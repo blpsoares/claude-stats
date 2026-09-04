@@ -1,0 +1,152 @@
+import { test, expect } from 'bun:test'
+import { expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands, type DirFacts } from './repo-manifest'
+
+const HOME = '/home/u'
+
+const facts = (over: Partial<DirFacts> & { path: string }): DirFacts => ({
+  exists: true, commonDir: null, topLevel: null, cloneUrl: '', remote: '', branch: '', head: '',
+  ...over,
+})
+
+const mainRepo = (path: string, url = 'git@github.com:org/repo.git'): DirFacts => facts({
+  path, commonDir: `${path}/.git`, topLevel: path, cloneUrl: url,
+  remote: 'github.com/org/repo', branch: 'main', head: 'a1b2c3d',
+})
+
+test('a plain checkout becomes one entry with no worktrees', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
+  expect(e!.key).toBe('github.com/org/repo')
+  expect(e!.mainPath).toBe('~/proj')
+  expect(e!.mainBranch).toBe('main')
+  expect(e!.worktrees).toEqual([])
+  expect(e!.note).toBeNull()
+})
+
+// The only thing a worktree provably shares with its main checkout is the git COMMON DIR. Grouping
+// by remote would merge two unrelated clones of the same repo into one entry, and the restore
+// would rebuild one and silently drop the other. Grouping by path prefix breaks the
+// moment a worktree lives outside its checkout.
+test('a worktree groups under its main checkout, by common dir', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/.claude/worktrees/feat`, commonDir: `${HOME}/proj/.git`,
+    topLevel: `${HOME}/proj/.claude/worktrees/feat`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'feat/x', head: 'deadbee',
+  })
+  const entries = groupRepos([wt, main], HOME)
+  expect(entries).toHaveLength(1)
+  expect(entries[0]!.mainPath).toBe('~/proj')
+  expect(entries[0]!.worktrees).toEqual([
+    { path: '~/proj/.claude/worktrees/feat', branch: 'feat/x', head: 'deadbee' },
+  ])
+})
+
+test('a worktree living outside its checkout still groups with it', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: '/tmp/elsewhere', commonDir: `${HOME}/proj/.git`, topLevel: '/tmp/elsewhere',
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'wip', head: 'f00',
+  })
+  const entries = groupRepos([main, wt], HOME)
+  expect(entries).toHaveLength(1)
+  expect(entries[0]!.worktrees[0]!.path).toBe('/tmp/elsewhere')
+})
+
+test('two clones of the same repo stay two entries', () => {
+  const entries = groupRepos([mainRepo(`${HOME}/a`), mainRepo(`${HOME}/b`)], HOME)
+  expect(entries).toHaveLength(2)
+  expect(entries.map(e => e.mainPath).sort()).toEqual(['~/a', '~/b'])
+})
+
+test('a directory that no longer exists is `gone` and is never asked of git', () => {
+  const [e] = groupRepos([facts({ path: `${HOME}/deleted`, exists: false })], HOME)
+  expect(e!.note).toBe('gone')
+  expect(restoreCommands(e!, HOME)).toEqual([])
+})
+
+test('an existing directory that is not a repo says so', () => {
+  const [e] = groupRepos([facts({ path: `${HOME}/notes` })], HOME)
+  expect(e!.note).toBe('not-a-repo')
+  expect(restoreCommands(e!, HOME)).toEqual([])
+})
+
+test('a repo with no remote is `no-remote` — there is nothing to clone from', () => {
+  const [e] = groupRepos([facts({
+    path: `${HOME}/local`, commonDir: `${HOME}/local/.git`, topLevel: `${HOME}/local`,
+    branch: 'main', head: 'abc',
+  })], HOME)
+  expect(e!.note).toBe('no-remote')
+  expect(e!.key).toBe(`${HOME}/local/.git`)
+})
+
+test('a path outside $HOME is recorded and never restored', () => {
+  const [e] = groupRepos([mainRepo('/tmp/scratch')], HOME)
+  expect(e!.note).toBe('outside-home')
+  expect(restoreCommands(e!, HOME)).toEqual([])
+})
+
+test('restoreCommands rebuilds clone, bundle, branch, worktrees and patches, in that order', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'feat/x', head: 'dead',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  e!.bundle = 'repos/github.com_org_repo.bundle'
+  e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
+
+  expect(restoreCommands(e!, '/home/new')).toEqual([
+    'git clone git@github.com:org/repo.git /home/new/proj',
+    'git -C /home/new/proj fetch repos/github.com_org_repo.bundle refs/heads/*:refs/heads/*',
+    'git -C /home/new/proj checkout main',
+    'git -C /home/new/proj worktree add /home/new/proj/wt feat/x',
+    'git -C /home/new/proj apply repos/github.com_org_repo__main.patch',
+  ])
+})
+
+// Display and execution come from ONE source, in two shapes. A path with a space cannot be
+// recovered from a joined string, and joining then re-splitting is how a shell injection or a
+// silently wrong argv gets in.
+test('restoreArgv is the same plan as structured argv, and survives a path with a space', () => {
+  const [e] = groupRepos([mainRepo('/home/u/my projects/app')], HOME)
+  const argv = restoreArgv(e!, '/home/u')
+  expect(argv[0]).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/my projects/app'])
+  // The printable form is the same plan, joined for a human to read.
+  expect(restoreCommands(e!, '/home/u')[0]).toBe('git clone git@github.com:org/repo.git /home/u/my projects/app')
+  expect(restoreCommands(e!, '/home/u')).toHaveLength(argv.length)
+})
+
+// A bundle and a patch are paths INSIDE the archive. Printed in the plan they stay archive-
+// relative (that is what a reader can locate); executed, they must resolve to where the archive
+// was actually extracted, or `git fetch` is handed a path that does not exist.
+test('an assetDir resolves the bundle and patch paths, and its absence leaves them archive-relative', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
+  e!.bundle = 'repos/github.com_org_repo.bundle'
+  e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
+
+  const bare = restoreArgv(e!, HOME)
+  expect(bare[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+
+  const staged = restoreArgv(e!, HOME, '/stage')
+  expect(staged[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+  expect(staged[staged.length - 1]).toEqual(['git', '-C', '/home/u/proj', 'apply', '/stage/repos/github.com_org_repo__main.patch'])
+})
+
+test('a repo whose bundle exceeded the ceiling is `too-large` and clones without one', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/big`)], HOME)
+  e!.note = 'too-large'
+  expect(restoreCommands(e!, HOME)).toEqual([
+    'git clone git@github.com:org/repo.git /home/u/big',
+    'git -C /home/u/big checkout main',
+  ])
+})
+
+test('home paths round-trip, and a path outside home is left absolute', () => {
+  expect(homeRelative('/home/u/proj', HOME)).toBe('~/proj')
+  expect(homeRelative('/tmp/x', HOME)).toBe('/tmp/x')
+  expect(expandHome('~/proj', '/home/new')).toBe('/home/new/proj')
+  expect(expandHome('/tmp/x', '/home/new')).toBe('/tmp/x')
+})
