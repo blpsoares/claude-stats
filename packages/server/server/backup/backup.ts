@@ -18,7 +18,7 @@ import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { createHash } from 'crypto'
 import { createReadStream, existsSync, statSync } from 'fs'
-import { mkdir, readdir, stat, writeFile, unlink } from 'fs/promises'
+import { lstat, mkdir, readdir, writeFile, unlink } from 'fs/promises'
 import { join, relative } from 'path'
 import type { HarnessId } from '@agentistics/core'
 import { excludeFor, omittedSecrets, planSources, type BackupLayer, type SourceEntry } from './backup-plan'
@@ -36,22 +36,63 @@ export interface WalkedFile {
   harness: HarnessId | null
 }
 
-/** Walk every source, applying the exclusion rules per file. A missing source contributes nothing —
- *  a machine that never installed codex is not an error condition. */
+/** A path the walk could not read, or deliberately did not follow. Reported, never silent. */
+export interface WalkSkip {
+  rel: string
+  reason: 'symlink' | 'unreadable'
+  detail?: string
+}
+
+/**
+ * Walk every source, applying the exclusion rules per file.
+ *
+ * A MISSING source contributes nothing and is not an error — a machine that never installed codex
+ * is not a fault. Two other cases are NOT the same thing and are recorded:
+ *
+ * **Symlinks are not followed.** `stat` dereferences; `lstat` does not, and the difference matters
+ * twice. A link pointing at one of its own ancestors — an ordinary dotfiles-manager artifact —
+ * sends this recursion around forever, in a tool whose entire job is walking an arbitrary person's
+ * home directory. And a link pointing OUTSIDE `$HOME` would copy its target's bytes into the
+ * archive under an innocent `$HOME`-relative name, which is the exclusion table's own problem
+ * arriving through a side door.
+ *
+ * **A directory that cannot be read is recorded, not skipped in silence.** A permission error deep
+ * inside an otherwise-fine tree would otherwise produce a smaller backup that reports complete
+ * success — the same failure-wearing-good-news shape this feature has had to remove three times
+ * already.
+ */
 export async function walkSources(
   homeDir: string, sources: SourceEntry[],
-): Promise<{ files: WalkedFile[]; sizes: BackupSizes }> {
+): Promise<{ files: WalkedFile[]; sizes: BackupSizes; skipped: WalkSkip[] }> {
   const sizes = emptySizes()
   const files: WalkedFile[] = []
+  const skipped: WalkSkip[] = []
 
-  const visit = async (abs: string, src: SourceEntry): Promise<void> => {
+  const visit = async (abs: string, src: SourceEntry, isRoot: boolean): Promise<void> => {
     const rel = relative(homeDir, abs).split('\\').join('/')
     if (excludeFor(rel)) return
+
     let st
-    try { st = await stat(abs) } catch { return }
+    try {
+      st = await lstat(abs)
+    } catch (e) {
+      // A source ROOT that is absent is the ordinary "this harness is not installed" case. The same
+      // failure on a path we reached by reading its parent's entry is a real read error.
+      if (!isRoot) skipped.push({ rel, reason: 'unreadable', detail: errText(e) })
+      return
+    }
+
+    if (st.isSymbolicLink()) { skipped.push({ rel, reason: 'symlink' }); return }
+
     if (st.isDirectory()) {
-      const entries = await readdir(abs).catch(() => [] as string[])
-      for (const e of entries) await visit(join(abs, e), src)
+      let entries: string[]
+      try {
+        entries = await readdir(abs)
+      } catch (e) {
+        skipped.push({ rel, reason: 'unreadable', detail: errText(e) })
+        return
+      }
+      for (const e of entries) await visit(join(abs, e), src, false)
       return
     }
     if (!st.isFile()) return
@@ -59,8 +100,12 @@ export async function walkSources(
     addBytes(sizes, src.layer, src.harness, st.size)
   }
 
-  for (const src of sources) await visit(join(homeDir, src.rel), src)
-  return { files, sizes }
+  for (const src of sources) await visit(join(homeDir, src.rel), src, true)
+  return { files, sizes, skipped }
+}
+
+function errText(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).slice(0, 200)
 }
 
 export type Archiver =
@@ -131,8 +176,16 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
 
   const sources = planSources({ layers: opts.layers, harnesses: opts.harnesses })
   log(`planning ${sources.length} sources`)
-  const { files, sizes } = await walkSources(opts.homeDir, sources)
+  const { files, sizes, skipped } = await walkSources(opts.homeDir, sources)
   log(`${files.length} files, ${plannedTotal(sizes, opts.layers)} bytes before compression`)
+
+  // Named, never counted-and-forgotten: a backup that quietly left things out is a backup whose
+  // completeness the user cannot reason about.
+  for (const s of skipped) {
+    log(s.reason === 'symlink'
+      ? `skipped ${s.rel} — a symlink; its target is either already in the walk or deliberately outside it`
+      : `skipped ${s.rel} — could not be read: ${s.detail ?? 'unknown'}`)
+  }
 
   await mkdir(opts.destDir, { recursive: true })
 
@@ -184,10 +237,13 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
       '-C', opts.homeDir, '-T', listPath,
     ], { maxBuffer: 16 * 1024 * 1024 })
   } catch (e) {
-    await unlink(listPath).catch(() => {})
-    await unlink(manifestPath).catch(() => {})
+    // A failed tar can leave a PARTIAL archive, and it carries a real backup's extension. Nothing
+    // recorded it, so nothing would ever delete it, and it would sit in the destination directory
+    // looking exactly like a backup somebody could try to restore from.
+    await unlink(archivePath).catch(() => {})
     return { ok: false, reason: e instanceof Error ? e.message : String(e) }
   } finally {
+    // One cleanup path for the staged files, on every outcome.
     await unlink(listPath).catch(() => {})
     await unlink(manifestPath).catch(() => {})
   }

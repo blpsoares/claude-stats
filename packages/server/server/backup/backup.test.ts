@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { execFileSync } from 'child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { archiverFor, runBackup, walkSources } from './backup'
@@ -45,14 +45,42 @@ test('the walk drops excluded files and never counts them toward a size', async 
   expect(sizes.metrics.bytes).toBeLessThan(5000)
 })
 
-test('a missing source is not an error — it contributes nothing', async () => {
-  const { files } = await walkSources(home, [{ rel: '.codex', layer: 'raw', harness: 'codex' }])
+test('a missing source is not an error — it contributes nothing and is not reported', async () => {
+  const { files, skipped } = await walkSources(home, [{ rel: '.codex', layer: 'raw', harness: 'codex' }])
   expect(files).toEqual([])
+  expect(skipped).toEqual([])
 })
 
+// `stat` dereferences and `lstat` does not, and the difference is a hang. A link to one of its own
+// ancestors is an ordinary dotfiles-manager artifact, and following it recurses forever in a tool
+// whose whole job is walking someone's home directory.
+test('a symlink is not followed, and is reported rather than dropped', async () => {
+  const dir = join(home, '.agentistics/sessions/claude')
+  symlinkSync(home, join(dir, 'loop'))
+  try {
+    const { files, skipped } = await walkSources(home, [
+      { rel: '.agentistics/sessions/claude', layer: 'metrics', harness: 'claude' },
+    ])
+    expect(files.map(f => f.rel)).toEqual(['.agentistics/sessions/claude/a.json'])
+    expect(skipped).toEqual([{ rel: '.agentistics/sessions/claude/loop', reason: 'symlink' }])
+  } finally {
+    rmSync(join(dir, 'loop'), { force: true })
+  }
+})
+
+// THE test of this feature, and it must be written so it can fail.
+//
+// The first version asked for `layers: ['metrics']`, which reaches `.claude` through exactly ONE
+// entry — the single file `.claude/stats-cache.json`. The walk therefore never visited
+// `.claude/.credentials.json` at all, so `excludeFor` was never asked about it and the assertion
+// passed for the same reason it would pass if the file did not exist. It would have stayed green
+// with the entire secrets table deleted.
+//
+// `raw` is what puts the `.claude` DIRECTORY in the source list, which is the only arrangement
+// under which the credential is a candidate and its exclusion is a real event.
 test('a backup writes an archive, records a real size, and no credential is inside', async () => {
   const r = await runBackup({
-    homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+    homeDir: home, destDir: dest, layers: ['metrics', 'raw'], harnesses: ['claude'],
     repos: [], agentopVersion: 'test', hostname: 'box',
   })
   expect(r.ok).toBe(true)
@@ -64,6 +92,9 @@ test('a backup writes an archive, records a real size, and no credential is insi
   const listing = execFileSync('tar', ['-tf', r.record.path], { encoding: 'utf8' })
   expect(listing).toContain('.agentistics/sessions/claude/a.json')
   expect(listing).toContain(MANIFEST_NAME)
+  // Proof the walk actually entered the directory holding the credential — without this the two
+  // assertions below are about a file that was never a candidate.
+  expect(listing).toContain('.claude/stats-cache.json')
   // The rule that matters most in this whole plan.
   expect(listing).not.toContain('.credentials.json')
   expect(listing).not.toContain('cache.db')
