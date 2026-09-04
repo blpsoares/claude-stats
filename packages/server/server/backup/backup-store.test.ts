@@ -52,6 +52,17 @@ test('a harness only in a backup whose file is gone counts as never backed up', 
   expect(lastPerHarness(entries).copilot).toBeUndefined()
 })
 
+// The store is append-only and read back in file order, which is not necessarily sorted — a
+// function that depended on its caller having sorted would go wrong the day one did not.
+test('last-per-harness keeps the maximum, whatever order it is given', () => {
+  const unsorted = [
+    { ...rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }), present: true },
+    { ...rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }), present: true },
+    { ...rec({ at: '2026-09-02T00:00:00Z', path: '/b/2' }), present: true },
+  ]
+  expect(lastPerHarness(unsorted).claude).toBe('2026-09-03T00:00:00Z')
+})
+
 test('pruning keeps the newest N present records and returns the rest', () => {
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }),
