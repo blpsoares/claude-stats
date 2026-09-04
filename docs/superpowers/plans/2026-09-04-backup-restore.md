@@ -2291,6 +2291,11 @@ test('a tree that cannot be read is `unavailable`, never `clean`', async () => {
 
 // Measured: GIT_COMMON_DIR alone, with no GIT_DIR set, redirects `rev-parse --git-common-dir` —
 // the ONE fact groupRepos keys on. A backup run from inside a git hook inherits variables like it.
+//
+// This test only DISCRIMINATES because `gitEnv()` is rebuilt per call. An earlier version captured
+// the environment once at module load, and this test then passed identically against a build with
+// the strip reverted — it was measuring nothing. If you are tempted to hoist `gitEnv()` back to a
+// module constant for performance, this test is what you would be switching off.
 test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
   const other = join(root, 'other')
   mkdirSync(other)
@@ -2311,11 +2316,22 @@ test('untracked files are listed, and ignored ones are not', async () => {
   writeFileSync(join(repo, 'ignored.txt'), 'x')
   writeFileSync(join(repo, 'new.txt'), 'y')
   const un = await listUntracked(repo)
-  expect(un).toContain('new.txt')
-  expect(un).not.toContain('ignored.txt')
+  expect(un.kind).toBe('files')
+  if (un.kind === 'files') {
+    expect(un.files).toContain('new.txt')
+    expect(un.files).not.toContain('ignored.txt')
+  }
   rmSync(join(repo, '.gitignore'))
   rmSync(join(repo, 'ignored.txt'))
   rmSync(join(repo, 'new.txt'))
+})
+
+// The same failure class as capturePatch's: a tree whose untracked state could not be established
+// must not read as a tree that had none, or `buildRepoManifest` skips the directory entirely.
+test('a directory git cannot read is `unavailable`, never an empty list', async () => {
+  const un = await listUntracked(join(root, 'not-a-repo-at-all'))
+  expect(un.kind).toBe('unavailable')
+  if (un.kind === 'unavailable') expect(un.reason.length).toBeGreaterThan(0)
 })
 
 // --- candidatePaths (pure) --------------------------------------------------------------------
@@ -2387,11 +2403,24 @@ const run = promisify(execFile)
  * on. (`GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES` were measured too and
  * do not redirect it; they are left alone rather than cargo-culted into the list.)
  */
-const GIT_ENV: NodeJS.ProcessEnv = (() => {
+const HIJACKERS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR'] as const
+
+/**
+ * Built PER CALL, deliberately, not captured once at module load.
+ *
+ * A module-load snapshot is wrong twice over. In production it misses anything that sets these
+ * variables after import — a spawn wrapper, a nested hook, a test harness. And it makes the strip
+ * UNTESTABLE: a test that sets `process.env.GIT_COMMON_DIR` and then calls the probe would be
+ * mutating an object the module had already copied, so it passes identically whether the strip is
+ * present or reverted. That was measured — the regression test for this very fix was green against
+ * a build with the fix removed. Rebuilding a small object per git call costs nothing next to
+ * spawning a process.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  for (const k of HIJACKERS) delete env[k]
   return env
-})()
+}
 
 export type GitResult =
   | { ok: true; stdout: string }
@@ -2407,7 +2436,7 @@ export type GitResult =
  */
 async function gitRun(cwd: string, args: string[], timeout = 10_000): Promise<GitResult> {
   try {
-    const { stdout } = await run('git', ['-C', cwd, ...args], { env: GIT_ENV, timeout, maxBuffer: 64 * 1024 * 1024 })
+    const { stdout } = await run('git', ['-C', cwd, ...args], { env: gitEnv(), timeout, maxBuffer: 64 * 1024 * 1024 })
     return { ok: true, stdout: stdout.trim() }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -2496,6 +2525,12 @@ export async function createBundle(
 }
 
 export type PatchResult =
+  /**
+   * No PATCH to write. That covers a genuinely clean tree AND a tree whose only changes are
+   * untracked files — `git status` sees those, `git diff HEAD` does not. It never means "nothing to
+   * back up here": the untracked list is collected separately by `listUntracked`, and a caller that
+   * read `clean` as "skip this directory" would drop it.
+   */
   | { kind: 'clean' }
   | { kind: 'patch'; text: string }
   | { kind: 'unavailable'; reason: string }
@@ -2525,10 +2560,22 @@ export async function capturePatch(dir: string): Promise<PatchResult> {
   return diff.stdout ? { kind: 'patch', text: diff.stdout + '\n' } : { kind: 'clean' }
 }
 
-/** Untracked, not-ignored files, relative to the repository root. */
-export async function listUntracked(dir: string): Promise<string[]> {
-  const out = await git(dir, ['ls-files', '--others', '--exclude-standard'])
-  return out ? out.split('\n').filter(Boolean) : []
+export type UntrackedResult =
+  | { kind: 'files'; files: string[] }
+  | { kind: 'unavailable'; reason: string }
+
+/**
+ * Untracked, not-ignored files, relative to the repository root.
+ *
+ * Discriminated for the same reason `capturePatch` is: this call COLLECTS BACKUP CONTENT, unlike
+ * the probe calls where "git has no answer about this directory" is itself a legitimate answer.
+ * Folding a permission error or a corrupted index into an empty list means a tree whose untracked
+ * state was never established gets skipped as though it had none — the reassuring direction again.
+ */
+export async function listUntracked(dir: string): Promise<UntrackedResult> {
+  const res = await gitRun(dir, ['ls-files', '--others', '--exclude-standard'])
+  if (!res.ok) return { kind: 'unavailable', reason: `git ls-files failed: ${res.reason}` }
+  return { kind: 'files', files: res.stdout ? res.stdout.split('\n').filter(Boolean) : [] }
 }
 
 /** Every directory worth probing, from the session store. PURE. */
@@ -2803,6 +2850,8 @@ export interface BackupOptions {
   layers: BackupLayer[]
   harnesses: HarnessId[]
   repos: RepoEntry[]
+  agentopVersion: string
+  hostname: string
   /**
    * Directory holding the repos layer's ASSETS — the bundles and patches, already laid out as
    * `<assetRoot>/repos/…` exactly as they must appear inside the archive.
@@ -3333,7 +3382,7 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
   for (const e of entries) {
     for (const d of e.dirty) {
       if (d.patchUnavailable) {
-        log(`note ${e.key}: ${d.path} had uncommitted changes that could NOT be captured — ${d.patchUnavailable}`)
+        log(`note ${e.key}: the uncommitted state of ${d.path} could NOT be read — ${d.patchUnavailable}`)
       }
       if (d.untracked.length) {
         log(`note ${e.key}: ${d.untracked.length} untracked file(s) in ${d.path} were listed, not carried:`)
@@ -3682,15 +3731,21 @@ async function buildRepoManifest(
     for (const dir of [e.mainPath, ...e.worktrees.map(w => w.path)]) {
       const abs = expandHome(dir, HOME_DIR)
       const patch = await capturePatch(abs)
-      const untracked = await listUntracked(abs)
-      if (patch.kind === 'clean' && !untracked.length) continue
+      const listed = await listUntracked(abs)
+      const untracked = listed.kind === 'files' ? listed.files : []
 
-      // A tree we could not read is RECORDED as unread, never as clean. The restore prints it.
-      if (patch.kind === 'unavailable') {
-        log(`  ${e.key}: ${dir} is dirty but its diff could not be captured — ${patch.reason}`)
-        e.dirty.push({ path: dir, patch: null, untracked, patchUnavailable: patch.reason })
+      // A tree we could not read is RECORDED as unread, never as clean or empty. Either half
+      // failing is enough: skipping a directory whose state was never established is the silence
+      // this whole module is built to avoid. The restore prints the reason.
+      const unread = patch.kind === 'unavailable' ? patch.reason
+        : listed.kind === 'unavailable' ? listed.reason
+        : null
+      if (unread) {
+        log(`  ${e.key}: ${dir} could not be read — ${unread}`)
+        e.dirty.push({ path: dir, patch: null, untracked, patchUnavailable: unread })
         continue
       }
+      if (patch.kind === 'clean' && !untracked.length) continue
 
       let patchRel: string | null = null
       if (patch.kind === 'patch') {
