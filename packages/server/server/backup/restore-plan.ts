@@ -50,14 +50,14 @@ export function planMetrics(staged: StagedFile[], localMtime: Map<string, number
   })
 }
 
-export type RepoStepState = 'pending' | 'done' | 'skipped'
+export type RepoStepState = 'pending' | 'done' | 'skipped' | 'half-restored'
 
 export interface RepoStep {
   key: string
   mainPath: string
   state: RepoStepState
   /** Why it is skipped, or why it was not attempted. */
-  reason?: RepoNote | 'destination-exists' | 'skipped-earlier'
+  reason?: RepoNote | 'destination-exists' | 'skipped-earlier' | 'half-restored'
   /** The reason recorded by a previous failed attempt, so the report can say what went wrong. */
   previousFailure?: string
   /** What RUNS — structured argv, never joined. */
@@ -102,6 +102,19 @@ export function planRepos(
     // `too-large` is a real, cloneable repository; every other note means there is nothing to clone.
     if (e.note && e.note !== 'too-large') {
       return { ...base, state: 'skipped', reason: e.note, argv: [], commands: [] }
+    }
+
+    // A repo that failed after its clone leaves the destination behind. Checking `destExists` first
+    // — as this did — turns every such repo into a permanent silent skip, which is worse than the
+    // failure: the CLI tells the user to re-run, the re-run does nothing, and it exits 0.
+    if (prior?.state === 'failed' && destExists(expandHome(e.mainPath, homeDir))) {
+      return {
+        ...base,
+        state: 'half-restored',
+        reason: 'half-restored',
+        previousFailure: prior.reason ?? 'unknown',
+        argv: [], commands: [],
+      }
     }
 
     if (destExists(expandHome(e.mainPath, homeDir))) {

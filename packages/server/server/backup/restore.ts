@@ -30,6 +30,7 @@ import { dirname, join, relative } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { safeReadJson } from '../utils'
 import { decodeManifest, MANIFEST_NAME, type BackupManifest, type DecodedManifest } from './manifest'
+import { expandHome } from './repo-manifest'
 import { gitEnv } from './repo-probe'
 import {
   emptyRestoreState, planMetrics, planRepos, remaining, rewriteHome,
@@ -241,6 +242,14 @@ export interface RestoreReposResult {
   succeeded: number
   failures: { key: string; reason: string }[]
   skipped: { key: string; reason: string }[]
+  /**
+   * A repo that failed AFTER its clone — `branch -m`, `fetch`, `checkout`, `worktree add` or
+   * `apply` — leaves the destination on disk and is never retried automatically: neither step is
+   * repeatable, and a half-clever resume that gets it wrong writes into a repository the user may
+   * already have started working in. Named here so the report says so loudly instead of the
+   * ordinary `skipped` a re-run would otherwise print forever.
+   */
+  halfRestored: { key: string; path: string; previousFailure: string }[]
 }
 
 export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreReposResult> {
@@ -270,7 +279,7 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
         // rebuild every repository without the unpushed work this phase exists to restore.
         await rm(assetDir, { recursive: true, force: true }).catch(() => {})
         return {
-          attempted: 0, succeeded: 0, skipped: [],
+          attempted: 0, succeeded: 0, skipped: [], halfRestored: [],
           failures: [{ key: '(repos assets)', reason: `could not extract them: ${e instanceof Error ? e.message : String(e)}` }],
         }
       }
@@ -278,10 +287,17 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
   }
 
   const steps = planRepos(entries, state, p => existsSync(p), opts.homeDir, assetDir)
-  const result: RestoreReposResult = { attempted: 0, succeeded: 0, failures: [], skipped: [] }
+  const result: RestoreReposResult = { attempted: 0, succeeded: 0, failures: [], skipped: [], halfRestored: [] }
 
   for (const s of steps) {
     if (s.state === 'skipped') result.skipped.push({ key: s.key, reason: String(s.reason) })
+    else if (s.state === 'half-restored') {
+      result.halfRestored.push({
+        key: s.key,
+        path: expandHome(s.mainPath, opts.homeDir),
+        previousFailure: s.previousFailure ?? 'unknown',
+      })
+    }
   }
 
   // Everything below is wrapped so the staging directory goes on EVERY exit path — the same

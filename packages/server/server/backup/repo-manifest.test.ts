@@ -211,6 +211,29 @@ test('a repo whose bundle exceeded the ceiling is `too-large` and clones without
   ])
 })
 
+test('a detached worktree is recreated detached at its head, never with an empty ref', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: '', head: 'deadbee',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  const argv = restoreArgv(e!, HOME)
+  expect(argv).toContainEqual(['git', '-C', '/home/u/proj', 'worktree', 'add', '--detach', '/home/u/proj/wt', 'deadbee'])
+  expect(argv.every(a => a.every(x => x !== ''))).toBe(true)
+})
+
+test('a worktree with neither branch nor head is left out rather than emitted broken', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo', branch: '', head: '',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  expect(restoreArgv(e!, HOME).some(a => a.includes('worktree'))).toBe(false)
+})
+
 test('home paths round-trip, and a path outside home is left absolute', () => {
   expect(homeRelative('/home/u/proj', HOME)).toBe('~/proj')
   expect(homeRelative('/tmp/x', HOME)).toBe('/tmp/x')

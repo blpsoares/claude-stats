@@ -62,6 +62,18 @@ test('a repo that failed is retried on the next run', () => {
   expect(steps[0]!.previousFailure).toBe('auth')
 })
 
+// D2: a repo that fails AFTER its clone (branch rename, fetch, checkout, worktree add, apply) leaves
+// the destination on disk. `destExists` alone would then read that as a plain `skipped` forever —
+// the CLI tells the user to re-run to retry failures, and the re-run does nothing and exits 0. It
+// must get its own state, checked BEFORE `destExists`.
+test('a repo that failed AFTER cloning is half-restored, not silently skipped', () => {
+  const state: RestoreState = { repos: { 'github.com/org/repo': { state: 'failed', reason: 'worktree add failed' } } }
+  const steps = planRepos([entry({ key: 'github.com/org/repo' })], state, () => true, '/home/n')
+  expect(steps[0]!.state).toBe('half-restored')
+  expect(steps[0]!.previousFailure).toBe('worktree add failed')
+  expect(steps[0]!.commands).toEqual([])
+})
+
 test('a destination that already exists is skipped with a reason, never overwritten', () => {
   const steps = planRepos([entry({ key: 'github.com/org/repo' })], fresh(), () => true, '/home/n')
   expect(steps[0]!.state).toBe('skipped')

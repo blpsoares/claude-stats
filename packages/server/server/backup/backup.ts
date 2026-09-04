@@ -17,9 +17,10 @@
 import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { createHash } from 'crypto'
+import { tmpdir } from 'os'
 import { createReadStream, existsSync, statSync } from 'fs'
-import { lstat, mkdir, readdir, stat, writeFile, unlink } from 'fs/promises'
-import { join, relative } from 'path'
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile, unlink } from 'fs/promises'
+import { dirname, join, relative } from 'path'
 import type { HarnessId } from '@agentistics/core'
 import { excludeFor, omittedSecrets, planSources, type BackupLayer, type SourceEntry } from './backup-plan'
 import { addBytes, emptySizes, plannedTotal, type BackupSizes } from './backup-size'
@@ -111,6 +112,53 @@ function errText(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).slice(0, 200)
 }
 
+/**
+ * Write `preferences.json` into a stage root with its live tokens removed, and report it as a
+ * `WalkedFile` — it stats what it wrote itself, since `runBackup` needs the same bytes/layer/harness
+ * shape as anything the ordinary walk produced, for the digest and the manifest's file count alike.
+ *
+ * The redaction mirrors what `preferences.ts` already does for its own API read-out — this is not a
+ * new rule, it is the existing one applied to the copy that leaves the machine.
+ *
+ * This is called from INSIDE `runBackup`, not passed in by a caller. It used to be the other way
+ * around — an optional `stagedRels` a caller supplied — and that shape let a caller omit it by
+ * omitting an argument, which is exactly what the scheduled backup did: every unattended run
+ * silently dropped the billing timeline (which exists in no other file on any machine), the custom
+ * layouts, `archiveMode`, and the backup configuration itself, while still reporting success.
+ */
+export async function stageRedactedFiles(
+  homeDir: string, stageRoot: string, log: (l: string) => void,
+): Promise<WalkedFile[]> {
+  const rel = '.agentistics/preferences.json'
+  const raw = await readFile(join(homeDir, rel), 'utf-8').catch(() => null)
+  if (raw === null) return []
+
+  let prefs: Record<string, unknown>
+  try {
+    prefs = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    // Unparseable preferences are not carried at all: a file we cannot read is a file whose tokens
+    // we cannot prove we removed.
+    log('preferences.json could not be parsed — it is NOT in this backup')
+    return []
+  }
+
+  const team = prefs.team as Record<string, unknown> | undefined
+  if (team) {
+    delete team.token
+    const conns = team.connections
+    if (Array.isArray(conns)) {
+      for (const c of conns) if (c && typeof c === 'object') delete (c as Record<string, unknown>).token
+    }
+  }
+
+  const dest = join(stageRoot, rel)
+  await mkdir(dirname(dest), { recursive: true })
+  await writeFile(dest, JSON.stringify(prefs, null, 2))
+  const st = await stat(dest)
+  return [{ rel, bytes: st.size, layer: 'metrics', harness: null }]
+}
+
 export type Archiver =
   | { kind: 'zstd'; extension: '.tar.zst'; flag: '--zstd' }
   | { kind: 'gzip'; extension: '.tar.gz'; flag: '-z' }
@@ -148,14 +196,6 @@ export interface BackupOptions {
    * is the single thing the repos layer exists to save.
    */
   assetRoot?: string
-  /**
-   * Archive-relative paths to take from `assetRoot` instead of from `$HOME`.
-   *
-   * For a file that must be TRANSFORMED before it travels — today, `preferences.json` with its
-   * tokens redacted. They are archive content like any walked file: digested, sized, counted, and
-   * merged on restore. They differ only in where `tar` reads them from.
-   */
-  stagedRels?: string[]
   /** Called with each progress line. Defaults to a no-op so tests are silent. */
   onLine?: (line: string) => void
 }
@@ -207,98 +247,101 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
       : `skipped ${s.rel} — could not be read: ${s.detail ?? 'unknown'}`)
   }
 
-  // Staged replacements join the walked files for every purpose except which root tar reads them
-  // from. They must be in the digest — they are $HOME content and the restore merges them.
-  const staged: WalkedFile[] = []
-  for (const rel of opts.stagedRels ?? []) {
-    const st = await stat(join(opts.assetRoot ?? '', rel)).catch(() => null)
-    if (!st?.isFile()) continue
-    staged.push({ rel, bytes: st.size, layer: 'metrics', harness: null })
-    addBytes(sizes, 'metrics', null, st.size)
-  }
-  const archived = [...files, ...staged]
-
-  await mkdir(opts.destDir, { recursive: true })
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const archivePath = join(opts.destDir, `agentistics-backup-${opts.hostname}-${stamp}${archiver.extension}`)
-
-  const manifest: BackupManifest = {
-    version: 1,
-    createdAt: new Date().toISOString(),
-    agentopVersion: opts.agentopVersion,
-    hostname: opts.hostname,
-    homeDir: opts.homeDir,
-    platform: process.platform,
-    layers: opts.layers,
-    harnesses: opts.harnesses,
-    sizes,
-    groups: [{
-      name: 'files',
-      files: archived.length,
-      bytes: plannedTotal(sizes, opts.layers),
-      // A digest of the FILE LIST, not of the archive: the manifest travels inside the archive, so
-      // hashing the archive from here is circular. This catches an archive that was rebuilt or
-      // edited — the case a byte count alone misses. The whole-archive hash lives on BackupRecord,
-      // for the person verifying the file they carried. Staged replacements (e.g. the redacted
-      // preferences.json) are archive content like any walked file, so they are in this digest too
-      // — leaving them out would reproduce the exact bug this digest exists to catch, in a new place.
-      sha256: manifestDigest(archived),
-    }],
-    repos: opts.repos,
-    omittedSecrets: omittedSecrets().map(r => ({ path: r.pattern, restoreWith: r.restoreWith ?? '' })),
-  }
-
-  // Staged beside the archive, added under its own name, removed afterwards. Writing it into
-  // $HOME would put our bookkeeping in the user's home directory.
-  const manifestPath = join(opts.destDir, MANIFEST_NAME)
-  const listPath = join(opts.destDir, `.agentistics-filelist-${stamp}`)
-  await writeFile(manifestPath, encodeManifest(manifest))
-  await writeFile(listPath, files.map(f => f.rel).join('\n') + '\n')
-
+  // Staged replacements are built HERE, not passed in. `preferences.json` must be redacted before
+  // it travels, and the previous shape — an optional `stagedRels` supplied by the caller — meant a
+  // caller could omit it by omitting an argument, which is exactly what the scheduled run did:
+  // every unattended backup silently lost the billing timeline while reporting success. A payload
+  // that is only complete when the caller remembers something is a payload that will be incomplete.
+  const prefStage = await mkdtemp(join(tmpdir(), 'agentistics-staged-'))
   try {
-    const flags = archiver.flag ? [archiver.flag] : []
-    // Four roots in one archive: the manifest (staged beside the output), the repos assets
-    // (produced during this run), the staged replacements (also produced during this run, under
-    // their $HOME-relative name), and the $HOME tree (the explicit file list).
-    const assets = opts.assetRoot && existsSync(join(opts.assetRoot, 'repos'))
-      ? ['-C', opts.assetRoot, 'repos']
-      : []
-    const stagedArgs = opts.assetRoot && staged.length
-      ? ['-C', opts.assetRoot, ...staged.map(f => f.rel)]
-      : []
-    await run('tar', [
-      ...flags, '-cf', archivePath,
-      '-C', opts.destDir, MANIFEST_NAME,
-      ...assets, ...stagedArgs,
-      '-C', opts.homeDir, '-T', listPath,
-    ], { maxBuffer: 16 * 1024 * 1024 })
-  } catch (e) {
-    // A failed tar can leave a PARTIAL archive, and it carries a real backup's extension. Nothing
-    // recorded it, so nothing would ever delete it, and it would sit in the destination directory
-    // looking exactly like a backup somebody could try to restore from.
-    await unlink(archivePath).catch(() => {})
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    // Staged replacements join the walked files for every purpose except which root tar reads them
+    // from. They must be in the digest — they are $HOME content and the restore merges them.
+    const staged = await stageRedactedFiles(opts.homeDir, prefStage, log)
+    for (const f of staged) addBytes(sizes, f.layer, f.harness, f.bytes)
+    const archived = [...files, ...staged]
+
+    await mkdir(opts.destDir, { recursive: true })
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const archivePath = join(opts.destDir, `agentistics-backup-${opts.hostname}-${stamp}${archiver.extension}`)
+
+    const manifest: BackupManifest = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      agentopVersion: opts.agentopVersion,
+      hostname: opts.hostname,
+      homeDir: opts.homeDir,
+      platform: process.platform,
+      layers: opts.layers,
+      harnesses: opts.harnesses,
+      sizes,
+      groups: [{
+        name: 'files',
+        files: archived.length,
+        bytes: plannedTotal(sizes, opts.layers),
+        // A digest of the FILE LIST, not of the archive: the manifest travels inside the archive, so
+        // hashing the archive from here is circular. This catches an archive that was rebuilt or
+        // edited — the case a byte count alone misses. The whole-archive hash lives on BackupRecord,
+        // for the person verifying the file they carried. Staged replacements (e.g. the redacted
+        // preferences.json) are archive content like any walked file, so they are in this digest too
+        // — leaving them out would reproduce the exact bug this digest exists to catch, in a new place.
+        sha256: manifestDigest(archived),
+      }],
+      repos: opts.repos,
+      omittedSecrets: omittedSecrets().map(r => ({ path: r.pattern, restoreWith: r.restoreWith ?? '' })),
+    }
+
+    // Staged beside the archive, added under its own name, removed afterwards. Writing it into
+    // $HOME would put our bookkeeping in the user's home directory.
+    const manifestPath = join(opts.destDir, MANIFEST_NAME)
+    const listPath = join(opts.destDir, `.agentistics-filelist-${stamp}`)
+    await writeFile(manifestPath, encodeManifest(manifest))
+    await writeFile(listPath, files.map(f => f.rel).join('\n') + '\n')
+
+    try {
+      const flags = archiver.flag ? [archiver.flag] : []
+      // Four roots in one archive: the manifest (staged beside the output), the repos assets
+      // (produced during this run), the staged replacements (redacted here, under their
+      // $HOME-relative name), and the $HOME tree (the explicit file list).
+      const assets = opts.assetRoot && existsSync(join(opts.assetRoot, 'repos'))
+        ? ['-C', opts.assetRoot, 'repos']
+        : []
+      const stagedArgs = staged.length ? ['-C', prefStage, ...staged.map(f => f.rel)] : []
+      await run('tar', [
+        ...flags, '-cf', archivePath,
+        '-C', opts.destDir, MANIFEST_NAME,
+        ...assets, ...stagedArgs,
+        '-C', opts.homeDir, '-T', listPath,
+      ], { maxBuffer: 16 * 1024 * 1024 })
+    } catch (e) {
+      // A failed tar can leave a PARTIAL archive, and it carries a real backup's extension. Nothing
+      // recorded it, so nothing would ever delete it, and it would sit in the destination directory
+      // looking exactly like a backup somebody could try to restore from.
+      await unlink(archivePath).catch(() => {})
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    } finally {
+      // One cleanup path for the staged files, on every outcome.
+      await unlink(listPath).catch(() => {})
+      await unlink(manifestPath).catch(() => {})
+    }
+
+    if (!existsSync(archivePath)) return { ok: false, reason: 'tar reported success but wrote nothing' }
+
+    const record: BackupRecord = {
+      at: manifest.createdAt,
+      path: archivePath,
+      layers: opts.layers,
+      harnesses: opts.harnesses,
+      bytesUncompressed: plannedTotal(sizes, opts.layers),
+      archiveBytes: statSync(archivePath).size,   // measured, never predicted
+      sha256: await sha256File(archivePath),
+      durationMs: Date.now() - started,
+      skipped: skipped.length,
+    }
+    await recordBackup(record)
+    log(`wrote ${archivePath}`)
+    return { ok: true, record, sizes, skipped }
   } finally {
-    // One cleanup path for the staged files, on every outcome.
-    await unlink(listPath).catch(() => {})
-    await unlink(manifestPath).catch(() => {})
+    await rm(prefStage, { recursive: true, force: true }).catch(() => {})
   }
-
-  if (!existsSync(archivePath)) return { ok: false, reason: 'tar reported success but wrote nothing' }
-
-  const record: BackupRecord = {
-    at: manifest.createdAt,
-    path: archivePath,
-    layers: opts.layers,
-    harnesses: opts.harnesses,
-    bytesUncompressed: plannedTotal(sizes, opts.layers),
-    archiveBytes: statSync(archivePath).size,   // measured, never predicted
-    sha256: await sha256File(archivePath),
-    durationMs: Date.now() - started,
-    skipped: skipped.length,
-  }
-  await recordBackup(record)
-  log(`wrote ${archivePath}`)
-  return { ok: true, record, sizes, skipped }
 }

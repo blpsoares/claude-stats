@@ -11,8 +11,8 @@
  */
 import { hostname, tmpdir } from 'os'
 import { existsSync } from 'fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
-import { dirname, join } from 'path'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
+import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, writePreferences, type Preferences } from './preferences'
@@ -220,47 +220,6 @@ async function buildRepoManifest(
 }
 
 /**
- * Write `preferences.json` into the stage root with its live tokens removed.
- *
- * Returns the archive-relative paths staged. The redaction mirrors what `preferences.ts` already
- * does for its API read-out — this is not a new rule, it is the existing one applied to the copy
- * that leaves the machine.
- *
- * `homeDir` is a parameter, not a read of `HOME_DIR`, so this can be exercised against a fixture
- * home directory in a test rather than the real machine's `~/.agentistics/preferences.json`.
- */
-export async function stagePreferences(
-  stageRoot: string, homeDir: string, log: (l: string) => void,
-): Promise<string[]> {
-  const rel = '.agentistics/preferences.json'
-  const raw = await readFile(join(homeDir, rel), 'utf-8').catch(() => null)
-  if (raw === null) return []
-
-  let prefs: Record<string, unknown>
-  try {
-    prefs = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    // Unparseable preferences are not carried at all: a file we cannot read is a file whose tokens
-    // we cannot prove we removed.
-    log('preferences.json could not be parsed — it is NOT in this backup')
-    return []
-  }
-
-  const team = prefs.team as Record<string, unknown> | undefined
-  if (team) {
-    delete team.token
-    const conns = team.connections
-    if (Array.isArray(conns)) {
-      for (const c of conns) if (c && typeof c === 'object') delete (c as Record<string, unknown>).token
-    }
-  }
-
-  await mkdir(dirname(join(stageRoot, rel)), { recursive: true })
-  await writeFile(join(stageRoot, rel), JSON.stringify(prefs, null, 2))
-  return [rel]
-}
-
-/**
  * Delete the FILES of backups beyond `keep`, newest first. The records stay: the store is
  * append-only and `markPresence` reports a missing file as absent from then on.
  */
@@ -338,9 +297,6 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     const repos = layers.includes('repos')
       ? await buildRepoManifest(effective, stageRoot, log)
       : []
-    // Staged whatever the layer selection, like the `metrics` layer itself always is —
-    // preferences.json is cross-harness data, not something `--with-*` opts into.
-    const stagedRels = await stagePreferences(stageRoot, HOME_DIR, log)
 
     if (parsed.planOnly) {
       log(`layers:    ${layers.join(', ')}`)
@@ -353,7 +309,7 @@ export async function runBackupCli(argv: string[]): Promise<number> {
 
     const result = await runBackup({
       homeDir: HOME_DIR, destDir, layers, harnesses: parsed.harnesses,
-      repos, assetRoot: stageRoot, stagedRels, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
+      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
     })
     if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
 
@@ -418,5 +374,14 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
   for (const f of r.failures) log(`  FAILED ${f.key} — ${f.reason}`)
   for (const skip of r.skipped) log(`  skipped ${skip.key} — ${skip.reason}`)
   if (r.failures.length) log('Re-run the same command to retry only the failures.')
-  return r.failures.length ? 1 : 0
+  if (r.halfRestored.length) {
+    log('')
+    log('These repositories were PARTLY restored and will not be retried automatically:')
+    for (const h of r.halfRestored) {
+      log(`  ${h.key} at ${h.path}`)
+      log(`    the earlier run failed after cloning: ${h.previousFailure}`)
+    }
+    log('  Inspect them, then remove the directory and re-run to restore each from scratch.')
+  }
+  return r.failures.length || r.halfRestored.length ? 1 : 0
 }

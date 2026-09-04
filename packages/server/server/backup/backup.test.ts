@@ -5,7 +5,6 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { archiverFor, runBackup, walkSources } from './backup'
 import { decodeManifest, MANIFEST_NAME } from './manifest'
-import { stagePreferences } from '../cli-backup'
 
 let home = ''
 let dest = ''
@@ -20,6 +19,10 @@ beforeAll(() => {
   writeFileSync(join(home, '.agentistics/cache.db'), 'X'.repeat(5000))          // regenerable
   writeFileSync(join(home, '.claude/stats-cache.json'), '{}')
   writeFileSync(join(home, '.claude/.credentials.json'), '{"secret":"nope"}')   // secret
+  writeFileSync(join(home, '.agentistics/preferences.json'), JSON.stringify({
+    lang: 'en',
+    team: { token: 'SUPER-SECRET-TOKEN', connections: [{ token: 'SUPER-SECRET-TOKEN' }] },
+  }))
 })
 
 afterAll(() => {
@@ -170,37 +173,25 @@ test('the repos assets travel inside the archive, under their archive-relative n
 
 // B1 (C2): preferences.json is not walked from $HOME — it never enters `EXCLUDE_RULES`, since
 // dropping the file entirely would lose custom layouts, the billing timeline and the sharing
-// rules the design promises to restore. Instead `stagePreferences` (cli-backup.ts) writes a
-// REDACTED copy into the stage root, and `stagedRels` tells `runBackup` to take that one path from
-// `assetRoot` instead of from `$HOME`. This exercises the real redaction end to end: a live token
-// goes in, and the archived copy must not carry it.
-test('the staged preferences travel WITHOUT their tokens', async () => {
-  const prefsHome = mkdtempSync(join(tmpdir(), 'agentistics-prefs-home-'))
-  const stageRoot = mkdtempSync(join(tmpdir(), 'agentistics-stage-'))
-  try {
-    mkdirSync(join(prefsHome, '.agentistics'), { recursive: true })
-    writeFileSync(join(prefsHome, '.agentistics/preferences.json'), JSON.stringify({
-      lang: 'en',
-      team: { token: 'SUPER-SECRET-TOKEN', connections: [{ token: 'SUPER-SECRET-TOKEN' }] },
-    }))
+// rules the design promises to restore. Instead `runBackup` stages a REDACTED copy of it itself
+// (`stageRedactedFiles`, backup.ts) and takes that path from the staging root instead of `$HOME`.
+//
+// D1: this used to be a CALLER's job — `cli-backup.ts` built the staged copy and passed it in as
+// `stagedRels` — which meant a caller could produce an incomplete backup by omitting the argument.
+// `daemon.ts` did exactly that, and every scheduled run silently dropped the billing timeline while
+// reporting success. This test deliberately mentions no caller: it calls `runBackup` with no
+// `assetRoot` and no staging argument and asserts the redacted file is in the archive anyway.
+test('runBackup always carries the redacted preferences, with no caller cooperation', async () => {
+  const r = await runBackup({
+    homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+    repos: [], agentopVersion: 'test', hostname: 'box',   // no assetRoot, no staged anything
+  })
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
 
-    const stagedRels = await stagePreferences(stageRoot, prefsHome, () => {})
-    expect(stagedRels).toEqual(['.agentistics/preferences.json'])
-
-    const r = await runBackup({
-      homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-      repos: [], assetRoot: stageRoot, stagedRels, agentopVersion: 'test', hostname: 'box',
-    })
-    expect(r.ok).toBe(true)
-    if (!r.ok) return
-
-    const text = execFileSync('tar', ['-xOf', r.record.path, '.agentistics/preferences.json'], { encoding: 'utf8' })
-    expect(text).toContain('"lang"')
-    expect(text).not.toContain('SUPER-SECRET-TOKEN')
-  } finally {
-    rmSync(prefsHome, { recursive: true, force: true })
-    rmSync(stageRoot, { recursive: true, force: true })
-  }
+  const text = execFileSync('tar', ['-xOf', r.record.path, '.agentistics/preferences.json'], { encoding: 'utf8' })
+  expect(text).toContain('"lang"')
+  expect(text).not.toContain('SUPER-SECRET-TOKEN')
 })
 
 test('an absent assetRoot is not an error — a metrics-only backup has no assets', async () => {

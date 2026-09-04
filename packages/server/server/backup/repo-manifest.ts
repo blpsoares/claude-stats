@@ -280,7 +280,13 @@ export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): s
   }
 
   for (const w of entry.worktrees) {
-    out.push(['git', '-C', main, 'worktree', 'add', expandHome(w.path, homeDir), w.branch])
+    const at = expandHome(w.path, homeDir)
+    // A detached worktree has no branch — `probeDir` records '' for it deliberately. Passing that
+    // through emitted an empty argv element and git refused the whole repository at that point.
+    if (w.branch) out.push(['git', '-C', main, 'worktree', 'add', at, w.branch])
+    else if (w.head) out.push(['git', '-C', main, 'worktree', 'add', '--detach', at, w.head])
+    // With neither a branch nor a head there is nothing to recreate; the entry stays in the
+    // manifest so the report can name it.
   }
   for (const d of entry.dirty) {
     if (d.patch) out.push(['git', '-C', expandHome(d.path, homeDir), 'apply', asset(d.patch)])
