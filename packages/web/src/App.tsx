@@ -1716,9 +1716,6 @@ export default function AppLayout() {
     setCurrencyState(draft.currency)
     setCardOrder(draft.cardOrder as CardId[])
     setCardPrecisionState(draft.cardPrecision)
-    if (draft.chatModel) setChatModel(draft.chatModel)
-    setChatSoundEnabled(draft.chatSoundEnabled)
-    setChatSoundId(draft.chatSoundId)
     fetch('/api/preferences', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1728,9 +1725,6 @@ export default function AppLayout() {
         currency: draft.currency,
         cardOrder: draft.cardOrder,
         cardPrecision: draft.cardPrecision,
-        chatModel: draft.chatModel,
-        chatSoundEnabled: draft.chatSoundEnabled,
-        chatSoundId: draft.chatSoundId,
       }),
     }).catch(() => {})
   }, [setCardOrder])
@@ -3123,7 +3117,7 @@ export default function AppLayout() {
           billing, saveBilling, costBasis, setCostBasis, planBasis, billingReady, openBillingSetup,
           comparisons, saveComparisons,
           tags: tagsList, monthCommitment,
-          chatModel, chatSoundEnabled, chatSoundId,
+          chatModel, setChatModel, chatSoundEnabled, setChatSoundEnabled, chatSoundId, setChatSoundId,
           savePreferences,
           pwaPrompt,
           onPwaInstalled: () => { setPwaInstalled(true); setPwaPrompt(null) },
@@ -3141,6 +3135,7 @@ export default function AppLayout() {
           me: iam?.account,
           teams: teamsList,
           machines: machinesList,
+          capabilities: teamSession?.capabilities,
           deniedRepoLabels,
           refreshDeniedRepoLabels,
         }} />

@@ -31,6 +31,7 @@ export default function SettingsPage() {
     central: ctx.isCentral,
     role: ctx.me?.role,
     isManager: ctx.me?.memberships.some(m => m.role === 'manager'),
+    localChat: ctx.capabilities?.localChat,
   }
 
   const sections = visibleSettingsSections(viewer)

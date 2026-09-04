@@ -36,3 +36,28 @@ test('chat is a machine section — a central serves no local chat to configure'
   expect(ids({ central: false })).toContain('chat')
   expect(ids({ central: true, role: 'owner' })).not.toContain('chat')
 })
+
+// Two gates, not one — `localChat` (the exposure profile) gates the SECTION; `chatEnabled` (the
+// user's own switch, not modeled here) gates the sound/model rows drawn inside it.
+test('chat is offered on a machine whose profile allows it', () => {
+  expect(ids({ central: false, localChat: true })).toContain('chat')
+})
+
+// The section holds the enable switch. Hiding it when chat is merely OFF would make the switch
+// unreachable — the user could never turn it back on.
+test('chat stays visible when the profile allows it and the user has it off', () => {
+  expect(ids({ central: false, localChat: undefined })).toContain('chat')
+})
+
+test('chat is absent when the exposure profile denies localChat — there is nothing to switch', () => {
+  expect(ids({ central: false, localChat: false })).not.toContain('chat')
+})
+
+test('chat is absent on a central, as before', () => {
+  expect(ids({ central: true, localChat: true })).not.toContain('chat')
+})
+
+test('the other sections are unaffected by the new field', () => {
+  expect(ids({ central: false, localChat: false })).toContain('preferences')
+  expect(ids({ central: false, localChat: false })).toContain('notifications')
+})

@@ -7,7 +7,15 @@ export type SettingsSectionId =
 export type SettingsGroup = 'personal' | 'governance'
 
 export interface SettingsSection { id: SettingsSectionId; labelEn: string; labelPt: string; group: SettingsGroup }
-export interface SettingsViewer { central: boolean; role?: 'owner' | 'member'; isManager?: boolean }
+export interface SettingsViewer {
+  central: boolean
+  role?: 'owner' | 'member'
+  isManager?: boolean
+  /** `CAPS.localChat` from /api/team/session. `false` means the exposure profile denies chat
+   *  entirely, so the section has nothing to offer. `undefined` (not yet loaded) shows it —
+   *  hiding a section on a slow fetch is worse than showing one that is briefly empty. */
+  localChat?: boolean
+}
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'preferences', labelEn: 'Preferences', labelPt: 'Preferências', group: 'personal' },
@@ -34,7 +42,10 @@ export function visibleSettingsSections(v: SettingsViewer): SettingsSection[] {
       case 'live': return !v.central
       // Chat spawns an assistant CLI on THIS host. A central has no local harness to spawn, so
       // there is nothing there to configure — the same reason `connection` and `live` are hidden.
-      case 'chat': return !v.central
+      // Two gates, not one. `chatEnabled` (the user's switch) gates the ROWS inside the section;
+      // this gates the SECTION. Collapsing them would hide the enable switch whenever chat is off,
+      // which is a one-way door: there would be no way to turn it back on.
+      case 'chat': return !v.central && v.localChat !== false
       // Billing describes how ONE machine is paid for. A central aggregates many, and pricing a
       // whole fleet from its operator's own timeline would be a fabricated number — so the plan
       // cost basis does not exist there and neither does the screen that configures it.

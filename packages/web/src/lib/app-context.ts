@@ -28,16 +28,18 @@ export interface Principal {
   mustChangePassword: boolean
 }
 
-/** Draft shape for the Preferences settings page / modal (single source of truth). */
+/** Draft shape for the Preferences settings page / modal (single source of truth).
+ *
+ *  Chat's sound/model preferences moved to the Chat settings section (ChatSettings.tsx), which
+ *  reads and writes them directly via /api/preferences — the same pattern it already used for
+ *  `chatEnabled` — so they are deliberately NOT part of this draft. Carrying them here would mean
+ *  Preferences' Save button could silently overwrite whatever Chat's own controls just set. */
 export interface PrefsDraft {
   lang: Lang
   theme: Theme
   currency: 'USD' | 'BRL'
   cardOrder: string[]
   cardPrecision: Record<string, boolean>
-  chatModel: ChatModelId | null
-  chatSoundEnabled: boolean
-  chatSoundId: string
 }
 
 export interface AppContext {
@@ -97,10 +99,16 @@ export interface AppContext {
    *  different question from the filter-window plan cost. `null` when nothing is registered. */
   monthCommitment: MonthlyCommitment | null
 
-  // chat preferences (seed the Preferences settings page draft)
+  // chat preferences — live values consumed by the chat widget (TtyChat). Set from the Chat
+  // settings section (ChatSettings.tsx), which persists them itself via PUT /api/preferences and
+  // calls these setters so the live widget picks up the change without a reload — the same thing
+  // `savePreferences` used to do for them when they still lived in the Preferences draft.
   chatModel: ChatModelId | null
+  setChatModel: (m: ChatModelId) => void
   chatSoundEnabled: boolean
+  setChatSoundEnabled: (v: boolean) => void
   chatSoundId: string
+  setChatSoundId: (id: string) => void
 
   /** Persists a full preferences draft: applies it to global state + PUTs /api/preferences.
    *  Reuses the same logic the old Settings modal ran on Save. */
@@ -161,6 +169,16 @@ export interface AppContext {
   teams: { id: string; name: string }[]
   /** Central-only: available machines for filter. Empty when not a central or no machines. */
   machines: { id: string; name: string; user: string; teamId?: string; teamIds?: string[] }[]
+
+  /** Local host-power capabilities the server still grants (`server/exposure.ts`'s `CAPS`, as
+   *  reported by `/api/team/session`). Undefined while `teamSession` has not loaded yet — treat
+   *  the same as "granted", the same reading `App.tsx` already uses for an older server. */
+  capabilities?: {
+    localShell?: boolean
+    localChat?: boolean
+    localTranscripts?: boolean
+    mcpAdmin?: boolean
+  }
 
   /** The tag definitions `useDerivedStats` resolves a tag filter against.
    *
