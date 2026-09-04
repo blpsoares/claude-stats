@@ -30,6 +30,7 @@ import { dirname, join, relative } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { safeReadJson } from '../utils'
 import { decodeManifest, MANIFEST_NAME, type BackupManifest, type DecodedManifest } from './manifest'
+import { gitEnv } from './repo-probe'
 import {
   emptyRestoreState, planMetrics, planRepos, remaining, rewriteHome,
   type RepoStep, type RestoreState, type StagedFile,
@@ -37,6 +38,20 @@ import {
 
 const run = promisify(execFile)
 
+/**
+ * Where the resume bookkeeping lives — derived from the `$HOME` being restored INTO, not from this
+ * process's own.
+ *
+ * Every other stateful path here (`staging`, `assetDir`) is built from the `homeDir` argument, and
+ * this one broke the pattern: a restore aimed at another user, a container, or one target of a
+ * scripted multi-target run wrote its `done`/`failed` state onto the operator's machine — where two
+ * different targets sharing a repository key would then overwrite each other's progress.
+ */
+export function restoreStateFile(homeDir: string): string {
+  return join(homeDir, '.agentistics', 'restore-state.json')
+}
+
+/** The ordinary case: this machine restoring into itself. */
 export const RESTORE_STATE_FILE = join(AGENTISTICS_DATA_DIR, 'restore-state.json')
 
 const STAGING = '.agentistics/restore-staging'
@@ -55,8 +70,14 @@ export type VerifyResult = { ok: true } | { ok: false; reason: string }
 
 /**
  * Prove the archive is intact. Two checks, because they fail differently: tar must be able to LIST
- * it end to end (catches truncation), and the file count must match what the manifest recorded
- * (catches a rebuilt or edited archive).
+ * it end to end (catches truncation), and the entry count must be AT LEAST what the manifest
+ * recorded.
+ *
+ * A floor, deliberately, not an equality — the doc used to claim equality and the code has always
+ * been a floor, which is the honest one: the archive legitimately holds MORE entries than the
+ * manifest's file count (the manifest itself, the `repos/` assets, and whatever directory entries
+ * tar chose to emit). An equality check would refuse every backup carrying a repos layer. Content
+ * is proven separately by `verifyStaged`'s digest, after extraction and before any merge.
  */
 export async function verifyArchive(archive: string, manifest: BackupManifest): Promise<VerifyResult> {
   let listing: string
@@ -219,7 +240,8 @@ export interface RestoreReposResult {
 
 export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreReposResult> {
   const log = opts.onLine ?? (() => {})
-  const state = await readRestoreState()
+  const stateFile = restoreStateFile(opts.homeDir)
+  const state = await readRestoreState(stateFile)
   const entries = opts.only
     ? opts.manifest.repos.filter(r => r.key === opts.only)
     : opts.manifest.repos
@@ -242,6 +264,10 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     if (s.state === 'skipped') result.skipped.push({ key: s.key, reason: String(s.reason) })
   }
 
+  // Everything below is wrapped so the staging directory goes on EVERY exit path — the same
+  // invariant `restoreMetrics` already holds. Without it an uncaught throw inside the loop (a
+  // disk-write failure in `writeRestoreState`, say) leaves the staging tree behind.
+  try {
   for (const step of remaining(steps)) {
     result.attempted++
     if (step.previousFailure) log(`retrying ${step.key} (last failed: ${step.previousFailure})`)
@@ -256,13 +282,17 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
       log(`ok ${step.key} -> ${step.mainPath}`)
     }
     // Written after every repo, not at the end: an interrupted run must not lose what it did.
-    await writeRestoreState(state)
+    await writeRestoreState(state, stateFile)
   }
 
-  // Untracked files were never carried (see RepoDirty). Name them, so "not restored" is a fact the
-  // user reads rather than a silence they discover.
+  // Untracked files were never carried, and a diff we could not capture was never carried either
+  // (see RepoDirty). Name both, so "not restored" is a fact the user reads rather than a silence
+  // they discover.
   for (const e of entries) {
     for (const d of e.dirty) {
+      if (d.patchUnavailable) {
+        log(`note ${e.key}: the uncommitted state of ${d.path} could NOT be read — ${d.patchUnavailable}`)
+      }
       if (d.untracked.length) {
         log(`note ${e.key}: ${d.untracked.length} untracked file(s) in ${d.path} were listed, not carried:`)
         for (const u of d.untracked.slice(0, 20)) log(`       ${u}`)
@@ -271,7 +301,9 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     }
   }
 
-  await rm(assetDir, { recursive: true, force: true }).catch(() => {})
+  } finally {
+    await rm(assetDir, { recursive: true, force: true }).catch(() => {})
+  }
   return result
 }
 
@@ -290,7 +322,11 @@ async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => voi
       log(`  ${step.commands[i] ?? bin}`)
       await run(bin, args, {
         cwd: homeDir,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        // `cwd` does NOT override an inherited GIT_DIR. `agentop restore --repos` can run from a
+        // git hook, and there it would clone into the hook's repository instead of the target.
+        // Same rule as the probe's, imported rather than restated — a second copy is a second
+        // place to forget GIT_COMMON_DIR.
+        env: gitEnv(),
         timeout: 600_000,
         maxBuffer: 64 * 1024 * 1024,
       })

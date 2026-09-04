@@ -1,9 +1,12 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test'
+import { execFileSync } from 'child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, utimesSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { runBackup } from './backup'
-import { readManifestOf, restoreMetrics, verifyArchive } from './restore'
+import { readManifestOf, restoreMetrics, restoreRepos, verifyArchive } from './restore'
+import type { BackupManifest } from './manifest'
+import type { RepoEntry } from './repo-manifest'
 
 let oldHome = ''
 let newHome = ''
@@ -92,4 +95,134 @@ test('a newer local file survives the restore, and is reported as skipped', asyn
 test('a restore leaves no staging directory behind', async () => {
   await restoreMetrics({ archive, homeDir: newHome })
   expect(existsSync(join(newHome, '.agentistics/restore-staging'))).toBe(false)
+})
+
+// --- the repo phase -----------------------------------------------------------------------------
+//
+// It is the resumable half of the feature and was reaching production verified only by reading it.
+// These run real git against a real repository, because what is under test is the interaction.
+
+// `cwd` is NOT enough, and this is not theoretical — it happened twice on this branch. Git fires a
+// pre-commit hook with GIT_DIR / GIT_INDEX_FILE / GIT_PREFIX exported, and neither `cwd` nor `-C`
+// overrides an inherited GIT_DIR. Run under husky from a linked worktree, `makeOrigin`'s `git init`
+// and `git config user.email` below executed against the REAL SHARED repository: they rewrote this
+// fleet's git identity and committed a fixture file onto the branch. `repo-probe.test.ts` carries
+// the same guard for the same reason; GIT_COMMON_DIR is here too because it redirects
+// --git-common-dir on its own (measured).
+const git = (cwd: string, ...args: string[]) => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env })
+}
+
+/** A real repository to clone FROM. */
+function makeOrigin(at: string): string {
+  mkdirSync(at, { recursive: true })
+  git(at, 'init', '-q', '-b', 'main')
+  git(at, 'config', 'user.email', 't@t')
+  git(at, 'config', 'user.name', 't')
+  writeFileSync(join(at, 'a.txt'), 'one\n')
+  git(at, 'add', 'a.txt')
+  git(at, 'commit', '-q', '-m', 'one')
+  return at
+}
+
+const entry = (over: Partial<RepoEntry> & { key: string; cloneUrl: string; mainPath: string }): RepoEntry => ({
+  mainBranch: 'main', worktrees: [], bundle: null, dirty: [], note: null, ...over,
+})
+
+async function manifestWith(repos: RepoEntry[]): Promise<BackupManifest> {
+  const m = await readManifestOf(archive)
+  if (!m.ok) throw new Error('fixture archive has no readable manifest')
+  return { ...m.manifest, repos }
+}
+
+test('a repo is cloned, and a second run does not attempt it again', async () => {
+  const origin = makeOrigin(join(dest, 'origin-ok'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t1-'))
+  try {
+    const manifest = await manifestWith([entry({ key: 'ok', cloneUrl: origin, mainPath: '~/proj' })])
+
+    const first = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(first.attempted).toBe(1)
+    expect(first.succeeded).toBe(1)
+    expect(first.failures).toEqual([])
+    expect(readFileSync(join(target, 'proj/a.txt'), 'utf8')).toBe('one\n')
+
+    // `done` is terminal — this is what makes re-running safe rather than destructive.
+    const second = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(second.attempted).toBe(0)
+    expect(second.succeeded).toBe(0)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// A restore of 89 repositories WILL partially fail. Re-running until it converges is the whole
+// design, and that only works if `failed` is retried while `done` is not.
+test('a failure is recorded by name and retried on the next run', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t2-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'no-such-repo-anywhere'), mainPath: '~/gone' }),
+    ])
+
+    const first = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(first.attempted).toBe(1)
+    expect(first.succeeded).toBe(0)
+    expect(first.failures).toHaveLength(1)
+    expect(first.failures[0]!.key).toBe('bad')
+    expect(first.failures[0]!.reason.length).toBeGreaterThan(0)
+
+    const second = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(second.attempted).toBe(1)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// The resume bookkeeping belongs to the machine being restored INTO. Anchored to the operator's own
+// $HOME, two different restore targets sharing a repository key overwrite each other's progress.
+test('the resume state is written under the home being restored into', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t3-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'nope'), mainPath: '~/gone' }),
+    ])
+    await restoreRepos({ manifest, homeDir: target, archive })
+    expect(existsSync(join(target, '.agentistics/restore-state.json'))).toBe(true)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+test('a destination that already exists is skipped with a reason, never cloned over', async () => {
+  const origin = makeOrigin(join(dest, 'origin-occupied'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t4-'))
+  try {
+    mkdirSync(join(target, 'proj'), { recursive: true })
+    writeFileSync(join(target, 'proj/MINE.txt'), 'do not touch')
+
+    const manifest = await manifestWith([entry({ key: 'occ', cloneUrl: origin, mainPath: '~/proj' })])
+    const r = await restoreRepos({ manifest, homeDir: target, archive })
+
+    expect(r.attempted).toBe(0)
+    expect(r.skipped).toEqual([{ key: 'occ', reason: 'destination-exists' }])
+    expect(readFileSync(join(target, 'proj/MINE.txt'), 'utf8')).toBe('do not touch')
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+test('the repo phase leaves no staging directory behind', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t5-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'nope'), mainPath: '~/gone' }),
+    ])
+    await restoreRepos({ manifest, homeDir: target, archive })
+    expect(existsSync(join(target, '.agentistics/restore-staging'))).toBe(false)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
 })

@@ -2197,8 +2197,18 @@ let root = ''
 let repo = ''
 let wt = ''
 
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+// `cwd` is NOT enough, and this is not theoretical — it happened twice on this branch. Git fires a
+// pre-commit hook with GIT_DIR / GIT_INDEX_FILE / GIT_PREFIX exported, and neither `cwd` nor `-C`
+// overrides an inherited GIT_DIR. Run under husky from a linked worktree, `makeOrigin`'s `git init`
+// and `git config user.email` below executed against the REAL SHARED repository: they rewrote this
+// fleet's git identity and committed a fixture file onto the branch. `repo-probe.test.ts` carries
+// the same guard for the same reason; GIT_COMMON_DIR is here too because it redirects
+// --git-common-dir on its own (measured).
+const git = (cwd: string, ...args: string[]) => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env })
+}
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'agentistics-probe-'))
@@ -3218,8 +3228,18 @@ test('a restore leaves no staging directory behind', async () => {
 // It is the resumable half of the feature and was reaching production verified only by reading it.
 // These run real git against a real repository, because what is under test is the interaction.
 
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+// `cwd` is NOT enough, and this is not theoretical — it happened twice on this branch. Git fires a
+// pre-commit hook with GIT_DIR / GIT_INDEX_FILE / GIT_PREFIX exported, and neither `cwd` nor `-C`
+// overrides an inherited GIT_DIR. Run under husky from a linked worktree, `makeOrigin`'s `git init`
+// and `git config user.email` below executed against the REAL SHARED repository: they rewrote this
+// fleet's git identity and committed a fixture file onto the branch. `repo-probe.test.ts` carries
+// the same guard for the same reason; GIT_COMMON_DIR is here too because it redirects
+// --git-common-dir on its own (measured).
+const git = (cwd: string, ...args: string[]) => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env })
+}
 
 /** A real repository to clone FROM. */
 function makeOrigin(at: string): string {
@@ -3376,6 +3396,7 @@ import { dirname, join, relative } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { safeReadJson } from '../utils'
 import { decodeManifest, MANIFEST_NAME, type BackupManifest, type DecodedManifest } from './manifest'
+import { gitEnv } from './repo-probe'
 import {
   emptyRestoreState, planMetrics, planRepos, remaining, rewriteHome,
   type RepoStep, type RestoreState, type StagedFile,
@@ -3667,7 +3688,11 @@ async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => voi
       log(`  ${step.commands[i] ?? bin}`)
       await run(bin, args, {
         cwd: homeDir,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        // `cwd` does NOT override an inherited GIT_DIR. `agentop restore --repos` can run from a
+        // git hook, and there it would clone into the hook's repository instead of the target.
+        // Same rule as the probe's, imported rather than restated — a second copy is a second
+        // place to forget GIT_COMMON_DIR.
+        env: gitEnv(),
         timeout: 600_000,
         maxBuffer: 64 * 1024 * 1024,
       })
