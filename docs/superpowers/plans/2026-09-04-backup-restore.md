@@ -3115,11 +3115,14 @@ Create `packages/server/server/backup/restore.test.ts`:
 
 ```ts
 import { test, expect, beforeAll, afterAll } from 'bun:test'
+import { execFileSync } from 'child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, utimesSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { runBackup } from './backup'
-import { readManifestOf, restoreMetrics, verifyArchive } from './restore'
+import { readManifestOf, restoreMetrics, restoreRepos, verifyArchive } from './restore'
+import type { BackupManifest } from './manifest'
+import type { RepoEntry } from './repo-manifest'
 
 let oldHome = ''
 let newHome = ''
@@ -3209,6 +3212,126 @@ test('a restore leaves no staging directory behind', async () => {
   await restoreMetrics({ archive, homeDir: newHome })
   expect(existsSync(join(newHome, '.agentistics/restore-staging'))).toBe(false)
 })
+
+// --- the repo phase -----------------------------------------------------------------------------
+//
+// It is the resumable half of the feature and was reaching production verified only by reading it.
+// These run real git against a real repository, because what is under test is the interaction.
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+
+/** A real repository to clone FROM. */
+function makeOrigin(at: string): string {
+  mkdirSync(at, { recursive: true })
+  git(at, 'init', '-q', '-b', 'main')
+  git(at, 'config', 'user.email', 't@t')
+  git(at, 'config', 'user.name', 't')
+  writeFileSync(join(at, 'a.txt'), 'one\n')
+  git(at, 'add', 'a.txt')
+  git(at, 'commit', '-q', '-m', 'one')
+  return at
+}
+
+const entry = (over: Partial<RepoEntry> & { key: string; cloneUrl: string; mainPath: string }): RepoEntry => ({
+  mainBranch: 'main', worktrees: [], bundle: null, dirty: [], note: null, ...over,
+})
+
+async function manifestWith(repos: RepoEntry[]): Promise<BackupManifest> {
+  const m = await readManifestOf(archive)
+  if (!m.ok) throw new Error('fixture archive has no readable manifest')
+  return { ...m.manifest, repos }
+}
+
+test('a repo is cloned, and a second run does not attempt it again', async () => {
+  const origin = makeOrigin(join(dest, 'origin-ok'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t1-'))
+  try {
+    const manifest = await manifestWith([entry({ key: 'ok', cloneUrl: origin, mainPath: '~/proj' })])
+
+    const first = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(first.attempted).toBe(1)
+    expect(first.succeeded).toBe(1)
+    expect(first.failures).toEqual([])
+    expect(readFileSync(join(target, 'proj/a.txt'), 'utf8')).toBe('one\n')
+
+    // `done` is terminal — this is what makes re-running safe rather than destructive.
+    const second = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(second.attempted).toBe(0)
+    expect(second.succeeded).toBe(0)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// A restore of 89 repositories WILL partially fail. Re-running until it converges is the whole
+// design, and that only works if `failed` is retried while `done` is not.
+test('a failure is recorded by name and retried on the next run', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t2-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'no-such-repo-anywhere'), mainPath: '~/gone' }),
+    ])
+
+    const first = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(first.attempted).toBe(1)
+    expect(first.succeeded).toBe(0)
+    expect(first.failures).toHaveLength(1)
+    expect(first.failures[0]!.key).toBe('bad')
+    expect(first.failures[0]!.reason.length).toBeGreaterThan(0)
+
+    const second = await restoreRepos({ manifest, homeDir: target, archive })
+    expect(second.attempted).toBe(1)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// The resume bookkeeping belongs to the machine being restored INTO. Anchored to the operator's own
+// $HOME, two different restore targets sharing a repository key overwrite each other's progress.
+test('the resume state is written under the home being restored into', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t3-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'nope'), mainPath: '~/gone' }),
+    ])
+    await restoreRepos({ manifest, homeDir: target, archive })
+    expect(existsSync(join(target, '.agentistics/restore-state.json'))).toBe(true)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+test('a destination that already exists is skipped with a reason, never cloned over', async () => {
+  const origin = makeOrigin(join(dest, 'origin-occupied'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t4-'))
+  try {
+    mkdirSync(join(target, 'proj'), { recursive: true })
+    writeFileSync(join(target, 'proj/MINE.txt'), 'do not touch')
+
+    const manifest = await manifestWith([entry({ key: 'occ', cloneUrl: origin, mainPath: '~/proj' })])
+    const r = await restoreRepos({ manifest, homeDir: target, archive })
+
+    expect(r.attempted).toBe(0)
+    expect(r.skipped).toEqual([{ key: 'occ', reason: 'destination-exists' }])
+    expect(readFileSync(join(target, 'proj/MINE.txt'), 'utf8')).toBe('do not touch')
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+test('the repo phase leaves no staging directory behind', async () => {
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-t5-'))
+  try {
+    const manifest = await manifestWith([
+      entry({ key: 'bad', cloneUrl: join(dest, 'nope'), mainPath: '~/gone' }),
+    ])
+    await restoreRepos({ manifest, homeDir: target, archive })
+    expect(existsSync(join(target, '.agentistics/restore-staging'))).toBe(false)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3260,6 +3383,20 @@ import {
 
 const run = promisify(execFile)
 
+/**
+ * Where the resume bookkeeping lives — derived from the `$HOME` being restored INTO, not from this
+ * process's own.
+ *
+ * Every other stateful path here (`staging`, `assetDir`) is built from the `homeDir` argument, and
+ * this one broke the pattern: a restore aimed at another user, a container, or one target of a
+ * scripted multi-target run wrote its `done`/`failed` state onto the operator's machine — where two
+ * different targets sharing a repository key would then overwrite each other's progress.
+ */
+export function restoreStateFile(homeDir: string): string {
+  return join(homeDir, '.agentistics', 'restore-state.json')
+}
+
+/** The ordinary case: this machine restoring into itself. */
 export const RESTORE_STATE_FILE = join(AGENTISTICS_DATA_DIR, 'restore-state.json')
 
 const STAGING = '.agentistics/restore-staging'
@@ -3278,8 +3415,14 @@ export type VerifyResult = { ok: true } | { ok: false; reason: string }
 
 /**
  * Prove the archive is intact. Two checks, because they fail differently: tar must be able to LIST
- * it end to end (catches truncation), and the file count must match what the manifest recorded
- * (catches a rebuilt or edited archive).
+ * it end to end (catches truncation), and the entry count must be AT LEAST what the manifest
+ * recorded.
+ *
+ * A floor, deliberately, not an equality — the doc used to claim equality and the code has always
+ * been a floor, which is the honest one: the archive legitimately holds MORE entries than the
+ * manifest's file count (the manifest itself, the `repos/` assets, and whatever directory entries
+ * tar chose to emit). An equality check would refuse every backup carrying a repos layer. Content
+ * is proven separately by `verifyStaged`'s digest, after extraction and before any merge.
  */
 export async function verifyArchive(archive: string, manifest: BackupManifest): Promise<VerifyResult> {
   let listing: string
@@ -3442,7 +3585,8 @@ export interface RestoreReposResult {
 
 export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreReposResult> {
   const log = opts.onLine ?? (() => {})
-  const state = await readRestoreState()
+  const stateFile = restoreStateFile(opts.homeDir)
+  const state = await readRestoreState(stateFile)
   const entries = opts.only
     ? opts.manifest.repos.filter(r => r.key === opts.only)
     : opts.manifest.repos
@@ -3465,6 +3609,10 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     if (s.state === 'skipped') result.skipped.push({ key: s.key, reason: String(s.reason) })
   }
 
+  // Everything below is wrapped so the staging directory goes on EVERY exit path — the same
+  // invariant `restoreMetrics` already holds. Without it an uncaught throw inside the loop (a
+  // disk-write failure in `writeRestoreState`, say) leaves the staging tree behind.
+  try {
   for (const step of remaining(steps)) {
     result.attempted++
     if (step.previousFailure) log(`retrying ${step.key} (last failed: ${step.previousFailure})`)
@@ -3479,7 +3627,7 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
       log(`ok ${step.key} -> ${step.mainPath}`)
     }
     // Written after every repo, not at the end: an interrupted run must not lose what it did.
-    await writeRestoreState(state)
+    await writeRestoreState(state, stateFile)
   }
 
   // Untracked files were never carried, and a diff we could not capture was never carried either
@@ -3498,7 +3646,9 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     }
   }
 
-  await rm(assetDir, { recursive: true, force: true }).catch(() => {})
+  } finally {
+    await rm(assetDir, { recursive: true, force: true }).catch(() => {})
+  }
   return result
 }
 
