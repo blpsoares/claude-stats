@@ -954,3 +954,166 @@ bun test packages/server/server/backup/
    `preferences.json` in the archive). Restore it.
 2. Move the `prior?.state === 'failed'` check back BELOW `destExists` and confirm a D2 test FAILS.
    Restore it.
+
+---
+
+# Wave E — the four Importants and the Minors
+
+## E1 (I6). `gitEnv()` strips too much — an over-correction of mine
+
+Wave C added `GIT_SSH_COMMAND` and `GIT_PROXY_COMMAND` to the strip list alongside the config
+variables. The config ones are right: `url.<base>.insteadOf` rewrites the remote a clone fetches
+from, and `git clone` is the one invocation here with no `-C`. The transport ones are not, and they
+reach the RESTORE clone through the same `gitEnv()`. A user whose forge access depends on
+`GIT_SSH_COMMAND` — a non-default identity file, a `ProxyJump` — has every clone fail on the new
+machine, which is the moment they can least afford it.
+
+The threat model does not support it either: anything able to set `GIT_SSH_COMMAND` in agentop's
+environment already has code execution as the user, and `~/.ssh/config` does the same job and
+cannot be stripped.
+
+Remove both from `HIJACKERS` and say why they are absent:
+
+```ts
+  // Transport variables (GIT_SSH_COMMAND, GIT_PROXY_COMMAND) are deliberately NOT here. They reach
+  // the restore's `git clone`, and a user whose forge access needs a non-default identity or a
+  // ProxyJump would have every clone fail on the new machine. Anything that can set them in this
+  // process already has code execution as the user, and ~/.ssh/config does the same job unstrippably.
+```
+
+## E2 (I4). A bundle restore loses the main branch's upstream and leaves the placeholder behind
+
+Verified: after the clone/rename/fetch sequence, `branch.main.remote` is absent, so `git pull` says
+"no tracking information" and `git push` says "no upstream branch". `branch -m` carries the tracking
+config to the placeholder, and the bundle fetch then creates `refs/heads/main` with none. It bites
+only when the main branch has unpushed commits — exactly the repositories the bundle exists for.
+The placeholder also survives in every restored repo, where the NEXT backup would bundle it as
+"unpushed work".
+
+**Steps must be able to be optional for this.** `restoreArgv` returns
+`{ argv: string[]; optional?: boolean }[]`; `restoreCommands` joins `argv`; `runSteps` logs and
+CONTINUES past a failing optional step instead of abandoning the repository. `--set-upstream-to`
+legitimately fails (a branch with no matching remote branch), and that must not cost the worktrees.
+
+After the checkout:
+
+```ts
+    out.push({ argv: ['git', '-C', main, 'branch', '--set-upstream-to', `origin/${entry.mainBranch}`, entry.mainBranch], optional: true })
+```
+
+and last, once nothing else needs it:
+
+```ts
+  if (entry.bundle) out.push({ argv: ['git', '-C', main, 'branch', '-D', PLACEHOLDER_BRANCH], optional: true })
+```
+
+Export `PLACEHOLDER_BRANCH` so the rename and the delete cannot drift apart.
+
+For the unknown-`mainBranch` case the `reset --hard` leaves the checkout ON the placeholder, with a
+working tree at the pushed tip while the unpushed work sits in `refs/heads/main`. Replace it with
+`['git','-C',main,'checkout','--detach','origin/HEAD']` — a detached checkout at the clone's own
+default is honest about knowing no branch name, and leaves no placeholder checked out.
+
+## E3 (I5). The digest is strict `path:bytes` equality taken over a live machine
+
+Any file whose SIZE changes between the walk and the moment tar reaches it makes the archive
+permanently unrestorable, discovered only after the source machine is gone. `~/.agentistics/sessions/*`
+is rewritten by the running server and `.claude/projects/**/*.jsonl` by every live session, so with
+`--with-raw` this is close to expected.
+
+**The digest was never content integrity** — it is `path:bytes`, so an edited file of the same size
+already passes. Its real job is catching a rebuilt or edited ARCHIVE. So it checks the SET, and
+reports size drift instead of refusing on it:
+
+```ts
+export type StagedVerdict =
+  | { ok: true; drifted: string[] }
+  | { ok: false; reason: string }
+
+/**
+ * Compare the extracted set against the manifest.
+ *
+ * MISSING or EXTRA paths are a refusal: that is a rebuilt or truncated archive, which is what this
+ * check exists for. A path whose SIZE differs is REPORTED and does not block — the backup was taken
+ * on a live machine, where the running server rewrites session documents and every open assistant
+ * appends to a transcript, so a few bytes of drift between the walk and tar's read is expected. It
+ * used to refuse, which made a perfectly restorable archive unopenable on a machine that no longer
+ * existed.
+ */
+export function verifyStaged(staged: { rel: string; bytes: number }[], manifest: BackupManifest): StagedVerdict
+```
+
+Compute both sets from the manifest's `groups[0]` — which needs the per-file list. **The manifest
+must carry it**: add `files: { rel: string; bytes: number }[]` to `FileGroup`, written from
+`archived` in `backup.ts`. Keep `sha256` (it still detects a wholesale rebuild) but stop refusing on
+it alone.
+
+`restoreMetrics` names the drift:
+
+```ts
+    if (digest.drifted.length) {
+      log(`${digest.drifted.length} file(s) changed size between the walk and the archive — restored as archived:`)
+      for (const d of digest.drifted.slice(0, 10)) log(`  ${d}`)
+    }
+```
+
+And `agentop backup` warns up front when the machine is busy, using the same producer heartbeat
+`status` already reads:
+
+```ts
+  if (existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json'))) {
+    log('note: the agentop server is running, so session files may change while this backup is taken.')
+    log('      Files that change are archived as read and reported on restore; nothing is lost.')
+  }
+```
+
+## E4 (I7). The restored `preferences.json` normally loses to the newer local copy
+
+On the real flow — reformat, install agentop, run `agentop setup` or accept the archive-consent
+modal, THEN restore — the local `preferences.json` is minutes old, so `planMetrics`' newer-wins rule
+drops the one file Wave B went to the trouble of carrying, as one line in the skip stream. The
+billing timeline and the layouts do not come back.
+
+Newer-wins is right for session documents and wrong for a config file the tool creates for itself.
+`preferences.json` gets a UNION merge, in `restore.ts`'s merge loop:
+
+```ts
+      // preferences.json is the one file the tool writes for ITSELF, so on the realistic flow — set
+      // up the new machine, then restore — the local copy is always newer and newer-wins would drop
+      // it. Union instead: keys the local file does not have are taken from the backup, keys it has
+      // are kept. Nothing local is overwritten and nothing carried is silently lost.
+      if (a.rel === PREFERENCES_REL) {
+        const merged = mergePreferences(localText, archivedText)
+        …write merged, and report which keys came from the backup…
+      }
+```
+
+`mergePreferences` is PURE and belongs in `restore-plan.ts` with its own tests: a shallow union at
+the top level, local wins per key, and it returns the list of keys it took so the report can name
+them. It never merges `team` (that block's tokens were redacted out; taking a half-`team` from a
+backup onto a configured machine would be worse than not taking it) — say so in the code.
+
+## E5. The Minors
+
+- **`.claude/sessions/*.key` (141 files here) and `.claude/daemon/control.key`** enter a `--with-raw`
+  backup. Local control-socket tokens for dead pids — both the `secret` and the `runtime` reason
+  apply, and the table's own trade says they go out. Add a `runtime` rule for `.claude/daemon` and a
+  `contains` rule for `.claude/sessions/` + `.key`.
+- **`backup-plan.test.ts`'s per-harness loop never uses `h`** — it asserts one global fact six times.
+  Key the probe off `HARNESS_SECRETS[h]` so a harness with an empty array fails BY NAME.
+- **The backup tests append to the real `~/.agentistics/backups.jsonl`.** Thread the store path
+  through `BackupOptions` (`recordFile?: string`) and give the tests a temp one.
+- **`cli-backup.ts` reads the resume state from `RESTORE_STATE_FILE` while `restoreRepos` uses
+  `restoreStateFile(homeDir)`.** Identical unless `AGENTISTICS_DIR` is set, in which case the printed
+  plan and the executed run disagree about what is already done. Use `restoreStateFile(HOME_DIR)`.
+
+## Verify
+
+```bash
+bun test packages/server/server/backup/
+```
+
+**Deliberate-break checks, all reported:** (1) make `verifyStaged` refuse on size drift again and
+confirm a new drift test FAILS; (2) remove the `preferences.json` union and confirm the E4 test
+FAILS by finding the local file unchanged; (3) put `GIT_SSH_COMMAND` back in `HIJACKERS` and confirm
+the E1 test FAILS.
