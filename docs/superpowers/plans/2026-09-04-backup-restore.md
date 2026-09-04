@@ -178,6 +178,16 @@ test('no credential filename can pass the filter — asserted over the source it
   }
 })
 
+// The `repos` layer's content is produced during the backup (bundles, patches) and lives nowhere
+// in $HOME, so it contributes no source to this walk. Pinned so the absence reads as a decision
+// rather than an omission — it is `runBackup`'s `assetRoot` that carries it into the archive.
+test('the repos layer contributes no $HOME source — its content is made, not found', () => {
+  const withRepos = planSources({ layers: ['metrics', 'repos'], harnesses: ['claude'] })
+  const without = planSources({ layers: ['metrics'], harnesses: ['claude'] })
+  expect(withRepos.map(e => e.rel)).toEqual(without.map(e => e.rel))
+  expect(withRepos.some(e => e.layer === 'repos')).toBe(false)
+})
+
 test('BACKUP_LAYERS is the whole set and metrics leads it', () => {
   expect(BACKUP_LAYERS).toEqual(['metrics', 'repos', 'archive', 'raw'])
   expect(EXCLUDE_RULES.every(r => r.why.length > 0)).toBe(true)
@@ -984,6 +994,22 @@ test('restoreArgv is the same plan as structured argv, and survives a path with 
   expect(restoreCommands(e!, '/home/u')).toHaveLength(argv.length)
 })
 
+// A bundle and a patch are paths INSIDE the archive. Printed in the plan they stay archive-
+// relative (that is what a reader can locate); executed, they must resolve to where the archive
+// was actually extracted, or `git fetch` is handed a path that does not exist.
+test('an assetDir resolves the bundle and patch paths, and its absence leaves them archive-relative', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
+  e!.bundle = 'repos/github.com_org_repo.bundle'
+  e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
+
+  const bare = restoreArgv(e!, HOME)
+  expect(bare[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+
+  const staged = restoreArgv(e!, HOME, '/stage')
+  expect(staged[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+  expect(staged[staged.length - 1]).toEqual(['git', '-C', '/home/u/proj', 'apply', '/stage/repos/github.com_org_repo__main.patch'])
+})
+
 test('a repo whose bundle exceeded the ceiling is `too-large` and clones without one', () => {
   const [e] = groupRepos([mainRepo(`${HOME}/big`)], HOME)
   e!.note = 'too-large'
@@ -1051,8 +1077,18 @@ export interface RepoWorktree {
 
 export interface RepoDirty {
   path: string
-  /** Path inside the archive, or null when the tree was clean. */
+  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when the tree was clean. */
   patch: string | null
+  /**
+   * Untracked file names — a LIST, never the contents.
+   *
+   * An untracked `.env`, `credentials.json` or service-account key sitting in a working tree is
+   * exactly the class of file Task 1's exclusion table exists to keep out of the archive, and it
+   * is invisible to that table because it lives under a repository path rather than a known
+   * dotfile. Carrying the contents would smuggle back in through the repos layer precisely what
+   * the secrets decision keeps out of the raw layer. The restore prints these by name so nothing
+   * goes missing in silence.
+   */
   untracked: string[]
 }
 
@@ -1176,22 +1212,26 @@ function bare(f: DirFacts, homeDir: string, note: RepoNote): RepoEntry {
  * commands rather than running them is what lets `agentop restore` print the plan before touching
  * anything.
  */
-export function restoreArgv(entry: RepoEntry, homeDir: string): string[][] {
+export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): string[][] {
   if (entry.note && entry.note !== 'too-large') return []
   if (!entry.cloneUrl) return []
 
   const main = expandHome(entry.mainPath, homeDir)
+  // `bundle` and `patch` are paths INSIDE the archive. At restore time they live under wherever
+  // the archive was extracted, so the caller passes that directory; the plan printed BEFORE
+  // extraction passes nothing and shows the archive-relative path, which is what a reader wants.
+  const asset = (rel: string): string => (assetDir ? `${assetDir}/${rel}` : rel)
   const out: string[][] = [['git', 'clone', entry.cloneUrl, main]]
 
   // Fetch the bundle BEFORE checking out: the branch we want may only exist inside it.
-  if (entry.bundle) out.push(['git', '-C', main, 'fetch', entry.bundle, 'refs/heads/*:refs/heads/*'])
+  if (entry.bundle) out.push(['git', '-C', main, 'fetch', asset(entry.bundle), 'refs/heads/*:refs/heads/*'])
   if (entry.mainBranch) out.push(['git', '-C', main, 'checkout', entry.mainBranch])
 
   for (const w of entry.worktrees) {
     out.push(['git', '-C', main, 'worktree', 'add', expandHome(w.path, homeDir), w.branch])
   }
   for (const d of entry.dirty) {
-    if (d.patch) out.push(['git', '-C', expandHome(d.path, homeDir), 'apply', d.patch])
+    if (d.patch) out.push(['git', '-C', expandHome(d.path, homeDir), 'apply', asset(d.patch)])
   }
   return out
 }
@@ -1204,8 +1244,8 @@ export function restoreArgv(entry: RepoEntry, homeDir: string): string[][] {
  * is how a wrong argv (or a shell) gets in. The printed form is for the human reading
  * `agentop restore`'s plan; nothing executes it.
  */
-export function restoreCommands(entry: RepoEntry, homeDir: string): string[] {
-  return restoreArgv(entry, homeDir).map(a => a.join(' '))
+export function restoreCommands(entry: RepoEntry, homeDir: string, assetDir = ''): string[] {
+  return restoreArgv(entry, homeDir, assetDir).map(a => a.join(' '))
 }
 ```
 
@@ -1841,6 +1881,8 @@ export function planRepos(
   state: RestoreState,
   destExists: (absPath: string) => boolean,
   homeDir: string,
+  /** Where the archive was extracted. Empty while PRINTING a plan (nothing is extracted yet). */
+  assetDir = '',
 ): RepoStep[] {
   return entries.map<RepoStep>(e => {
     const base = { key: e.key, mainPath: e.mainPath }
@@ -1864,8 +1906,8 @@ export function planRepos(
       ...base,
       state: 'pending',
       previousFailure: prior?.state === 'failed' ? (prior.reason ?? 'unknown') : undefined,
-      argv: restoreArgv(e, homeDir),
-      commands: restoreCommands(e, homeDir),
+      argv: restoreArgv(e, homeDir, assetDir),
+      commands: restoreCommands(e, homeDir),   // printed form stays archive-relative
     }
   })
 }
@@ -2300,6 +2342,34 @@ test('a backup writes an archive, records a real size, and no credential is insi
   expect(listing).not.toContain('cache.db')
 })
 
+// The repos layer's whole promise. Before this was wired the bundle path in the manifest named a
+// file that existed only on the machine being replaced.
+test('the repos assets travel inside the archive, under their archive-relative names', async () => {
+  const assetRoot = mkdtempSync(join(tmpdir(), 'agentistics-assets-'))
+  mkdirSync(join(assetRoot, 'repos'), { recursive: true })
+  writeFileSync(join(assetRoot, 'repos/example.bundle'), 'BUNDLE')
+  writeFileSync(join(assetRoot, 'repos/example__main.patch'), 'PATCH')
+
+  const r = await runBackup({
+    homeDir: home, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
+    repos: [], assetRoot, agentopVersion: 'test', hostname: 'box',
+  })
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  const listing = execFileSync('tar', ['-tf', r.record.path], { encoding: 'utf8' })
+  expect(listing).toContain('repos/example.bundle')
+  expect(listing).toContain('repos/example__main.patch')
+  rmSync(assetRoot, { recursive: true, force: true })
+})
+
+test('an absent assetRoot is not an error — a metrics-only backup has no assets', async () => {
+  const r = await runBackup({
+    homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+    repos: [], agentopVersion: 'test', hostname: 'box',
+  })
+  expect(r.ok).toBe(true)
+})
+
 test('the manifest inside the archive round-trips and records the old $HOME', async () => {
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
@@ -2424,8 +2494,16 @@ export interface BackupOptions {
   layers: BackupLayer[]
   harnesses: HarnessId[]
   repos: RepoEntry[]
-  agentopVersion: string
-  hostname: string
+  /**
+   * Directory holding the repos layer's ASSETS — the bundles and patches, already laid out as
+   * `<assetRoot>/repos/…` exactly as they must appear inside the archive.
+   *
+   * They cannot come from the $HOME walk: they are produced during the backup and live nowhere in
+   * $HOME. Without this they never enter the tar, `RepoEntry.bundle` names a file that only exists
+   * on the machine being replaced, and every unpushed branch the manifest promises is lost — which
+   * is the single thing the repos layer exists to save.
+   */
+  assetRoot?: string
   /** Called with each progress line. Defaults to a no-op so tests are silent. */
   onLine?: (line: string) => void
 }
@@ -2498,9 +2576,15 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
 
   try {
     const flags = archiver.flag ? [archiver.flag] : []
+    // Three roots in one archive: the manifest (staged beside the output), the repos assets
+    // (produced during this run), and the $HOME tree (the explicit file list).
+    const assets = opts.assetRoot && existsSync(join(opts.assetRoot, 'repos'))
+      ? ['-C', opts.assetRoot, 'repos']
+      : []
     await run('tar', [
       ...flags, '-cf', archivePath,
       '-C', opts.destDir, MANIFEST_NAME,
+      ...assets,
       '-C', opts.homeDir, '-T', listPath,
     ], { maxBuffer: 16 * 1024 * 1024 })
   } catch (e) {
@@ -2879,6 +2963,8 @@ export async function writeRestoreState(state: RestoreState, file = RESTORE_STAT
 export interface RestoreReposOptions {
   manifest: BackupManifest
   homeDir: string
+  /** The archive itself — the repos phase extracts its `repos/` assets before running anything. */
+  archive: string
   only?: string
   onLine?: (line: string) => void
 }
@@ -2897,7 +2983,18 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     ? opts.manifest.repos.filter(r => r.key === opts.only)
     : opts.manifest.repos
 
-  const steps = planRepos(entries, state, p => existsSync(p), opts.homeDir)
+  // The bundles and patches live inside the archive. Extract just that subtree — `git fetch` needs
+  // a real file, and the manifest names it archive-relative precisely so it can be placed anywhere.
+  const assetDir = join(opts.homeDir, STAGING)
+  await rm(assetDir, { recursive: true, force: true })
+  await mkdir(assetDir, { recursive: true })
+  const needsAssets = entries.some(e => e.bundle || e.dirty.some(d => d.patch))
+  if (needsAssets) {
+    await run('tar', ['-xf', opts.archive, '-C', assetDir, 'repos'], { maxBuffer: 16 * 1024 * 1024 })
+      .catch(() => log('no repos assets in this archive — cloning without local-only history'))
+  }
+
+  const steps = planRepos(entries, state, p => existsSync(p), opts.homeDir, assetDir)
   const result: RestoreReposResult = { attempted: 0, succeeded: 0, failures: [], skipped: [] }
 
   for (const s of steps) {
@@ -2920,6 +3017,20 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     // Written after every repo, not at the end: an interrupted run must not lose what it did.
     await writeRestoreState(state)
   }
+
+  // Untracked files were never carried (see RepoDirty). Name them, so "not restored" is a fact the
+  // user reads rather than a silence they discover.
+  for (const e of entries) {
+    for (const d of e.dirty) {
+      if (d.untracked.length) {
+        log(`note ${e.key}: ${d.untracked.length} untracked file(s) in ${d.path} were listed, not carried:`)
+        for (const u of d.untracked.slice(0, 20)) log(`       ${u}`)
+        if (d.untracked.length > 20) log(`       … and ${d.untracked.length - 20} more`)
+      }
+    }
+  }
+
+  await rm(assetDir, { recursive: true, force: true }).catch(() => {})
   return result
 }
 
@@ -3102,8 +3213,9 @@ Create `packages/server/server/cli-backup.ts`:
  * A run that clones 89 repositories will partially fail, and a count of successes without the list
  * of what did not come back is not a report.
  */
-import { hostname } from 'os'
+import { hostname, tmpdir } from 'os'
 import { existsSync } from 'fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
@@ -3222,10 +3334,19 @@ Carry this machine's whole agentistics history to another one.
   Live credentials are NEVER included. \`restore\` prints each one and the command that
   re-establishes it.`
 
-/** Build the repository manifest: probe every directory the store knows, bundle, patch. */
+/**
+ * Build the repository manifest: probe every directory the store knows, bundle, patch.
+ *
+ * `stageRoot` is the directory whose `repos/` subtree is handed to `runBackup` as `assetRoot` and
+ * copied verbatim into the archive. Every `bundle` and `patch` recorded on a `RepoEntry` is
+ * therefore an ARCHIVE-RELATIVE path (`repos/…`), never a path on this machine — the restore
+ * resolves it against wherever it extracted.
+ */
 async function buildRepoManifest(
-  prefs: BackupPrefs, workDir: string, log: (l: string) => void,
+  prefs: BackupPrefs, stageRoot: string, log: (l: string) => void,
 ): Promise<RepoEntry[]> {
+  const reposDir = join(stageRoot, 'repos')
+  await mkdir(reposDir, { recursive: true })
   const sessions = [...(await loadConsolidated()).values()]
   const paths = candidatePaths(sessions)
   log(`probing ${paths.length} directories with git`)
@@ -3236,20 +3357,32 @@ async function buildRepoManifest(
     if (e.note === 'gone' || e.note === 'not-a-repo' || e.note === 'outside-home') continue
     const main = expandHome(e.mainPath, HOME_DIR)
     const safe = e.key.replace(/[^A-Za-z0-9._-]/g, '_')
-    const bundlePath = join(workDir, `${safe}.bundle`)
 
     // A repo with no remote has no other home, so it needs its whole history.
-    const res = await createBundle(main, bundlePath, {
+    const rel = `repos/${safe}.bundle`
+    const res = await createBundle(main, join(stageRoot, rel), {
       full: e.note === 'no-remote', maxBytes: prefs.maxBundleBytes,
     })
-    if (res === 'written') e.bundle = bundlePath
+    if (res === 'written') e.bundle = rel
     else if (res === 'too-large') { e.note = 'too-large'; log(`  ${e.key}: bundle over the ceiling — cloning without local-only history`) }
 
     for (const dir of [e.mainPath, ...e.worktrees.map(w => w.path)]) {
       const abs = expandHome(dir, HOME_DIR)
       const patch = await capturePatch(abs)
       const untracked = await listUntracked(abs)
-      if (patch || untracked.length) e.dirty.push({ path: dir, patch: patch ? `${safe}__patch` : null, untracked })
+      if (!patch && !untracked.length) continue
+
+      let patchRel: string | null = null
+      if (patch) {
+        // One patch per WORKING TREE, not per repo: a checkout and each of its worktrees are
+        // different trees with different uncommitted work, and one file per repo would have them
+        // overwrite each other.
+        const dirSlug = dir.replace(/[^A-Za-z0-9._-]/g, '_')
+        patchRel = `repos/${safe}__${dirSlug}.patch`
+        await writeFile(join(stageRoot, patchRel), patch)
+      }
+      // `untracked` is a LIST of names and never the contents — see RepoDirty in repo-manifest.ts.
+      e.dirty.push({ path: dir, patch: patchRel, untracked })
     }
   }
   return entries
@@ -3294,11 +3427,15 @@ export async function runBackupCli(argv: string[]): Promise<number> {
 
   const destDir = parsed.destDir ?? prefs.destDir
   const effective = { ...prefs, maxBundleBytes: parsed.maxBundleBytes ?? prefs.maxBundleBytes }
+  // A temp staging root, removed on every exit path: the bundles and patches belong in the
+  // archive, not left lying beside it.
+  const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
   const repos = parsed.layers.includes('repos')
-    ? await buildRepoManifest(effective, join(destDir, '.bundles'), log)
+    ? await buildRepoManifest(effective, stageRoot, log)
     : []
 
   if (parsed.planOnly) {
+    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
     log(`layers:    ${parsed.layers.join(', ')}`)
     log(`harnesses: ${parsed.harnesses.join(', ')}`)
     log(`repos:     ${repos.filter(r => !r.note).length} cloneable, ${repos.filter(r => r.note).length} noted`)
@@ -3307,10 +3444,15 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     return 0
   }
 
-  const result = await runBackup({
-    homeDir: HOME_DIR, destDir, layers: parsed.layers, harnesses: parsed.harnesses,
-    repos, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
-  })
+  let result
+  try {
+    result = await runBackup({
+      homeDir: HOME_DIR, destDir, layers: parsed.layers, harnesses: parsed.harnesses,
+      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
+    })
+  } finally {
+    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
+  }
   if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
 
   log(`before compression: ${formatBytes(plannedTotal(result.sizes, parsed.layers))}`)
@@ -3365,7 +3507,7 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
     return 0
   }
 
-  const r = await restoreRepos({ manifest, homeDir: HOME_DIR, only, onLine: log })
+  const r = await restoreRepos({ manifest, homeDir: HOME_DIR, archive, only, onLine: log })
   log('')
   log(`${r.succeeded}/${r.attempted} repositories restored.`)
   for (const f of r.failures) log(`  FAILED ${f.key} — ${f.reason}`)
@@ -3390,8 +3532,9 @@ Create `packages/server/server/backup/daemon.ts`:
  * The check is cheap (a preference read and a date comparison), so it runs on a plain interval
  * rather than trying to be clever about when to wake up.
  */
-import { hostname } from 'os'
+import { hostname, tmpdir } from 'os'
 import { existsSync } from 'fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { HOME_DIR } from '../config'
 import { readPreferences } from '../preferences'
@@ -3723,7 +3866,16 @@ Two, both deliberate. Recorded here rather than left for a reader to discover as
    requirement asked for it, and every extra output shape is another thing the verify step has to
    understand. If a real need appears, it is a small addition to `runBackup`'s tail. YAGNI.
 
-2. **A scheduled run carries no repository manifest.** Building one shells out to git across 282
+2. **Untracked file CONTENTS do not travel — only their names.** The spec said "and their
+   contents, subject to the size ceiling". That was wrong, and the reason is Task 1's own decision:
+   an untracked `.env`, `credentials.json` or service-account key sitting in a working tree is
+   exactly the class of file the exclusion table exists to keep out of the archive, and it is
+   invisible to that table because it lives under a repository path rather than a known dotfile.
+   Carrying the contents would smuggle back in through the `repos` layer precisely what the secrets
+   decision keeps out of the `raw` layer. The restore prints them by name, so "not restored" is a
+   fact the user reads rather than a silence they discover.
+
+3. **A scheduled run carries no repository manifest.** Building one shells out to git across 282
    directories and writes bundles. Doing that unattended every day is load the user did not ask
    for, and the manifest's value is highest at the moment someone is about to reformat — which is a
    manual moment. `agentop backup` builds it; the daemon does not. Stated in `backup/daemon.ts`
