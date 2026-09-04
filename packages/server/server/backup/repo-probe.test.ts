@@ -93,13 +93,50 @@ test('a bundle over the ceiling reports too-large and leaves no file behind', as
   expect(() => statSync(out)).toThrow()
 })
 
-test('a clean tree yields no patch; a dirty one yields the diff', async () => {
-  expect(await capturePatch(repo)).toBeNull()
+// `empty` means "every local commit is already on the remote" — a happy answer. A real failure
+// wearing that answer tells the user their unpushed work was checked and found safe.
+test('a bundle that genuinely FAILS is not reported as empty', async () => {
+  const res = await createBundle(repo, '/proc/definitely/not/writable.bundle', {
+    full: true, maxBytes: 100_000_000,
+  })
+  expect(res).toBe('failed')
+})
+
+test('a clean tree says clean; a dirty one carries the diff', async () => {
+  expect(await capturePatch(repo)).toEqual({ kind: 'clean' })
   writeFileSync(join(repo, 'a.txt'), 'two\n')
-  const patch = await capturePatch(repo)
-  expect(patch).toContain('-one')
-  expect(patch).toContain('+two')
+  const res = await capturePatch(repo)
+  expect(res.kind).toBe('patch')
+  if (res.kind === 'patch') {
+    expect(res.text).toContain('-one')
+    expect(res.text).toContain('+two')
+  }
   git(repo, 'checkout', '--', 'a.txt')
+})
+
+// The failure this module exists to prevent, arriving in the reassuring direction: a tree we could
+// not read must never be reported with the same value as a tree that had nothing in it.
+test('a tree that cannot be read is `unavailable`, never `clean`', async () => {
+  const res = await capturePatch(join(root, 'not-a-repo-at-all'))
+  expect(res.kind).toBe('unavailable')
+  if (res.kind === 'unavailable') expect(res.reason.length).toBeGreaterThan(0)
+})
+
+// Measured: GIT_COMMON_DIR alone, with no GIT_DIR set, redirects `rev-parse --git-common-dir` —
+// the ONE fact groupRepos keys on. A backup run from inside a git hook inherits variables like it.
+test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
+  const other = join(root, 'other')
+  mkdirSync(other)
+  git(other, 'init', '-q', '-b', 'main')
+  const saved = process.env.GIT_COMMON_DIR
+  process.env.GIT_COMMON_DIR = join(other, '.git')
+  try {
+    const f = await probeDir(repo)
+    expect(f.commonDir).toBe(join(repo, '.git'))
+  } finally {
+    if (saved === undefined) delete process.env.GIT_COMMON_DIR
+    else process.env.GIT_COMMON_DIR = saved
+  }
 })
 
 test('untracked files are listed, and ignored ones are not', async () => {

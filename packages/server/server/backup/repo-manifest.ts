@@ -39,8 +39,17 @@ export interface RepoWorktree {
 
 export interface RepoDirty {
   path: string
-  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when the tree was clean. */
+  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when there is no patch. */
   patch: string | null
+  /**
+   * Set when the tree IS dirty and its diff could not be captured — too large for the buffer, too
+   * slow for the timeout, or git refused. Carries the reason, and the restore prints it.
+   *
+   * This field exists because the alternative is the worst failure this module can have: a `patch`
+   * of `null` used to mean both "clean" and "we could not look", so a working tree full of
+   * uncommitted work was silently backed up as though it had none.
+   */
+  patchUnavailable?: string
   /**
    * Untracked file names — a LIST, never the contents.
    *
