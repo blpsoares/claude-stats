@@ -563,3 +563,212 @@ bun test packages/server/server/backup/
 **Then a deliberate-break check, and report it:** remove the `.kimi-code/config.toml` rule and
 confirm the per-harness probe FAILS naming kimi; restore it. And remove the redaction from
 `stagePreferences` and confirm the archive test FAILS finding the token; restore it.
+
+---
+
+# Wave C — the reporting still lies in five places
+
+One Critical and four Important. None stops a backup from being written; all five let it claim
+something the code did not do.
+
+## C1 (finding C5). A bundle that FAILED is treated exactly like one that was EMPTY
+
+`repo-probe.ts` spends nine lines explaining that `failed` must never read as `empty` — "their
+unpushed work was checked and found to be already safe". Its sole caller, `buildRepoManifest` in
+`cli-backup.ts`, drops the distinction:
+
+```ts
+    if (res === 'written') e.bundle = rel
+    else if (res === 'too-large') { e.note = 'too-large'; log(…) }
+```
+
+`'failed'` falls off the end: no log line, no note, `bundle` stays `null`, the run reports success.
+The defect the module documents, reintroduced one layer up.
+
+**The fix.** `RepoEntry` gains a field mirroring `RepoDirty.patchUnavailable`, which exists for
+exactly this reason. In `repo-manifest.ts`:
+
+```ts
+  /**
+   * Set when a bundle could NOT be produced — a permission error, a full disk, a timeout. Carries
+   * the reason, and the restore prints it.
+   *
+   * A `bundle` of `null` used to mean both "every local commit is already on the remote" and "we
+   * could not look", so a repository whose unpushed work was never captured restored silently
+   * without it.
+   */
+  bundleUnavailable?: string
+```
+
+and in `cli-backup.ts`:
+
+```ts
+    if (res === 'written') e.bundle = rel
+    else if (res === 'too-large') {
+      e.note = 'too-large'
+      log(`  ${e.key}: bundle over the ceiling — cloning without local-only history`)
+    } else if (res === 'failed') {
+      e.bundleUnavailable = 'git bundle failed — this repository restores WITHOUT its unpushed commits'
+      log(`  ${e.key}: ${e.bundleUnavailable}`)
+    }
+    // 'empty' is the happy case: every local commit is already on the remote.
+```
+
+`restoreRepos` names it beside the untracked report:
+
+```ts
+  for (const e of entries) {
+    if (e.bundleUnavailable) log(`note ${e.key}: ${e.bundleUnavailable}`)
+    for (const d of e.dirty) { … }
+  }
+```
+
+## C2 (I1). An unreadable source ROOT reads as "this harness is not installed"
+
+`backup.ts`: `if (!isRoot) skipped.push(...)`. At a root, ENOENT and EACCES/ELOOP/ENOTDIR are one
+value. `~/.claude` unreadable ⇒ the whole claude layer contributes zero bytes, `skipped` is empty,
+`record.skipped` is 0, and the result is `ok: true`. `backup.test.ts`'s missing-source test would
+still pass with the distinction removed.
+
+```ts
+    } catch (e) {
+      // A source ROOT that is ABSENT is the ordinary "this harness is not installed" case and is
+      // not reported. A root that exists and cannot be READ is a hole in the backup, and only the
+      // errno separates them — without this check a permission error on ~/.claude produced an
+      // empty claude layer inside a backup reporting complete success.
+      const code = (e as NodeJS.ErrnoException).code
+      if (!isRoot || code !== 'ENOENT') skipped.push({ rel, reason: 'unreadable', detail: errText(e) })
+      return
+    }
+```
+
+Test:
+
+```ts
+test('a source root that exists but cannot be read is reported, not read as "not installed"', async () => {
+  const locked = join(home, '.locked')
+  mkdirSync(locked, { recursive: true })
+  writeFileSync(join(locked, 'x.json'), '{}')
+  chmodSync(locked, 0o000)
+  try {
+    const { files, skipped } = await walkSources(home, [{ rel: '.locked', layer: 'raw', harness: 'claude' }])
+    expect(files).toEqual([])
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0]!.reason).toBe('unreadable')
+  } finally {
+    chmodSync(locked, 0o700)
+    rmSync(locked, { recursive: true, force: true })
+  }
+})
+```
+
+If the test environment runs as root (where a 000 directory is still readable), skip it with an
+explicit `if (process.getuid?.() === 0) return` and say so in a comment — a test that silently
+cannot fail is the thing this branch keeps finding.
+
+## C3 (I2). The scheduled backup records a `repos` layer it never carries
+
+`daemon.ts` passes `repos: []` and no `assetRoot`, while `scheduleLayers` defaults to
+`['metrics','repos']`. The manifest and `BackupRecord.layers` then claim `repos`, `status` shows it,
+and a restore prints "Repository plan: 0 to clone". A user who set `daily` believes their repository
+layout and unpushed branches are being saved. The deviation is recorded in the plan; the ARTIFACT
+does not record it.
+
+```ts
+      // The scheduled run carries no repository manifest — building one shells out to git across
+      // every known directory and writes bundles, which is load nobody asked for unattended. So it
+      // must not RECORD a repos layer either: a manifest that claims one produces a restore saying
+      // "0 repositories to clone" on a machine whose owner believed they were covered.
+      const layers = prefs.scheduleLayers.filter(l => l !== 'repos')
+      log(`[backup] scheduled run: layers ${layers.join(', ')} (repos are built by \`agentop backup\`, not on a schedule)`)
+```
+
+and pass `layers` to `runBackup`.
+
+## C4 (I3). Retention is never applied to a scheduled backup
+
+`toPrune` has exactly one caller, in `runBackupCli`. An unattended daily schedule grows unbounded —
+the precise scenario the spec's retention rule exists for.
+
+Extract the prune from `runBackupCli` into an exported helper in `cli-backup.ts`, and call it from
+both:
+
+```ts
+/**
+ * Delete the FILES of backups beyond `keep`, newest first. The records stay: the store is
+ * append-only and `markPresence` reports a missing file as absent from then on.
+ */
+export async function pruneOldBackups(keep: number, log: (l: string) => void): Promise<void> {
+  const entries = markPresence(await readBackups(), p => existsSync(p))
+  for (const old of toPrune(entries, keep)) {
+    await rm(old.path, { force: true }).catch(() => {})
+    log(`pruned ${old.path}`)
+  }
+}
+```
+
+In `daemon.ts`, after a successful run:
+
+```ts
+      if (r.ok) await pruneOldBackups(prefs.keep, l => log(`[backup] ${l}`))
+```
+
+## C5 (I6). `gitEnv()` leaves the config-injection variables in place
+
+It deletes the five directory hijackers and sets `GIT_CONFIG_NOSYSTEM`, but not `GIT_CONFIG_GLOBAL`,
+the numbered `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` triple, or
+`GIT_SSH_COMMAND`. `repo-manifest.ts`'s `git clone` is the one argv with no `-C`, and an inherited
+`url.<base>.insteadOf` rewrites the remote it clones from.
+
+```ts
+const HIJACKERS = [
+  // Directory: these make `-C` and `cwd` a lie.
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR',
+  // Configuration: these inject config we did not read. `url.<base>.insteadOf` rewrites the remote
+  // a clone actually fetches from, and the clone is the one argv here with no `-C` to anchor it.
+  'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_COUNT',
+  // Transport.
+  'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND',
+] as const
+
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
+  for (const k of HIJACKERS) delete env[k]
+  // GIT_CONFIG_COUNT is deleted above, which disables the numbered pairs — but they are removed
+  // too, so nothing is left for a later `GIT_CONFIG_COUNT` in a child to pick up.
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('GIT_CONFIG_KEY_') || k.startsWith('GIT_CONFIG_VALUE_')) delete env[k]
+  }
+  return env
+}
+```
+
+Test, in `repo-probe.test.ts` beside the `GIT_COMMON_DIR` one:
+
+```ts
+// `url.<base>.insteadOf` in an inherited environment rewrites the remote a clone fetches from, and
+// the clone is the one git argv on this branch with no `-C` to anchor it.
+test('inherited GIT_CONFIG_* cannot inject configuration into a probe', async () => {
+  const saved = { count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, val: process.env.GIT_CONFIG_VALUE_0 }
+  process.env.GIT_CONFIG_COUNT = '1'
+  process.env.GIT_CONFIG_KEY_0 = 'remote.origin.url'
+  process.env.GIT_CONFIG_VALUE_0 = 'https://evil.example/injected.git'
+  try {
+    const f = await probeDir(repo)
+    expect(f.cloneUrl).toBe('git@github.com:org/repo.git')
+  } finally {
+    for (const [k, v] of [['GIT_CONFIG_COUNT', saved.count], ['GIT_CONFIG_KEY_0', saved.key], ['GIT_CONFIG_VALUE_0', saved.val]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+```
+
+## Verify
+
+```bash
+bun test packages/server/server/backup/
+```
+
+**Deliberate-break check, and report it:** remove `GIT_CONFIG_COUNT` from `HIJACKERS` and confirm
+the injection test FAILS; restore it.
