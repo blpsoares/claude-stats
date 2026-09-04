@@ -27,7 +27,8 @@
  * commands that run are the same function. A note means it emits nothing at all.
  */
 
-export type RepoNote = 'no-remote' | 'gone' | 'not-a-repo' | 'outside-home' | 'too-large' | null
+export type RepoNote =
+  | 'no-remote' | 'gone' | 'not-a-repo' | 'outside-home' | 'no-main-checkout' | 'too-large' | null
 
 export interface RepoWorktree {
   /** `~`-prefixed when under $HOME, absolute otherwise. */
@@ -103,6 +104,23 @@ function isUnder(path: string, homeDir: string): boolean {
  * the probed directories (the checkout itself was never a session cwd) promotes the common dir's
  * parent to `mainPath`, because that is where git will put it back.
  */
+/**
+ * The working tree a git common dir belongs to, or null when the layout does not name one.
+ *
+ * `<tree>/.git` is the ordinary case. It is NOT the only one: a BARE repository with worktrees
+ * hanging off it (`~/proj.git` + `git worktree add ~/proj/main`) and a `--separate-git-dir`
+ * checkout both report a common dir that is not `<tree>/.git`, and for a bare repository there is
+ * genuinely no working tree to be found. Returning null for those is the whole point — the
+ * alternative, which this module shipped for one review cycle, was to leave `mainDir` as the raw
+ * common dir, match no member, and promote whichever directory happened to be FIRST in the array
+ * to "main". That makes the restore clone into a worktree's path and rebuild the real checkout as
+ * a worktree of itself.
+ */
+function mainTreeOf(commonDir: string): string | null {
+  const suffix = '/.git'
+  return commonDir.endsWith(suffix) ? commonDir.slice(0, -suffix.length) : null
+}
+
 export function groupRepos(facts: DirFacts[], homeDir: string): RepoEntry[] {
   const noted: RepoEntry[] = []
   const groups = new Map<string, DirFacts[]>()
@@ -123,22 +141,53 @@ export function groupRepos(facts: DirFacts[], homeDir: string): RepoEntry[] {
 
   const entries: RepoEntry[] = []
   for (const [commonDir, members] of groups) {
-    const mainDir = commonDir.replace(/\/\.git$/, '')
-    const main = members.find(m => m.topLevel === mainDir) ?? members[0]!
-    const worktrees = members.filter(m => m !== main)
-
     const remote = members.find(m => m.remote)?.remote ?? ''
     const cloneUrl = members.find(m => m.cloneUrl)?.cloneUrl ?? ''
+    const mainDir = mainTreeOf(commonDir)
 
+    // No working tree can be named from this layout. Say so rather than electing one: every note
+    // except `too-large` makes the restore skip the entry with a reason the user reads, and a
+    // skipped repository costs a manual clone while a wrongly elected one corrupts a real checkout.
+    if (!mainDir) {
+      entries.push({
+        key: remote || commonDir,
+        cloneUrl,
+        mainPath: homeRelative(commonDir, homeDir),
+        mainBranch: '',
+        worktrees: members.map(w => ({
+          path: homeRelative(w.topLevel ?? w.path, homeDir),
+          branch: w.branch,
+          head: w.head,
+        })),
+        bundle: null,
+        dirty: [],
+        note: 'no-main-checkout',
+      })
+      continue
+    }
+
+    // The main checkout may simply never have been a session cwd, so it is absent from `members`.
+    // That is fine — git puts it back at `mainDir` regardless — but its BRANCH is then unknown, and
+    // it must stay unknown. Borrowing a worktree's branch would have the restore check that branch
+    // out in the main checkout and then fail the `worktree add` for it: git refuses to have one
+    // branch checked out in two trees. An empty `mainBranch` makes `restoreArgv` omit the checkout
+    // step, and each worktree still adds its own branch.
+    const main = members.find(m => m.topLevel === mainDir) ?? null
+    const worktrees = main ? members.filter(m => m !== main) : members
+
+    // `outside-home` is decided BEFORE `no-remote`: it is the stronger statement — this repository
+    // will not be put back here whatever else is true of it — and deciding it first is what stops
+    // the backup spending a full-history bundle on a remote-less repository in /tmp that no restore
+    // will ever place.
     let note: RepoNote = null
-    if (!remote) note = 'no-remote'
-    else if (!isUnder(mainDir, homeDir)) note = 'outside-home'
+    if (!isUnder(mainDir, homeDir)) note = 'outside-home'
+    else if (!remote) note = 'no-remote'
 
     entries.push({
       key: remote || commonDir,
       cloneUrl,
       mainPath: homeRelative(mainDir, homeDir),
-      mainBranch: main.branch,
+      mainBranch: main?.branch ?? '',
       worktrees: worktrees.map(w => ({
         path: homeRelative(w.topLevel ?? w.path, homeDir),
         branch: w.branch,

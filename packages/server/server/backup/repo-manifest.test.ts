@@ -23,8 +23,7 @@ test('a plain checkout becomes one entry with no worktrees', () => {
 })
 
 // The only thing a worktree provably shares with its main checkout is the git COMMON DIR. Grouping
-// by remote would merge two unrelated clones of the same repo into one entry, and the restore
-// would rebuild one and silently drop the other. Grouping by path prefix breaks the
+// by remote would merge two unrelated clones of the same repo; grouping by path prefix breaks the
 // moment a worktree lives outside its checkout.
 test('a worktree groups under its main checkout, by common dir', () => {
   const main = mainRepo(`${HOME}/proj`)
@@ -79,6 +78,50 @@ test('a repo with no remote is `no-remote` — there is nothing to clone from', 
   })], HOME)
   expect(e!.note).toBe('no-remote')
   expect(e!.key).toBe(`${HOME}/local/.git`)
+})
+
+// The bug this module exists to prevent, and which it shipped for one review cycle. A bare
+// repository with worktrees hanging off it reports a common dir that is not `<tree>/.git`; the old
+// code left mainDir as that raw string, matched no member, and elected members[0] — so a worktree
+// became "main" and the restore would rebuild the real checkout as a worktree of itself.
+test('a layout that names no working tree is refused, never resolved by array order', () => {
+  const bare = `${HOME}/proj.git`
+  const wt = (path: string, branch: string): DirFacts => facts({
+    path, commonDir: bare, topLevel: path,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo', branch, head: 'abc',
+  })
+  const [e] = groupRepos([wt(`${HOME}/proj/main`, 'main'), wt(`${HOME}/proj/feat`, 'feat')], HOME)
+  expect(e!.note).toBe('no-main-checkout')
+  expect(e!.mainPath).toBe('~/proj.git')
+  expect(e!.worktrees.map(w => w.path)).toEqual(['~/proj/main', '~/proj/feat'])
+  // Nothing runs: an elected worktree would clone over a real checkout.
+  expect(restoreArgv(e!, HOME)).toEqual([])
+})
+
+// git refuses one branch checked out in two trees, so borrowing a worktree's branch for the
+// unprobed main checkout would make `checkout` succeed and the matching `worktree add` fail.
+test('an unprobed main checkout keeps its branch UNKNOWN, and every member stays a worktree', () => {
+  const wt = facts({
+    path: `${HOME}/proj/.worktrees/feat`, commonDir: `${HOME}/proj/.git`,
+    topLevel: `${HOME}/proj/.worktrees/feat`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'feat/x', head: 'dead',
+  })
+  const [e] = groupRepos([wt], HOME)
+  expect(e!.mainPath).toBe('~/proj')
+  expect(e!.mainBranch).toBe('')
+  expect(e!.worktrees).toHaveLength(1)
+  const argv = restoreArgv(e!, HOME)
+  expect(argv.some(a => a.includes('checkout'))).toBe(false)
+  expect(argv.some(a => a.includes('worktree'))).toBe(true)
+})
+
+test('outside $HOME outranks no-remote — the stronger statement, and it saves a wasted bundle', () => {
+  const [e] = groupRepos([facts({
+    path: '/tmp/scratch', commonDir: '/tmp/scratch/.git', topLevel: '/tmp/scratch',
+    branch: 'main', head: 'abc',
+  })], HOME)
+  expect(e!.note).toBe('outside-home')
 })
 
 test('a path outside $HOME is recorded and never restored', () => {
