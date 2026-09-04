@@ -240,11 +240,35 @@ export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): s
   // the archive was extracted, so the caller passes that directory; the plan printed BEFORE
   // extraction passes nothing and shows the archive-relative path, which is what a reader wants.
   const asset = (rel: string): string => (assetDir ? `${assetDir}/${rel}` : rel)
-  const out: string[][] = [['git', 'clone', entry.cloneUrl, main]]
 
-  // Fetch the bundle BEFORE checking out: the branch we want may only exist inside it.
-  if (entry.bundle) out.push(['git', '-C', main, 'fetch', asset(entry.bundle), 'refs/heads/*:refs/heads/*'])
-  if (entry.mainBranch) out.push(['git', '-C', main, 'checkout', entry.mainBranch])
+  // With a bundle, the clone must not leave any branch checked out under the name the bundle needs
+  // to write. Git's refusal is keyed on what HEAD symbolically points at — verified against real
+  // git: `--no-checkout` alone changes nothing, because `clone` still attaches HEAD to a local
+  // branch even when it skips populating the working tree, and a freshly `git init`-ed repo with no
+  // commits at all is refused the same way, on its still-unborn default branch. The only thing that
+  // actually clears the refusal is moving HEAD off the name the fetch needs. `branch -m
+  // <placeholder>` with a single argument renames whatever is CURRENTLY checked out — so the
+  // original name never has to be known in advance — without touching the commit it points at, and
+  // HEAD follows the rename. That vacates the original name for the forced refspec to rewrite, and
+  // keeps the pre-fetch content reachable under the placeholder for the no-branch-known case below.
+  const RESTORE_PLACEHOLDER_BRANCH = 'agentistics-restore-placeholder'
+  const out: string[][] = entry.bundle
+    ? [
+        ['git', 'clone', '--no-checkout', entry.cloneUrl, main],
+        ['git', '-C', main, 'branch', '-m', RESTORE_PLACEHOLDER_BRANCH],
+        ['git', '-C', main, 'fetch', asset(entry.bundle), '+refs/heads/*:refs/heads/*'],
+      ]
+    : [['git', 'clone', entry.cloneUrl, main]]
+
+  if (entry.mainBranch) {
+    out.push(['git', '-C', main, 'checkout', entry.mainBranch])
+  } else if (entry.bundle) {
+    // The main checkout was never probed, so its branch is unknown — but `--no-checkout` left the
+    // working tree empty and something has to materialise it. The rename above kept the clone's own
+    // default branch reachable as the CURRENT branch, just under the placeholder name, so a plain
+    // reset fills the tree from it without inventing the real name.
+    out.push(['git', '-C', main, 'reset', '--hard'])
+  }
 
   for (const w of entry.worktrees) {
     out.push(['git', '-C', main, 'worktree', 'add', expandHome(w.path, homeDir), w.branch])

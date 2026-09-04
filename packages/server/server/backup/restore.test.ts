@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { runBackup } from './backup'
 import { readManifestOf, restoreMetrics, restoreRepos, verifyArchive } from './restore'
+import { createBundle } from './repo-probe'
 import type { BackupManifest } from './manifest'
 import type { RepoEntry } from './repo-manifest'
 
@@ -95,6 +96,35 @@ test('a newer local file survives the restore, and is reported as skipped', asyn
 test('a restore leaves no staging directory behind', async () => {
   await restoreMetrics({ archive, homeDir: newHome })
   expect(existsSync(join(newHome, '.agentistics/restore-staging'))).toBe(false)
+})
+
+// The defect this test exists for: the manifest digest covered only the $HOME walk while the
+// staging walk covered the repos assets too, so a backup taken with the DEFAULT layers reported
+// itself corrupt on restore. Both halves had tests; this is the seam.
+test('an archive carrying repos assets restores — the digest covers the same set both sides', async () => {
+  const assetRoot = mkdtempSync(join(tmpdir(), 'agentistics-a-'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-rt-'))
+  try {
+    mkdirSync(join(assetRoot, 'repos'), { recursive: true })
+    writeFileSync(join(assetRoot, 'repos/example.bundle'), 'BUNDLE BYTES')
+    writeFileSync(join(assetRoot, 'repos/example__main.patch'), 'PATCH BYTES')
+
+    const made = await runBackup({
+      homeDir: oldHome, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
+      repos: [], assetRoot, agentopVersion: 'test', hostname: 'old',
+    })
+    expect(made.ok).toBe(true)
+    if (!made.ok) return
+
+    const r = await restoreMetrics({ archive: made.record.path, homeDir: target })
+    expect(r.ok).toBe(true)
+    expect(existsSync(join(target, '.agentistics/sessions/claude/a.json'))).toBe(true)
+    // …and the assets are NOT merged into $HOME: they belong to the archive, not to the home.
+    expect(existsSync(join(target, 'repos'))).toBe(false)
+  } finally {
+    rmSync(assetRoot, { recursive: true, force: true })
+    rmSync(target, { recursive: true, force: true })
+  }
 })
 
 // --- the repo phase -----------------------------------------------------------------------------
@@ -222,6 +252,51 @@ test('the repo phase leaves no staging directory behind', async () => {
     ])
     await restoreRepos({ manifest, homeDir: target, archive })
     expect(existsSync(join(target, '.agentistics/restore-staging'))).toBe(false)
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// C4 reproduced and pinned: `git fetch <bundle> refs/heads/*:refs/heads/*` after a plain clone is
+// REFUSED when the branch is checked out — which is exactly the case a bundle exists for.
+test('a repository ahead of its remote comes back WITH its unpushed commit', async () => {
+  const origin = makeOrigin(join(dest, 'origin-ahead'))
+  const clone = join(dest, 'ahead-work')
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-ahead-'))
+  try {
+    git(dest, 'clone', '-q', origin, clone)
+    git(clone, 'config', 'user.email', 't@t')
+    git(clone, 'config', 'user.name', 't')
+    writeFileSync(join(clone, 'b.txt'), 'unpushed\n')
+    git(clone, 'add', 'b.txt')
+    git(clone, 'commit', '-q', '-m', 'unpushed work')
+
+    const bundleDir = mkdtempSync(join(tmpdir(), 'agentistics-b-'))
+    mkdirSync(join(bundleDir, 'repos'), { recursive: true })
+    const res = await createBundle(clone, join(bundleDir, 'repos/ahead.bundle'), {
+      full: false, maxBytes: 100_000_000,
+    })
+    expect(res).toBe('written')
+
+    const made = await runBackup({
+      homeDir: oldHome, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
+      assetRoot: bundleDir, agentopVersion: 'test', hostname: 'old',
+      repos: [entry({ key: 'ahead', cloneUrl: origin, mainPath: '~/back', bundle: 'repos/ahead.bundle' })],
+    })
+    expect(made.ok).toBe(true)
+    if (!made.ok) return
+
+    const m = await readManifestOf(made.record.path)
+    expect(m.ok).toBe(true)
+    if (!m.ok) return
+
+    const r = await restoreRepos({ manifest: m.manifest, homeDir: target, archive: made.record.path })
+    expect(r.failures).toEqual([])
+    expect(r.succeeded).toBe(1)
+    // The whole promise of the repos layer, in one assertion.
+    expect(readFileSync(join(target, 'back/b.txt'), 'utf8')).toBe('unpushed\n')
+
+    rmSync(bundleDir, { recursive: true, force: true })
   } finally {
     rmSync(target, { recursive: true, force: true })
   }

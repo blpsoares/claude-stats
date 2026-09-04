@@ -142,12 +142,36 @@ test('restoreCommands rebuilds clone, bundle, branch, worktrees and patches, in 
   e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
 
   expect(restoreCommands(e!, '/home/new')).toEqual([
-    'git clone git@github.com:org/repo.git /home/new/proj',
-    'git -C /home/new/proj fetch repos/github.com_org_repo.bundle refs/heads/*:refs/heads/*',
+    'git clone --no-checkout git@github.com:org/repo.git /home/new/proj',
+    'git -C /home/new/proj branch -m agentistics-restore-placeholder',
+    'git -C /home/new/proj fetch repos/github.com_org_repo.bundle +refs/heads/*:refs/heads/*',
     'git -C /home/new/proj checkout main',
     'git -C /home/new/proj worktree add /home/new/proj/wt feat/x',
     'git -C /home/new/proj apply repos/github.com_org_repo__main.patch',
   ])
+})
+
+// Verified against real git, not just read: `--no-checkout` alone does NOT clear the refusal (a
+// clone still attaches HEAD to a local branch even without populating the working tree, and even a
+// freshly `git init`-ed repo with no commits refuses a fetch into its still-unborn default branch).
+// Only moving HEAD off the name the fetch needs to write does — `branch -m <placeholder>` renames
+// whatever is CURRENTLY checked out, so the plan never has to know that name in advance.
+test('a bundle renames the checked-out branch out of the way before fetching it', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const [e] = groupRepos([main], HOME)
+  e!.bundle = 'repos/k.bundle'
+  const argv = restoreArgv(e!, HOME)
+  expect(argv[0]).toEqual(['git', 'clone', '--no-checkout', 'git@github.com:org/repo.git', '/home/u/proj'])
+  expect(argv[1]).toEqual(['git', '-C', '/home/u/proj', 'branch', '-m', 'agentistics-restore-placeholder'])
+  expect(argv[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/k.bundle', '+refs/heads/*:refs/heads/*'])
+  expect(argv[3]).toEqual(['git', '-C', '/home/u/proj', 'checkout', 'main'])
+})
+
+test('with no bundle the clone checks out normally', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
+  const argv = restoreArgv(e!, HOME)
+  expect(argv[0]).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/proj'])
+  expect(argv.some(a => a.includes('--no-checkout'))).toBe(false)
 })
 
 // Display and execution come from ONE source, in two shapes. A path with a space cannot be
@@ -171,10 +195,10 @@ test('an assetDir resolves the bundle and patch paths, and its absence leaves th
   e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
 
   const bare = restoreArgv(e!, HOME)
-  expect(bare[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+  expect(bare[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
 
   const staged = restoreArgv(e!, HOME, '/stage')
-  expect(staged[1]).toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', 'refs/heads/*:refs/heads/*'])
+  expect(staged[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
   expect(staged[staged.length - 1]).toEqual(['git', '-C', '/home/u/proj', 'apply', '/stage/repos/github.com_org_repo__main.patch'])
 })
 

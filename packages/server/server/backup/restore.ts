@@ -133,7 +133,12 @@ async function walkStaged(root: string): Promise<(StagedFile & { bytes: number }
     out.push({ rel: relative(root, abs).split('\\').join('/'), mtimeMs: st.mtimeMs, bytes: st.size })
   }
   await visit(root)
-  return out.filter(f => f.rel !== MANIFEST_NAME)
+  // `repos/` holds the archive's OWN assets — the bundles and patches — not $HOME content. It is
+  // outside the manifest digest (which covers the walk that produced the archive) and outside the
+  // merge (which writes into $HOME). Leaving it in broke both: the digest never matched, so a
+  // perfectly intact backup refused to restore, and had it matched, the merge would have copied
+  // git bundles into `$HOME/repos/`.
+  return out.filter(f => f.rel !== MANIFEST_NAME && f.rel !== 'repos' && !f.rel.startsWith('repos/'))
 }
 
 export interface RestoreMetricsOptions {
@@ -253,8 +258,23 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
   await mkdir(assetDir, { recursive: true })
   const needsAssets = entries.some(e => e.bundle || e.dirty.some(d => d.patch))
   if (needsAssets) {
-    await run('tar', ['-xf', opts.archive, '-C', assetDir, 'repos'], { maxBuffer: 16 * 1024 * 1024 })
-      .catch(() => log('no repos assets in this archive — cloning without local-only history'))
+    const listed = await run('tar', ['-tf', opts.archive, 'repos'], { maxBuffer: 16 * 1024 * 1024 })
+      .then(() => true).catch(() => false)
+    if (!listed) {
+      log('this archive carries no repos assets — cloning without local-only history')
+    } else {
+      try {
+        await run('tar', ['-xf', opts.archive, '-C', assetDir, 'repos'], { maxBuffer: 16 * 1024 * 1024 })
+      } catch (e) {
+        // The assets ARE in the archive and could not be extracted. Cloning on would silently
+        // rebuild every repository without the unpushed work this phase exists to restore.
+        await rm(assetDir, { recursive: true, force: true }).catch(() => {})
+        return {
+          attempted: 0, succeeded: 0, skipped: [],
+          failures: [{ key: '(repos assets)', reason: `could not extract them: ${e instanceof Error ? e.message : String(e)}` }],
+        }
+      }
+    }
   }
 
   const steps = planRepos(entries, state, p => existsSync(p), opts.homeDir, assetDir)

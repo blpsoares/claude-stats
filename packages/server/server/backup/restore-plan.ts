@@ -57,7 +57,7 @@ export interface RepoStep {
   mainPath: string
   state: RepoStepState
   /** Why it is skipped, or why it was not attempted. */
-  reason?: RepoNote | 'destination-exists'
+  reason?: RepoNote | 'destination-exists' | 'skipped-earlier'
   /** The reason recorded by a previous failed attempt, so the report can say what went wrong. */
   previousFailure?: string
   /** What RUNS — structured argv, never joined. */
@@ -88,7 +88,15 @@ export function planRepos(
 
     if (prior?.state === 'done') return { ...base, state: 'done', argv: [], commands: [] }
     if (prior?.state === 'skipped') {
-      return { ...base, state: 'skipped', reason: e.note ?? undefined, argv: [], commands: [] }
+      // A repo skipped on an earlier run stays skipped, but the REASON may no longer apply (it was
+      // `gone` and the directory is back). Say which it is rather than printing `undefined`.
+      return {
+        ...base,
+        state: 'skipped',
+        reason: e.note ?? 'skipped-earlier',
+        argv: [],
+        commands: [],
+      }
     }
 
     // `too-large` is a real, cloneable repository; every other note means there is nothing to clone.
