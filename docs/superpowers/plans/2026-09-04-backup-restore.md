@@ -1182,8 +1182,17 @@ export interface RepoWorktree {
 
 export interface RepoDirty {
   path: string
-  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when the tree was clean. */
+  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when there is no patch. */
   patch: string | null
+  /**
+   * Set when the tree IS dirty and its diff could not be captured — too large for the buffer, too
+   * slow for the timeout, or git refused. Carries the reason, and the restore prints it.
+   *
+   * This field exists because the alternative is the worst failure this module can have: a `patch`
+   * of `null` used to mean both "clean" and "we could not look", so a working tree full of
+   * uncommitted work was silently backed up as though it had none.
+   */
+  patchUnavailable?: string
   /**
    * Untracked file names — a LIST, never the contents.
    *
@@ -2251,13 +2260,50 @@ test('a bundle over the ceiling reports too-large and leaves no file behind', as
   expect(() => statSync(out)).toThrow()
 })
 
-test('a clean tree yields no patch; a dirty one yields the diff', async () => {
-  expect(await capturePatch(repo)).toBeNull()
+// `empty` means "every local commit is already on the remote" — a happy answer. A real failure
+// wearing that answer tells the user their unpushed work was checked and found safe.
+test('a bundle that genuinely FAILS is not reported as empty', async () => {
+  const res = await createBundle(repo, '/proc/definitely/not/writable.bundle', {
+    full: true, maxBytes: 100_000_000,
+  })
+  expect(res).toBe('failed')
+})
+
+test('a clean tree says clean; a dirty one carries the diff', async () => {
+  expect(await capturePatch(repo)).toEqual({ kind: 'clean' })
   writeFileSync(join(repo, 'a.txt'), 'two\n')
-  const patch = await capturePatch(repo)
-  expect(patch).toContain('-one')
-  expect(patch).toContain('+two')
+  const res = await capturePatch(repo)
+  expect(res.kind).toBe('patch')
+  if (res.kind === 'patch') {
+    expect(res.text).toContain('-one')
+    expect(res.text).toContain('+two')
+  }
   git(repo, 'checkout', '--', 'a.txt')
+})
+
+// The failure this module exists to prevent, arriving in the reassuring direction: a tree we could
+// not read must never be reported with the same value as a tree that had nothing in it.
+test('a tree that cannot be read is `unavailable`, never `clean`', async () => {
+  const res = await capturePatch(join(root, 'not-a-repo-at-all'))
+  expect(res.kind).toBe('unavailable')
+  if (res.kind === 'unavailable') expect(res.reason.length).toBeGreaterThan(0)
+})
+
+// Measured: GIT_COMMON_DIR alone, with no GIT_DIR set, redirects `rev-parse --git-common-dir` —
+// the ONE fact groupRepos keys on. A backup run from inside a git hook inherits variables like it.
+test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
+  const other = join(root, 'other')
+  mkdirSync(other)
+  git(other, 'init', '-q', '-b', 'main')
+  const saved = process.env.GIT_COMMON_DIR
+  process.env.GIT_COMMON_DIR = join(other, '.git')
+  try {
+    const f = await probeDir(repo)
+    expect(f.commonDir).toBe(join(repo, '.git'))
+  } finally {
+    if (saved === undefined) delete process.env.GIT_COMMON_DIR
+    else process.env.GIT_COMMON_DIR = saved
+  }
 })
 
 test('untracked files are listed, and ignored ones are not', async () => {
@@ -2319,7 +2365,7 @@ Create `packages/server/server/backup/repo-probe.ts`:
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { unlink } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, statSync } from 'fs'
 import { isAbsolute, resolve } from 'path'
 import { normalizeGitRemote } from '@agentistics/core'
 import { createLimiter } from '../utils'
@@ -2327,16 +2373,52 @@ import type { DirFacts } from './repo-manifest'
 
 const run = promisify(execFile)
 
-/** Never let git prompt. A credential prompt inside a backup hangs the whole run. */
-const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
+/**
+ * The environment every git child gets.
+ *
+ * Two jobs. It never lets git PROMPT — a credential prompt inside a backup hangs the whole run.
+ * And it REMOVES the variables that would make `-C` a lie.
+ *
+ * `git -C <path>` does NOT override an inherited `GIT_DIR`, and a hook is exactly where one is
+ * inherited: git fires `pre-commit` with `GIT_DIR`, `GIT_INDEX_FILE` and `GIT_PREFIX` exported, so
+ * a backup invoked from a hook would probe every directory against the HOOK's repository.
+ * `GIT_COMMON_DIR` is in the list for a sharper reason — measured: on its own, with no `GIT_DIR`
+ * set, it silently redirects `rev-parse --git-common-dir`, which is the ONE fact `groupRepos` keys
+ * on. (`GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES` were measured too and
+ * do not redirect it; they are left alone rather than cargo-culted into the list.)
+ */
+const GIT_ENV: NodeJS.ProcessEnv = (() => {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  return env
+})()
 
-async function git(cwd: string, args: string[], timeout = 10_000): Promise<string | null> {
+export type GitResult =
+  | { ok: true; stdout: string }
+  | { ok: false; reason: string }
+
+/**
+ * Run git and say what happened.
+ *
+ * The distinction this returns is the whole point. Folding a FAILURE into the same value as a
+ * SUCCESS WITH EMPTY OUTPUT is how `createBundle` came to report a permission error as "everything
+ * is already pushed" and `capturePatch` came to report a 200 MB dirty tree as clean. Both are
+ * silent, and both are silent in the reassuring direction.
+ */
+async function gitRun(cwd: string, args: string[], timeout = 10_000): Promise<GitResult> {
   try {
     const { stdout } = await run('git', ['-C', cwd, ...args], { env: GIT_ENV, timeout, maxBuffer: 64 * 1024 * 1024 })
-    return stdout.trim()
-  } catch {
-    return null
+    return { ok: true, stdout: stdout.trim() }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { ok: false, reason: msg.split('\n').slice(0, 2).join(' ').slice(0, 200) }
   }
+}
+
+/** For the probes where a failure legitimately means "git has no answer about this directory". */
+async function git(cwd: string, args: string[], timeout = 10_000): Promise<string | null> {
+  const r = await gitRun(cwd, args, timeout)
+  return r.ok ? r.stdout : null
 }
 
 export async function probeDir(path: string): Promise<DirFacts> {
@@ -2393,14 +2475,19 @@ export async function createBundle(
     ? ['bundle', 'create', out, '--all']
     : ['bundle', 'create', out, '--all', '--not', '--remotes']
 
-  const ok = await git(mainDir, args, 120_000)
-  if (ok === null) {
-    // `git bundle` refuses an empty ref set with a non-zero exit. That is not a failure: it means
-    // every local commit is already on the remote, which is the common and happy case.
+  const res = await gitRun(mainDir, args, 120_000)
+  if (!res.ok) {
     await unlink(out).catch(() => {})
-    return 'empty'
+    // `git bundle` refuses an EMPTY ref set with a non-zero exit and a specific message. That case
+    // is not a failure — it means every local commit is already on the remote, the common and happy
+    // case. Everything else (a permission error, a full disk, a 120s timeout on a huge repository)
+    // is a REAL failure and must be reported as one.
+    //
+    // The match errs toward `failed`: an unrecognised message becomes `failed`, which costs the
+    // user one visible line naming the repository. The opposite mistake — a real failure reported
+    // as `empty` — tells them their unpushed work was checked and found to be already safe.
+    return /empty bundle/i.test(res.reason) ? 'empty' : 'failed'
   }
-  const { statSync } = await import('fs')
   let size = 0
   try { size = statSync(out).size } catch { return 'failed' }
   if (size === 0) { await unlink(out).catch(() => {}); return 'empty' }
@@ -2408,10 +2495,34 @@ export async function createBundle(
   return 'written'
 }
 
-/** The working tree's diff against HEAD, staged and unstaged together, or null when clean. */
-export async function capturePatch(dir: string): Promise<string | null> {
-  const patch = await git(dir, ['diff', 'HEAD', '--binary'], 30_000)
-  return patch ? patch + '\n' : null
+export type PatchResult =
+  | { kind: 'clean' }
+  | { kind: 'patch'; text: string }
+  | { kind: 'unavailable'; reason: string }
+
+/**
+ * The working tree's uncommitted state.
+ *
+ * Asked in TWO steps on purpose. `git status --porcelain` is cheap and bounded, and it answers
+ * "is this tree dirty" — a question that must be answered even when the diff itself cannot be
+ * produced. Only then is the diff taken, which is the part that can exceed a 64 MB buffer or a 30s
+ * timeout on a tree with large modified assets.
+ *
+ * One step would fold those together: an oversized diff came back as an error, an error came back
+ * as `null`, and `null` also meant clean — so a working tree full of uncommitted work was backed up
+ * as though it had none. That is the exact loss this whole module exists to prevent, arriving
+ * silently and in the reassuring direction.
+ */
+export async function capturePatch(dir: string): Promise<PatchResult> {
+  const status = await gitRun(dir, ['status', '--porcelain'], 15_000)
+  if (!status.ok) return { kind: 'unavailable', reason: `git status failed: ${status.reason}` }
+  if (!status.stdout) return { kind: 'clean' }
+
+  const diff = await gitRun(dir, ['diff', 'HEAD', '--binary'], 30_000)
+  if (!diff.ok) return { kind: 'unavailable', reason: `git diff failed: ${diff.reason}` }
+  // Dirty per status but an empty diff means the changes are all untracked files, which travel as
+  // a LIST rather than as content — `listUntracked` reports them and there is no patch to write.
+  return diff.stdout ? { kind: 'patch', text: diff.stdout + '\n' } : { kind: 'clean' }
 }
 
 /** Untracked, not-ignored files, relative to the repository root. */
@@ -3216,10 +3327,14 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
     await writeRestoreState(state)
   }
 
-  // Untracked files were never carried (see RepoDirty). Name them, so "not restored" is a fact the
-  // user reads rather than a silence they discover.
+  // Untracked files were never carried, and a diff we could not capture was never carried either
+  // (see RepoDirty). Name both, so "not restored" is a fact the user reads rather than a silence
+  // they discover.
   for (const e of entries) {
     for (const d of e.dirty) {
+      if (d.patchUnavailable) {
+        log(`note ${e.key}: ${d.path} had uncommitted changes that could NOT be captured — ${d.patchUnavailable}`)
+      }
       if (d.untracked.length) {
         log(`note ${e.key}: ${d.untracked.length} untracked file(s) in ${d.path} were listed, not carried:`)
         for (const u of d.untracked.slice(0, 20)) log(`       ${u}`)
@@ -3568,16 +3683,23 @@ async function buildRepoManifest(
       const abs = expandHome(dir, HOME_DIR)
       const patch = await capturePatch(abs)
       const untracked = await listUntracked(abs)
-      if (!patch && !untracked.length) continue
+      if (patch.kind === 'clean' && !untracked.length) continue
+
+      // A tree we could not read is RECORDED as unread, never as clean. The restore prints it.
+      if (patch.kind === 'unavailable') {
+        log(`  ${e.key}: ${dir} is dirty but its diff could not be captured — ${patch.reason}`)
+        e.dirty.push({ path: dir, patch: null, untracked, patchUnavailable: patch.reason })
+        continue
+      }
 
       let patchRel: string | null = null
-      if (patch) {
+      if (patch.kind === 'patch') {
         // One patch per WORKING TREE, not per repo: a checkout and each of its worktrees are
         // different trees with different uncommitted work, and one file per repo would have them
         // overwrite each other.
         const dirSlug = dir.replace(/[^A-Za-z0-9._-]/g, '_')
         patchRel = `repos/${safe}__${dirSlug}.patch`
-        await writeFile(join(stageRoot, patchRel), patch)
+        await writeFile(join(stageRoot, patchRel), patch.text)
       }
       // `untracked` is a LIST of names and never the contents — see RepoDirty in repo-manifest.ts.
       e.dirty.push({ path: dir, patch: patchRel, untracked })
