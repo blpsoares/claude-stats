@@ -418,6 +418,12 @@ export interface CliStrings {
   stateNetUnreachable: string
   stateOk: string
   neverSynced: string
+
+  // `agentop backup` / `agentop restore` — see backup/daemon.ts and cli-backup.ts
+  backupScheduleOff: string
+  backupScheduleNoServer: string
+  backupSecretsOmitted: string
+  backupNoneOnDisk: string
 }
 
 const EN: CliStrings = {
@@ -707,6 +713,11 @@ const EN: CliStrings = {
   stateNetUnreachable: 'central unreachable',
   stateOk: 'ok',
   neverSynced: 'never',
+
+  backupScheduleOff: 'schedule: off',
+  backupScheduleNoServer: 'schedule: inactive — the server is not running, so nothing will fire',
+  backupSecretsOmitted: 'These were NOT in the backup. Re-establish each:',
+  backupNoneOnDisk: 'last backup: none (no recorded backup whose file is still on disk)',
 }
 
 const PT: CliStrings = {
@@ -990,6 +1001,11 @@ const PT: CliStrings = {
   stateNetUnreachable: 'central inacessível',
   stateOk: 'ok',
   neverSynced: 'nunca',
+
+  backupScheduleOff: 'agenda: desligada',
+  backupScheduleNoServer: 'agenda: inativa — o servidor não está rodando, então nada vai disparar',
+  backupSecretsOmitted: 'Estes NÃO estavam no backup. Restabeleça cada um:',
+  backupNoneOnDisk: 'último backup: nenhum (nenhum registro cujo arquivo ainda esteja no disco)',
 }
 
 const TABLE: Record<CliLang, CliStrings> = { en: EN, pt: PT }
