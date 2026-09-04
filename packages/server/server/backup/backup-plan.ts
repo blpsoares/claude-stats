@@ -63,7 +63,7 @@ export interface ExcludeRule {
  * puts a key in a tarball. An empty array is a legitimate entry and means "this harness stores no
  * credential under its own directory"; it is a claim, so state the evidence in a comment.
  */
-const HARNESS_SECRETS: Record<HarnessId, ExcludeRule[]> = {
+export const HARNESS_SECRETS: Record<HarnessId, ExcludeRule[]> = {
   claude: [
     {
       pattern: '.claude/.credentials.json', match: 'prefix', reason: 'secret',

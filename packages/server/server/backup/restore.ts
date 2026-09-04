@@ -33,7 +33,7 @@ import { decodeManifest, MANIFEST_NAME, type BackupManifest, type DecodedManifes
 import { expandHome } from './repo-manifest'
 import { gitEnv } from './repo-probe'
 import {
-  emptyRestoreState, planMetrics, planRepos, remaining, rewriteHome,
+  emptyRestoreState, mergePreferences, planMetrics, planRepos, remaining, rewriteHome,
   type RepoStep, type RestoreState, type StagedFile,
 } from './restore-plan'
 
@@ -89,29 +89,48 @@ export async function verifyArchive(archive: string, manifest: BackupManifest): 
     return { ok: false, reason: `archive is unreadable or truncated: ${e instanceof Error ? e.message : String(e)}` }
   }
   const entries = listing.split('\n').filter(l => l.trim() && !l.endsWith('/'))
-  const expected = (manifest.groups[0]?.files ?? 0) + 1   // + the manifest itself
+  const expected = (manifest.groups[0]?.files.length ?? 0) + 1   // + the manifest itself
   if (entries.length < expected) {
     return { ok: false, reason: `archive holds ${entries.length} entries, the manifest recorded ${expected}` }
   }
   return { ok: true }
 }
 
+export type StagedVerdict =
+  | { ok: true; drifted: string[] }
+  | { ok: false; reason: string }
+
 /**
- * The second half of verification, run against the STAGED files once they are extracted: the
- * manifest's digest is over `path:bytes`, so it catches an archive whose contents were changed
- * while its entry count stayed the same. Kept separate from `verifyArchive` because it needs the
- * extraction to have happened, and a mismatch there still aborts before anything is merged.
+ * The second half of verification, run against the STAGED files once they are extracted.
+ *
+ * The digest was never content integrity — it is `path:bytes`, so an edited file of the same size
+ * already passed it. Its real job is catching a REBUILT or TRUNCATED archive, so this checks the
+ * SET (every path the manifest recorded is present, and nothing unexpected is), and merely REPORTS
+ * a size that drifted rather than refusing on it. A backup is taken on a LIVE machine: the running
+ * server rewrites session documents and every open assistant appends to its transcript between the
+ * walk and the moment tar reads the file, so a few bytes of drift is expected, not corruption. It
+ * used to refuse on any size mismatch, which made a perfectly restorable archive unopenable on a
+ * machine that no longer existed to produce a byte-identical copy.
  */
 export function verifyStaged(
   staged: { rel: string; bytes: number }[], manifest: BackupManifest,
-): VerifyResult {
-  const expected = manifest.groups[0]?.sha256 ?? ''
-  if (!expected) return { ok: true }   // an older manifest carried no digest
-  const lines = staged.map(f => `${f.rel}:${f.bytes}`).sort().join('\n')
-  const actual = createHash('sha256').update(lines).digest('hex')
-  return actual === expected
-    ? { ok: true }
-    : { ok: false, reason: 'the archive contents do not match the manifest digest' }
+): StagedVerdict {
+  const expected = Array.isArray(manifest.groups[0]?.files) ? manifest.groups[0]!.files : []
+  const expectedByRel = new Map(expected.map(f => [f.rel, f.bytes]))
+  const stagedRels = new Set(staged.map(f => f.rel))
+
+  const missing = expected.filter(f => !stagedRels.has(f.rel))
+  const extra = staged.filter(f => !expectedByRel.has(f.rel))
+  if (missing.length || extra.length) {
+    return {
+      ok: false,
+      reason: `the archive contents do not match the manifest — ${missing.length} file(s) missing, `
+        + `${extra.length} unexpected`,
+    }
+  }
+
+  const drifted = staged.filter(f => expectedByRel.get(f.rel) !== f.bytes).map(f => f.rel)
+  return { ok: true, drifted }
 }
 
 export async function sha256Of(path: string): Promise<string> {
@@ -174,10 +193,15 @@ export async function restoreMetrics(opts: RestoreMetricsOptions): Promise<Resto
 
     const staged = await walkStaged(staging)
 
-    // The digest check happens HERE, after extraction and before the merge — it needs the files,
-    // and a mismatch must still stop everything before a single byte is written into $HOME.
+    // The set check happens HERE, after extraction and before the merge — it needs the files, and a
+    // MISSING or EXTRA path must still stop everything before a single byte is written into $HOME. A
+    // size that merely drifted is reported, not refused — see `verifyStaged`.
     const digest = verifyStaged(staged, manifest)
     if (!digest.ok) return { ok: false, reason: digest.reason }
+    if (digest.drifted.length) {
+      log(`${digest.drifted.length} file(s) changed size between the walk and the archive — restored as archived:`)
+      for (const d of digest.drifted.slice(0, 10)) log(`  ${d}`)
+    }
 
     const localMtime = new Map<string, number>()
     for (const f of staged) {
@@ -195,6 +219,29 @@ export async function restoreMetrics(opts: RestoreMetricsOptions): Promise<Resto
         log(`skip ${a.rel} — the local copy is newer`)
         continue
       }
+
+      if (a.kind === 'merge') {
+        // preferences.json is the one file the tool writes for ITSELF, so on the realistic flow —
+        // set up the new machine, then restore — the local copy is always newer and newer-wins
+        // would drop it. Union instead: keys the local file does not have are taken from the
+        // backup, keys it has are kept, and `team` is never merged in either direction (its tokens
+        // travelled redacted out — see mergePreferences).
+        const to = join(opts.homeDir, a.rel)
+        await mkdir(dirname(to), { recursive: true })
+        const rawArchived = await readFile(join(staging, a.rel), 'utf8')
+        const archivedText = manifest.homeDir !== opts.homeDir
+          ? rewriteHome(rawArchived, manifest.homeDir, opts.homeDir)
+          : rawArchived
+        const localText = await readFile(to, 'utf8').catch(() => '{}')
+        const { text, tookFromBackup } = mergePreferences(localText, archivedText)
+        await writeFile(to, text)
+        log(tookFromBackup.length
+          ? `merged ${a.rel} — kept every local key, took from the backup: ${tookFromBackup.join(', ')}`
+          : `merged ${a.rel} — the local copy already had every key`)
+        written++
+        continue
+      }
+
       const from = join(staging, a.rel)
       const to = join(opts.homeDir, a.redirectTo ?? a.rel)
       await mkdir(dirname(to), { recursive: true })
@@ -349,11 +396,15 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
  *
  * It walks `step.argv` — structured, never a split string — so a path containing a space survives,
  * and no shell is involved at any point. `step.commands` is the same plan joined, and exists only
- * to be printed.
+ * to be printed. A step marked `optional` (the bundle's upstream re-link, its placeholder-branch
+ * cleanup) is LOGGED and stepped over on failure rather than abandoning the repository — losing
+ * every remaining worktree and uncommitted patch over one tracking link that legitimately has no
+ * matching remote branch would cost far more than the thing that failed.
  */
 async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => void): Promise<string | null> {
   for (let i = 0; i < step.argv.length; i++) {
-    const [bin, ...args] = step.argv[i]!
+    const { argv, optional } = step.argv[i]!
+    const [bin, ...args] = argv
     if (!bin) continue
     try {
       log(`  ${step.commands[i] ?? bin}`)
@@ -369,7 +420,12 @@ async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => voi
       })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      return msg.split('\n').slice(0, 3).join(' ').slice(0, 300)
+      const reason = msg.split('\n').slice(0, 3).join(' ').slice(0, 300)
+      if (optional) {
+        log(`  (optional step failed, continuing: ${reason})`)
+        continue
+      }
+      return reason
     }
   }
   return null

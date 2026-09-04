@@ -2,16 +2,20 @@ import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { execFileSync } from 'child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, chmodSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { archiverFor, runBackup, walkSources } from './backup'
 import { decodeManifest, MANIFEST_NAME } from './manifest'
 
 let home = ''
 let dest = ''
+// `recordBackup` defaults to the real `~/.agentistics/backups.jsonl` — every `runBackup` call below
+// passes this instead, so running the suite never appends to the operator's own backup history.
+let records = ''
 
 beforeAll(() => {
   home = mkdtempSync(join(tmpdir(), 'agentistics-home-'))
   dest = mkdtempSync(join(tmpdir(), 'agentistics-dest-'))
+  records = join(mkdtempSync(join(tmpdir(), 'agentistics-records-')), 'backups.jsonl')
   mkdirSync(join(home, '.agentistics/sessions/claude'), { recursive: true })
   mkdirSync(join(home, '.claude'), { recursive: true })
   writeFileSync(join(home, '.agentistics/sessions/claude/a.json'), '{"session_id":"a","project_path":"/x"}')
@@ -28,6 +32,7 @@ beforeAll(() => {
 afterAll(() => {
   rmSync(home, { recursive: true, force: true })
   rmSync(dest, { recursive: true, force: true })
+  rmSync(dirname(records), { recursive: true, force: true })
 })
 
 test('the walk sizes real files and attributes them to a layer and a harness', async () => {
@@ -109,7 +114,7 @@ test('a symlink is not followed, and is reported rather than dropped', async () 
 test('a backup writes an archive, records a real size, and no credential is inside', async () => {
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics', 'raw'], harnesses: ['claude'],
-    repos: [], agentopVersion: 'test', hostname: 'box',
+    repos: [], agentopVersion: 'test', hostname: 'box', recordFile: records,
   })
   expect(r.ok).toBe(true)
   if (!r.ok) return
@@ -138,7 +143,7 @@ test('a backup with a symlink in sources returns skipped and records the count',
   try {
     const r = await runBackup({
       homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-      repos: [], agentopVersion: 'test', hostname: 'box',
+      repos: [], agentopVersion: 'test', hostname: 'box', recordFile: records,
     })
     expect(r.ok).toBe(true)
     if (!r.ok) return
@@ -161,7 +166,7 @@ test('the repos assets travel inside the archive, under their archive-relative n
 
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
-    repos: [], assetRoot, agentopVersion: 'test', hostname: 'box',
+    repos: [], assetRoot, agentopVersion: 'test', hostname: 'box', recordFile: records,
   })
   expect(r.ok).toBe(true)
   if (!r.ok) return
@@ -184,7 +189,7 @@ test('the repos assets travel inside the archive, under their archive-relative n
 test('runBackup always carries the redacted preferences, with no caller cooperation', async () => {
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-    repos: [], agentopVersion: 'test', hostname: 'box',   // no assetRoot, no staged anything
+    repos: [], agentopVersion: 'test', hostname: 'box', recordFile: records,   // no assetRoot, no staged anything
   })
   expect(r.ok).toBe(true)
   if (!r.ok) return
@@ -197,7 +202,7 @@ test('runBackup always carries the redacted preferences, with no caller cooperat
 test('an absent assetRoot is not an error — a metrics-only backup has no assets', async () => {
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-    repos: [], agentopVersion: 'test', hostname: 'box',
+    repos: [], agentopVersion: 'test', hostname: 'box', recordFile: records,
   })
   expect(r.ok).toBe(true)
 })
@@ -205,7 +210,7 @@ test('an absent assetRoot is not an error — a metrics-only backup has no asset
 test('the manifest inside the archive round-trips and records the old $HOME', async () => {
   const r = await runBackup({
     homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-    repos: [], agentopVersion: 'test', hostname: 'box',
+    repos: [], agentopVersion: 'test', hostname: 'box', recordFile: records,
   })
   expect(r.ok).toBe(true)
   if (!r.ok) return

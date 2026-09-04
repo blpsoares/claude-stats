@@ -1,10 +1,11 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { execFileSync } from 'child_process'
+import { createHash } from 'crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, utimesSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { runBackup } from './backup'
-import { readManifestOf, restoreMetrics, restoreRepos, verifyArchive } from './restore'
+import { readManifestOf, restoreMetrics, restoreRepos, verifyArchive, verifyStaged } from './restore'
 import { createBundle } from './repo-probe'
 import type { BackupManifest } from './manifest'
 import type { RepoEntry } from './repo-manifest'
@@ -13,11 +14,15 @@ let oldHome = ''
 let newHome = ''
 let dest = ''
 let archive = ''
+// `recordBackup` defaults to the real `~/.agentistics/backups.jsonl` — every `runBackup` call in
+// this file passes this instead, so running the suite never appends to the operator's own history.
+let records = ''
 
 beforeAll(async () => {
   oldHome = mkdtempSync(join(tmpdir(), 'agentistics-old-'))
   newHome = mkdtempSync(join(tmpdir(), 'agentistics-new-'))
   dest = mkdtempSync(join(tmpdir(), 'agentistics-arch-'))
+  records = join(mkdtempSync(join(tmpdir(), 'agentistics-records-')), 'backups.jsonl')
   mkdirSync(join(oldHome, '.agentistics/sessions/claude'), { recursive: true })
   mkdirSync(join(oldHome, '.claude'), { recursive: true })
   writeFileSync(
@@ -27,14 +32,14 @@ beforeAll(async () => {
   writeFileSync(join(oldHome, '.claude/stats-cache.json'), '{"totalCostUSD":42}')
   const r = await runBackup({
     homeDir: oldHome, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
-    repos: [], agentopVersion: 'test', hostname: 'old',
+    repos: [], agentopVersion: 'test', hostname: 'old', recordFile: records,
   })
   if (!r.ok) throw new Error(r.reason)
   archive = r.record.path
 })
 
 afterAll(() => {
-  for (const d of [oldHome, newHome, dest]) rmSync(d, { recursive: true, force: true })
+  for (const d of [oldHome, newHome, dest, dirname(records)]) rmSync(d, { recursive: true, force: true })
 })
 
 test('the manifest is readable straight out of the archive', async () => {
@@ -98,6 +103,76 @@ test('a restore leaves no staging directory behind', async () => {
   expect(existsSync(join(newHome, '.agentistics/restore-staging'))).toBe(false)
 })
 
+// E3: the digest was never content integrity — it is `path:bytes`, so an edited file of the same
+// size already passed it. Its real job is catching a REBUILT or TRUNCATED archive: a MISSING or
+// EXTRA path still refuses, but a path whose size merely drifted between the walk and tar's read —
+// expected on a live machine, where the running server rewrites session documents — is now REPORTED
+// rather than refused. It used to refuse on any digest mismatch, which made a perfectly restorable
+// archive unopenable on a machine that no longer existed to reproduce a byte-identical copy.
+test('a file that drifted in size is reported, not refused — only a missing or extra path refuses', () => {
+  const originalFiles = [{ rel: 'a.json', bytes: 100 }, { rel: 'b.json', bytes: 50 }]
+  // A real digest of the ORIGINAL (non-drifted) set — not an empty string — so this test actually
+  // discriminates: a reverted, hash-based `verifyStaged` would refuse here (the drifted set hashes
+  // differently), while the set-based one merely reports the drift.
+  const sha256 = createHash('sha256')
+    .update(originalFiles.map(f => `${f.rel}:${f.bytes}`).sort().join('\n')).digest('hex')
+  const manifest = {
+    groups: [{ name: 'files', bytes: 0, sha256, files: originalFiles }],
+  } as unknown as BackupManifest
+
+  const drifted = verifyStaged([{ rel: 'a.json', bytes: 105 }, { rel: 'b.json', bytes: 50 }], manifest)
+  expect(drifted.ok).toBe(true)
+  if (drifted.ok) expect(drifted.drifted).toEqual(['a.json'])
+
+  const missing = verifyStaged([{ rel: 'b.json', bytes: 50 }], manifest)
+  expect(missing.ok).toBe(false)
+
+  const extra = verifyStaged(
+    [{ rel: 'a.json', bytes: 100 }, { rel: 'b.json', bytes: 50 }, { rel: 'c.json', bytes: 1 }],
+    manifest,
+  )
+  expect(extra.ok).toBe(false)
+})
+
+// E4: on the realistic flow — reformat, install agentop, run setup, THEN restore — the local
+// preferences.json is minutes old, so newer-wins would ALWAYS drop the one file Wave B went to the
+// trouble of carrying redacted. Union instead: local keys win, and whatever the backup carried that
+// the local copy lacks arrives anyway. `team` never crosses in either direction.
+test('a newer local preferences.json still receives keys the backup carries and it lacks', async () => {
+  const srcHome = mkdtempSync(join(tmpdir(), 'agentistics-prefsrc-'))
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-prefdst-'))
+  try {
+    mkdirSync(join(srcHome, '.agentistics'), { recursive: true })
+    writeFileSync(join(srcHome, '.agentistics/preferences.json'), JSON.stringify({
+      lang: 'pt', backupOnlyKey: 'from-backup', team: { token: 'SHOULD-NEVER-ARRIVE' },
+    }))
+
+    const made = await runBackup({
+      homeDir: srcHome, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+      repos: [], agentopVersion: 'test', hostname: 'prefsrc', recordFile: records,
+    })
+    expect(made.ok).toBe(true)
+    if (!made.ok) return
+
+    mkdirSync(join(target, '.agentistics'), { recursive: true })
+    writeFileSync(join(target, '.agentistics/preferences.json'), JSON.stringify({ lang: 'en', localOnlyKey: 'kept' }))
+    const future = new Date(Date.now() + 60_000)
+    utimesSync(join(target, '.agentistics/preferences.json'), future, future)
+
+    const r = await restoreMetrics({ archive: made.record.path, homeDir: target })
+    expect(r.ok).toBe(true)
+
+    const merged = JSON.parse(readFileSync(join(target, '.agentistics/preferences.json'), 'utf8')) as Record<string, unknown>
+    expect(merged.lang).toBe('en')                    // local wins over the backup's copy
+    expect(merged.localOnlyKey).toBe('kept')          // local-only key survives
+    expect(merged.backupOnlyKey).toBe('from-backup')  // the union pulls in what local lacked
+    expect(merged.team).toBeUndefined()               // team is never merged from the backup
+  } finally {
+    rmSync(srcHome, { recursive: true, force: true })
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
 // The defect this test exists for: the manifest digest covered only the $HOME walk while the
 // staging walk covered the repos assets too, so a backup taken with the DEFAULT layers reported
 // itself corrupt on restore. Both halves had tests; this is the seam.
@@ -111,7 +186,7 @@ test('an archive carrying repos assets restores — the digest covers the same s
 
     const made = await runBackup({
       homeDir: oldHome, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
-      repos: [], assetRoot, agentopVersion: 'test', hostname: 'old',
+      repos: [], assetRoot, agentopVersion: 'test', hostname: 'old', recordFile: records,
     })
     expect(made.ok).toBe(true)
     if (!made.ok) return
@@ -280,7 +355,7 @@ test('a repository ahead of its remote comes back WITH its unpushed commit', asy
 
     const made = await runBackup({
       homeDir: oldHome, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
-      assetRoot: bundleDir, agentopVersion: 'test', hostname: 'old',
+      assetRoot: bundleDir, agentopVersion: 'test', hostname: 'old', recordFile: records,
       repos: [entry({ key: 'ahead', cloneUrl: origin, mainPath: '~/back', bundle: 'repos/ahead.bundle' })],
     })
     expect(made.ok).toBe(true)
@@ -295,6 +370,61 @@ test('a repository ahead of its remote comes back WITH its unpushed commit', asy
     expect(r.succeeded).toBe(1)
     // The whole promise of the repos layer, in one assertion.
     expect(readFileSync(join(target, 'back/b.txt'), 'utf8')).toBe('unpushed\n')
+
+    rmSync(bundleDir, { recursive: true, force: true })
+  } finally {
+    rmSync(target, { recursive: true, force: true })
+  }
+})
+
+// E2: `--set-upstream-to` legitimately fails when the restored branch has no matching name on the
+// remote — an unpushed branch created locally and never pushed under that name at all, exactly the
+// case a bundle exists for. That failure must not cost the checkout that already succeeded: the
+// repository still restores, with its content intact, and the failure is only ever LOGGED.
+test('an optional step failing (no matching remote branch) does not fail the repository', async () => {
+  const origin = makeOrigin(join(dest, 'origin-newbranch'))
+  const clone = join(dest, 'newbranch-work')
+  const target = mkdtempSync(join(tmpdir(), 'agentistics-optional-'))
+  try {
+    git(dest, 'clone', '-q', origin, clone)
+    git(clone, 'config', 'user.email', 't@t')
+    git(clone, 'config', 'user.name', 't')
+    git(clone, 'checkout', '-q', '-b', 'newbranch')
+    writeFileSync(join(clone, 'c.txt'), 'unpushed on a branch the remote never had\n')
+    git(clone, 'add', 'c.txt')
+    git(clone, 'commit', '-q', '-m', 'new branch, never pushed')
+
+    const bundleDir = mkdtempSync(join(tmpdir(), 'agentistics-b2-'))
+    mkdirSync(join(bundleDir, 'repos'), { recursive: true })
+    const res = await createBundle(clone, join(bundleDir, 'repos/newbranch.bundle'), {
+      full: false, maxBytes: 100_000_000,
+    })
+    expect(res).toBe('written')
+
+    const made = await runBackup({
+      homeDir: oldHome, destDir: dest, layers: ['metrics', 'repos'], harnesses: ['claude'],
+      assetRoot: bundleDir, agentopVersion: 'test', hostname: 'old', recordFile: records,
+      repos: [entry({
+        key: 'newbranch', cloneUrl: origin, mainPath: '~/nb', mainBranch: 'newbranch',
+        bundle: 'repos/newbranch.bundle',
+      })],
+    })
+    expect(made.ok).toBe(true)
+    if (!made.ok) return
+
+    const m = await readManifestOf(made.record.path)
+    expect(m.ok).toBe(true)
+    if (!m.ok) return
+
+    const lines: string[] = []
+    const r = await restoreRepos({
+      manifest: m.manifest, homeDir: target, archive: made.record.path, onLine: l => lines.push(l),
+    })
+    expect(r.failures).toEqual([])
+    expect(r.succeeded).toBe(1)
+    expect(readFileSync(join(target, 'nb/c.txt'), 'utf8')).toBe('unpushed on a branch the remote never had\n')
+    // The optional step really did fail — visible in the log, just never as a repository failure.
+    expect(lines.some(l => l.includes('optional step failed'))).toBe(true)
 
     rmSync(bundleDir, { recursive: true, force: true })
   } finally {

@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER } from '@agentistics/core'
-import { BACKUP_LAYERS, EXCLUDE_RULES, excludeFor, omittedSecrets, planSources } from './backup-plan'
+import { BACKUP_LAYERS, EXCLUDE_RULES, HARNESS_SECRETS, excludeFor, omittedSecrets, planSources } from './backup-plan'
 
 test('metrics is always planned, whatever the caller asked for', () => {
   const s = planSources({ layers: ['raw'], harnesses: ['claude'] })
@@ -57,12 +57,18 @@ test('every credential path is excluded, and names how to re-establish it', () =
 })
 
 // One credential per harness, so a harness added without a secrets decision fails here rather than
-// in someone's tarball. The Record makes the omission a compile error; this makes the WRONG path a
-// test failure.
+// in someone's tarball. The Record makes the omission a compile error; keying the probe off
+// `HARNESS_SECRETS[h]` — rather than the flattened `EXCLUDE_RULES`, which this loop used to read
+// without ever using `h` — is what makes a harness with an EMPTY array fail here BY NAME instead of
+// the loop silently passing on some other harness's rule.
 test('every harness has at least one credential rule, and each names how to re-establish it', () => {
   for (const h of HARNESS_ORDER) {
-    const rules = EXCLUDE_RULES.filter(r => r.reason === 'secret' && r.why.length > 0)
-    expect(rules.length).toBeGreaterThan(0)
+    const rules = HARNESS_SECRETS[h]
+    expect(rules.length, `${h} has no credential rule`).toBeGreaterThan(0)
+    for (const r of rules) {
+      expect(r.why.length, `${h}: ${r.pattern} has no explanation`).toBeGreaterThan(0)
+      expect(r.restoreWith ?? '', `${h}: ${r.pattern} has no restore command`).not.toBe('')
+    }
   }
   for (const [rel, harness] of [
     ['.claude/.credentials.json', 'claude'],

@@ -47,8 +47,11 @@ const HIJACKERS = [
   // Configuration: these inject config we did not read. `url.<base>.insteadOf` rewrites the remote
   // a clone actually fetches from, and the clone is the one argv here with no `-C` to anchor it.
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_COUNT',
-  // Transport.
-  'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND',
+  // Transport variables (GIT_SSH_COMMAND, GIT_PROXY_COMMAND) are deliberately NOT here. They reach
+  // the restore's `git clone`, and a user whose forge access needs a non-default identity or a
+  // ProxyJump would have every clone fail on the new machine, which is the moment they can least
+  // afford it. Anything that can set them in this process already has code execution as the user,
+  // and ~/.ssh/config does the same job unstrippably.
 ] as const
 
 /**

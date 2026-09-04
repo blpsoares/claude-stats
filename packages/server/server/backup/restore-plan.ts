@@ -18,11 +18,15 @@
  *     attempted again on the next run — that is what makes `agentop restore --repos` safe to run
  *     until it converges.
  */
-import { expandHome, restoreArgv, restoreCommands, type RepoEntry, type RepoNote } from './repo-manifest'
+import { expandHome, restoreArgv, restoreCommands, type RepoEntry, type RepoNote, type RestoreStep } from './repo-manifest'
 
 /** Where a restored `stats-cache.json` actually lands. Mirrors `ARCHIVE_STATS_DIR` in config.ts;
  *  this module stays pure, so the path is expressed $HOME-relative here. */
 export const STATS_REDIRECT = '.agentistics/archive/stats-cache/stats-cache.json'
+
+/** `preferences.json`'s $HOME-relative path. It gets its own `RestoreAction` kind (`merge`) rather
+ *  than the ordinary newer-wins rule — see `mergePreferences` below. */
+export const PREFERENCES_REL = '.agentistics/preferences.json'
 
 export interface StagedFile {
   rel: string
@@ -32,6 +36,8 @@ export interface StagedFile {
 export type RestoreAction =
   | { kind: 'write'; rel: string; redirectTo?: string }
   | { kind: 'skip'; rel: string; reason: 'newer-local' }
+  /** `preferences.json` only — see `mergePreferences`. */
+  | { kind: 'merge'; rel: string }
 
 /**
  * Which staged files to write. `localMtime` maps a $HOME-relative path to the local file's mtime;
@@ -42,12 +48,75 @@ export function planMetrics(staged: StagedFile[], localMtime: Map<string, number
     if (f.rel === '.claude/stats-cache.json') {
       return { kind: 'write', rel: f.rel, redirectTo: STATS_REDIRECT }
     }
+    // `preferences.json` is the one file the tool writes for ITSELF. On the realistic flow —
+    // reformat, install, run setup, THEN restore — the local copy is minutes old, so newer-wins
+    // would drop it every time, taking the billing timeline and the custom layouts Wave B went to
+    // the trouble of carrying redacted along with it. It always merges instead, whichever side is
+    // newer.
+    if (f.rel === PREFERENCES_REL) {
+      return { kind: 'merge', rel: f.rel }
+    }
     const local = localMtime.get(f.rel)
     if (local !== undefined && local > f.mtimeMs) {
       return { kind: 'skip', rel: f.rel, reason: 'newer-local' }
     }
     return { kind: 'write', rel: f.rel }
   })
+}
+
+export interface PreferencesMerge {
+  text: string
+  /** Top-level keys the local file did not have, taken from the backup. For the report. */
+  tookFromBackup: string[]
+}
+
+function safeParseObject(text: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(text) as unknown
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Union `preferences.json`: local keys win, keys the local file does not have are taken from the
+ * backup.
+ *
+ * Newer-wins — the rule for every other staged file — is wrong here specifically. It is right when
+ * two copies of the SAME kind of document might each hold updates the other lacks (a session
+ * document, say); `preferences.json` is different because the tool overwrites it on every boot, so
+ * on the realistic restore flow the local copy is ALWAYS newer and newer-wins would ALWAYS discard
+ * the backup's copy — never a rare case, always the outcome. Union means nothing local is
+ * overwritten and nothing the backup carried is silently lost.
+ *
+ * `team` is never merged, in either direction. Its tokens were stripped before the file traveled
+ * (`stageRedactedFiles`), and a half-`team` block landing on an already-configured machine — or
+ * overwriting a teamless one with a stub that still can't authenticate — is worse than leaving the
+ * local file's own team state exactly as it is.
+ */
+export function mergePreferences(localText: string, archivedText: string): PreferencesMerge {
+  const archived = safeParseObject(archivedText)
+  if (!archived) return { text: localText, tookFromBackup: [] }
+
+  const local = safeParseObject(localText)
+  if (!local) {
+    // Nothing local worth preserving — an unparseable local file cannot be merged INTO, so the
+    // archived copy replaces it wholesale, still minus `team`.
+    const { team: _team, ...rest } = archived
+    return { text: JSON.stringify(rest, null, 2), tookFromBackup: Object.keys(rest) }
+  }
+
+  const tookFromBackup: string[] = []
+  const merged: Record<string, unknown> = { ...local }
+  for (const key of Object.keys(archived)) {
+    if (key === 'team') continue
+    if (!(key in local)) {
+      merged[key] = archived[key]
+      tookFromBackup.push(key)
+    }
+  }
+  return { text: JSON.stringify(merged, null, 2), tookFromBackup }
 }
 
 export type RepoStepState = 'pending' | 'done' | 'skipped' | 'half-restored'
@@ -60,8 +129,8 @@ export interface RepoStep {
   reason?: RepoNote | 'destination-exists' | 'skipped-earlier' | 'half-restored'
   /** The reason recorded by a previous failed attempt, so the report can say what went wrong. */
   previousFailure?: string
-  /** What RUNS — structured argv, never joined. */
-  argv: string[][]
+  /** What RUNS — structured argv, never joined. Some steps are `optional` — see `RestoreStep`. */
+  argv: RestoreStep[]
   /** What PRINTS — the same plan, joined. */
   commands: string[]
 }

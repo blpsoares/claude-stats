@@ -233,6 +233,33 @@ function bare(f: DirFacts, homeDir: string, note: RepoNote): RepoEntry {
 }
 
 /**
+ * With a bundle, the clone must not leave any branch checked out under the name the bundle needs
+ * to write. Git's refusal is keyed on what HEAD symbolically points at — verified against real
+ * git: `--no-checkout` alone changes nothing, because `clone` still attaches HEAD to a local
+ * branch even when it skips populating the working tree, and a freshly `git init`-ed repo with no
+ * commits at all is refused the same way, on its still-unborn default branch. The only thing that
+ * actually clears the refusal is moving HEAD off the name the fetch needs. `branch -m
+ * <placeholder>` with a single argument renames whatever is CURRENTLY checked out — so the
+ * original name never has to be known in advance — without touching the commit it points at, and
+ * HEAD follows the rename. That vacates the original name for the forced refspec to rewrite, and
+ * keeps the pre-fetch content reachable under the placeholder for the no-branch-known case below.
+ *
+ * Exported so the rename step and the delete step at the end of `restoreArgv` cannot drift apart.
+ */
+export const PLACEHOLDER_BRANCH = 'agentistics-restore-placeholder'
+
+export interface RestoreStep {
+  argv: string[]
+  /**
+   * True when this step's failure must not abort the rest of the repository. `--set-upstream-to`
+   * legitimately fails on a branch with no matching remote branch, and a repository's worktrees and
+   * uncommitted patches are worth far more than one tracking link — `runSteps` logs an optional
+   * failure and carries on instead of abandoning everything after it.
+   */
+  optional?: boolean
+}
+
+/**
  * The exact commands that rebuild this entry under `homeDir`.
  *
  * Empty for every note except `too-large`, which is a real, cloneable repository whose local-only
@@ -240,7 +267,7 @@ function bare(f: DirFacts, homeDir: string, note: RepoNote): RepoEntry {
  * commands rather than running them is what lets `agentop restore` print the plan before touching
  * anything.
  */
-export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): string[][] {
+export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): RestoreStep[] {
   if (entry.note && entry.note !== 'too-large') return []
   if (!entry.cloneUrl) return []
 
@@ -249,48 +276,59 @@ export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): s
   // the archive was extracted, so the caller passes that directory; the plan printed BEFORE
   // extraction passes nothing and shows the archive-relative path, which is what a reader wants.
   const asset = (rel: string): string => (assetDir ? `${assetDir}/${rel}` : rel)
+  const step = (argv: string[], optional = false): RestoreStep => ({ argv, optional })
 
-  // With a bundle, the clone must not leave any branch checked out under the name the bundle needs
-  // to write. Git's refusal is keyed on what HEAD symbolically points at — verified against real
-  // git: `--no-checkout` alone changes nothing, because `clone` still attaches HEAD to a local
-  // branch even when it skips populating the working tree, and a freshly `git init`-ed repo with no
-  // commits at all is refused the same way, on its still-unborn default branch. The only thing that
-  // actually clears the refusal is moving HEAD off the name the fetch needs. `branch -m
-  // <placeholder>` with a single argument renames whatever is CURRENTLY checked out — so the
-  // original name never has to be known in advance — without touching the commit it points at, and
-  // HEAD follows the rename. That vacates the original name for the forced refspec to rewrite, and
-  // keeps the pre-fetch content reachable under the placeholder for the no-branch-known case below.
-  const RESTORE_PLACEHOLDER_BRANCH = 'agentistics-restore-placeholder'
-  const out: string[][] = entry.bundle
+  const out: RestoreStep[] = entry.bundle
     ? [
-        ['git', 'clone', '--no-checkout', entry.cloneUrl, main],
-        ['git', '-C', main, 'branch', '-m', RESTORE_PLACEHOLDER_BRANCH],
-        ['git', '-C', main, 'fetch', asset(entry.bundle), '+refs/heads/*:refs/heads/*'],
+        step(['git', 'clone', '--no-checkout', entry.cloneUrl, main]),
+        step(['git', '-C', main, 'branch', '-m', PLACEHOLDER_BRANCH]),
+        step(['git', '-C', main, 'fetch', asset(entry.bundle), '+refs/heads/*:refs/heads/*']),
       ]
-    : [['git', 'clone', entry.cloneUrl, main]]
+    : [step(['git', 'clone', entry.cloneUrl, main])]
 
   if (entry.mainBranch) {
-    out.push(['git', '-C', main, 'checkout', entry.mainBranch])
+    out.push(step(['git', '-C', main, 'checkout', entry.mainBranch]))
+    if (entry.bundle) {
+      // `branch -m` above carried the tracking config to the placeholder, and the bundle fetch then
+      // created `refs/heads/<mainBranch>` with none — so a restored repo with unpushed commits (the
+      // only kind that gets a bundle) answered `git pull`/`git push` with "no tracking information" /
+      // "no upstream branch". Re-establish it here; it legitimately fails on a branch with no
+      // matching remote branch, so it must not cost the worktrees and patches that follow.
+      out.push(step(
+        ['git', '-C', main, 'branch', '--set-upstream-to', `origin/${entry.mainBranch}`, entry.mainBranch],
+        true,
+      ))
+    }
   } else if (entry.bundle) {
     // The main checkout was never probed, so its branch is unknown — but `--no-checkout` left the
-    // working tree empty and something has to materialise it. The rename above kept the clone's own
-    // default branch reachable as the CURRENT branch, just under the placeholder name, so a plain
-    // reset fills the tree from it without inventing the real name.
-    out.push(['git', '-C', main, 'reset', '--hard'])
+    // working tree empty and something has to materialise it. A plain `reset --hard` here left the
+    // checkout ON the placeholder branch, with the pushed tip in the working tree while the actual
+    // unpushed work sat unreachable in `refs/heads/main` — and the placeholder then survived into
+    // every later backup as spurious "unpushed work". A detached checkout at the clone's own default
+    // is honest about knowing no branch name, and leaves no placeholder checked out.
+    out.push(step(['git', '-C', main, 'checkout', '--detach', 'origin/HEAD']))
   }
 
   for (const w of entry.worktrees) {
     const at = expandHome(w.path, homeDir)
     // A detached worktree has no branch — `probeDir` records '' for it deliberately. Passing that
     // through emitted an empty argv element and git refused the whole repository at that point.
-    if (w.branch) out.push(['git', '-C', main, 'worktree', 'add', at, w.branch])
-    else if (w.head) out.push(['git', '-C', main, 'worktree', 'add', '--detach', at, w.head])
+    if (w.branch) out.push(step(['git', '-C', main, 'worktree', 'add', at, w.branch]))
+    else if (w.head) out.push(step(['git', '-C', main, 'worktree', 'add', '--detach', at, w.head]))
     // With neither a branch nor a head there is nothing to recreate; the entry stays in the
     // manifest so the report can name it.
   }
   for (const d of entry.dirty) {
-    if (d.patch) out.push(['git', '-C', expandHome(d.path, homeDir), 'apply', asset(d.patch)])
+    if (d.patch) out.push(step(['git', '-C', expandHome(d.path, homeDir), 'apply', asset(d.patch)]))
   }
+
+  // Last, once nothing else needs it: the placeholder held the pre-fetch content reachable during
+  // the steps above and would otherwise sit in the repository forever, bundled again as "unpushed
+  // work" by the very next backup. Optional for the same reason the rename step above is — a repo
+  // whose worktrees or patches failed to apply should not additionally lose this cleanup as a hard
+  // failure.
+  if (entry.bundle) out.push(step(['git', '-C', main, 'branch', '-D', PLACEHOLDER_BRANCH], true))
+
   return out
 }
 
@@ -303,5 +341,5 @@ export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): s
  * `agentop restore`'s plan; nothing executes it.
  */
 export function restoreCommands(entry: RepoEntry, homeDir: string, assetDir = ''): string[] {
-  return restoreArgv(entry, homeDir, assetDir).map(a => a.join(' '))
+  return restoreArgv(entry, homeDir, assetDir).map(s => s.argv.join(' '))
 }

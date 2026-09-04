@@ -1,6 +1,9 @@
 import { test, expect } from 'bun:test'
 import type { RepoEntry } from './repo-manifest'
-import { planMetrics, planRepos, remaining, rewriteHome, type RestoreState } from './restore-plan'
+import {
+  PREFERENCES_REL, mergePreferences, planMetrics, planRepos, remaining, rewriteHome,
+  type RestoreState,
+} from './restore-plan'
 
 const entry = (over: Partial<RepoEntry> & { key: string }): RepoEntry => ({
   cloneUrl: 'git@github.com:org/repo.git', mainPath: '~/proj', mainBranch: 'main',
@@ -36,6 +39,65 @@ test('stats-cache.json is redirected into the archive stats dir, never over Clau
     rel: '.claude/stats-cache.json',
     redirectTo: '.agentistics/archive/stats-cache/stats-cache.json',
   }])
+})
+
+// E4: preferences.json is the one file the tool writes for ITSELF, so on the realistic flow —
+// reformat, install, run setup, THEN restore — the local copy is always minutes old. Newer-wins
+// would ALWAYS discard the backup's copy, dropping the billing timeline and custom layouts Wave B
+// went to the trouble of carrying redacted. It gets its own `merge` action instead, regardless of
+// which side is newer.
+test('preferences.json always merges — it is never skipped for being older or written outright', () => {
+  const localNewer = new Map([[PREFERENCES_REL, 999_999]])
+  expect(planMetrics([{ rel: PREFERENCES_REL, mtimeMs: 100 }], localNewer))
+    .toEqual([{ kind: 'merge', rel: PREFERENCES_REL }])
+
+  expect(planMetrics([{ rel: PREFERENCES_REL, mtimeMs: 999_999 }], new Map()))
+    .toEqual([{ kind: 'merge', rel: PREFERENCES_REL }])
+})
+
+// --- mergePreferences (pure) ------------------------------------------------------------------
+
+test('mergePreferences keeps every local key, and fills in what the backup has and the local lacks', () => {
+  const local = JSON.stringify({ lang: 'en', localOnly: 1 })
+  const archived = JSON.stringify({ lang: 'pt', localOnly: 2, backupOnly: 3 })
+  const r = mergePreferences(local, archived)
+  const merged = JSON.parse(r.text) as Record<string, unknown>
+  expect(merged.lang).toBe('en')          // local wins
+  expect(merged.localOnly).toBe(1)        // local wins
+  expect(merged.backupOnly).toBe(3)       // taken from the backup, since local lacked it
+  expect(r.tookFromBackup).toEqual(['backupOnly'])
+})
+
+// `team`'s tokens were stripped before the file traveled (stageRedactedFiles) — a half-`team` block
+// landing on an already-configured machine is worse than no team at all, so it is never merged in
+// EITHER direction, whichever side actually has it.
+test('mergePreferences never merges the team block, in either direction', () => {
+  const local = JSON.stringify({ lang: 'en' })
+  const archived = JSON.stringify({ lang: 'pt', team: { token: 'nope', mode: 'member' } })
+  const r = mergePreferences(local, archived)
+  const merged = JSON.parse(r.text) as Record<string, unknown>
+  expect(merged.team).toBeUndefined()
+  expect(r.tookFromBackup).not.toContain('team')
+})
+
+test('a local team block survives untouched even when the backup also carries one', () => {
+  const local = JSON.stringify({ team: { mode: 'solo' } })
+  const archived = JSON.stringify({ team: { mode: 'member', token: 'nope' } })
+  const r = mergePreferences(local, archived)
+  expect(JSON.parse(r.text)).toEqual({ team: { mode: 'solo' } })
+})
+
+test('an unparseable local file yields the archived copy wholesale, minus team', () => {
+  const r = mergePreferences('{not json', JSON.stringify({ lang: 'pt', team: { token: 'x' } }))
+  const merged = JSON.parse(r.text) as Record<string, unknown>
+  expect(merged.lang).toBe('pt')
+  expect(merged.team).toBeUndefined()
+})
+
+test('an unparseable backup copy leaves the local file untouched', () => {
+  const r = mergePreferences(JSON.stringify({ lang: 'en' }), '{not json')
+  expect(r.text).toBe(JSON.stringify({ lang: 'en' }))
+  expect(r.tookFromBackup).toEqual([])
 })
 
 // --- repos ----------------------------------------------------------------------------------

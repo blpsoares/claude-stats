@@ -25,7 +25,7 @@ import { runBackup } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, type RepoEntry } from './backup/repo-manifest'
 import { planRepos } from './backup/restore-plan'
-import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState } from './backup/restore'
+import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState, restoreStateFile } from './backup/restore'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 
@@ -286,6 +286,16 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   // it, nothing changes, and they are left guessing which of the two they got wrong.
   const layers = parsed.layersFromFlags ? parsed.layers : effective.layers
 
+  // The digest can only ever catch a REBUILT or TRUNCATED archive (see `verifyStaged`) — a file that
+  // merely changed size between the walk and tar's read is expected on a live machine, where the
+  // running server rewrites session documents and every open assistant appends to its transcript.
+  // Said up front, using the same producer heartbeat `agentop backup status` already reads, so a
+  // size drift reported on restore reads as an explained fact rather than a surprise.
+  if (existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json'))) {
+    log('note: the agentop server is running, so session files may change while this backup is taken.')
+    log('      Files that change are archived as read and reported on restore; nothing is lost.')
+  }
+
   // ONE try/finally, from the mkdtemp to the end.
   //
   // `buildRepoManifest` used to sit outside it, and it is not exception-free: the `mkdir` for the
@@ -359,7 +369,11 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
     for (const secret of manifest.omittedSecrets) log(`  ${secret.path.padEnd(38)} ${secret.restoreWith}`)
 
     log('')
-    const steps = planRepos(manifest.repos, await readRestoreState(), p => existsSync(p), HOME_DIR)
+    // `restoreRepos` (restore.ts) reads its resume state from `restoreStateFile(homeDir)`. Reading
+    // the default `RESTORE_STATE_FILE` here instead is only ever the same file when `AGENTISTICS_DIR`
+    // is unset — with it set, the printed plan and the run it precedes would disagree about what is
+    // already done.
+    const steps = planRepos(manifest.repos, await readRestoreState(restoreStateFile(HOME_DIR)), p => existsSync(p), HOME_DIR)
     const pending = steps.filter(step => step.state === 'pending')
     log(`Repository plan: ${pending.length} to clone, ${steps.length - pending.length} skipped.`)
     for (const step of steps.filter(x => x.state === 'skipped')) log(`  skip ${step.key} — ${step.reason}`)

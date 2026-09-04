@@ -26,7 +26,16 @@ export const MANIFEST_NAME = 'agentistics-backup.json'
 
 export interface FileGroup {
   name: string
-  files: number
+  /**
+   * Every archived file's $HOME-relative path and size, as walked.
+   *
+   * This is what lets `verifyStaged` check the SET after extraction (every path present, nothing
+   * extra) and report a size that merely DRIFTED instead of refusing on it — a backup is taken on a
+   * live machine, and a few bytes moving between the walk and tar's read is expected, not
+   * corruption. Before this the group carried only a count, which could tell "how many" but not
+   * "which ones changed".
+   */
+  files: { rel: string; bytes: number }[]
   bytes: number
   /** sha256 over the group's concatenated file list and contents, as written. */
   sha256: string

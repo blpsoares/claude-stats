@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { candidatePaths, capturePatch, createBundle, listUntracked, probeDir } from './repo-probe'
+import { candidatePaths, capturePatch, createBundle, gitEnv, listUntracked, probeDir } from './repo-probe'
 
 let root = ''
 let repo = ''
@@ -158,6 +158,27 @@ test('inherited GIT_CONFIG_* cannot inject configuration into a probe', async ()
     for (const [k, v] of [['GIT_CONFIG_COUNT', saved.count], ['GIT_CONFIG_KEY_0', saved.key], ['GIT_CONFIG_VALUE_0', saved.val]] as const) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v
     }
+  }
+})
+
+// E1: the config variables (GIT_CONFIG_*, GIT_CONFIG_GLOBAL) are stripped because they inject
+// config this module never read and the clone has no `-C` to anchor it against. The TRANSPORT
+// variables are a different case entirely and are deliberately left standing: they reach the
+// restore's `git clone` on the NEW machine, and a user whose forge access needs a non-default SSH
+// identity or a ProxyJump would have every clone fail there, which is the moment they can least
+// afford it. Anything able to set them in this process already has code execution as the user, and
+// `~/.ssh/config` does the same job and cannot be stripped anyway.
+test('gitEnv preserves GIT_SSH_COMMAND and GIT_PROXY_COMMAND for a real clone to use', () => {
+  const saved = { ssh: process.env.GIT_SSH_COMMAND, proxy: process.env.GIT_PROXY_COMMAND }
+  process.env.GIT_SSH_COMMAND = 'ssh -i /home/u/.ssh/work_id_ed25519'
+  process.env.GIT_PROXY_COMMAND = 'connect-proxy -H proxy.example:1080 %h %p'
+  try {
+    const env = gitEnv()
+    expect(env.GIT_SSH_COMMAND).toBe('ssh -i /home/u/.ssh/work_id_ed25519')
+    expect(env.GIT_PROXY_COMMAND).toBe('connect-proxy -H proxy.example:1080 %h %p')
+  } finally {
+    if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh
+    if (saved.proxy === undefined) delete process.env.GIT_PROXY_COMMAND; else process.env.GIT_PROXY_COMMAND = saved.proxy
   }
 })
 

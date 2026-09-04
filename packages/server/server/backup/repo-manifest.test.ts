@@ -1,5 +1,8 @@
 import { test, expect } from 'bun:test'
-import { expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands, type DirFacts } from './repo-manifest'
+import {
+  PLACEHOLDER_BRANCH, expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands,
+  type DirFacts,
+} from './repo-manifest'
 
 const HOME = '/home/u'
 
@@ -112,8 +115,28 @@ test('an unprobed main checkout keeps its branch UNKNOWN, and every member stays
   expect(e!.mainBranch).toBe('')
   expect(e!.worktrees).toHaveLength(1)
   const argv = restoreArgv(e!, HOME)
-  expect(argv.some(a => a.includes('checkout'))).toBe(false)
-  expect(argv.some(a => a.includes('worktree'))).toBe(true)
+  expect(argv.some(s => s.argv.includes('checkout'))).toBe(false)
+  expect(argv.some(s => s.argv.includes('worktree'))).toBe(true)
+})
+
+// E2: an unknown main branch WITH a bundle used to `reset --hard`, which left the checkout ON the
+// placeholder branch — a working tree at the pushed tip while the real unpushed work sat unreachable
+// in `refs/heads/main`. A detached checkout at the clone's own default is honest about knowing no
+// branch name, and checks out the content the bundle actually wrote.
+test('an unknown main branch with a bundle checks out detached at the clone default, never `reset --hard` on the placeholder', () => {
+  const wt = facts({
+    path: `${HOME}/proj/.worktrees/feat`, commonDir: `${HOME}/proj/.git`,
+    topLevel: `${HOME}/proj/.worktrees/feat`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'feat/x', head: 'dead',
+  })
+  const [e] = groupRepos([wt], HOME)
+  e!.bundle = 'repos/k.bundle'
+  const argv = restoreArgv(e!, HOME)
+  expect(argv.some(s => s.argv.includes('reset'))).toBe(false)
+  expect(argv.some(s =>
+    s.argv[0] === 'git' && s.argv.includes('checkout') && s.argv.includes('--detach') && s.argv.includes('origin/HEAD'),
+  )).toBe(true)
 })
 
 test('outside $HOME outranks no-remote — the stronger statement, and it saves a wasted bundle', () => {
@@ -146,9 +169,50 @@ test('restoreCommands rebuilds clone, bundle, branch, worktrees and patches, in 
     'git -C /home/new/proj branch -m agentistics-restore-placeholder',
     'git -C /home/new/proj fetch repos/github.com_org_repo.bundle +refs/heads/*:refs/heads/*',
     'git -C /home/new/proj checkout main',
+    'git -C /home/new/proj branch --set-upstream-to origin/main main',
     'git -C /home/new/proj worktree add /home/new/proj/wt feat/x',
     'git -C /home/new/proj apply repos/github.com_org_repo__main.patch',
+    'git -C /home/new/proj branch -D agentistics-restore-placeholder',
   ])
+})
+
+// E2: `branch -m` above carried the tracking config to the placeholder, and the bundle fetch then
+// created `refs/heads/main` with none — a restored repo with unpushed commits answered `git pull`/
+// `git push` with "no tracking information" / "no upstream branch". Re-established right after the
+// checkout, and marked OPTIONAL: it legitimately fails on a branch with no matching remote branch,
+// and that must not cost the worktrees and patches that follow.
+test('a restored main branch gets its upstream re-established, marked optional', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const [e] = groupRepos([main], HOME)
+  e!.bundle = 'repos/k.bundle'
+  const argv = restoreArgv(e!, HOME)
+  const upstream = argv.find(s => s.argv.includes('--set-upstream-to'))
+  expect(upstream?.argv).toEqual(['git', '-C', '/home/u/proj', 'branch', '--set-upstream-to', 'origin/main', 'main'])
+  expect(upstream?.optional).toBe(true)
+})
+
+// E2: the placeholder held the pre-fetch content reachable during the steps above and would
+// otherwise sit in the restored repository forever, bundled again as "unpushed work" by the very
+// next backup — deleted LAST, once nothing else needs it, and OPTIONAL for the same reason the
+// rename step is.
+test('the placeholder branch is deleted last, once nothing else needs it, and optionally', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const [e] = groupRepos([main], HOME)
+  e!.bundle = 'repos/k.bundle'
+  e!.dirty = [{ path: '~/proj', patch: 'repos/k__main.patch', untracked: [] }]
+  const argv = restoreArgv(e!, HOME)
+  const last = argv[argv.length - 1]!
+  expect(last.argv).toEqual(['git', '-C', '/home/u/proj', 'branch', '-D', PLACEHOLDER_BRANCH])
+  expect(last.optional).toBe(true)
+})
+
+// A repo with no bundle never renamed anything onto the placeholder, so there is nothing to
+// re-link or clean up — the two new steps must not appear.
+test('with no bundle there is no upstream re-link and no placeholder cleanup', () => {
+  const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
+  const argv = restoreArgv(e!, HOME)
+  expect(argv.some(s => s.argv.includes('--set-upstream-to'))).toBe(false)
+  expect(argv.some(s => s.argv.includes(PLACEHOLDER_BRANCH) && s.argv.includes('-D'))).toBe(false)
 })
 
 // Verified against real git, not just read: `--no-checkout` alone does NOT clear the refusal (a
@@ -161,17 +225,17 @@ test('a bundle renames the checked-out branch out of the way before fetching it'
   const [e] = groupRepos([main], HOME)
   e!.bundle = 'repos/k.bundle'
   const argv = restoreArgv(e!, HOME)
-  expect(argv[0]).toEqual(['git', 'clone', '--no-checkout', 'git@github.com:org/repo.git', '/home/u/proj'])
-  expect(argv[1]).toEqual(['git', '-C', '/home/u/proj', 'branch', '-m', 'agentistics-restore-placeholder'])
-  expect(argv[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/k.bundle', '+refs/heads/*:refs/heads/*'])
-  expect(argv[3]).toEqual(['git', '-C', '/home/u/proj', 'checkout', 'main'])
+  expect(argv[0]!.argv).toEqual(['git', 'clone', '--no-checkout', 'git@github.com:org/repo.git', '/home/u/proj'])
+  expect(argv[1]!.argv).toEqual(['git', '-C', '/home/u/proj', 'branch', '-m', PLACEHOLDER_BRANCH])
+  expect(argv[2]!.argv).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/k.bundle', '+refs/heads/*:refs/heads/*'])
+  expect(argv[3]!.argv).toEqual(['git', '-C', '/home/u/proj', 'checkout', 'main'])
 })
 
 test('with no bundle the clone checks out normally', () => {
   const [e] = groupRepos([mainRepo(`${HOME}/proj`)], HOME)
   const argv = restoreArgv(e!, HOME)
-  expect(argv[0]).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/proj'])
-  expect(argv.some(a => a.includes('--no-checkout'))).toBe(false)
+  expect(argv[0]!.argv).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/proj'])
+  expect(argv.some(s => s.argv.includes('--no-checkout'))).toBe(false)
 })
 
 // Display and execution come from ONE source, in two shapes. A path with a space cannot be
@@ -180,7 +244,7 @@ test('with no bundle the clone checks out normally', () => {
 test('restoreArgv is the same plan as structured argv, and survives a path with a space', () => {
   const [e] = groupRepos([mainRepo('/home/u/my projects/app')], HOME)
   const argv = restoreArgv(e!, '/home/u')
-  expect(argv[0]).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/my projects/app'])
+  expect(argv[0]!.argv).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/my projects/app'])
   // The printable form is the same plan, joined for a human to read.
   expect(restoreCommands(e!, '/home/u')[0]).toBe('git clone git@github.com:org/repo.git /home/u/my projects/app')
   expect(restoreCommands(e!, '/home/u')).toHaveLength(argv.length)
@@ -195,11 +259,14 @@ test('an assetDir resolves the bundle and patch paths, and its absence leaves th
   e!.dirty = [{ path: '~/proj', patch: 'repos/github.com_org_repo__main.patch', untracked: [] }]
 
   const bare = restoreArgv(e!, HOME)
-  expect(bare[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
+  expect(bare.find(s => s.argv.includes('fetch'))!.argv)
+    .toEqual(['git', '-C', '/home/u/proj', 'fetch', 'repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
 
   const staged = restoreArgv(e!, HOME, '/stage')
-  expect(staged[2]).toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
-  expect(staged[staged.length - 1]).toEqual(['git', '-C', '/home/u/proj', 'apply', '/stage/repos/github.com_org_repo__main.patch'])
+  expect(staged.find(s => s.argv.includes('fetch'))!.argv)
+    .toEqual(['git', '-C', '/home/u/proj', 'fetch', '/stage/repos/github.com_org_repo.bundle', '+refs/heads/*:refs/heads/*'])
+  expect(staged.find(s => s.argv.includes('apply'))!.argv)
+    .toEqual(['git', '-C', '/home/u/proj', 'apply', '/stage/repos/github.com_org_repo__main.patch'])
 })
 
 test('a repo whose bundle exceeded the ceiling is `too-large` and clones without one', () => {
@@ -220,8 +287,9 @@ test('a detached worktree is recreated detached at its head, never with an empty
   })
   const [e] = groupRepos([main, wt], HOME)
   const argv = restoreArgv(e!, HOME)
-  expect(argv).toContainEqual(['git', '-C', '/home/u/proj', 'worktree', 'add', '--detach', '/home/u/proj/wt', 'deadbee'])
-  expect(argv.every(a => a.every(x => x !== ''))).toBe(true)
+  expect(argv.map(s => s.argv)).toContainEqual(
+    ['git', '-C', '/home/u/proj', 'worktree', 'add', '--detach', '/home/u/proj/wt', 'deadbee'])
+  expect(argv.every(s => s.argv.every(x => x !== ''))).toBe(true)
 })
 
 test('a worktree with neither branch nor head is left out rather than emitted broken', () => {
@@ -231,7 +299,7 @@ test('a worktree with neither branch nor head is left out rather than emitted br
     cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo', branch: '', head: '',
   })
   const [e] = groupRepos([main, wt], HOME)
-  expect(restoreArgv(e!, HOME).some(a => a.includes('worktree'))).toBe(false)
+  expect(restoreArgv(e!, HOME).some(s => s.argv.includes('worktree'))).toBe(false)
 })
 
 test('home paths round-trip, and a path outside home is left absolute', () => {

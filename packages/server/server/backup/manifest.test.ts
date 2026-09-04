@@ -12,7 +12,12 @@ const sample = (): BackupManifest => ({
   layers: ['metrics', 'repos'],
   harnesses: ['claude', 'codex'],
   sizes: emptySizes(),
-  groups: [{ name: 'metrics', files: 648, bytes: 3_700_000, sha256: 'a'.repeat(64) }],
+  groups: [{
+    name: 'metrics',
+    files: [{ rel: '.agentistics/tags.json', bytes: 2 }, { rel: '.claude/stats-cache.json', bytes: 3_699_998 }],
+    bytes: 3_700_000,
+    sha256: 'a'.repeat(64),
+  }],
   repos: [],
   omittedSecrets: [{ path: '.claude/.credentials.json', restoreWith: 'claude login' }],
 })

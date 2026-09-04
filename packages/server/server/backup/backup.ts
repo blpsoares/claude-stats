@@ -196,6 +196,12 @@ export interface BackupOptions {
    * is the single thing the repos layer exists to save.
    */
   assetRoot?: string
+  /**
+   * Where `recordBackup` appends its line. Defaults to the real `BACKUPS_FILE`
+   * (`~/.agentistics/backups.jsonl`). Tests pass a temp path so running the suite does not append
+   * to the operator's own backup history.
+   */
+  recordFile?: string
   /** Called with each progress line. Defaults to a no-op so tests are silent. */
   onLine?: (line: string) => void
 }
@@ -277,14 +283,19 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
       sizes,
       groups: [{
         name: 'files',
-        files: archived.length,
+        // The per-file rel/bytes list, not just a count — it is what lets a restore tell "the set
+        // matches but N files drifted in size" (expected on a live machine) from "a path is missing
+        // or unexpected" (a rebuilt or truncated archive). See `verifyStaged` in restore.ts.
+        files: archived.map(f => ({ rel: f.rel, bytes: f.bytes })),
         bytes: plannedTotal(sizes, opts.layers),
         // A digest of the FILE LIST, not of the archive: the manifest travels inside the archive, so
         // hashing the archive from here is circular. This catches an archive that was rebuilt or
-        // edited — the case a byte count alone misses. The whole-archive hash lives on BackupRecord,
-        // for the person verifying the file they carried. Staged replacements (e.g. the redacted
-        // preferences.json) are archive content like any walked file, so they are in this digest too
-        // — leaving them out would reproduce the exact bug this digest exists to catch, in a new place.
+        // edited — the case the per-file list's SET check alone misses (a rebuild could preserve
+        // every path and every size while changing content). The whole-archive hash lives on
+        // BackupRecord, for the person verifying the file they carried. Staged replacements (e.g.
+        // the redacted preferences.json) are archive content like any walked file, so they are in
+        // this digest too — leaving them out would reproduce the exact bug this digest exists to
+        // catch, in a new place.
         sha256: manifestDigest(archived),
       }],
       repos: opts.repos,
@@ -338,7 +349,7 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
       durationMs: Date.now() - started,
       skipped: skipped.length,
     }
-    await recordBackup(record)
+    await recordBackup(record, opts.recordFile)
     log(`wrote ${archivePath}`)
     return { ok: true, record, sizes, skipped }
   } finally {
