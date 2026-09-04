@@ -1602,6 +1602,15 @@ export interface BackupRecord {
   archiveBytes: number
   sha256: string
   durationMs: number
+  /**
+   * How many paths the walk skipped — a symlink it would not follow, or something it could not
+   * read. A COUNT rather than the list, because the list is unbounded (a home directory can hold
+   * thousands of symlinks) and this file is append-only history.
+   *
+   * It is here so `agentop backup status` can say a backup was incomplete. Absent on a record
+   * written before the field existed, which reads as "not known", never as zero.
+   */
+  skipped?: number
 }
 
 export interface BackupHistoryEntry extends BackupRecord {
@@ -2943,7 +2952,16 @@ export interface BackupOptions {
 }
 
 export type BackupResult =
-  | { ok: true; record: BackupRecord; sizes: BackupSizes }
+  /**
+   * `skipped` is on the RESULT, not only in the log.
+   *
+   * `onLine` defaults to a no-op, so a caller that does not wire it — the scheduled run, anything
+   * headless, any future surface reading the result after the fact — would get an `ok: true` that
+   * looks identical whether the walk skipped a permission-denied directory or skipped nothing.
+   * That is the same "reports complete success over a real gap" this walk was changed to stop
+   * doing, arriving one layer up.
+   */
+  | { ok: true; record: BackupRecord; sizes: BackupSizes; skipped: WalkSkip[] }
   | { ok: false; reason: string }
 
 /** sha256 over the sorted `path:bytes` list. Deterministic, and independent of the archive. */
@@ -3052,10 +3070,11 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
     archiveBytes: statSync(archivePath).size,   // measured, never predicted
     sha256: await sha256File(archivePath),
     durationMs: Date.now() - started,
+    skipped: skipped.length,
   }
   await recordBackup(record)
   log(`wrote ${archivePath}`)
-  return { ok: true, record, sizes }
+  return { ok: true, record, sizes, skipped }
 }
 ```
 
@@ -3875,6 +3894,13 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     log(last
       ? `last backup: ${last.at} · ${formatBytes(last.archiveBytes)} · ${last.path}`
       : 'last backup: none (no recorded backup whose file is still on disk)')
+    // An incomplete backup must not read as a complete one. `undefined` is not zero: a record
+    // written before this field existed does not know, and says so.
+    if (last && last.skipped === undefined) {
+      log('  (this record predates skip tracking — whether anything was skipped is not known)')
+    } else if (last?.skipped) {
+      log(`  WARNING: ${last.skipped} path(s) were skipped — re-run \`agentop backup\` to see which`)
+    }
     const per = lastPerHarness(entries)
     for (const h of HARNESS_ORDER) log(`  ${h.padEnd(12)} ${per[h] ?? 'never'}`)
     const s = scheduleStatus({
