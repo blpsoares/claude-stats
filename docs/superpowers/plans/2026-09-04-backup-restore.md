@@ -1432,7 +1432,8 @@ e os comandos que rodam serem a mesma função."
 
 **Interfaces:**
 - Consumes: `BackupLayer` (Task 1), `HarnessId`.
-- Produces: `BACKUPS_FILE`, `BackupRecord`, `BackupHistoryEntry`, `markPresence(records, exists)`, `lastPerHarness(entries)`, `lastBackup(entries)`, `toPrune(entries, keep)`, `readBackups()`, `recordBackup(record)`, `writeBackups(records)`.
+- Produces: `BACKUPS_FILE`, `BackupRecord`, `BackupHistoryEntry`, `markPresence(records, exists)`, `lastPerHarness(entries)`, `lastBackup(entries)`, `toPrune(entries, keep)`, `readBackups()`, `recordBackup(record)`.
+- **There is deliberately no `writeBackups`** — see the module doc. Nothing ever rewrites this file.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1493,6 +1494,17 @@ test('a harness only in a backup whose file is gone counts as never backed up', 
   expect(lastPerHarness(entries).copilot).toBeUndefined()
 })
 
+// The store is append-only and read back in file order, which is not necessarily sorted — a
+// function that depended on its caller having sorted would go wrong the day one did not.
+test('last-per-harness keeps the maximum, whatever order it is given', () => {
+  const unsorted = [
+    { ...rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }), present: true },
+    { ...rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }), present: true },
+    { ...rec({ at: '2026-09-02T00:00:00Z', path: '/b/2' }), present: true },
+  ]
+  expect(lastPerHarness(unsorted).claude).toBe('2026-09-03T00:00:00Z')
+})
+
 test('pruning keeps the newest N present records and returns the rest', () => {
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }),
@@ -1544,14 +1556,30 @@ Create `packages/server/server/backup/backup-store.ts`:
  * `toPrune` inherits it: it never proposes deleting a file that is already gone, and a `keep` of
  * zero or below prunes nothing — a config typo must not be a way to wipe every backup at once.
  */
-import { join } from 'path'
-import { writeFile } from 'fs/promises'
+import { dirname, join } from 'path'
+import { appendFile, mkdir, readFile } from 'fs/promises'
 import type { HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR } from '../config'
-import { safeReadJson } from '../utils'
 import type { BackupLayer } from './backup-plan'
 
-export const BACKUPS_FILE = join(AGENTISTICS_DATA_DIR, 'backups.json')
+/**
+ * APPEND-ONLY, and `.jsonl` rather than `.json` because of it.
+ *
+ * The obvious shape — a JSON array, read-modify-written by `recordBackup` — is the registry race
+ * `registry.ts` documents and this project has MEASURED: agentop runs as several processes (a
+ * cockpit, the daemon, every one-shot command), and a record written by a short-lived one has been
+ * observed erased by a longer-lived one. Here the loss is quiet and lands on exactly the question
+ * this module exists to answer: the history would say you last backed up longer ago than you did.
+ *
+ * A lock would mitigate it. Appending removes it: one short line written with `O_APPEND` is atomic,
+ * so two processes recording at once both survive with no coordination at all.
+ *
+ * Nothing rewrites the file, and that costs nothing, because the module already holds the rule that
+ * makes rewriting unnecessary — a record whose file is gone is MARKED, not dropped. Pruning deletes
+ * the FILES; the records stay, and `markPresence` reports them absent from then on. At roughly 200
+ * bytes a record, a daily backup writes 73 KB a year.
+ */
+export const BACKUPS_FILE = join(AGENTISTICS_DATA_DIR, 'backups.jsonl')
 
 export interface BackupRecord {
   /** ISO. */
@@ -1585,7 +1613,13 @@ export function lastBackup(entries: BackupHistoryEntry[]): BackupHistoryEntry | 
   return entries.find(e => e.present) ?? null
 }
 
-/** When each harness was last covered by a backup that still exists. */
+/**
+ * When each harness was last covered by a backup that still exists.
+ *
+ * Deliberately order-INDEPENDENT: it keeps the maximum rather than the first hit. `markPresence`
+ * does sort, but a function whose answer depends on its caller having sorted is one that silently
+ * becomes wrong the day some other caller does not.
+ */
 export function lastPerHarness(entries: BackupHistoryEntry[]): Partial<Record<HarnessId, string>> {
   const out: Partial<Record<HarnessId, string>> = {}
   for (const e of entries) {
@@ -1604,18 +1638,29 @@ export function toPrune(entries: BackupHistoryEntry[], keep: number): BackupHist
   return entries.filter(e => e.present).slice(keep)
 }
 
+/**
+ * Every recorded backup. A line that will not parse is SKIPPED, not thrown on: an append
+ * interrupted by a crash or a full disk leaves a torn last line, and one bad line must not cost the
+ * user every record before it.
+ */
 export async function readBackups(file = BACKUPS_FILE): Promise<BackupRecord[]> {
-  return (await safeReadJson<BackupRecord[]>(file)) ?? []
+  const text = await readFile(file, 'utf-8').catch(() => '')
+  const out: BackupRecord[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      out.push(JSON.parse(line) as BackupRecord)
+    } catch {
+      // torn or hand-edited line — the records around it are still good
+    }
+  }
+  return out
 }
 
-export async function writeBackups(records: BackupRecord[], file = BACKUPS_FILE): Promise<void> {
-  await writeFile(file, JSON.stringify(records, null, 2))
-}
-
+/** Append one record. Atomic by construction; see BACKUPS_FILE. */
 export async function recordBackup(record: BackupRecord, file = BACKUPS_FILE): Promise<void> {
-  const all = await readBackups(file)
-  all.push(record)
-  await writeBackups(all, file)
+  await mkdir(dirname(file), { recursive: true })
+  await appendFile(file, JSON.stringify(record) + '\n')
 }
 ```
 
@@ -3376,7 +3421,7 @@ import { readPreferences, writePreferences, type Preferences } from './preferenc
 import { CURRENT_VERSION } from './version'
 import type { BackupLayer } from './backup/backup-plan'
 import { formatBytes, plannedTotal } from './backup/backup-size'
-import { markPresence, readBackups, lastBackup, lastPerHarness, toPrune, writeBackups } from './backup/backup-store'
+import { markPresence, readBackups, lastBackup, lastPerHarness, toPrune } from './backup/backup-store'
 import { runBackup } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, type RepoEntry } from './backup/repo-manifest'
@@ -3612,12 +3657,15 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
   log(`sha256:             ${result.record.sha256}`)
 
+  // Pruning deletes the FILES and leaves the records. The store is append-only (see BACKUPS_FILE)
+  // and already holds the rule that makes rewriting unnecessary: a record whose file is gone is
+  // reported absent by `markPresence` from then on, which is the truth and is what the history is
+  // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
+  // append-only shape exists to remove.
   const entries = markPresence(await readBackups(), p => existsSync(p))
-  const prune = toPrune(entries, prefs.keep)
-  if (prune.length) {
-    const { unlink } = await import('fs/promises')
-    for (const p of prune) { await unlink(p.path).catch(() => {}); log(`pruned ${p.path}`) }
-    await writeBackups(entries.filter(e => !prune.includes(e)).map(({ present, ...r }) => r))
+  for (const old of toPrune(entries, prefs.keep)) {
+    await rm(old.path, { force: true }).catch(() => {})
+    log(`pruned ${old.path}`)
   }
   return 0
 }
