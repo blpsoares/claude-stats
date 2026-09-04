@@ -144,6 +144,23 @@ test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
   }
 })
 
+// `url.<base>.insteadOf` in an inherited environment rewrites the remote a clone fetches from, and
+// the clone is the one git argv on this branch with no `-C` to anchor it.
+test('inherited GIT_CONFIG_* cannot inject configuration into a probe', async () => {
+  const saved = { count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, val: process.env.GIT_CONFIG_VALUE_0 }
+  process.env.GIT_CONFIG_COUNT = '1'
+  process.env.GIT_CONFIG_KEY_0 = 'remote.origin.url'
+  process.env.GIT_CONFIG_VALUE_0 = 'https://evil.example/injected.git'
+  try {
+    const f = await probeDir(repo)
+    expect(f.cloneUrl).toBe('git@github.com:org/repo.git')
+  } finally {
+    for (const [k, v] of [['GIT_CONFIG_COUNT', saved.count], ['GIT_CONFIG_KEY_0', saved.key], ['GIT_CONFIG_VALUE_0', saved.val]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
 test('untracked files are listed, and ignored ones are not', async () => {
   writeFileSync(join(repo, '.gitignore'), 'ignored.txt\n')
   writeFileSync(join(repo, 'ignored.txt'), 'x')

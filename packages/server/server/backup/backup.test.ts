@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll } from 'bun:test'
 import { execFileSync } from 'child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, chmodSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { archiverFor, runBackup, walkSources } from './backup'
@@ -50,6 +50,30 @@ test('a missing source is not an error — it contributes nothing and is not rep
   const { files, skipped } = await walkSources(home, [{ rel: '.codex', layer: 'raw', harness: 'codex' }])
   expect(files).toEqual([])
   expect(skipped).toEqual([])
+})
+
+// C2 (I1): an unreadable source ROOT used to read exactly like an absent one — only the errno tells
+// them apart. Without the check a permission error on `~/.claude` produced an empty claude layer
+// inside a backup that still reported complete success.
+//
+// If the test runner is root, a mode-000 directory is still readable and this can never fail —
+// which is the same silently-cannot-fail shape this branch keeps finding, so it is skipped rather
+// than left to pass for the wrong reason.
+test('a source root that exists but cannot be read is reported, not read as "not installed"', async () => {
+  if (process.getuid?.() === 0) return
+  const locked = join(home, '.locked')
+  mkdirSync(locked, { recursive: true })
+  writeFileSync(join(locked, 'x.json'), '{}')
+  chmodSync(locked, 0o000)
+  try {
+    const { files, skipped } = await walkSources(home, [{ rel: '.locked', layer: 'raw', harness: 'claude' }])
+    expect(files).toEqual([])
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0]!.reason).toBe('unreadable')
+  } finally {
+    chmodSync(locked, 0o700)
+    rmSync(locked, { recursive: true, force: true })
+  }
 })
 
 // `stat` dereferences and `lstat` does not, and the difference is a hang. A link to one of its own

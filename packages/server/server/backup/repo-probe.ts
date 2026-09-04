@@ -41,7 +41,15 @@ const run = promisify(execFile)
  * on. (`GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES` were measured too and
  * do not redirect it; they are left alone rather than cargo-culted into the list.)
  */
-const HIJACKERS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR'] as const
+const HIJACKERS = [
+  // Directory: these make `-C` and `cwd` a lie.
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR',
+  // Configuration: these inject config we did not read. `url.<base>.insteadOf` rewrites the remote
+  // a clone actually fetches from, and the clone is the one argv here with no `-C` to anchor it.
+  'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_COUNT',
+  // Transport.
+  'GIT_SSH_COMMAND', 'GIT_PROXY_COMMAND',
+] as const
 
 /**
  * Built PER CALL, deliberately, not captured once at module load.
@@ -57,6 +65,11 @@ const HIJACKERS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', '
 export function gitEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
   for (const k of HIJACKERS) delete env[k]
+  // GIT_CONFIG_COUNT is deleted above, which disables the numbered pairs — but they are removed
+  // too, so nothing is left for a later `GIT_CONFIG_COUNT` in a child to pick up.
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('GIT_CONFIG_KEY_') || k.startsWith('GIT_CONFIG_VALUE_')) delete env[k]
+  }
   return env
 }
 

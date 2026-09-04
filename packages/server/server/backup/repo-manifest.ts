@@ -73,6 +73,15 @@ export interface RepoEntry {
   worktrees: RepoWorktree[]
   /** Path inside the archive, or null. */
   bundle: string | null
+  /**
+   * Set when a bundle could NOT be produced — a permission error, a full disk, a timeout. Carries
+   * the reason, and the restore prints it.
+   *
+   * A `bundle` of `null` used to mean both "every local commit is already on the remote" and "we
+   * could not look", so a repository whose unpushed work was never captured restored silently
+   * without it.
+   */
+  bundleUnavailable?: string
   dirty: RepoDirty[]
   note: RepoNote
 }

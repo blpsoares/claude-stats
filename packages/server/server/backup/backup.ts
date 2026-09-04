@@ -76,9 +76,12 @@ export async function walkSources(
     try {
       st = await lstat(abs)
     } catch (e) {
-      // A source ROOT that is absent is the ordinary "this harness is not installed" case. The same
-      // failure on a path we reached by reading its parent's entry is a real read error.
-      if (!isRoot) skipped.push({ rel, reason: 'unreadable', detail: errText(e) })
+      // A source ROOT that is ABSENT is the ordinary "this harness is not installed" case and is
+      // not reported. A root that exists and cannot be READ is a hole in the backup, and only the
+      // errno separates them — without this check a permission error on ~/.claude produced an
+      // empty claude layer inside a backup reporting complete success.
+      const code = (e as NodeJS.ErrnoException).code
+      if (!isRoot || code !== 'ENOENT') skipped.push({ rel, reason: 'unreadable', detail: errText(e) })
       return
     }
 

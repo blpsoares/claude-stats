@@ -175,7 +175,14 @@ async function buildRepoManifest(
       full: e.note === 'no-remote', maxBytes: prefs.maxBundleBytes,
     })
     if (res === 'written') e.bundle = rel
-    else if (res === 'too-large') { e.note = 'too-large'; log(`  ${e.key}: bundle over the ceiling — cloning without local-only history`) }
+    else if (res === 'too-large') {
+      e.note = 'too-large'
+      log(`  ${e.key}: bundle over the ceiling — cloning without local-only history`)
+    } else if (res === 'failed') {
+      e.bundleUnavailable = 'git bundle failed — this repository restores WITHOUT its unpushed commits'
+      log(`  ${e.key}: ${e.bundleUnavailable}`)
+    }
+    // 'empty' is the happy case: every local commit is already on the remote.
 
     for (const dir of [e.mainPath, ...e.worktrees.map(w => w.path)]) {
       const abs = expandHome(dir, HOME_DIR)
@@ -251,6 +258,18 @@ export async function stagePreferences(
   await mkdir(dirname(join(stageRoot, rel)), { recursive: true })
   await writeFile(join(stageRoot, rel), JSON.stringify(prefs, null, 2))
   return [rel]
+}
+
+/**
+ * Delete the FILES of backups beyond `keep`, newest first. The records stay: the store is
+ * append-only and `markPresence` reports a missing file as absent from then on.
+ */
+export async function pruneOldBackups(keep: number, log: (l: string) => void): Promise<void> {
+  const entries = markPresence(await readBackups(), p => existsSync(p))
+  for (const old of toPrune(entries, keep)) {
+    await rm(old.path, { force: true }).catch(() => {})
+    log(`pruned ${old.path}`)
+  }
 }
 
 export async function runBackupCli(argv: string[]): Promise<number> {
@@ -347,11 +366,7 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     // reported absent by `markPresence` from then on, which is the truth and is what the history is
     // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
     // append-only shape exists to remove.
-    const entries = markPresence(await readBackups(), p => existsSync(p))
-    for (const old of toPrune(entries, prefs.keep)) {
-      await rm(old.path, { force: true }).catch(() => {})
-      log(`pruned ${old.path}`)
-    }
+    await pruneOldBackups(prefs.keep, log)
     return 0
   } finally {
     await rm(stageRoot, { recursive: true, force: true }).catch(() => {})

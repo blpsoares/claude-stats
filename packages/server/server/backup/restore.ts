@@ -309,6 +309,7 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
   // (see RepoDirty). Name both, so "not restored" is a fact the user reads rather than a silence
   // they discover.
   for (const e of entries) {
+    if (e.bundleUnavailable) log(`note ${e.key}: ${e.bundleUnavailable}`)
     for (const d of e.dirty) {
       if (d.patchUnavailable) {
         log(`note ${e.key}: the uncommitted state of ${d.path} could NOT be read — ${d.patchUnavailable}`)
