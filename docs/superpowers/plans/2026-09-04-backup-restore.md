@@ -45,7 +45,7 @@ Expected: the chat-gate tests pass. If `bun test` reports module-resolution erro
 | `packages/server/server/backup/manifest.test.ts` | Round-trip; a newer version is refused with a reason. |
 | `packages/server/server/backup/repo-manifest.ts` | PURE. `DirFacts[]` → `RepoEntry[]`, and `RepoEntry` → the commands that rebuild it. |
 | `packages/server/server/backup/repo-manifest.test.ts` | Worktree grouping, the five notes, command generation. |
-| `packages/server/server/backup/backup-store.ts` | The `backups.json` history. Pure decisions + two IO functions. |
+| `packages/server/server/backup/backup-store.ts` | The append-only `backups.jsonl` history. Pure decisions + two IO functions. |
 | `packages/server/server/backup/backup-store.test.ts` | The "file is gone" rule and per-harness last-backup. |
 | `packages/server/server/backup/schedule.ts` | PURE. Is a run due, and what the UI is allowed to say. |
 | `packages/server/server/backup/schedule.test.ts` | Due/not-due; a stopped server yields "inactive", never a next time. |
@@ -4565,7 +4565,7 @@ rules; writing them now would mean inventing a `BackupHost` signature this plan 
 
 ## Deviations from the spec, and why
 
-Two, both deliberate. Recorded here rather than left for a reader to discover as a gap.
+Three, all deliberate. Recorded here rather than left for a reader to discover as a gap.
 
 1. **`--dir` (write a directory instead of a single archive) is not implemented.** The spec offered
    it as an escape hatch beside the single-file default. Nothing in the restore path needs it, no

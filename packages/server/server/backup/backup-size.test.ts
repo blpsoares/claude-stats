@@ -1,8 +1,10 @@
 import { test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { HARNESS_ORDER } from '@agentistics/core'
 import {
-  addBytes, emptySizes, formatBytes, harnessTotal, layerTotal, plannedTotal, retainedTotal,
+  addBytes, emptySizes, formatBytes, harnessTotal, harnessesPresent, layerTotal, plannedTotal,
+  retainedTotal,
 } from './backup-size'
 
 test('an empty accounting has every layer at zero, and no layer is missing', () => {
@@ -45,6 +47,29 @@ test('retention is accounted as one total across every kept backup', () => {
     { archiveBytes: 4_050_000 } as never,
   ])).toBe(8_150_000)
   expect(retainedTotal([])).toBe(0)
+})
+
+// The spec promises this accounting is DERIVED from HARNESS_ORDER rather than written as a
+// literal, for the reason CLAUDE.md gives everywhere else: an array literal with a member missing
+// compiles clean and that harness silently vanishes. Nothing exercised the derivation, so replacing
+// it with a short literal kept the suite green — which is the defect, not the risk of it.
+test('every harness that contributed appears, in HARNESS_ORDER, and none is invented', () => {
+  const all = emptySizes()
+  for (const h of HARNESS_ORDER) addBytes(all, 'metrics', h, 10)
+  expect(harnessesPresent(all)).toEqual(HARNESS_ORDER)
+
+  // The order follows HARNESS_ORDER, not the order the bytes happened to arrive in.
+  const partial = emptySizes()
+  const last = HARNESS_ORDER[HARNESS_ORDER.length - 1]!
+  const first = HARNESS_ORDER[0]!
+  addBytes(partial, 'raw', last, 1)
+  addBytes(partial, 'metrics', first, 1)
+  expect(harnessesPresent(partial)).toEqual([first, last])
+
+  // A harness with cross-harness bytes only is not present: those belong to no harness.
+  const crossOnly = emptySizes()
+  addBytes(crossOnly, 'metrics', null, 100)
+  expect(harnessesPresent(crossOnly)).toEqual([])
 })
 
 test('formatBytes is readable and never lies about the unit', () => {

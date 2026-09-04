@@ -115,7 +115,8 @@ was excluded so the restore can print it.
 | `~/.codex/auth.json` | `codex login` |
 | `~/.gemini/oauth_creds.json` | `gemini` (first run) |
 | `~/.copilot` token files | `copilot` (first run) |
-| `~/.agentistics/connections/`, `preferences.json → team.token` | `agentop member connect` |
+| `~/.agentistics/connections/` | `agentop member connect <url> <token>` |
+| `preferences.json → team.token`, `team.connections[].token` | `agentop member connect <url> <token>` — the file itself DOES travel, redacted: it also carries layouts, the billing timeline and the sharing rules, which the restore is meant to bring back |
 | envelope private key (`envelope-keys.ts`) | re-pinned by siblings on next announce |
 
 A tarball holding these is a master key to the user's accounts. It is excluded, and the cost — five
@@ -152,7 +153,7 @@ filter**, the same enforcement shape `billing-detect.test.ts` uses.
 The harness map is keyed off `HARNESS_ORDER`, never a literal array — a literal with a member
 missing compiles clean and the harness vanishes from the screen.
 
-Recorded after a run, in `~/.agentistics/backups.json`: `at`, `path`, `layers`, `harnesses`,
+Recorded after a run, appended to `~/.agentistics/backups.jsonl`: `at`, `path`, `layers`, `harnesses`,
 `bytesRaw`, `bytesArchive` (the file's real size), `sha256`, `durationMs`.
 
 **A recorded backup whose file is gone says so.** The date is checked against the disk before it is
@@ -201,7 +202,10 @@ agentop restore --repos     # executes; records what succeeded; re-running resum
 agentop restore --repos --only <repo>
 ```
 
-- The archive is **verified against the manifest's sha256 per group before anything is written**. A
+- The archive is verified in TWO steps, and **nothing reaches `$HOME` before both pass**: `tar` must
+  list it end to end (catches truncation) BEFORE extraction, and the manifest's `path:bytes` digest
+  must match the extracted set (catches a rebuilt or edited archive) AFTER extraction into staging
+  and before the merge. The digest cannot be checked earlier — it needs the files. A
   truncated tarball is a refusal, not a partial restore.
 - Metrics merge and **never overwrite a newer local file** — the same rule `writeConsolidated`
   already applies.
@@ -222,7 +226,11 @@ The scheduled run **rides along with the daemon `agentop server` already starts*
 `agentop autostart`, and is never a process the user must remember to start. `schedule.ts` is pure
 and only answers "is one due?".
 
-A schedule carries **`metrics` + `repos` only** (~5 MB/day; 7 retained = 35 MB). `raw` is manual —
+A schedule carries **`metrics` only** (~4 MB/day; 7 retained = 28 MB). It carries no repository
+manifest — building one shells out to git across every known directory and writes bundles, which is
+load nobody asked for unattended — and it therefore does not RECORD a `repos` layer either: a
+manifest claiming one would produce a restore saying "0 repositories to clone" to somebody who
+believed they were covered. `repos` and `raw` are both manual —
 it is the tarball you take on the eve of a reformat.
 
 **The stated cost, which the UI must state too:** with the server stopped, nothing runs. The tab
@@ -309,7 +317,7 @@ packages/web/src/pages/settings/
 ## Tests
 
 - `backup-plan.test.ts` — greps its own source; no secret path may pass the filter.
-- `backup-size.test.ts` — per-harness accounting keyed off `HARNESS_ORDER`; a compressed figure is
+- `backup-size.test.ts` — per-harness accounting derived from `HARNESS_ORDER`; a compressed figure is
   never produced before a write.
 - `manifest.test.ts` — round-trip, and an older manifest version still reads.
 - `repo-manifest.test.ts` — worktree grouping by common dir; `gone` / `no-remote` / `outside-home` /
