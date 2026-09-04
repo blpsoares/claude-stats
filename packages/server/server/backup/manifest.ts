@@ -1,0 +1,98 @@
+/**
+ * manifest.ts — PURE. The document an archive carries about itself.
+ *
+ * It answers three questions a restore cannot answer any other way: WHICH layers are in here (so
+ * "the archive layer is absent" is distinguishable from "there were no transcripts"), WHAT the old
+ * $HOME was (so a different username on the new machine is a deterministic substitution rather
+ * than a guess), and WHETHER the bytes arrived intact (`groups[].sha256`, checked before anything
+ * is written).
+ *
+ * `decodeManifest` never throws and never half-reads. A manifest from a NEWER agentop is REFUSED
+ * naming the version: it may describe layers or repo fields this build cannot honour, and
+ * restoring the parts we recognise while dropping the rest produces a machine that looks restored
+ * and is not. An OLDER one reads, with absent optional arrays becoming empty — the same tolerance
+ * `fromBsonDate` applies to a mixed-version fleet.
+ */
+import type { HarnessId } from '@agentistics/core'
+import type { BackupLayer } from './backup-plan'
+import type { BackupSizes } from './backup-size'
+import type { RepoEntry } from './repo-manifest'
+
+export const MANIFEST_VERSION = 1
+
+/** The manifest's path inside the archive. Outside the $HOME-relative tree so it can never collide
+ *  with a real dotfile. */
+export const MANIFEST_NAME = 'agentistics-backup.json'
+
+export interface FileGroup {
+  name: string
+  files: number
+  bytes: number
+  /** sha256 over the group's concatenated file list and contents, as written. */
+  sha256: string
+}
+
+export interface OmittedSecret {
+  path: string
+  restoreWith: string
+}
+
+export interface BackupManifest {
+  version: number
+  createdAt: string
+  agentopVersion: string
+  hostname: string
+  /** The $HOME this backup was taken from. Restore rewrites this prefix only when it differs. */
+  homeDir: string
+  platform: string
+  layers: BackupLayer[]
+  harnesses: HarnessId[]
+  sizes: BackupSizes
+  groups: FileGroup[]
+  repos: RepoEntry[]
+  omittedSecrets: OmittedSecret[]
+}
+
+export type DecodedManifest =
+  | { ok: true; manifest: BackupManifest }
+  | { ok: false; reason: 'unreadable' | 'too-new' | 'incomplete'; found?: number }
+
+export function encodeManifest(m: BackupManifest): string {
+  return JSON.stringify(m, null, 2)
+}
+
+const REQUIRED = ['version', 'createdAt', 'homeDir', 'layers', 'harnesses', 'sizes', 'groups'] as const
+
+export function decodeManifest(text: string): DecodedManifest {
+  let raw: Record<string, unknown>
+  try {
+    raw = JSON.parse(text) as Record<string, unknown>
+  } catch {
+    return { ok: false, reason: 'unreadable' }
+  }
+  if (!raw || typeof raw !== 'object') return { ok: false, reason: 'unreadable' }
+
+  const version = raw.version
+  if (typeof version !== 'number') return { ok: false, reason: 'incomplete' }
+  if (version > MANIFEST_VERSION) return { ok: false, reason: 'too-new', found: version }
+
+  for (const key of REQUIRED) {
+    if (raw[key] === undefined || raw[key] === null) return { ok: false, reason: 'incomplete' }
+  }
+
+  const manifest: BackupManifest = {
+    version,
+    createdAt: String(raw.createdAt),
+    agentopVersion: String(raw.agentopVersion ?? ''),
+    hostname: String(raw.hostname ?? ''),
+    homeDir: String(raw.homeDir),
+    platform: String(raw.platform ?? ''),
+    layers: raw.layers as BackupLayer[],
+    harnesses: raw.harnesses as HarnessId[],
+    sizes: raw.sizes as BackupSizes,
+    groups: raw.groups as FileGroup[],
+    repos: (raw.repos as RepoEntry[] | undefined) ?? [],
+    omittedSecrets: (raw.omittedSecrets as OmittedSecret[] | undefined) ?? [],
+  }
+  return { ok: true, manifest }
+}
