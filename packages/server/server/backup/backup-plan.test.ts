@@ -77,6 +77,16 @@ test('omittedSecrets lists every secret rule, each with its command', () => {
   expect(s.every(r => r.reason === 'secret' && (r.restoreWith ?? '') !== '')).toBe(true)
 })
 
+// The `repos` layer's content is produced during the backup (bundles, patches) and lives nowhere
+// in $HOME, so it contributes no source to this walk. Pinned so the absence reads as a decision
+// rather than an omission — it is `runBackup`'s `assetRoot` that carries it into the archive.
+test('the repos layer contributes no $HOME source — its content is made, not found', () => {
+  const withRepos = planSources({ layers: ['metrics', 'repos'], harnesses: ['claude'] })
+  const without = planSources({ layers: ['metrics'], harnesses: ['claude'] })
+  expect(withRepos.map(e => e.rel)).toEqual(without.map(e => e.rel))
+  expect(withRepos.some(e => e.layer === 'repos')).toBe(false)
+})
+
 // The enforcement, not a convention: a credential path that stopped being excluded is a leak, and
 // a leak in a tarball is discovered by whoever finds the tarball. Same shape as
 // billing-detect.test.ts, which greps its own module rather than trusting a reviewer.

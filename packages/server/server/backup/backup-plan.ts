@@ -33,7 +33,20 @@ export type ExcludeReason = 'secret' | 'regenerable' | 'runtime'
 export interface ExcludeRule {
   /** Matched against a $HOME-relative path with no leading slash. */
   pattern: string
-  /** `prefix` — the path is, or is inside, `pattern`. `contains` — `pattern` appears anywhere. */
+  /**
+   * `prefix` — the path STARTS WITH `pattern`. A string prefix, deliberately, not a directory
+   * boundary: three rules depend on it matching a filename STEM rather than a directory
+   * — `.agentistics/cache.db` must catch `cache.db-wal` and `cache.db-shm`, `.agentistics/git-stats.db`
+   * the same, and `.agentistics/server-` must catch `server-47291.lock`. A boundary check would let
+   * all of those through.
+   *
+   * The cost is that a path merely sharing a string prefix is excluded too (a hypothetical
+   * `.claude/statsigmoid.json` would match the `.claude/statsig` rule). That direction is
+   * over-exclusion, never a credential leak, which is the trade this filter must make: a file
+   * wrongly kept out of a backup is recoverable, a credential wrongly let in is not.
+   *
+   * `contains` — `pattern` appears anywhere in the path.
+   */
   match: 'prefix' | 'contains'
   reason: ExcludeReason
   /** For `secret` only: the command that re-establishes it. Required, and tested for. */
@@ -172,7 +185,7 @@ export function excludeFor(rel: string): ExcludeRule | null {
   for (const r of EXCLUDE_RULES) {
     if (r.match === 'contains') {
       if (rel.includes(r.pattern)) return r
-    } else if (rel === r.pattern || rel.startsWith(r.pattern + '/') || rel.startsWith(r.pattern)) {
+    } else if (rel.startsWith(r.pattern)) {
       return r
     }
   }
@@ -194,7 +207,9 @@ function within(rel: string, parent: string): boolean {
  *
  * `metrics` is added whatever the caller asked for. The harness selection scopes two things — the
  * consolidate dir and the raw dir — and nothing else: the cross-harness files are the vocabulary
- * the metrics are read in.
+ * the metrics are read in. The `repos` layer contributes no source here; its content is produced
+ * during the backup and lives nowhere in $HOME — a later task carries it into the archive through
+ * a separate route.
  */
 export function planSources(input: PlanInput): SourceEntry[] {
   const layers = new Set<BackupLayer>([...input.layers, 'metrics'])
