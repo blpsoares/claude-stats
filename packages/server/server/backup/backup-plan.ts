@@ -55,28 +55,76 @@ export interface ExcludeRule {
   why: string
 }
 
-export const EXCLUDE_RULES: ExcludeRule[] = [
-  // --- secrets ---------------------------------------------------------------------------------
-  {
-    pattern: '.claude/.credentials.json', match: 'prefix', reason: 'secret',
-    restoreWith: 'claude login',
-    why: 'Claude Code OAuth credentials — a live session token.',
-  },
-  {
-    pattern: '.codex/auth.json', match: 'prefix', reason: 'secret',
-    restoreWith: 'codex login',
-    why: 'Codex CLI credentials, including the id token whose payload carries the tier.',
-  },
-  {
-    pattern: '.gemini/oauth_creds.json', match: 'prefix', reason: 'secret',
-    restoreWith: 'gemini  (sign in on first run)',
-    why: 'Gemini CLI OAuth credentials.',
-  },
-  {
-    pattern: '.copilot/token', match: 'contains', reason: 'secret',
-    restoreWith: 'copilot  (sign in on first run)',
-    why: 'Copilot CLI token files.',
-  },
+/**
+ * Credential paths, per harness.
+ *
+ * A Record, so a new harness cannot be added without a decision about its secrets — the same rule
+ * `HARNESS_SORT` enforces for display order, applied to the one table where forgetting a harness
+ * puts a key in a tarball. An empty array is a legitimate entry and means "this harness stores no
+ * credential under its own directory"; it is a claim, so state the evidence in a comment.
+ */
+const HARNESS_SECRETS: Record<HarnessId, ExcludeRule[]> = {
+  claude: [
+    {
+      pattern: '.claude/.credentials.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'claude login',
+      why: 'Claude Code OAuth credentials — a live session token.',
+    },
+  ],
+  codex: [
+    {
+      pattern: '.codex/auth.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'codex login',
+      why: 'Codex CLI credentials, including the id token whose payload carries the tier.',
+    },
+  ],
+  gemini: [
+    {
+      pattern: '.gemini/oauth_creds.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'Gemini CLI OAuth credentials.',
+    },
+    {
+      pattern: '.gemini/gemini-credentials.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'A second Gemini credential file the oauth_creds rule does not reach — verified present on a real machine.',
+    },
+    {
+      pattern: '.gemini/google_accounts.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'The signed-in Google account identifiers.',
+    },
+  ],
+  copilot: [
+    {
+      pattern: '.copilot/token', match: 'contains', reason: 'secret',
+      restoreWith: 'copilot  (sign in on first run)',
+      why: 'Copilot CLI token files.',
+    },
+    {
+      pattern: '.copilot/mcp-oauth-config', match: 'prefix', reason: 'secret',
+      restoreWith: 're-authorise each MCP server from inside copilot',
+      why: 'Per-MCP-server OAuth tokens. The `.copilot/token` rule does not reach `mcp-oauth-config/<x>.tokens.json`.',
+    },
+  ],
+  antigravity: [
+    {
+      pattern: '.gemini/antigravity-cli/antigravity-oauth-token', match: 'prefix', reason: 'secret',
+      restoreWith: 'agy  (sign in on first run)',
+      why: 'Antigravity OAuth token. It lives under the Gemini directory, so no Gemini rule reaches it.',
+    },
+  ],
+  kimi: [
+    {
+      pattern: '.kimi-code/config.toml', match: 'prefix', reason: 'secret',
+      restoreWith: 'restore your api_key in ~/.kimi-code/config.toml',
+      why: 'Holds `api_key` alongside ordinary settings. The whole file is excluded: over-excluding costs the user their Kimi settings, which are recoverable, while under-excluding costs them a key, which is not.',
+    },
+  ],
+}
+
+/** Secrets that are not scoped to one harness. */
+const CROSS_HARNESS_SECRETS: ExcludeRule[] = [
   {
     pattern: '.agentistics/connections', match: 'prefix', reason: 'secret',
     restoreWith: 'agentop member connect <url> <token>',
@@ -87,7 +135,18 @@ export const EXCLUDE_RULES: ExcludeRule[] = [
     restoreWith: 'nothing — siblings re-pin this machine on its next announcement',
     why: 'The X25519 private key behind the sealed envelope channel (envelope-keys.ts, 0600, never logged).',
   },
-  // --- regenerable -----------------------------------------------------------------------------
+  // This pattern can never match a real path — a `#` never appears in any filename this walks — so
+  // it excludes nothing new. It exists only so `omittedSecrets()` names the tokens inside
+  // `preferences.json` for the restore to print; the file itself is never walked at all (see
+  // `ALWAYS`, above) because it travels REDACTED, staged by `cli-backup.ts`.
+  {
+    pattern: '.agentistics/preferences.json#team.token', match: 'prefix', reason: 'secret',
+    restoreWith: 'agentop member connect <url> <token>',
+    why: 'The central tokens inside preferences.json. The file itself travels, redacted — see backup-plan.ts ALWAYS.',
+  },
+]
+
+const REGENERABLE: ExcludeRule[] = [
   {
     pattern: '.agentistics/cache.db', match: 'prefix', reason: 'regenerable',
     why: 'Parse cache. Rebuilt on the next build; 2.3 MB on the reference machine.',
@@ -124,7 +183,9 @@ export const EXCLUDE_RULES: ExcludeRule[] = [
     pattern: '.claude/statsig', match: 'prefix', reason: 'regenerable',
     why: 'Feature-flag cache.',
   },
-  // --- runtime ---------------------------------------------------------------------------------
+]
+
+const RUNTIME: ExcludeRule[] = [
   {
     pattern: '.agentistics/managed-sessions.json', match: 'prefix', reason: 'runtime',
     why: 'Names tmux sessions that will not exist on the new machine. Restoring it yields rows pointing at nothing.',
@@ -137,6 +198,13 @@ export const EXCLUDE_RULES: ExcludeRule[] = [
     pattern: '.agentistics/events-producer.json', match: 'prefix', reason: 'runtime',
     why: 'The producer heartbeat — a pid on a machine that is gone.',
   },
+]
+
+export const EXCLUDE_RULES: ExcludeRule[] = [
+  ...HARNESS_ORDER.flatMap(h => HARNESS_SECRETS[h]),
+  ...CROSS_HARNESS_SECRETS,
+  ...REGENERABLE,
+  ...RUNTIME,
 ]
 
 /**
@@ -160,7 +228,10 @@ const RAW_DIR: Record<HarnessId, string> = {
 const ALWAYS: string[] = [
   '.agentistics/tags.json',
   '.agentistics/workflows',
-  '.agentistics/preferences.json',
+  // NOT here, deliberately. `preferences.json` travels REDACTED, staged by `cli-backup.ts`, because
+  // it carries live central tokens (`team.token` and `team.connections[].token`) that exist nowhere
+  // else on this machine. Walking it would put them in the archive verbatim — in the 4 MB default
+  // backup the design says is safe to schedule and carry on a pendrive.
   '.agentistics/notifications.json',
   // Claude's deep aggregate. It is the only surviving source of pre-30-day totals once Claude
   // Code's own cleanup has run, and it is 24 KB.

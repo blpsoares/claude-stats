@@ -18,7 +18,7 @@ import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { createHash } from 'crypto'
 import { createReadStream, existsSync, statSync } from 'fs'
-import { lstat, mkdir, readdir, writeFile, unlink } from 'fs/promises'
+import { lstat, mkdir, readdir, stat, writeFile, unlink } from 'fs/promises'
 import { join, relative } from 'path'
 import type { HarnessId } from '@agentistics/core'
 import { excludeFor, omittedSecrets, planSources, type BackupLayer, type SourceEntry } from './backup-plan'
@@ -145,6 +145,14 @@ export interface BackupOptions {
    * is the single thing the repos layer exists to save.
    */
   assetRoot?: string
+  /**
+   * Archive-relative paths to take from `assetRoot` instead of from `$HOME`.
+   *
+   * For a file that must be TRANSFORMED before it travels — today, `preferences.json` with its
+   * tokens redacted. They are archive content like any walked file: digested, sized, counted, and
+   * merged on restore. They differ only in where `tar` reads them from.
+   */
+  stagedRels?: string[]
   /** Called with each progress line. Defaults to a no-op so tests are silent. */
   onLine?: (line: string) => void
 }
@@ -196,6 +204,17 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
       : `skipped ${s.rel} — could not be read: ${s.detail ?? 'unknown'}`)
   }
 
+  // Staged replacements join the walked files for every purpose except which root tar reads them
+  // from. They must be in the digest — they are $HOME content and the restore merges them.
+  const staged: WalkedFile[] = []
+  for (const rel of opts.stagedRels ?? []) {
+    const st = await stat(join(opts.assetRoot ?? '', rel)).catch(() => null)
+    if (!st?.isFile()) continue
+    staged.push({ rel, bytes: st.size, layer: 'metrics', harness: null })
+    addBytes(sizes, 'metrics', null, st.size)
+  }
+  const archived = [...files, ...staged]
+
   await mkdir(opts.destDir, { recursive: true })
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -213,13 +232,15 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
     sizes,
     groups: [{
       name: 'files',
-      files: files.length,
+      files: archived.length,
       bytes: plannedTotal(sizes, opts.layers),
       // A digest of the FILE LIST, not of the archive: the manifest travels inside the archive, so
       // hashing the archive from here is circular. This catches an archive that was rebuilt or
       // edited — the case a byte count alone misses. The whole-archive hash lives on BackupRecord,
-      // for the person verifying the file they carried.
-      sha256: manifestDigest(files),
+      // for the person verifying the file they carried. Staged replacements (e.g. the redacted
+      // preferences.json) are archive content like any walked file, so they are in this digest too
+      // — leaving them out would reproduce the exact bug this digest exists to catch, in a new place.
+      sha256: manifestDigest(archived),
     }],
     repos: opts.repos,
     omittedSecrets: omittedSecrets().map(r => ({ path: r.pattern, restoreWith: r.restoreWith ?? '' })),
@@ -234,15 +255,19 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
 
   try {
     const flags = archiver.flag ? [archiver.flag] : []
-    // Three roots in one archive: the manifest (staged beside the output), the repos assets
-    // (produced during this run), and the $HOME tree (the explicit file list).
+    // Four roots in one archive: the manifest (staged beside the output), the repos assets
+    // (produced during this run), the staged replacements (also produced during this run, under
+    // their $HOME-relative name), and the $HOME tree (the explicit file list).
     const assets = opts.assetRoot && existsSync(join(opts.assetRoot, 'repos'))
       ? ['-C', opts.assetRoot, 'repos']
+      : []
+    const stagedArgs = opts.assetRoot && staged.length
+      ? ['-C', opts.assetRoot, ...staged.map(f => f.rel)]
       : []
     await run('tar', [
       ...flags, '-cf', archivePath,
       '-C', opts.destDir, MANIFEST_NAME,
-      ...assets,
+      ...assets, ...stagedArgs,
       '-C', opts.homeDir, '-T', listPath,
     ], { maxBuffer: 16 * 1024 * 1024 })
   } catch (e) {

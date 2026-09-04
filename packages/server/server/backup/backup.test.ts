@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { archiverFor, runBackup, walkSources } from './backup'
 import { decodeManifest, MANIFEST_NAME } from './manifest'
+import { stagePreferences } from '../cli-backup'
 
 let home = ''
 let dest = ''
@@ -141,6 +142,41 @@ test('the repos assets travel inside the archive, under their archive-relative n
   expect(listing).toContain('repos/example.bundle')
   expect(listing).toContain('repos/example__main.patch')
   rmSync(assetRoot, { recursive: true, force: true })
+})
+
+// B1 (C2): preferences.json is not walked from $HOME — it never enters `EXCLUDE_RULES`, since
+// dropping the file entirely would lose custom layouts, the billing timeline and the sharing
+// rules the design promises to restore. Instead `stagePreferences` (cli-backup.ts) writes a
+// REDACTED copy into the stage root, and `stagedRels` tells `runBackup` to take that one path from
+// `assetRoot` instead of from `$HOME`. This exercises the real redaction end to end: a live token
+// goes in, and the archived copy must not carry it.
+test('the staged preferences travel WITHOUT their tokens', async () => {
+  const prefsHome = mkdtempSync(join(tmpdir(), 'agentistics-prefs-home-'))
+  const stageRoot = mkdtempSync(join(tmpdir(), 'agentistics-stage-'))
+  try {
+    mkdirSync(join(prefsHome, '.agentistics'), { recursive: true })
+    writeFileSync(join(prefsHome, '.agentistics/preferences.json'), JSON.stringify({
+      lang: 'en',
+      team: { token: 'SUPER-SECRET-TOKEN', connections: [{ token: 'SUPER-SECRET-TOKEN' }] },
+    }))
+
+    const stagedRels = await stagePreferences(stageRoot, prefsHome, () => {})
+    expect(stagedRels).toEqual(['.agentistics/preferences.json'])
+
+    const r = await runBackup({
+      homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+      repos: [], assetRoot: stageRoot, stagedRels, agentopVersion: 'test', hostname: 'box',
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+
+    const text = execFileSync('tar', ['-xOf', r.record.path, '.agentistics/preferences.json'], { encoding: 'utf8' })
+    expect(text).toContain('"lang"')
+    expect(text).not.toContain('SUPER-SECRET-TOKEN')
+  } finally {
+    rmSync(prefsHome, { recursive: true, force: true })
+    rmSync(stageRoot, { recursive: true, force: true })
+  }
 })
 
 test('an absent assetRoot is not an error — a metrics-only backup has no assets', async () => {

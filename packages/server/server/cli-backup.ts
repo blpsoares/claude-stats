@@ -11,8 +11,8 @@
  */
 import { hostname, tmpdir } from 'os'
 import { existsSync } from 'fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
-import { join } from 'path'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
+import { dirname, join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, writePreferences, type Preferences } from './preferences'
@@ -212,6 +212,47 @@ async function buildRepoManifest(
   return entries
 }
 
+/**
+ * Write `preferences.json` into the stage root with its live tokens removed.
+ *
+ * Returns the archive-relative paths staged. The redaction mirrors what `preferences.ts` already
+ * does for its API read-out — this is not a new rule, it is the existing one applied to the copy
+ * that leaves the machine.
+ *
+ * `homeDir` is a parameter, not a read of `HOME_DIR`, so this can be exercised against a fixture
+ * home directory in a test rather than the real machine's `~/.agentistics/preferences.json`.
+ */
+export async function stagePreferences(
+  stageRoot: string, homeDir: string, log: (l: string) => void,
+): Promise<string[]> {
+  const rel = '.agentistics/preferences.json'
+  const raw = await readFile(join(homeDir, rel), 'utf-8').catch(() => null)
+  if (raw === null) return []
+
+  let prefs: Record<string, unknown>
+  try {
+    prefs = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    // Unparseable preferences are not carried at all: a file we cannot read is a file whose tokens
+    // we cannot prove we removed.
+    log('preferences.json could not be parsed — it is NOT in this backup')
+    return []
+  }
+
+  const team = prefs.team as Record<string, unknown> | undefined
+  if (team) {
+    delete team.token
+    const conns = team.connections
+    if (Array.isArray(conns)) {
+      for (const c of conns) if (c && typeof c === 'object') delete (c as Record<string, unknown>).token
+    }
+  }
+
+  await mkdir(dirname(join(stageRoot, rel)), { recursive: true })
+  await writeFile(join(stageRoot, rel), JSON.stringify(prefs, null, 2))
+  return [rel]
+}
+
 export async function runBackupCli(argv: string[]): Promise<number> {
   const parsed = parseBackupArgs(argv)
   const log = (l: string) => console.log(l)
@@ -278,6 +319,9 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     const repos = layers.includes('repos')
       ? await buildRepoManifest(effective, stageRoot, log)
       : []
+    // Staged whatever the layer selection, like the `metrics` layer itself always is —
+    // preferences.json is cross-harness data, not something `--with-*` opts into.
+    const stagedRels = await stagePreferences(stageRoot, HOME_DIR, log)
 
     if (parsed.planOnly) {
       log(`layers:    ${layers.join(', ')}`)
@@ -290,7 +334,7 @@ export async function runBackupCli(argv: string[]): Promise<number> {
 
     const result = await runBackup({
       homeDir: HOME_DIR, destDir, layers, harnesses: parsed.harnesses,
-      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
+      repos, assetRoot: stageRoot, stagedRels, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
     })
     if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
 

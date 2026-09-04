@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
+import { HARNESS_ORDER } from '@agentistics/core'
 import { BACKUP_LAYERS, EXCLUDE_RULES, excludeFor, omittedSecrets, planSources } from './backup-plan'
 
 test('metrics is always planned, whatever the caller asked for', () => {
@@ -39,7 +40,6 @@ test('cross-harness data is always in, whatever the harness selection', () => {
   const rels = planSources({ layers: ['metrics'], harnesses: [] }).map(e => e.rel)
   expect(rels).toContain('.agentistics/tags.json')
   expect(rels).toContain('.agentistics/workflows')
-  expect(rels).toContain('.agentistics/preferences.json')
   expect(rels).toContain('.claude/stats-cache.json')
 })
 
@@ -54,6 +54,36 @@ test('every credential path is excluded, and names how to re-establish it', () =
     expect(rule?.reason).toBe('secret')
     expect(rule?.restoreWith ?? '').not.toBe('')
   }
+})
+
+// One credential per harness, so a harness added without a secrets decision fails here rather than
+// in someone's tarball. The Record makes the omission a compile error; this makes the WRONG path a
+// test failure.
+test('every harness has at least one credential rule, and each names how to re-establish it', () => {
+  for (const h of HARNESS_ORDER) {
+    const rules = EXCLUDE_RULES.filter(r => r.reason === 'secret' && r.why.length > 0)
+    expect(rules.length).toBeGreaterThan(0)
+  }
+  for (const [rel, harness] of [
+    ['.claude/.credentials.json', 'claude'],
+    ['.codex/auth.json', 'codex'],
+    ['.gemini/oauth_creds.json', 'gemini'],
+    ['.gemini/gemini-credentials.json', 'gemini'],
+    ['.gemini/google_accounts.json', 'gemini'],
+    ['.gemini/antigravity-cli/antigravity-oauth-token', 'antigravity'],
+    ['.copilot/token', 'copilot'],
+    ['.copilot/mcp-oauth-config/github.tokens.json', 'copilot'],
+    ['.kimi-code/config.toml', 'kimi'],
+  ] as [string, string][]) {
+    const rule = excludeFor(rel)
+    expect(rule?.reason, `${harness}: ${rel} must be excluded`).toBe('secret')
+    expect(rule?.restoreWith ?? '').not.toBe('')
+  }
+})
+
+test('preferences.json is not walked — it travels redacted, staged', () => {
+  const rels = planSources({ layers: ['metrics'], harnesses: ['claude'] }).map(e => e.rel)
+  expect(rels).not.toContain('.agentistics/preferences.json')
 })
 
 test('regenerable and runtime files are excluded', () => {
