@@ -124,6 +124,11 @@ test('a tree that cannot be read is `unavailable`, never `clean`', async () => {
 
 // Measured: GIT_COMMON_DIR alone, with no GIT_DIR set, redirects `rev-parse --git-common-dir` —
 // the ONE fact groupRepos keys on. A backup run from inside a git hook inherits variables like it.
+//
+// This test only DISCRIMINATES because `gitEnv()` is rebuilt per call. An earlier version captured
+// the environment once at module load, and this test then passed identically against a build with
+// the strip reverted — it was measuring nothing. If you are tempted to hoist `gitEnv()` back to a
+// module constant for performance, this test is what you would be switching off.
 test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
   const other = join(root, 'other')
   mkdirSync(other)
@@ -144,11 +149,22 @@ test('untracked files are listed, and ignored ones are not', async () => {
   writeFileSync(join(repo, 'ignored.txt'), 'x')
   writeFileSync(join(repo, 'new.txt'), 'y')
   const un = await listUntracked(repo)
-  expect(un).toContain('new.txt')
-  expect(un).not.toContain('ignored.txt')
+  expect(un.kind).toBe('files')
+  if (un.kind === 'files') {
+    expect(un.files).toContain('new.txt')
+    expect(un.files).not.toContain('ignored.txt')
+  }
   rmSync(join(repo, '.gitignore'))
   rmSync(join(repo, 'ignored.txt'))
   rmSync(join(repo, 'new.txt'))
+})
+
+// The same failure class as capturePatch's: a tree whose untracked state could not be established
+// must not read as a tree that had none, or `buildRepoManifest` skips the directory entirely.
+test('a directory git cannot read is `unavailable`, never an empty list', async () => {
+  const un = await listUntracked(join(root, 'not-a-repo-at-all'))
+  expect(un.kind).toBe('unavailable')
+  if (un.kind === 'unavailable') expect(un.reason.length).toBeGreaterThan(0)
 })
 
 // --- candidatePaths (pure) --------------------------------------------------------------------

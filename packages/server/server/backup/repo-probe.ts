@@ -41,11 +41,24 @@ const run = promisify(execFile)
  * on. (`GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE` and `GIT_CEILING_DIRECTORIES` were measured too and
  * do not redirect it; they are left alone rather than cargo-culted into the list.)
  */
-const GIT_ENV: NodeJS.ProcessEnv = (() => {
+const HIJACKERS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR'] as const
+
+/**
+ * Built PER CALL, deliberately, not captured once at module load.
+ *
+ * A module-load snapshot is wrong twice over. In production it misses anything that sets these
+ * variables after import — a spawn wrapper, a nested hook, a test harness. And it makes the strip
+ * UNTESTABLE: a test that sets `process.env.GIT_COMMON_DIR` and then calls the probe would be
+ * mutating an object the module had already copied, so it passes identically whether the strip is
+ * present or reverted. That was measured — the regression test for this very fix was green against
+ * a build with the fix removed. Rebuilding a small object per git call costs nothing next to
+ * spawning a process.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GIT_CONFIG_NOSYSTEM: '1' }
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete env[k]
+  for (const k of HIJACKERS) delete env[k]
   return env
-})()
+}
 
 export type GitResult =
   | { ok: true; stdout: string }
@@ -61,7 +74,7 @@ export type GitResult =
  */
 async function gitRun(cwd: string, args: string[], timeout = 10_000): Promise<GitResult> {
   try {
-    const { stdout } = await run('git', ['-C', cwd, ...args], { env: GIT_ENV, timeout, maxBuffer: 64 * 1024 * 1024 })
+    const { stdout } = await run('git', ['-C', cwd, ...args], { env: gitEnv(), timeout, maxBuffer: 64 * 1024 * 1024 })
     return { ok: true, stdout: stdout.trim() }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -150,6 +163,12 @@ export async function createBundle(
 }
 
 export type PatchResult =
+  /**
+   * No PATCH to write. That covers a genuinely clean tree AND a tree whose only changes are
+   * untracked files — `git status` sees those, `git diff HEAD` does not. It never means "nothing to
+   * back up here": the untracked list is collected separately by `listUntracked`, and a caller that
+   * read `clean` as "skip this directory" would drop it.
+   */
   | { kind: 'clean' }
   | { kind: 'patch'; text: string }
   | { kind: 'unavailable'; reason: string }
@@ -179,10 +198,22 @@ export async function capturePatch(dir: string): Promise<PatchResult> {
   return diff.stdout ? { kind: 'patch', text: diff.stdout + '\n' } : { kind: 'clean' }
 }
 
-/** Untracked, not-ignored files, relative to the repository root. */
-export async function listUntracked(dir: string): Promise<string[]> {
-  const out = await git(dir, ['ls-files', '--others', '--exclude-standard'])
-  return out ? out.split('\n').filter(Boolean) : []
+export type UntrackedResult =
+  | { kind: 'files'; files: string[] }
+  | { kind: 'unavailable'; reason: string }
+
+/**
+ * Untracked, not-ignored files, relative to the repository root.
+ *
+ * Discriminated for the same reason `capturePatch` is: this call COLLECTS BACKUP CONTENT, unlike
+ * the probe calls where "git has no answer about this directory" is itself a legitimate answer.
+ * Folding a permission error or a corrupted index into an empty list means a tree whose untracked
+ * state was never established gets skipped as though it had none — the reassuring direction again.
+ */
+export async function listUntracked(dir: string): Promise<UntrackedResult> {
+  const res = await gitRun(dir, ['ls-files', '--others', '--exclude-standard'])
+  if (!res.ok) return { kind: 'unavailable', reason: `git ls-files failed: ${res.reason}` }
+  return { kind: 'files', files: res.stdout ? res.stdout.split('\n').filter(Boolean) : [] }
 }
 
 /** Every directory worth probing, from the session store. PURE. */
