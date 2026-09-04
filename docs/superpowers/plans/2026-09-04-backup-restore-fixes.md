@@ -288,3 +288,278 @@ bun test packages/server/server/backup/
 **Then a deliberate-break check, and report the result:** revert the `walkStaged` filter (A1) alone
 and confirm the new seam test FAILS; restore it and confirm it passes. A regression test for a bug
 that shipped must be shown to catch it.
+
+---
+
+# Wave B — credentials reach the archive
+
+Two Critical findings. The module's own header promises "a tarball holding these is a master key to
+the user's accounts" and excludes them for that reason. The promise currently holds for two of six
+harnesses, and not at all for the one file that is in EVERY backup.
+
+## B1 (C2). `preferences.json` carries live central tokens, in the default 4 MB backup
+
+`backup-plan.ts` puts `.agentistics/preferences.json` in `ALWAYS`, and `excludeFor` returns `null`
+for it. On the reference machine both `team.connections[].token` and the legacy `team.token` are
+non-empty, and `preferences.ts` states outright that those tokens "exist nowhere else on this
+machine". The spec's secrets table already lists `preferences.json → team.token` as excluded — the
+spec is currently false.
+
+Dropping the file is not the answer: it carries custom layouts, the billing timeline, the sharing
+rules and the backup configuration, all of which the design promises to restore. **The file travels
+REDACTED.**
+
+**The mechanism.** A staged replacement: the redacted copy is written into the stage root at its
+own `$HOME`-relative path, the real file is not walked, and `tar` takes that one path from the
+stage root instead of from `$HOME`. It is then ordinary archive content — digested, counted, and
+merged on restore like any other file.
+
+In `backup-plan.ts`, remove `.agentistics/preferences.json` from `ALWAYS` and leave this in its
+place:
+
+```ts
+// NOT here, deliberately. `preferences.json` travels REDACTED, staged by `cli-backup.ts`, because
+// it carries live central tokens (`team.token` and `team.connections[].token`) that exist nowhere
+// else on this machine. Walking it would put them in the archive verbatim — in the 4 MB default
+// backup the design says is safe to schedule and carry on a pendrive.
+```
+
+In `backup.ts`, `BackupOptions` gains:
+
+```ts
+  /**
+   * Archive-relative paths to take from `assetRoot` instead of from `$HOME`.
+   *
+   * For a file that must be TRANSFORMED before it travels — today, `preferences.json` with its
+   * tokens redacted. They are archive content like any walked file: digested, sized, counted, and
+   * merged on restore. They differ only in where `tar` reads them from.
+   */
+  stagedRels?: string[]
+```
+
+and `runBackup`, after the walk:
+
+```ts
+  // Staged replacements join the walked files for every purpose except which root tar reads them
+  // from. They must be in the digest — they are $HOME content and the restore merges them.
+  const staged: WalkedFile[] = []
+  for (const rel of opts.stagedRels ?? []) {
+    const st = await stat(join(opts.assetRoot ?? '', rel)).catch(() => null)
+    if (!st?.isFile()) continue
+    staged.push({ rel, bytes: st.size, layer: 'metrics', harness: null })
+    addBytes(sizes, 'metrics', null, st.size)
+  }
+  const archived = [...files, ...staged]
+```
+
+`manifestDigest(archived)` and `groups[0].files = archived.length`; `listPath` stays built from
+`files` alone (the staged ones are not under `$HOME`); the tar roots become:
+
+```ts
+    const assets = opts.assetRoot && existsSync(join(opts.assetRoot, 'repos'))
+      ? ['-C', opts.assetRoot, 'repos'] : []
+    const stagedArgs = opts.assetRoot && staged.length
+      ? ['-C', opts.assetRoot, ...staged.map(f => f.rel)] : []
+    await run('tar', [
+      ...flags, '-cf', archivePath,
+      '-C', opts.destDir, MANIFEST_NAME,
+      ...assets, ...stagedArgs,
+      '-C', opts.homeDir, '-T', listPath,
+    ], { maxBuffer: 16 * 1024 * 1024 })
+```
+
+`stat` needs importing from `fs/promises` in `backup.ts`.
+
+In `cli-backup.ts`, before `runBackup`, stage the redacted copy:
+
+```ts
+/**
+ * Write `preferences.json` into the stage root with its live tokens removed.
+ *
+ * Returns the archive-relative paths staged. The redaction mirrors what `preferences.ts` already
+ * does for its API read-out — this is not a new rule, it is the existing one applied to the copy
+ * that leaves the machine.
+ */
+async function stagePreferences(stageRoot: string, log: (l: string) => void): Promise<string[]> {
+  const rel = '.agentistics/preferences.json'
+  const raw = await readFile(join(HOME_DIR, rel), 'utf-8').catch(() => null)
+  if (raw === null) return []
+  let prefs: Record<string, unknown>
+  try {
+    prefs = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    // Unparseable preferences are not carried at all: a file we cannot read is a file whose tokens
+    // we cannot prove we removed.
+    log('preferences.json could not be parsed — it is NOT in this backup')
+    return []
+  }
+  const team = prefs.team as Record<string, unknown> | undefined
+  if (team) {
+    delete team.token
+    const conns = team.connections
+    if (Array.isArray(conns)) for (const c of conns) if (c && typeof c === 'object') delete (c as Record<string, unknown>).token
+  }
+  await mkdir(dirname(join(stageRoot, rel)), { recursive: true })
+  await writeFile(join(stageRoot, rel), JSON.stringify(prefs, null, 2))
+  return [rel]
+}
+```
+
+Call it inside the existing `try` (so the stage root's cleanup covers it) and pass
+`stagedRels` to `runBackup`. `readFile` and `dirname` need importing.
+
+`omittedSecrets()` must also name it, so the restore prints it. Add to `EXCLUDE_RULES`:
+
+```ts
+  {
+    pattern: '.agentistics/preferences.json#team.token', match: 'prefix', reason: 'secret',
+    restoreWith: 'agentop member connect <url> <token>',
+    why: 'The central tokens inside preferences.json. The file itself travels, redacted — see backup-plan.ts ALWAYS.',
+  },
+```
+
+That pattern can never match a real path (a `#` is not in any filename this walks), so it changes
+no exclusion; it exists to appear in `omittedSecrets()`. **State that in the rule's own comment** —
+a rule that looks like a path and is not one is otherwise a trap for the next reader.
+
+## B2 (C3). The secret rules are a hardcoded harness list, and it is already incomplete
+
+There are rows for claude, codex, gemini and copilot. Kimi and antigravity have none, and the
+gemini and copilot rows do not reach the files that actually exist. Probed on the reference machine,
+all reachable under `--with-raw`:
+
+| path | today | on disk |
+|---|---|---|
+| `.kimi-code/config.toml` (holds `api_key`) | KEPT | exists |
+| `.gemini/gemini-credentials.json` | KEPT | 526 B |
+| `.gemini/google_accounts.json` | KEPT | exists |
+| `.gemini/antigravity-cli/antigravity-oauth-token` | KEPT | 548 B |
+| `.copilot/mcp-oauth-config/*.tokens.json` | KEPT | dir exists |
+
+This is the `HARNESS_ORDER` rule — applied everywhere on this branch except the one table where
+forgetting a harness leaks a credential.
+
+**The fix.** Make it a `Record<HarnessId, ExcludeRule[]>` so the compiler requires an entry, and
+derive `EXCLUDE_RULES` from it:
+
+```ts
+/**
+ * Credential paths, per harness.
+ *
+ * A Record, so a new harness cannot be added without a decision about its secrets — the same rule
+ * `HARNESS_SORT` enforces for display order, applied to the one table where forgetting a harness
+ * puts a key in a tarball. An empty array is a legitimate entry and means "this harness stores no
+ * credential under its own directory"; it is a claim, so state the evidence in a comment.
+ */
+const HARNESS_SECRETS: Record<HarnessId, ExcludeRule[]> = {
+  claude: [
+    { pattern: '.claude/.credentials.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'claude login',
+      why: 'Claude Code OAuth credentials — a live session token.' },
+  ],
+  codex: [
+    { pattern: '.codex/auth.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'codex login',
+      why: 'Codex CLI credentials, including the id token whose payload carries the tier.' },
+  ],
+  gemini: [
+    { pattern: '.gemini/oauth_creds.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'Gemini CLI OAuth credentials.' },
+    { pattern: '.gemini/gemini-credentials.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'A second Gemini credential file the oauth_creds rule does not reach — verified present on a real machine.' },
+    { pattern: '.gemini/google_accounts.json', match: 'prefix', reason: 'secret',
+      restoreWith: 'gemini  (sign in on first run)',
+      why: 'The signed-in Google account identifiers.' },
+  ],
+  copilot: [
+    { pattern: '.copilot/token', match: 'contains', reason: 'secret',
+      restoreWith: 'copilot  (sign in on first run)',
+      why: 'Copilot CLI token files.' },
+    { pattern: '.copilot/mcp-oauth-config', match: 'prefix', reason: 'secret',
+      restoreWith: 're-authorise each MCP server from inside copilot',
+      why: 'Per-MCP-server OAuth tokens. The `.copilot/token` rule does not reach `mcp-oauth-config/<x>.tokens.json`.' },
+  ],
+  antigravity: [
+    { pattern: '.gemini/antigravity-cli/antigravity-oauth-token', match: 'prefix', reason: 'secret',
+      restoreWith: 'agy  (sign in on first run)',
+      why: 'Antigravity OAuth token. It lives under the Gemini directory, so no Gemini rule reaches it.' },
+  ],
+  kimi: [
+    { pattern: '.kimi-code/config.toml', match: 'prefix', reason: 'secret',
+      restoreWith: 'restore your api_key in ~/.kimi-code/config.toml',
+      why: 'Holds `api_key` alongside ordinary settings. The whole file is excluded: over-excluding costs the user their Kimi settings, which are recoverable, while under-excluding costs them a key, which is not.' },
+  ],
+}
+```
+
+`EXCLUDE_RULES` becomes:
+
+```ts
+export const EXCLUDE_RULES: ExcludeRule[] = [
+  ...HARNESS_ORDER.flatMap(h => HARNESS_SECRETS[h]),
+  ...CROSS_HARNESS_SECRETS,   // the .agentistics connections + machine key + the preferences note
+  ...REGENERABLE,
+  ...RUNTIME,
+]
+```
+
+Split the existing non-harness rows into those three arrays, unchanged.
+
+**The test grows a per-harness probe.** In `backup-plan.test.ts`:
+
+```ts
+// One credential per harness, so a harness added without a secrets decision fails here rather than
+// in someone's tarball. The Record makes the omission a compile error; this makes the WRONG path a
+// test failure.
+test('every harness has at least one credential rule, and each names how to re-establish it', () => {
+  for (const h of HARNESS_ORDER) {
+    const rules = EXCLUDE_RULES.filter(r => r.reason === 'secret' && r.why.length > 0)
+    expect(rules.length).toBeGreaterThan(0)
+  }
+  for (const [rel, harness] of [
+    ['.claude/.credentials.json', 'claude'],
+    ['.codex/auth.json', 'codex'],
+    ['.gemini/oauth_creds.json', 'gemini'],
+    ['.gemini/gemini-credentials.json', 'gemini'],
+    ['.gemini/google_accounts.json', 'gemini'],
+    ['.gemini/antigravity-cli/antigravity-oauth-token', 'antigravity'],
+    ['.copilot/token', 'copilot'],
+    ['.copilot/mcp-oauth-config/github.tokens.json', 'copilot'],
+    ['.kimi-code/config.toml', 'kimi'],
+  ] as [string, string][]) {
+    const rule = excludeFor(rel)
+    expect(rule?.reason, `${harness}: ${rel} must be excluded`).toBe('secret')
+    expect(rule?.restoreWith ?? '').not.toBe('')
+  }
+})
+
+test('preferences.json is not walked — it travels redacted, staged', () => {
+  const rels = planSources({ layers: ['metrics'], harnesses: ['claude'] }).map(e => e.rel)
+  expect(rels).not.toContain('.agentistics/preferences.json')
+})
+```
+
+And in `backup.test.ts`, prove the redaction over a real archive:
+
+```ts
+test('the staged preferences travel WITHOUT their tokens', async () => {
+  // written by the fixture with a token in it
+  const text = execFileSync('tar', ['-xOf', archivePath, '.agentistics/preferences.json'], { encoding: 'utf8' })
+  expect(text).toContain('"lang"')
+  expect(text).not.toContain('SUPER-SECRET-TOKEN')
+})
+```
+
+Build the fixture's `preferences.json` with `team: { token: 'SUPER-SECRET-TOKEN', connections: [{ token: 'SUPER-SECRET-TOKEN' }] }` and assert the literal is absent from the extracted file.
+
+## Verify
+
+```bash
+bun test packages/server/server/backup/
+```
+
+**Then a deliberate-break check, and report it:** remove the `.kimi-code/config.toml` rule and
+confirm the per-harness probe FAILS naming kimi; restore it. And remove the redaction from
+`stagePreferences` and confirm the archive test FAILS finding the token; restore it.
