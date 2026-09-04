@@ -3793,6 +3793,24 @@ test('--max-bundle takes megabytes, and refuses anything that is not a positive 
   expect(parseBackupArgs(['--max-bundle', '0']).kind).toBe('error')
 })
 
+// A preference that is read and never consulted is worse than no preference: the user sets it,
+// nothing changes, and they are left guessing which of the two they got wrong.
+test('a --with flag marks the layers explicit; without one they come from configuration', () => {
+  const bare = parseBackupArgs([])
+  if (bare.kind !== 'run') throw new Error('expected run')
+  expect(bare.layersFromFlags).toBe(false)
+
+  const flagged = parseBackupArgs(['--with-raw'])
+  if (flagged.kind !== 'run') throw new Error('expected run')
+  expect(flagged.layersFromFlags).toBe(true)
+  expect(flagged.layers).toContain('raw')
+
+  // A non-layer flag does not make the layers explicit.
+  const other = parseBackupArgs(['--plan'])
+  if (other.kind !== 'run') throw new Error('expected run')
+  expect(other.layersFromFlags).toBe(false)
+})
+
 test('the schedule subcommand takes only the known ids', () => {
   expect(parseBackupArgs(['schedule', 'daily']).kind).toBe('schedule')
   expect(parseBackupArgs(['schedule', 'hourly']).kind).toBe('error')
@@ -3828,7 +3846,7 @@ In `packages/server/server/preferences.ts`, inside `export interface Preferences
    *  start writing gigabytes because it was upgraded. See backup/schedule.ts. */
   backup?: {
     schedule?: 'off' | 'daily' | 'weekly'
-    /** Layers a MANUAL run writes. */
+    /** Layers a MANUAL run writes when no `--with-*` flag is given. An explicit flag wins. */
     layers?: ('metrics' | 'repos' | 'archive' | 'raw')[]
     /** Layers a SCHEDULED run writes. Deliberately separate: `raw` is 2.4 GB a copy, so a daily
      *  schedule that inherited a manual run's layers would fill a disk. */
@@ -3907,7 +3925,16 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
 }
 
 export type BackupArgs =
-  | { kind: 'run'; layers: BackupLayer[]; harnesses: HarnessId[]; destDir?: string; maxBundleBytes?: number; planOnly: boolean }
+  | {
+      kind: 'run'
+      layers: BackupLayer[]
+      /** Whether a `--with-*` flag was actually given. False means "use the configured layers". */
+      layersFromFlags: boolean
+      harnesses: HarnessId[]
+      destDir?: string
+      maxBundleBytes?: number
+      planOnly: boolean
+    }
   | { kind: 'schedule'; schedule: ScheduleId }
   | { kind: 'status' }
   | { kind: 'help' }
@@ -3928,8 +3955,10 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
 
   const args = first === undefined ? [] : argv
   const layers: BackupLayer[] = [...DEFAULT_LAYERS]
-  if (args.includes('--with-archive')) layers.push('archive')
-  if (args.includes('--with-raw')) layers.push('raw')
+  const wantsArchive = args.includes('--with-archive')
+  const wantsRaw = args.includes('--with-raw')
+  if (wantsArchive) layers.push('archive')
+  if (wantsRaw) layers.push('raw')
 
   let harnesses: HarnessId[] = [...HARNESS_ORDER]
   const hi = args.indexOf('--harness')
@@ -3958,7 +3987,10 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
     maxBundleBytes = mb * 1024 * 1024
   }
 
-  return { kind: 'run', layers, harnesses, destDir, maxBundleBytes, planOnly: args.includes('--plan') }
+  return {
+    kind: 'run', layers, layersFromFlags: wantsArchive || wantsRaw,
+    harnesses, destDir, maxBundleBytes, planOnly: args.includes('--plan'),
+  }
 }
 
 const USAGE = `Usage:
@@ -4048,6 +4080,8 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   const parsed = parseBackupArgs(argv)
   const log = (l: string) => console.log(l)
 
+  // The early returns come BEFORE any preference read. `resolveLang()` calls `readPreferences()`,
+  // and `agentop backup help` should not touch the disk to print a usage string.
   if (parsed.kind === 'help') { console.log(USAGE); return 0 }
   if (parsed.kind === 'error') { console.error(parsed.message); console.error(); console.error(USAGE); return 1 }
 
@@ -4090,16 +4124,26 @@ export async function runBackupCli(argv: string[]): Promise<number> {
 
   const destDir = parsed.destDir ?? prefs.destDir
   const effective = { ...prefs, maxBundleBytes: parsed.maxBundleBytes ?? prefs.maxBundleBytes }
-  // A temp staging root, removed on every exit path: the bundles and patches belong in the
-  // archive, not left lying beside it.
+
+  // Explicit flags win; otherwise the configured layers; otherwise the built-in default. A
+  // preference that is read and never consulted is worse than no preference at all — the user sets
+  // it, nothing changes, and they are left guessing which of the two they got wrong.
+  const layers = parsed.layersFromFlags ? parsed.layers : effective.layers
+
+  // ONE try/finally, from the mkdtemp to the end.
+  //
+  // `buildRepoManifest` used to sit outside it, and it is not exception-free: the `mkdir` for the
+  // staging subtree and the `writeFile` for each patch are raw fs calls that throw on a permission
+  // error or a full disk, unlike the probe helpers, which report `unavailable` instead. A throw
+  // there left the temp root behind holding however many git bundles had already been written.
   const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
-  const repos = parsed.layers.includes('repos')
+  try {
+  const repos = layers.includes('repos')
     ? await buildRepoManifest(effective, stageRoot, log)
     : []
 
   if (parsed.planOnly) {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
-    log(`layers:    ${parsed.layers.join(', ')}`)
+    log(`layers:    ${layers.join(', ')}`)
     log(`harnesses: ${parsed.harnesses.join(', ')}`)
     log(`repos:     ${repos.filter(r => !r.note).length} cloneable, ${repos.filter(r => r.note).length} noted`)
     log(`dest:      ${destDir}`)
@@ -4107,18 +4151,13 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     return 0
   }
 
-  let result
-  try {
-    result = await runBackup({
-      homeDir: HOME_DIR, destDir, layers: parsed.layers, harnesses: parsed.harnesses,
-      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
-    })
-  } finally {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
-  }
+  const result = await runBackup({
+    homeDir: HOME_DIR, destDir, layers, harnesses: parsed.harnesses,
+    repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
+  })
   if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
 
-  log(`before compression: ${formatBytes(plannedTotal(result.sizes, parsed.layers))}`)
+  log(`before compression: ${formatBytes(plannedTotal(result.sizes, layers))}`)
   log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
   log(`sha256:             ${result.record.sha256}`)
 
@@ -4133,6 +4172,9 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     log(`pruned ${old.path}`)
   }
   return 0
+  } finally {
+    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 export async function runRestoreCli(argv: string[]): Promise<number> {
@@ -4198,10 +4240,8 @@ Create `packages/server/server/backup/daemon.ts`:
  * The check is cheap (a preference read and a date comparison), so it runs on a plain interval
  * rather than trying to be clever about when to wake up.
  */
-import { hostname, tmpdir } from 'os'
+import { hostname } from 'os'
 import { existsSync } from 'fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
-import { join } from 'path'
 import { HOME_DIR } from '../config'
 import { readPreferences } from '../preferences'
 import { CURRENT_VERSION } from '../version'
