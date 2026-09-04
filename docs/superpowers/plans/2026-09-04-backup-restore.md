@@ -717,6 +717,41 @@ test('a manifest missing a required field is refused, not half-read', () => {
   if (!r.ok) expect(r.reason).toBe('incomplete')
 })
 
+// A key that is PRESENT but the wrong type is the half-read this function exists to refuse. Each
+// of these passed the presence check and came back inside an `ok` manifest before `shapeOk`.
+test('a required field present but the wrong type is refused, not cast', () => {
+  for (const [key, bad] of [
+    ['layers', 'not-an-array'],
+    ['harnesses', 42],
+    ['groups', { name: 'metrics' }],
+    ['sizes', null],
+    ['homeDir', { toString: 'nope' }],
+    ['createdAt', 1_700_000_000],
+  ] as [string, unknown][]) {
+    const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+    raw[key] = bad
+    const r = decodeManifest(JSON.stringify(raw))
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toBe('incomplete')
+  }
+})
+
+test('an optional array that is present but not an array is refused', () => {
+  const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+  raw.repos = 'nope'
+  const r = decodeManifest(JSON.stringify(raw))
+  expect(r.ok).toBe(false)
+})
+
+// Structure is validated, contents are NOT: a layer name or harness id this build does not know
+// must still decode, because the VERSION gate is what guards meaning. Refusing on contents would
+// stop an older build reading a manifest it is entitled to read.
+test('an unknown layer name still decodes — the version gate guards meaning, not this', () => {
+  const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+  raw.layers = ['metrics', 'something-new']
+  expect(decodeManifest(JSON.stringify(raw)).ok).toBe(true)
+})
+
 test('an older manifest still reads — absent optional arrays become empty', () => {
   const raw = JSON.parse(encodeManifest(sample()))
   delete raw.repos
@@ -805,6 +840,30 @@ export function encodeManifest(m: BackupManifest): string {
 
 const REQUIRED = ['version', 'createdAt', 'homeDir', 'layers', 'harnesses', 'sizes', 'groups'] as const
 
+/**
+ * Present AND well-shaped.
+ *
+ * A presence check alone is exactly the half-read this function promises never to perform: a
+ * `layers` that is a string passes it, gets cast, and comes back inside an `ok` manifest — where
+ * the caller iterates its CHARACTERS as layer names. A `sizes` of `null` comes back as `null` under
+ * a type that says it cannot be. The archive came off physical media somebody carried, so
+ * structural corruption is a case rather than a hypothesis, and `ok` has to mean the shape is
+ * usable, not merely that the keys were there.
+ *
+ * This validates STRUCTURE, not contents: an unknown layer name or a harness id this build does not
+ * know still decodes, because the version gate above is what guards meaning. Rejecting on contents
+ * would refuse manifests an older build should still be able to read.
+ */
+function shapeOk(raw: Record<string, unknown>): boolean {
+  if (typeof raw.createdAt !== 'string' || typeof raw.homeDir !== 'string') return false
+  if (!Array.isArray(raw.layers) || !Array.isArray(raw.harnesses) || !Array.isArray(raw.groups)) return false
+  // The optional arrays may be ABSENT (an older manifest) but never present and not an array.
+  if (raw.repos !== undefined && !Array.isArray(raw.repos)) return false
+  if (raw.omittedSecrets !== undefined && !Array.isArray(raw.omittedSecrets)) return false
+  const sizes = raw.sizes
+  return typeof sizes === 'object' && sizes !== null && !Array.isArray(sizes)
+}
+
 export function decodeManifest(text: string): DecodedManifest {
   let raw: Record<string, unknown>
   try {
@@ -821,13 +880,14 @@ export function decodeManifest(text: string): DecodedManifest {
   for (const key of REQUIRED) {
     if (raw[key] === undefined || raw[key] === null) return { ok: false, reason: 'incomplete' }
   }
+  if (!shapeOk(raw)) return { ok: false, reason: 'incomplete' }
 
   const manifest: BackupManifest = {
     version,
-    createdAt: String(raw.createdAt),
-    agentopVersion: String(raw.agentopVersion ?? ''),
-    hostname: String(raw.hostname ?? ''),
-    homeDir: String(raw.homeDir),
+    createdAt: raw.createdAt as string,
+    agentopVersion: typeof raw.agentopVersion === 'string' ? raw.agentopVersion : '',
+    hostname: typeof raw.hostname === 'string' ? raw.hostname : '',
+    homeDir: raw.homeDir as string,
     platform: String(raw.platform ?? ''),
     layers: raw.layers as BackupLayer[],
     harnesses: raw.harnesses as HarnessId[],
