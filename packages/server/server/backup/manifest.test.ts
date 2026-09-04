@@ -52,6 +52,41 @@ test('a manifest missing a required field is refused, not half-read', () => {
   if (!r.ok) expect(r.reason).toBe('incomplete')
 })
 
+// A key that is PRESENT but the wrong type is the half-read this function exists to refuse. Each
+// of these passed the presence check and came back inside an `ok` manifest before `shapeOk`.
+test('a required field present but the wrong type is refused, not cast', () => {
+  for (const [key, bad] of [
+    ['layers', 'not-an-array'],
+    ['harnesses', 42],
+    ['groups', { name: 'metrics' }],
+    ['sizes', null],
+    ['homeDir', { toString: 'nope' }],
+    ['createdAt', 1_700_000_000],
+  ] as [string, unknown][]) {
+    const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+    raw[key] = bad
+    const r = decodeManifest(JSON.stringify(raw))
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toBe('incomplete')
+  }
+})
+
+test('an optional array that is present but not an array is refused', () => {
+  const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+  raw.repos = 'nope'
+  const r = decodeManifest(JSON.stringify(raw))
+  expect(r.ok).toBe(false)
+})
+
+// Structure is validated, contents are NOT: a layer name or harness id this build does not know
+// must still decode, because the VERSION gate is what guards meaning. Refusing on contents would
+// stop an older build reading a manifest it is entitled to read.
+test('an unknown layer name still decodes — the version gate guards meaning, not this', () => {
+  const raw = JSON.parse(encodeManifest(sample())) as Record<string, unknown>
+  raw.layers = ['metrics', 'something-new']
+  expect(decodeManifest(JSON.stringify(raw)).ok).toBe(true)
+})
+
 test('an older manifest still reads — absent optional arrays become empty', () => {
   const raw = JSON.parse(encodeManifest(sample()))
   delete raw.repos
