@@ -150,7 +150,16 @@ export interface BackupOptions {
 }
 
 export type BackupResult =
-  | { ok: true; record: BackupRecord; sizes: BackupSizes }
+  /**
+   * `skipped` is on the RESULT, not only in the log.
+   *
+   * `onLine` defaults to a no-op, so a caller that does not wire it — the scheduled run, anything
+   * headless, any future surface reading the result after the fact — would get an `ok: true` that
+   * looks identical whether the walk skipped a permission-denied directory or skipped nothing.
+   * That is the same "reports complete success over a real gap" this walk was changed to stop
+   * doing, arriving one layer up.
+   */
+  | { ok: true; record: BackupRecord; sizes: BackupSizes; skipped: WalkSkip[] }
   | { ok: false; reason: string }
 
 /** sha256 over the sorted `path:bytes` list. Deterministic, and independent of the archive. */
@@ -259,8 +268,9 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
     archiveBytes: statSync(archivePath).size,   // measured, never predicted
     sha256: await sha256File(archivePath),
     durationMs: Date.now() - started,
+    skipped: skipped.length,
   }
   await recordBackup(record)
   log(`wrote ${archivePath}`)
-  return { ok: true, record, sizes }
+  return { ok: true, record, sizes, skipped }
 }

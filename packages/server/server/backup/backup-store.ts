@@ -52,6 +52,15 @@ export interface BackupRecord {
   archiveBytes: number
   sha256: string
   durationMs: number
+  /**
+   * How many paths the walk skipped — a symlink it would not follow, or something it could not
+   * read. A COUNT rather than the list, because the list is unbounded (a home directory can hold
+   * thousands of symlinks) and this file is append-only history.
+   *
+   * It is here so `agentop backup status` can say a backup was incomplete. Absent on a record
+   * written before the field existed, which reads as "not known", never as zero.
+   */
+  skipped?: number
 }
 
 export interface BackupHistoryEntry extends BackupRecord {

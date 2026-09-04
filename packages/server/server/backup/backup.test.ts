@@ -100,6 +100,29 @@ test('a backup writes an archive, records a real size, and no credential is insi
   expect(listing).not.toContain('cache.db')
 })
 
+// A backup whose source tree contains a symlink returns skipped on the result with that entry,
+// and the recorded skipped count matches. Proving the defect is fixed: onLine defaults to a no-op,
+// so a caller that does not wire it would get an {ok: true} that looks identical whether the walk
+// skipped a symlink or skipped nothing at all.
+test('a backup with a symlink in sources returns skipped and records the count', async () => {
+  const dir = join(home, '.agentistics/sessions/claude')
+  symlinkSync(home, join(dir, 'loop'))
+  try {
+    const r = await runBackup({
+      homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+      repos: [], agentopVersion: 'test', hostname: 'box',
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // The result carries skipped, not only logged it.
+    expect(r.skipped).toEqual([{ rel: '.agentistics/sessions/claude/loop', reason: 'symlink' }])
+    // The record captures the count.
+    expect(r.record.skipped).toBe(1)
+  } finally {
+    rmSync(join(dir, 'loop'), { force: true })
+  }
+})
+
 // The repos layer's whole promise. Before this was wired the bundle path in the manifest named a
 // file that existed only on the machine being replaced.
 test('the repos assets travel inside the archive, under their archive-relative names', async () => {
