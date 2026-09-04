@@ -857,7 +857,7 @@ resto produz uma máquina que parece restaurada e não está."
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks (pure and standalone).
-- Produces: `RepoNote`, `RepoWorktree`, `RepoDirty`, `RepoEntry`, `DirFacts`, `groupRepos(facts, homeDir)`, `restoreCommands(entry, homeDir)`, `homeRelative(path, homeDir)`, `expandHome(path, homeDir)`.
+- Produces: `RepoNote`, `RepoWorktree`, `RepoDirty`, `RepoEntry`, `DirFacts`, `groupRepos(facts, homeDir)`, `restoreArgv(entry, homeDir)`, `restoreCommands(entry, homeDir)`, `homeRelative(path, homeDir)`, `expandHome(path, homeDir)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -865,7 +865,7 @@ Create `packages/server/server/backup/repo-manifest.test.ts`:
 
 ```ts
 import { test, expect } from 'bun:test'
-import { expandHome, groupRepos, homeRelative, restoreCommands, type DirFacts } from './repo-manifest'
+import { expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands, type DirFacts } from './repo-manifest'
 
 const HOME = '/home/u'
 
@@ -965,11 +965,23 @@ test('restoreCommands rebuilds clone, bundle, branch, worktrees and patches, in 
 
   expect(restoreCommands(e!, '/home/new')).toEqual([
     'git clone git@github.com:org/repo.git /home/new/proj',
-    'git -C /home/new/proj fetch repos/github.com_org_repo.bundle "refs/heads/*:refs/heads/*"',
+    'git -C /home/new/proj fetch repos/github.com_org_repo.bundle refs/heads/*:refs/heads/*',
     'git -C /home/new/proj checkout main',
     'git -C /home/new/proj worktree add /home/new/proj/wt feat/x',
     'git -C /home/new/proj apply repos/github.com_org_repo__main.patch',
   ])
+})
+
+// Display and execution come from ONE source, in two shapes. A path with a space cannot be
+// recovered from a joined string, and joining then re-splitting is how a shell injection or a
+// silently wrong argv gets in.
+test('restoreArgv is the same plan as structured argv, and survives a path with a space', () => {
+  const [e] = groupRepos([mainRepo('/home/u/my projects/app')], HOME)
+  const argv = restoreArgv(e!, '/home/u')
+  expect(argv[0]).toEqual(['git', 'clone', 'git@github.com:org/repo.git', '/home/u/my projects/app'])
+  // The printable form is the same plan, joined for a human to read.
+  expect(restoreCommands(e!, '/home/u')[0]).toBe('git clone git@github.com:org/repo.git /home/u/my projects/app')
+  expect(restoreCommands(e!, '/home/u')).toHaveLength(argv.length)
 })
 
 test('a repo whose bundle exceeded the ceiling is `too-large` and clones without one', () => {
@@ -1164,24 +1176,36 @@ function bare(f: DirFacts, homeDir: string, note: RepoNote): RepoEntry {
  * commands rather than running them is what lets `agentop restore` print the plan before touching
  * anything.
  */
-export function restoreCommands(entry: RepoEntry, homeDir: string): string[] {
+export function restoreArgv(entry: RepoEntry, homeDir: string): string[][] {
   if (entry.note && entry.note !== 'too-large') return []
   if (!entry.cloneUrl) return []
 
   const main = expandHome(entry.mainPath, homeDir)
-  const out: string[] = [`git clone ${entry.cloneUrl} ${main}`]
+  const out: string[][] = [['git', 'clone', entry.cloneUrl, main]]
 
   // Fetch the bundle BEFORE checking out: the branch we want may only exist inside it.
-  if (entry.bundle) out.push(`git -C ${main} fetch ${entry.bundle} "refs/heads/*:refs/heads/*"`)
-  if (entry.mainBranch) out.push(`git -C ${main} checkout ${entry.mainBranch}`)
+  if (entry.bundle) out.push(['git', '-C', main, 'fetch', entry.bundle, 'refs/heads/*:refs/heads/*'])
+  if (entry.mainBranch) out.push(['git', '-C', main, 'checkout', entry.mainBranch])
 
   for (const w of entry.worktrees) {
-    out.push(`git -C ${main} worktree add ${expandHome(w.path, homeDir)} ${w.branch}`)
+    out.push(['git', '-C', main, 'worktree', 'add', expandHome(w.path, homeDir), w.branch])
   }
   for (const d of entry.dirty) {
-    if (d.patch) out.push(`git -C ${expandHome(d.path, homeDir)} apply ${d.patch}`)
+    if (d.patch) out.push(['git', '-C', expandHome(d.path, homeDir), 'apply', d.patch])
   }
   return out
+}
+
+/**
+ * The same plan, joined for a person to read.
+ *
+ * `restoreArgv` is what RUNS and `restoreCommands` is what PRINTS, from one source — because a
+ * path containing a space cannot be recovered from a joined string, and joining then re-splitting
+ * is how a wrong argv (or a shell) gets in. The printed form is for the human reading
+ * `agentop restore`'s plan; nothing executes it.
+ */
+export function restoreCommands(entry: RepoEntry, homeDir: string): string[] {
+  return restoreArgv(entry, homeDir).map(a => a.join(' '))
 }
 ```
 
@@ -1756,7 +1780,7 @@ Create `packages/server/server/backup/restore-plan.ts`:
  *     attempted again on the next run — that is what makes `agentop restore --repos` safe to run
  *     until it converges.
  */
-import { expandHome, restoreCommands, type RepoEntry, type RepoNote } from './repo-manifest'
+import { expandHome, restoreArgv, restoreCommands, type RepoEntry, type RepoNote } from './repo-manifest'
 
 /** Where a restored `stats-cache.json` actually lands. Mirrors `ARCHIVE_STATS_DIR` in config.ts;
  *  this module stays pure, so the path is expressed $HOME-relative here. */
@@ -1798,6 +1822,9 @@ export interface RepoStep {
   reason?: RepoNote | 'destination-exists'
   /** The reason recorded by a previous failed attempt, so the report can say what went wrong. */
   previousFailure?: string
+  /** What RUNS — structured argv, never joined. */
+  argv: string[][]
+  /** What PRINTS — the same plan, joined. */
   commands: string[]
 }
 
@@ -1819,24 +1846,25 @@ export function planRepos(
     const base = { key: e.key, mainPath: e.mainPath }
     const prior = state.repos[e.key]
 
-    if (prior?.state === 'done') return { ...base, state: 'done', commands: [] }
+    if (prior?.state === 'done') return { ...base, state: 'done', argv: [], commands: [] }
     if (prior?.state === 'skipped') {
-      return { ...base, state: 'skipped', reason: e.note ?? undefined, commands: [] }
+      return { ...base, state: 'skipped', reason: e.note ?? undefined, argv: [], commands: [] }
     }
 
     // `too-large` is a real, cloneable repository; every other note means there is nothing to clone.
     if (e.note && e.note !== 'too-large') {
-      return { ...base, state: 'skipped', reason: e.note, commands: [] }
+      return { ...base, state: 'skipped', reason: e.note, argv: [], commands: [] }
     }
 
     if (destExists(expandHome(e.mainPath, homeDir))) {
-      return { ...base, state: 'skipped', reason: 'destination-exists', commands: [] }
+      return { ...base, state: 'skipped', reason: 'destination-exists', argv: [], commands: [] }
     }
 
     return {
       ...base,
       state: 'pending',
       previousFailure: prior?.state === 'failed' ? (prior.reason ?? 'unknown') : undefined,
+      argv: restoreArgv(e, homeDir),
       commands: restoreCommands(e, homeDir),
     }
   })
@@ -2895,14 +2923,19 @@ export async function restoreRepos(opts: RestoreReposOptions): Promise<RestoreRe
   return result
 }
 
-/** Run one repo's commands in order. Returns the failure reason, or null on success. */
+/**
+ * Run one repo's commands in order. Returns the failure reason, or null on success.
+ *
+ * It walks `step.argv` — structured, never a split string — so a path containing a space survives,
+ * and no shell is involved at any point. `step.commands` is the same plan joined, and exists only
+ * to be printed.
+ */
 async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => void): Promise<string | null> {
-  for (const cmd of step.commands) {
-    const args = cmd.split(' ').filter(Boolean)
-    const bin = args.shift()
+  for (let i = 0; i < step.argv.length; i++) {
+    const [bin, ...args] = step.argv[i]!
     if (!bin) continue
     try {
-      log(`  ${cmd}`)
+      log(`  ${step.commands[i] ?? bin}`)
       await run(bin, args, {
         cwd: homeDir,
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
@@ -2918,7 +2951,11 @@ async function runSteps(step: RepoStep, homeDir: string, log: (l: string) => voi
 }
 ```
 
-> **Note on `runSteps`' argument splitting:** the commands come from `restoreCommands`, which builds them from paths and URLs this machine produced. A path containing a space would split wrongly. That is a real limitation and it is stated rather than hidden — the plan's own output shows the exact commands, so a user with such a path can run them by hand. Do NOT "fix" it with a shell, which would turn a path into an injection surface.
+> **Why `runSteps` walks `argv` and not `commands`:** the two come from one source in
+> `repo-manifest.ts` — `restoreArgv` is what runs, `restoreCommands` is the same plan joined for a
+> person to read. A path containing a space cannot be recovered from a joined string, and joining
+> then re-splitting is exactly how a wrong argv gets in. No shell is involved at any point, so a
+> path is never an injection surface.
 
 - [ ] **Step 4: Run test to verify it passes**
 
