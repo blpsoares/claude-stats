@@ -8,10 +8,8 @@
  * The check is cheap (a preference read and a date comparison), so it runs on a plain interval
  * rather than trying to be clever about when to wake up.
  */
-import { hostname, tmpdir } from 'os'
+import { hostname } from 'os'
 import { existsSync } from 'fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
-import { join } from 'path'
 import { HOME_DIR } from '../config'
 import { readPreferences } from '../preferences'
 import { CURRENT_VERSION } from '../version'

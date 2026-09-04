@@ -38,6 +38,24 @@ test('--max-bundle takes megabytes, and refuses anything that is not a positive 
   expect(parseBackupArgs(['--max-bundle', '0']).kind).toBe('error')
 })
 
+// A preference that is read and never consulted is worse than no preference: the user sets it,
+// nothing changes, and they are left guessing which of the two they got wrong.
+test('a --with flag marks the layers explicit; without one they come from configuration', () => {
+  const bare = parseBackupArgs([])
+  if (bare.kind !== 'run') throw new Error('expected run')
+  expect(bare.layersFromFlags).toBe(false)
+
+  const flagged = parseBackupArgs(['--with-raw'])
+  if (flagged.kind !== 'run') throw new Error('expected run')
+  expect(flagged.layersFromFlags).toBe(true)
+  expect(flagged.layers).toContain('raw')
+
+  // A non-layer flag does not make the layers explicit.
+  const other = parseBackupArgs(['--plan'])
+  if (other.kind !== 'run') throw new Error('expected run')
+  expect(other.layersFromFlags).toBe(false)
+})
+
 test('the schedule subcommand takes only the known ids', () => {
   expect(parseBackupArgs(['schedule', 'daily']).kind).toBe('schedule')
   expect(parseBackupArgs(['schedule', 'hourly']).kind).toBe('error')

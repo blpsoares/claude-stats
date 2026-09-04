@@ -61,7 +61,16 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
 }
 
 export type BackupArgs =
-  | { kind: 'run'; layers: BackupLayer[]; harnesses: HarnessId[]; destDir?: string; maxBundleBytes?: number; planOnly: boolean }
+  | {
+      kind: 'run'
+      layers: BackupLayer[]
+      /** Whether a `--with-*` flag was actually given. False means "use the configured layers". */
+      layersFromFlags: boolean
+      harnesses: HarnessId[]
+      destDir?: string
+      maxBundleBytes?: number
+      planOnly: boolean
+    }
   | { kind: 'schedule'; schedule: ScheduleId }
   | { kind: 'status' }
   | { kind: 'help' }
@@ -82,8 +91,10 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
 
   const args = first === undefined ? [] : argv
   const layers: BackupLayer[] = [...DEFAULT_LAYERS]
-  if (args.includes('--with-archive')) layers.push('archive')
-  if (args.includes('--with-raw')) layers.push('raw')
+  const wantsArchive = args.includes('--with-archive')
+  const wantsRaw = args.includes('--with-raw')
+  if (wantsArchive) layers.push('archive')
+  if (wantsRaw) layers.push('raw')
 
   let harnesses: HarnessId[] = [...HARNESS_ORDER]
   const hi = args.indexOf('--harness')
@@ -112,7 +123,10 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
     maxBundleBytes = mb * 1024 * 1024
   }
 
-  return { kind: 'run', layers, harnesses, destDir, maxBundleBytes, planOnly: args.includes('--plan') }
+  return {
+    kind: 'run', layers, layersFromFlags: wantsArchive || wantsRaw,
+    harnesses, destDir, maxBundleBytes, planOnly: args.includes('--plan'),
+  }
 }
 
 const USAGE = `Usage:
@@ -201,11 +215,13 @@ async function buildRepoManifest(
 export async function runBackupCli(argv: string[]): Promise<number> {
   const parsed = parseBackupArgs(argv)
   const log = (l: string) => console.log(l)
-  const s = cliStrings(await resolveLang())
 
+  // The early returns come BEFORE any preference read. `resolveLang()` calls `readPreferences()`,
+  // and `agentop backup help` should not touch the disk to print a usage string.
   if (parsed.kind === 'help') { console.log(USAGE); return 0 }
   if (parsed.kind === 'error') { console.error(parsed.message); console.error(); console.error(USAGE); return 1 }
 
+  const s = cliStrings(await resolveLang())
   const prefs = readBackupPrefs(await readPreferences())
 
   if (parsed.kind === 'schedule') {
@@ -245,49 +261,57 @@ export async function runBackupCli(argv: string[]): Promise<number> {
 
   const destDir = parsed.destDir ?? prefs.destDir
   const effective = { ...prefs, maxBundleBytes: parsed.maxBundleBytes ?? prefs.maxBundleBytes }
-  // A temp staging root, removed on every exit path: the bundles and patches belong in the
-  // archive, not left lying beside it.
+
+  // Explicit flags win; otherwise the configured layers; otherwise the built-in default. A
+  // preference that is read and never consulted is worse than no preference at all — the user sets
+  // it, nothing changes, and they are left guessing which of the two they got wrong.
+  const layers = parsed.layersFromFlags ? parsed.layers : effective.layers
+
+  // ONE try/finally, from the mkdtemp to the end.
+  //
+  // `buildRepoManifest` used to sit outside it, and it is not exception-free: the `mkdir` for the
+  // staging subtree and the `writeFile` for each patch are raw fs calls that throw on a permission
+  // error or a full disk, unlike the probe helpers, which report `unavailable` instead. A throw
+  // there left the temp root behind holding however many git bundles had already been written.
   const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
-  const repos = parsed.layers.includes('repos')
-    ? await buildRepoManifest(effective, stageRoot, log)
-    : []
-
-  if (parsed.planOnly) {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
-    log(`layers:    ${parsed.layers.join(', ')}`)
-    log(`harnesses: ${parsed.harnesses.join(', ')}`)
-    log(`repos:     ${repos.filter(r => !r.note).length} cloneable, ${repos.filter(r => r.note).length} noted`)
-    log(`dest:      ${destDir}`)
-    log('(nothing was written — drop --plan to run it)')
-    return 0
-  }
-
-  let result
   try {
-    result = await runBackup({
-      homeDir: HOME_DIR, destDir, layers: parsed.layers, harnesses: parsed.harnesses,
+    const repos = layers.includes('repos')
+      ? await buildRepoManifest(effective, stageRoot, log)
+      : []
+
+    if (parsed.planOnly) {
+      log(`layers:    ${layers.join(', ')}`)
+      log(`harnesses: ${parsed.harnesses.join(', ')}`)
+      log(`repos:     ${repos.filter(r => !r.note).length} cloneable, ${repos.filter(r => r.note).length} noted`)
+      log(`dest:      ${destDir}`)
+      log('(nothing was written — drop --plan to run it)')
+      return 0
+    }
+
+    const result = await runBackup({
+      homeDir: HOME_DIR, destDir, layers, harnesses: parsed.harnesses,
       repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
     })
+    if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
+
+    log(`before compression: ${formatBytes(plannedTotal(result.sizes, layers))}`)
+    log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
+    log(`sha256:             ${result.record.sha256}`)
+
+    // Pruning deletes the FILES and leaves the records. The store is append-only (see BACKUPS_FILE)
+    // and already holds the rule that makes rewriting unnecessary: a record whose file is gone is
+    // reported absent by `markPresence` from then on, which is the truth and is what the history is
+    // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
+    // append-only shape exists to remove.
+    const entries = markPresence(await readBackups(), p => existsSync(p))
+    for (const old of toPrune(entries, prefs.keep)) {
+      await rm(old.path, { force: true }).catch(() => {})
+      log(`pruned ${old.path}`)
+    }
+    return 0
   } finally {
     await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
   }
-  if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
-
-  log(`before compression: ${formatBytes(plannedTotal(result.sizes, parsed.layers))}`)
-  log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
-  log(`sha256:             ${result.record.sha256}`)
-
-  // Pruning deletes the FILES and leaves the records. The store is append-only (see BACKUPS_FILE)
-  // and already holds the rule that makes rewriting unnecessary: a record whose file is gone is
-  // reported absent by `markPresence` from then on, which is the truth and is what the history is
-  // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
-  // append-only shape exists to remove.
-  const entries = markPresence(await readBackups(), p => existsSync(p))
-  for (const old of toPrune(entries, prefs.keep)) {
-    await rm(old.path, { force: true }).catch(() => {})
-    log(`pruned ${old.path}`)
-  }
-  return 0
 }
 
 export async function runRestoreCli(argv: string[]): Promise<number> {
