@@ -101,6 +101,29 @@ test('regenerable and runtime files are excluded', () => {
   expect(excludeFor('.agentistics/managed-sessions.json.corrupt-123')?.reason).toBe('regenerable')
 })
 
+// E5: local control-socket tokens, credential-shaped (a `--with-raw` backup walked them all: 141
+// `.key` files on the reference machine). `.key` matches BOTH — the correct one for the token file
+// itself, since it runs before the `.claude/daemon` runtime rule.
+test('session and daemon control-socket keys are excluded as secrets', () => {
+  const sessionKey = excludeFor('.claude/sessions/10259.1d78a4b41b072a6ab45882018ce6922232c6d996cb91d247fa18d79bfad5ac6b.key')
+  expect(sessionKey?.reason).toBe('secret')
+  expect(sessionKey?.restoreWith ?? '').not.toBe('')
+
+  const daemonKey = excludeFor('.claude/daemon/control.key')
+  expect(daemonKey?.reason).toBe('secret')
+
+  // A session's ordinary identity file (`<pid>.json` — holds the /rename name, not a credential)
+  // must NOT be swept up by the same rule; only `.key` files are.
+  expect(excludeFor('.claude/sessions/10259.json')).toBeNull()
+})
+
+// The rest of the daemon's state (dispatch queue, roster, attach journal) is tied to pids and
+// sockets on THIS machine and restores to nothing meaningful on a new one.
+test('the rest of the daemon directory is excluded as runtime state', () => {
+  expect(excludeFor('.claude/daemon/roster.json')?.reason).toBe('runtime')
+  expect(excludeFor('.claude/daemon/attach-journal')?.reason).toBe('runtime')
+})
+
 test('ordinary data is not excluded', () => {
   expect(excludeFor('.agentistics/sessions/claude/abc.json')).toBeNull()
   expect(excludeFor('.claude/stats-cache.json')).toBeNull()

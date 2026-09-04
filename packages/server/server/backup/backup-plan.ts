@@ -144,6 +144,17 @@ const CROSS_HARNESS_SECRETS: ExcludeRule[] = [
     restoreWith: 'agentop member connect <url> <token>',
     why: 'The central tokens inside preferences.json. The file itself travels, redacted — see backup-plan.ts ALWAYS.',
   },
+  // `.claude/sessions/<pid>.<hash>.key` (141 files on the reference machine) and
+  // `.claude/daemon/control.key` are local control-socket tokens for the session manager and the
+  // daemon dispatch socket. Both the `secret` and `runtime` reasons apply — they are credential-
+  // shaped AND tied to pids that will not exist on the new machine either way — and the table's own
+  // trade (over-exclusion is cheap, a leaked token is not) says they go out. `.key` alone is enough:
+  // it is a `contains` match, and nothing else this walk ever produces carries that extension.
+  {
+    pattern: '.key', match: 'contains', reason: 'secret',
+    restoreWith: 'nothing — a live session or the daemon issues a fresh one',
+    why: 'Local control-socket tokens: .claude/sessions/<pid>.<hash>.key and .claude/daemon/control.key.',
+  },
 ]
 
 const REGENERABLE: ExcludeRule[] = [
@@ -197,6 +208,12 @@ const RUNTIME: ExcludeRule[] = [
   {
     pattern: '.agentistics/events-producer.json', match: 'prefix', reason: 'runtime',
     why: 'The producer heartbeat — a pid on a machine that is gone.',
+  },
+  {
+    pattern: '.claude/daemon', match: 'prefix', reason: 'runtime',
+    why: 'The daemon dispatch queue, roster and attach journal — all keyed to pids and sockets on '
+      + 'THIS machine. `control.key` under this same directory is additionally caught by the `.key` '
+      + 'secret rule above, which runs first.',
   },
 ]
 
