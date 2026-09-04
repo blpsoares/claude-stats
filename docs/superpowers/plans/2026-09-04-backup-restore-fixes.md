@@ -772,3 +772,185 @@ bun test packages/server/server/backup/
 
 **Deliberate-break check, and report it:** remove `GIT_CONFIG_COUNT` from `HIJACKERS` and confirm
 the injection test FAILS; restore it.
+
+---
+
+# Wave D — three Criticals from the re-review, one of them created by Wave B
+
+## D1. The scheduled backup carries no `preferences.json` at all — a regression from B1
+
+Wave B removed the file from `ALWAYS` and re-established it as a staged replacement wired only
+through `cli-backup.ts`. `daemon.ts` is the other caller of `runBackup` and passes neither
+`assetRoot` nor `stagedRels`, so every scheduled run silently drops the billing timeline (which
+exists in no other file on any machine), the custom layouts, `archiveMode`, and the backup
+configuration itself — and logs `wrote <path>` and reports a healthy backup in `status`.
+
+**Why it happened, and what that dictates about the fix.** The new contract lets a caller omit half
+the payload by omitting an argument. `daemon.ts` was written against the old contract, where every
+source came from the `$HOME` walk and there was nothing to forget. Fixing `daemon.ts` would leave
+the trap for the third caller.
+
+**The staging moves INTO `runBackup`.** `stagedRels` leaves `BackupOptions` entirely.
+
+Move `stagePreferences` from `cli-backup.ts` into `backup.ts` (it needs `HOME_DIR`, which that
+module can import), and have `runBackup` own it:
+
+```ts
+  // Staged replacements are built HERE, not passed in. `preferences.json` must be redacted before
+  // it travels, and the previous shape — an optional `stagedRels` supplied by the caller — meant a
+  // caller could omit it by omitting an argument, which is exactly what the scheduled run did:
+  // every unattended backup silently lost the billing timeline while reporting success. A payload
+  // that is only complete when the caller remembers something is a payload that will be incomplete.
+  const prefStage = await mkdtemp(join(tmpdir(), 'agentistics-staged-'))
+  try {
+    const staged = await stageRedactedFiles(opts.homeDir, prefStage, log)
+    …everything from the walk to recordBackup…
+  } finally {
+    await rm(prefStage, { recursive: true, force: true }).catch(() => {})
+  }
+```
+
+with the tar gaining a fourth root:
+
+```ts
+    const stagedArgs = staged.length ? ['-C', prefStage, ...staged.map(f => f.rel)] : []
+```
+
+`stageRedactedFiles` returns `WalkedFile[]` (it stats what it wrote), so `archived`, the digest and
+the manifest count are unchanged from Wave B. Delete `stagePreferences` and the `stagedRels`
+plumbing from `cli-backup.ts`.
+
+**A test that pins the contract, not the caller** — in `backup.test.ts`:
+
+```ts
+// D1: the regression was that a CALLER could omit the redacted staging. Nothing about this test
+// mentions cli-backup; it asserts that `runBackup` itself always carries it, so the scheduled path
+// and every future caller get it for free.
+test('runBackup always carries the redacted preferences, with no caller cooperation', async () => {
+  const r = await runBackup({
+    homeDir: home, destDir: dest, layers: ['metrics'], harnesses: ['claude'],
+    repos: [], agentopVersion: 'test', hostname: 'box',   // no assetRoot, no staged anything
+  })
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  const text = execFileSync('tar', ['-xOf', r.record.path, '.agentistics/preferences.json'], { encoding: 'utf8' })
+  expect(text).toContain('"lang"')
+  expect(text).not.toContain('SUPER-SECRET-TOKEN')
+})
+```
+
+## D2. A repository that fails AFTER cloning is never retried, and the retry says `skipped`
+
+Reproduced:
+
+```
+RUN 1: FAILED k — git worktree add … fatal: invalid reference:
+RUN 2: attempted 0  failures []  skipped [{"key":"k","reason":"destination-exists"}]  exit 0
+```
+
+`planRepos` tests `destExists` before it reaches the `previousFailure` branch, and the clone is step
+one of several. So any failure at `branch -m`, `fetch`, `checkout`, `worktree add` or `apply` leaves
+the directory on disk, and from then on `agentop restore --repos` is a no-op printing `skipped` and
+returning 0 — while the CLI tells the user "Re-run the same command to retry only the failures".
+The worktrees, the unpushed branches and the uncommitted diffs are gone with no failing signal.
+
+**This is not resumed mid-sequence.** Making each step idempotent is a larger change than it looks
+(`branch -m` is not repeatable, `worktree add` is not), and a half-clever resume that gets it wrong
+writes into a repository the user may have started working in. It gets its own WORD instead, said
+loudly, with the previous reason and what to do.
+
+`RepoStep` gains the state, checked BEFORE `destExists`:
+
+```ts
+    // A repo that failed after its clone leaves the destination behind. Checking `destExists` first
+    // — as this did — turns every such repo into a permanent silent skip, which is worse than the
+    // failure: the CLI tells the user to re-run, the re-run does nothing, and it exits 0.
+    if (prior?.state === 'failed' && destExists(expandHome(e.mainPath, homeDir))) {
+      return {
+        ...base,
+        state: 'half-restored',
+        reason: 'half-restored',
+        previousFailure: prior.reason ?? 'unknown',
+        argv: [], commands: [],
+      }
+    }
+```
+
+`RepoStepState` becomes `'pending' | 'done' | 'skipped' | 'half-restored'`.
+
+`RestoreReposResult` gains `halfRestored: { key: string; path: string; previousFailure: string }[]`,
+`restoreRepos` fills it, and `runRestoreCli` prints it as its own block and **returns non-zero**:
+
+```ts
+  if (r.halfRestored.length) {
+    log('')
+    log('These repositories were PARTLY restored and will not be retried automatically:')
+    for (const h of r.halfRestored) {
+      log(`  ${h.key} at ${h.path}`)
+      log(`    the earlier run failed after cloning: ${h.previousFailure}`)
+    }
+    log('  Inspect them, then remove the directory and re-run to restore each from scratch.')
+  }
+  return r.failures.length || r.halfRestored.length ? 1 : 0
+```
+
+## D3. A worktree in detached HEAD emits `git worktree add <path> ''`
+
+`probeDir` deliberately records `branch: ''` for a detached HEAD, and `restoreArgv` passes it
+through. Real git: `fatal: invalid reference:` (exit 128). `runSteps` returns on the first failure,
+so ONE detached worktree costs the repository every later step — the remaining worktrees and every
+`git apply` of the uncommitted diffs — and by D2 it is then never retried. Detached HEADs are
+routine (bisects, CI checkouts, `worktree add --detach`).
+
+In `repo-manifest.ts`:
+
+```ts
+  for (const w of entry.worktrees) {
+    const at = expandHome(w.path, homeDir)
+    // A detached worktree has no branch — `probeDir` records '' for it deliberately. Passing that
+    // through emitted an empty argv element and git refused the whole repository at that point.
+    if (w.branch) out.push(['git', '-C', main, 'worktree', 'add', at, w.branch])
+    else if (w.head) out.push(['git', '-C', main, 'worktree', 'add', '--detach', at, w.head])
+    // With neither a branch nor a head there is nothing to recreate; the entry stays in the
+    // manifest so the report can name it.
+  }
+```
+
+Tests in `repo-manifest.test.ts`:
+
+```ts
+test('a detached worktree is recreated detached at its head, never with an empty ref', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: '', head: 'deadbee',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  const argv = restoreArgv(e!, HOME)
+  expect(argv).toContainEqual(['git', '-C', '/home/u/proj', 'worktree', 'add', '--detach', '/home/u/proj/wt', 'deadbee'])
+  expect(argv.every(a => a.every(x => x !== ''))).toBe(true)
+})
+
+test('a worktree with neither branch nor head is left out rather than emitted broken', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo', branch: '', head: '',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  expect(restoreArgv(e!, HOME).some(a => a.includes('worktree'))).toBe(false)
+})
+```
+
+## Verify
+
+```bash
+bun test packages/server/server/backup/
+```
+
+**Deliberate-break checks, both reported:**
+1. Remove the `stageRedactedFiles` call from `runBackup` and confirm the D1 test FAILS (no
+   `preferences.json` in the archive). Restore it.
+2. Move the `prior?.state === 'failed'` check back BELOW `destExists` and confirm a D2 test FAILS.
+   Restore it.
