@@ -32,6 +32,7 @@ import { confirm, maskedInput } from './cli-ui'
 import { parseRepoUrl, repoUrlHost } from './backup/github-api'
 import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
+import { backupNotification } from './backup/backup-notify'
 import { syncBackupToGithub } from './backup/github-upload'
 import {
   downloadBackupRelease, groupReleasesByMachine, listBackupReleases, newestForMachine,
@@ -414,15 +415,29 @@ export async function performBackup(
   prefs: BackupPrefs,
   run: { layers: BackupLayer[]; harnesses: HarnessId[]; destDir: string },
   log: (l: string) => void,
+  /** True when the DAEMON started this. Travels into every toast: a notification nobody asked for
+   *  has to say why it appeared. */
+  scheduled = false,
 ): Promise<import('./backup/backup').BackupResult> {
   const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
+  // Best-effort by construction: a backup must never fail because a toast could not be delivered,
+  // and on the CLI there is no dashboard listening at all.
+  const notify = (n: Parameters<typeof backupNotification>[0]): void => {
+    void import('../server/sse')
+      .then(m => m.broadcastNotification(backupNotification(n)))
+      .catch(() => { /* nobody is listening; the log already said it */ })
+  }
+  notify({ phase: 'started', layers: run.layers, scheduled })
   try {
     const repos = run.layers.includes('repos') ? await buildRepoManifest(prefs, stageRoot, log) : []
     const result = await runBackup({
       homeDir: HOME_DIR, destDir: run.destDir, layers: run.layers, harnesses: run.harnesses,
       repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
     })
-    if (!result.ok) return result
+    if (!result.ok) {
+      notify({ phase: 'failed', layers: run.layers, scheduled, reason: result.reason })
+      return result
+    }
 
     log(`before compression: ${formatBytes(plannedTotal(result.sizes, run.layers))}`)
     log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
@@ -438,8 +453,22 @@ export async function performBackup(
     // Not configured is a silent no-op — most machines never set this up. Configured, this walks
     // the whole confirmation ladder (`github-upload.ts`) and only deletes the local file once the
     // upload is confirmed byte-for-byte; a failed confirmation logs why and leaves it in place.
-    await syncBackupToGithub(result.record, { log })
+    notify({
+      phase: 'done', layers: run.layers, scheduled,
+      bytesLabel: formatBytes(result.record.archiveBytes),
+      skipped: result.record.skipped,
+    })
+
+    await syncBackupToGithub(result.record, { log, onOutcome: notify, scheduled })
     return result
+  } catch (e) {
+    // A throw here is the case the `!result.ok` branch above cannot see — a staging failure, a full
+    // disk mid-tar. Reported rather than swallowed into a stack trace nobody is watching.
+    notify({
+      phase: 'failed', layers: run.layers, scheduled,
+      reason: e instanceof Error ? e.message : String(e),
+    })
+    throw e
   } finally {
     await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
   }

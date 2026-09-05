@@ -526,6 +526,7 @@ const FAKE_BACKUP: ControlBackupStatus = {
     label: 'notebook',
     keepRemote: 5,
     deleteLocalAfterUpload: true,
+    auth: 'token',
   },
 }
 

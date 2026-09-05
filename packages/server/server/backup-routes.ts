@@ -255,7 +255,18 @@ export async function updateBackupConfig(
  * key-by-key check.
  */
 export type GithubSection =
-  | { configured: false }
+  | {
+    configured: false
+    /**
+     * Whether this machine can authenticate through the GitHub CLI it already has — so the form can
+     * OFFER that instead of asking for a token, which is the better answer when it is available:
+     * nothing is stored at all.
+     *
+     * Two refusal reasons, not one: "install gh" and "run `gh auth login`" are different
+     * instructions and one sentence covering both would be right for neither.
+     */
+    gh: { usable: true; account: string } | { usable: false; reason: 'not-installed' | 'logged-out' }
+  }
   | {
     configured: true
     url: string
@@ -266,12 +277,19 @@ export type GithubSection =
     /** How many of THIS machine's releases to keep. 0 = keep them all. */
     keepRemote: number
     deleteLocalAfterUpload: boolean
+    /** Which credential this machine uses. `'gh'` means NOTHING is stored here. */
+    auth: 'token' | 'gh'
   }
 
 export async function readGithubSection(file?: string): Promise<GithubSection> {
   const { readGithubConfig } = await import('./backup/github-store')
   const config = await readGithubConfig(file)
-  if (!config) return { configured: false }
+  if (!config) {
+    const { describeGhAuth, probeGh } = await import('./backup/github-cli')
+    // Probed only on the UNCONFIGURED path: it spawns a process and makes a network call, and a
+    // configured machine has no question left for it to answer.
+    return { configured: false, gh: describeGhAuth(await probeGh()) }
+  }
   return {
     configured: true,
     url: config.url,
@@ -279,6 +297,7 @@ export async function readGithubSection(file?: string): Promise<GithubSection> {
     label: config.label ?? hostname(),
     keepRemote: config.keepRemote,
     deleteLocalAfterUpload: config.deleteLocalAfterUpload,
+    auth: config.auth ?? 'token',
   }
 }
 
@@ -326,6 +345,8 @@ export interface ConnectGithubInput {
   url: string
   /** A GitHub PAT. Written to the 0600 config and NEVER echoed back — see the return type. */
   token: string
+  /** `'gh'` uses the GitHub CLI already on this machine and stores nothing. */
+  auth?: 'token' | 'gh'
   /** Test-only injection points, mirroring `setupGithubBackup`'s own. */
   file?: string
   fetchImpl?: import('./backup/github-api').FetchLike
@@ -358,6 +379,7 @@ export async function connectGithub(
   const result = await setupGithubBackup({
     url: input.url.trim(),
     token: input.token.trim(),
+    auth: input.auth,
     file: input.file,
     fetchImpl: input.fetchImpl,
   })

@@ -33,6 +33,12 @@ export interface GithubSetupInput {
   /** What this machine is called in its release tags. Defaults to the hostname — editable because
    *  a hostname is often unreadable and is not guaranteed unique across a person's machines. */
   label?: string
+  /**
+   * `'gh'` authenticates through the GitHub CLI already on this machine and stores NOTHING; the
+   * `token` field then carries the credential used to VERIFY the repository here (gh's own), and
+   * is not written. Absent means `'token'`. See `github-cli.ts`.
+   */
+  auth?: 'token' | 'gh'
   /** Test-only injection points, mirroring `gh()`'s own `fetchImpl` and `backup-store.ts`'s
    *  `file` parameter — a test never has to touch the network or the real `~/.agentistics`. */
   fetchImpl?: FetchLike
@@ -108,10 +114,14 @@ export async function setupGithubBackup(input: GithubSetupInput): Promise<Github
   }
 
   const config: GithubBackupConfig = {
+    // On `gh` the token is used for the four checks above and then DROPPED: the whole point of
+    // that mode is that this file holds no credential. Writing it "just in case" would be the one
+    // thing the mode exists to avoid.
+    ...(input.auth === 'gh' ? { auth: 'gh' as const } : null),
     url: input.url,
     owner,
     repo,
-    token: input.token,
+    token: input.auth === 'gh' ? '' : input.token,
     keepRemote: input.keepRemote ?? 0,
     deleteLocalAfterUpload: input.deleteLocalAfterUpload ?? false,
     label: input.label ?? hostname(),

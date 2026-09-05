@@ -105,7 +105,11 @@ type RunOutcome = { ok: true; bytesLabel: string; skipped?: number } | { ok: fal
  * refused on a public repository) lives in `agentop backup github setup`.
  */
 type GithubSectionJson =
-  | { configured: false }
+  | {
+    configured: false
+    /** Whether this machine can authenticate through the GitHub CLI it already has. */
+    gh?: { usable: true; account: string } | { usable: false; reason: 'not-installed' | 'logged-out' }
+  }
   | {
     configured: true
     url: string
@@ -403,6 +407,14 @@ export default function BackupSettings() {
   const [connectToken, setConnectToken] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
+  /**
+   * Authenticate through the GitHub CLI instead of storing a token.
+   *
+   * Defaults to ON the moment the server reports a usable `gh` — it is the better answer when it
+   * is available (nothing is stored at all), and defaulting to the token would mean the machine
+   * that needs no credential is the one being asked for one.
+   */
+  const [useGh, setUseGh] = useState(false)
 
   /**
    * Connect the repository. The five checks live on the server (`connectGithub` calls the same
@@ -419,7 +431,7 @@ export default function BackupSettings() {
       const r = await fetch('/api/backup/github/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: connectUrl, token: connectToken }),
+        body: JSON.stringify({ url: connectUrl, token: connectToken, auth: useGh ? 'gh' : 'token' }),
       })
       const data = (await r.json()) as { ok: boolean; reason?: string; section?: GithubSectionJson }
       if (data.ok && data.section) {
@@ -438,7 +450,7 @@ export default function BackupSettings() {
     } finally {
       setConnecting(false)
     }
-  }, [connectUrl, connectToken, pt])
+  }, [connectUrl, connectToken, useGh, pt])
   const [githubResult, setGithubResult] = useState<{ field: GithubField; ok: boolean; text: string } | null>(null)
 
   const loadGithub = useCallback(async () => {
@@ -450,6 +462,8 @@ export default function BackupSettings() {
       if (data.configured) {
         setLabelDraft(data.label)
         setKeepDraft(String(data.keepRemote))
+      } else if (data.gh?.usable) {
+        setUseGh(true)
       }
     } catch {
       setGithub(null)
@@ -611,6 +625,39 @@ export default function BackupSettings() {
             </div>
           )}
 
+          {/* Where the backups GO, before anything about what they contain. It is the decision a
+              person makes first and revisits least — an unconnected machine is one whose whole
+              history lives only on the disk being replaced, and burying that under four sections
+              about format and recurrence answers questions nobody asked yet. */}
+          {github && (
+            <>
+              <GithubVersioning
+                section={github}
+                labelDraft={labelDraft}
+                keepDraft={keepDraft}
+                saving={githubSaving}
+                result={githubResult}
+                pt={pt}
+                connectUrl={connectUrl}
+                connectToken={connectToken}
+                connecting={connecting}
+                connectError={connectError}
+                onConnectUrl={setConnectUrl}
+                onConnectToken={setConnectToken}
+                onConnect={() => { void connectGithubRepo() }}
+                useGh={useGh}
+                onUseGh={setUseGh}
+                onLabelDraft={setLabelDraft}
+                onKeepDraft={setKeepDraft}
+                onSaveLabel={saveLabelName}
+                onSaveKeep={saveKeepRemote}
+                onToggleDeleteLocal={checked => void saveGithub('deleteLocalAfterUpload', { deleteLocalAfterUpload: checked })}
+              />
+            </>
+          )}
+
+          <Divider />
+
           <Divider />
 
           {/* Configuration — the facts this page does not let you change: destination, retention,
@@ -695,32 +742,6 @@ export default function BackupSettings() {
 
           {/* GitHub versioning. Absent entirely when the endpoint 404s (a central) — see
               `loadGithub`. */}
-          {github && (
-            <>
-              <Divider />
-              <GithubVersioning
-                section={github}
-                labelDraft={labelDraft}
-                keepDraft={keepDraft}
-                saving={githubSaving}
-                result={githubResult}
-                pt={pt}
-                connectUrl={connectUrl}
-                connectToken={connectToken}
-                connecting={connecting}
-                connectError={connectError}
-                onConnectUrl={setConnectUrl}
-                onConnectToken={setConnectToken}
-                onConnect={() => { void connectGithubRepo() }}
-                onLabelDraft={setLabelDraft}
-                onKeepDraft={setKeepDraft}
-                onSaveLabel={saveLabelName}
-                onSaveKeep={saveKeepRemote}
-                onToggleDeleteLocal={checked => void saveGithub('deleteLocalAfterUpload', { deleteLocalAfterUpload: checked })}
-              />
-            </>
-          )}
-
           <Divider />
 
           {/* Per-harness coverage — last-backup is PER HARNESS, never one date at the top: an
@@ -1119,6 +1140,7 @@ function GithubVersioning({
   section, labelDraft, keepDraft, saving, result, pt,
   onLabelDraft, onKeepDraft, onSaveLabel, onSaveKeep, onToggleDeleteLocal,
   connectUrl, connectToken, connecting, connectError, onConnectUrl, onConnectToken, onConnect,
+  useGh, onUseGh,
 }: {
   section: GithubSectionJson
   labelDraft: string
@@ -1132,6 +1154,9 @@ function GithubVersioning({
   onConnectUrl: (v: string) => void
   onConnectToken: (v: string) => void
   onConnect: () => void
+  /** Authenticate through the GitHub CLI instead of storing a token. */
+  useGh: boolean
+  onUseGh: (v: boolean) => void
   /** Which control is writing right now, if any — every control is disabled while one is. */
   saving: GithubField | null
   result: { field: GithubField; ok: boolean; text: string } | null
@@ -1155,8 +1180,11 @@ function GithubVersioning({
           tokenDraft={connectToken}
           busy={connecting}
           error={connectError}
+          gh={section.gh}
+          useGh={useGh}
           onUrl={onConnectUrl}
           onToken={onConnectToken}
+          onUseGh={onUseGh}
           onSubmit={onConnect}
         />
       ) : (
@@ -1353,19 +1381,28 @@ function GithubFeedback({ feedback }: { feedback: { ok: boolean; text: string } 
  * message here would be a second explanation of a rule enforced somewhere else.
  */
 function GithubConnectForm({
-  pt, urlDraft, tokenDraft, busy, error, onUrl, onToken, onSubmit,
+  pt, urlDraft, tokenDraft, busy, error, gh, useGh, onUrl, onToken, onUseGh, onSubmit,
 }: {
   pt: boolean
   urlDraft: string
   tokenDraft: string
   busy: boolean
   error: string | null
+  /** Whether the GitHub CLI on this machine can be used instead of a token. */
+  gh?: { usable: true; account: string } | { usable: false; reason: 'not-installed' | 'logged-out' }
+  useGh: boolean
   onUrl: (v: string) => void
   onToken: (v: string) => void
+  onUseGh: (v: boolean) => void
   onSubmit: () => void
 }) {
   const isMobile = useIsMobile()
-  const canSubmit = urlDraft.trim().length > 0 && tokenDraft.trim().length > 0 && !busy
+  const ghUsable = gh?.usable === true
+  // With `gh` the token field is not shown at all, so it cannot be part of what makes the button
+  // pressable — requiring a value the form never asks for is a button that is disabled forever.
+  const canSubmit = urlDraft.trim().length > 0
+    && (useGh || tokenDraft.trim().length > 0)
+    && !busy
 
   const field = (
     label: string, hint: string, value: string, set: (v: string) => void, password: boolean,
@@ -1413,11 +1450,57 @@ function GithubConnectForm({
         <li>{pt
           ? 'Crie um repositório no GitHub e marque PRIVADO. Um público é recusado aqui — o backup carrega suas métricas, os primeiros prompts e um mapa dos seus diretórios.'
           : 'Create a repository on GitHub and mark it PRIVATE. A public one is refused here — a backup carries your metrics, your first prompts and a map of your directories.'}</li>
-        <li>{pt
-          ? 'Gere um token: fine-grained com acesso só a esse repositório e "Contents: Read and write", ou um clássico com o escopo repo.'
-          : 'Generate a token: fine-grained with access to that repository only and "Contents: Read and write", or a classic one with the repo scope.'}</li>
-        <li>{pt ? 'Cole os dois abaixo.' : 'Paste both below.'}</li>
+        <li>{pt ? 'Cole a URL abaixo.' : 'Paste the URL below.'}</li>
+        {!ghUsable && (
+          <li>{pt
+            ? 'Gere um token: fine-grained com acesso só a esse repositório e "Contents: Read and write", ou um clássico com o escopo repo.'
+            : 'Generate a token: fine-grained with access to that repository only and "Contents: Read and write", or a classic one with the repo scope.'}</li>
+        )}
       </ol>
+
+      {/* Which credential. The gh option is offered FIRST and pre-selected when it works, because
+          it is the better answer: nothing is stored on this machine at all. The trade is stated
+          rather than hidden — gh's token carries every scope the user's login has, while a
+          fine-grained PAT can be scoped to this one repository. */}
+      {gh && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        }}>
+          {ghUsable ? (
+            <>
+              <Checkbox
+                checked={useGh}
+                onChange={onUseGh}
+                disabled={busy}
+                label={pt
+                  ? `Usar o GitHub CLI desta máquina (${gh.usable ? gh.account : ''})`
+                  : `Use this machine’s GitHub CLI (${gh.usable ? gh.account : ''})`}
+              />
+              <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '6px 0 0 24px' }}>
+                {useGh
+                  ? (pt
+                    ? 'Nenhum token é guardado aqui. O agentop pede um ao gh no momento de cada envio — então se você rodar `gh auth logout`, o versionamento para, em vez de continuar com uma credencial antiga.'
+                    : 'No token is stored here. agentop asks gh for one at the moment of each upload — so if you run `gh auth logout`, versioning stops instead of carrying on with a stale credential.')
+                  : (pt
+                    ? 'Desmarcado, você cola um token. Ele fica em ~/.agentistics/github-backup.json com permissão 0600, nunca é devolvido por uma rota e está na lista de exclusão do próprio backup. Um token fine-grained alcança só este repositório — mais estreito que o do gh, que carrega todos os escopos do seu login.'
+                    : 'Unchecked, you paste a token. It lives in ~/.agentistics/github-backup.json at mode 0600, is never returned by a route, and is on the backup’s own exclusion list. A fine-grained token reaches only this repository — narrower than gh’s, which carries every scope your login has.')}
+              </p>
+            </>
+          ) : (
+            // Two reasons, two instructions. One sentence covering both would be right for neither.
+            <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+              {gh.usable ? '' : gh.reason === 'not-installed'
+                ? (pt
+                  ? 'O GitHub CLI (gh) não está instalado aqui. Com ele, o agentop não precisaria guardar token nenhum — instale e recarregue esta tela para usar essa opção.'
+                  : 'The GitHub CLI (gh) is not installed here. With it, agentop would store no token at all — install it and reload this screen to use that option.')
+                : (pt
+                  ? 'O GitHub CLI (gh) está instalado mas não autenticado. Rode `gh auth login` e recarregue esta tela para conectar sem guardar token nenhum.'
+                  : 'The GitHub CLI (gh) is installed but not logged in. Run `gh auth login` and reload this screen to connect without storing any token.')}
+            </p>
+          )}
+        </div>
+      )}
 
       {field(
         pt ? 'URL do repositório' : 'Repository URL',
@@ -1425,7 +1508,7 @@ function GithubConnectForm({
           : 'Must be github.com — checked before any request is made, so the token never leaves for a host you mistyped.',
         urlDraft, onUrl, false, 'https://github.com/owner/repo',
       )}
-      {field(
+      {!useGh && field(
         pt ? 'Token do GitHub' : 'GitHub token',
         pt ? 'Guardado só nesta máquina, com permissão 0600. Nunca é devolvido por uma rota e está na lista de exclusão do próprio backup.'
           : 'Stored only on this machine, mode 0600. Never returned by a route, and on the backup’s own exclusion list.',

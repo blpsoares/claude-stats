@@ -23,8 +23,17 @@ export interface GithubBackupConfig {
   url: string
   owner: string
   repo: string
-  /** A GitHub PAT. NEVER logged, NEVER returned by a route, NEVER included in a backup. */
+  /**
+   * A GitHub PAT. NEVER logged, NEVER returned by a route, NEVER included in a backup.
+   * EMPTY when `auth` is `'gh'` — nothing is stored in that mode.
+   */
   token: string
+  /**
+   * Which credential to use. Absent reads as `'token'`: every config written before `gh` was an
+   * option holds one, and treating absence as anything else would break every machine already
+   * versioning, at the moment it tried to upload. See `github-cli.ts`.
+   */
+  auth?: 'token' | 'gh'
   /** How many of THIS MACHINE's releases to keep on GitHub. 0 means keep them all. Never counted
    *  across machines — see `selectForPruning`. */
   keepRemote: number
@@ -89,6 +98,8 @@ export async function readGithubConfig(file = GITHUB_BACKUP_CONFIG_FILE): Promis
     // record in their bodies, so it attributes its own history correctly.
     label: typeof (parsed as Partial<GithubBackupConfig>).label === 'string'
       ? (parsed as GithubBackupConfig).label : undefined,
+    // Only the two values mean anything; anything else reads as absent, i.e. `'token'`.
+    auth: (parsed as Partial<GithubBackupConfig>).auth === 'gh' ? 'gh' : undefined,
   }
 }
 

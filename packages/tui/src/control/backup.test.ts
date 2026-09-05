@@ -539,13 +539,14 @@ test('an empty row list or a non-positive width fits nothing', () => {
 // githubRows — the versioning block, and the one thing it may never carry
 // -----------------------------------------------------------------------------
 
-const CONFIGURED: GithubSection = {
+const CONFIGURED: GithubSection & { configured: true } = {
   configured: true,
   url: 'https://github.com/you/agentistics-backups',
   repo: 'you/agentistics-backups',
   label: 'notebook',
   keepRemote: 5,
   deleteLocalAfterUpload: true,
+  auth: 'token',
 }
 
 const rowText = (rows: GithubRow[]) =>

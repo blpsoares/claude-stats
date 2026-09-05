@@ -52,6 +52,39 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
     pt: { title: 'Conectado à central', message: 'Os envios para {central} voltaram a funcionar.' },
     en: { title: 'Connected to the central', message: 'Pushes to {central} are working again.' },
   },
+  // The backup's own toasts. A backup can take minutes and, on a schedule, nobody pressed
+  // anything to start it — so a machine that is busy backing up would otherwise look exactly like
+  // one that is idle, and a FAILED backup exactly like one that never ran. That last pair is the
+  // dangerous one: it is the case where the person believes they are covered.
+  'backup.started': {
+    pt: { title: 'Backup em andamento', message: 'Salvando {layers}. Você pode continuar usando a máquina.' },
+    en: { title: 'Backup running', message: 'Saving {layers}. You can keep using the machine.' },
+  },
+  'backup.done': {
+    pt: { title: 'Backup concluído', message: '{layers} · {size}.' },
+    en: { title: 'Backup complete', message: '{layers} · {size}.' },
+  },
+  // A clean run and a partial one are different facts, so they are different codes — one sentence
+  // covering both would let a backup quietly stop carrying something.
+  'backup.done.skipped': {
+    pt: { title: 'Backup concluído, com ressalvas', message: '{layers} · {size}. {skipped} caminho(s) não puderam ser lidos e ficaram de fora — veja o log.' },
+    en: { title: 'Backup complete, with caveats', message: '{layers} · {size}. {skipped} path(s) could not be read and were left out — see the log.' },
+  },
+  'backup.failed': {
+    pt: { title: 'Backup FALHOU', message: 'Nada foi gravado. Motivo: {reason}' },
+    en: { title: 'Backup FAILED', message: 'Nothing was written. Reason: {reason}' },
+  },
+  'backup.uploaded': {
+    pt: { title: 'Backup versionado no GitHub', message: 'Release {tag} — conferido byte a byte.' },
+    en: { title: 'Backup versioned on GitHub', message: 'Release {tag} — confirmed byte for byte.' },
+  },
+  // A WARNING, deliberately, not an error: the archive was written and is on disk and restores.
+  // Calling this a failed backup would tell someone they have nothing when they have everything
+  // except the copy on GitHub.
+  'backup.upload_failed': {
+    pt: { title: 'Backup salvo, envio falhou', message: 'O arquivo está no disco desta máquina e restaura normalmente — só a cópia no GitHub não foi feita. Motivo: {reason}' },
+    en: { title: 'Backup saved, upload failed', message: 'The archive is on this machine and restores normally — only the GitHub copy was not made. Reason: {reason}' },
+  },
   'member.removed': {
     pt: { title: 'Removido da central', message: 'O acesso desta máquina a {central} foi revogado. A conexão foi removida — gere um novo token nessa central para reconectar.' },
     en: { title: 'Removed from the central', message: 'Access to {central} was revoked for this machine. The connection was removed — mint a new token there to reconnect.' },

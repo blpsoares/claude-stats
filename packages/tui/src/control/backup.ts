@@ -438,6 +438,8 @@ export type GithubSection =
     /** How many of THIS machine's releases to keep. 0 = keep them all. */
     keepRemote: number
     deleteLocalAfterUpload: boolean
+    /** Which credential this machine uses. `'gh'` means NOTHING is stored here. */
+    auth: 'token' | 'gh'
   }
 
 /**

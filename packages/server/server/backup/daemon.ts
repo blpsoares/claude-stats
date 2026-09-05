@@ -8,15 +8,10 @@
  * The check is cheap (a preference read and a date comparison), so it runs on a plain interval
  * rather than trying to be clever about when to wake up.
  */
-import { hostname } from 'os'
-import { HOME_DIR } from '../config'
 import { readPreferences } from '../preferences'
-import { CURRENT_VERSION } from '../version'
-import { pruneOldBackups, readBackupPrefs } from '../cli-backup'
+import { performBackup, readBackupPrefs } from '../cli-backup'
 import { lastBackup, loadBackupHistory } from './backup-store'
 import { isDue } from './schedule'
-import { runBackup } from './backup'
-import { syncBackupToGithub } from './github-upload'
 
 const CHECK_MS = 15 * 60_000
 
@@ -48,24 +43,22 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
       // "0 repositories to clone" on a machine whose owner believed they were covered.
       const layers = prefs.scheduleLayers.filter(l => l !== 'repos')
       log(`[backup] scheduled run: layers ${layers.join(', ')} (repos are built by \`agentop backup\`, not on a schedule)`)
-      const r = await runBackup({
-        homeDir: HOME_DIR,
-        destDir: prefs.destDir,
-        layers,
-        harnesses: prefs.harnesses,
-        repos: [],   // the repo manifest is a manual concern: it shells out to git 282 times
-        agentopVersion: CURRENT_VERSION,
-        hostname: hostname(),
-        onLine: l => log(`[backup] ${l}`),
-      })
+      // THE SAME `performBackup` a manual `agentop backup` runs — write, prune, then the GitHub
+      // confirmation ladder — rather than a second copy of that sequence. It used to be one here,
+      // and a copy of a gesture is a second place for the two to drift: the notifications added to
+      // `performBackup` reached a person pressing a button and NOT the unattended run, which is the
+      // one nobody is watching and the only one where a silent failure goes unnoticed for weeks.
+      //
+      // Passing `layers` WITHOUT `repos` is what keeps the daemon's own rule intact:
+      // `performBackup` builds a manifest only when the layers ask for one, so filtering the layer
+      // out is the whole of "no unattended git shelling", stated once.
+      const r = await performBackup(
+        prefs,
+        { layers, harnesses: prefs.harnesses, destDir: prefs.destDir },
+        l => log(`[backup] ${l}`),
+        true,
+      )
       log(r.ok ? `[backup] wrote ${r.record.path}` : `[backup] failed: ${r.reason}`)
-      if (r.ok) {
-        await pruneOldBackups(prefs.keep, l => log(`[backup] ${l}`))
-        // Walks the same confirmation ladder a manual `agentop backup` does (see
-        // `github-upload.ts`): a failed confirmation keeps the local file and logs why — never
-        // deletes on a schedule what a human running the same steps by hand would not delete.
-        await syncBackupToGithub(r.record, { log: l => log(`[backup] ${l}`) })
-      }
     } catch (e) {
       log(`[backup] not run: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

@@ -28,6 +28,8 @@ import { basename } from 'path'
 import { gh, type FetchLike } from './github-api'
 import type { GithubBackupConfig } from './github-store'
 import { readGithubConfig } from './github-store'
+import { resolveGithubAuth } from './github-cli'
+import type { BackupLayer } from './backup-plan'
 import type { BackupRecord } from './backup-store'
 import { recordPrune } from './backup-store'
 import { readManifestOf } from './restore'
@@ -51,7 +53,7 @@ interface ReleaseWithAssets {
 }
 
 export type GithubUploadOutcome =
-  | { ok: true; htmlUrl: string; deletedLocal: boolean; verifyMs: number }
+  | { ok: true; htmlUrl: string; deletedLocal: boolean; verifyMs: number; tag: string }
   /** `localFileKept` is always `true` here — there is no failure path from this function that
    *  removes the local archive; it is named on the type so a caller cannot read a failure and
    *  wonder. */
@@ -94,6 +96,14 @@ export async function uploadBackupToGithub(
   // The manifest travels INSIDE the archive (see manifest.ts) — reading it back here, rather than
   // threading it through every caller, is what lets this function take just a `BackupRecord` and
   // still build a release body with the layers/harnesses/session count the plan requires.
+  // The credential, resolved ONCE for this whole upload. On a `gh` config nothing is stored and
+  // this is where `gh auth token` runs; on a `token` config it is the stored one. Resolved before
+  // any request so a machine whose gh has been logged out fails with THAT sentence, rather than
+  // with a 401 the user would read as a revoked PAT.
+  const auth = await resolveGithubAuth(config)
+  if (!auth.ok) return fail(auth.reason)
+  const token = auth.token
+
   const decoded = await readManifestOf(record.path)
   if (!decoded.ok) {
     return fail(`could not read this backup's own manifest before uploading it (${decoded.reason})`)
@@ -117,7 +127,7 @@ export async function uploadBackupToGithub(
 
   log(`github backup: creating release ${tag}…`)
   const created = await gh<CreatedRelease>(
-    `/repos/${config.owner}/${config.repo}/releases`, config.token,
+    `/repos/${config.owner}/${config.repo}/releases`, token,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -137,7 +147,7 @@ export async function uploadBackupToGithub(
 
   log(`github backup: uploading ${fileName} (${bytes.length} bytes)…`)
   const uploaded = await gh<UploadedAsset>(
-    assetUploadUrl(created.data.upload_url, fileName), config.token,
+    assetUploadUrl(created.data.upload_url, fileName), token,
     // `Buffer` is not itself in the DOM `BodyInit` union `fetch` is typed against here — a plain
     // `Uint8Array` (which `Buffer` already is, at runtime) is.
     { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) },
@@ -147,7 +157,7 @@ export async function uploadBackupToGithub(
 
   log('github backup: re-reading the release to confirm the asset landed…')
   const reread = await gh<ReleaseWithAssets>(
-    `/repos/${config.owner}/${config.repo}/releases/${created.data.id}`, config.token, {}, fetchImpl,
+    `/repos/${config.owner}/${config.repo}/releases/${created.data.id}`, token, {}, fetchImpl,
   )
   if (!reread.ok) return fail(`could not re-read the release to confirm the upload: ${reread.message}`)
 
@@ -166,7 +176,7 @@ export async function uploadBackupToGithub(
   log('github backup: downloading it back to verify the bytes (this re-downloads the whole file)…')
   const verifyStart = Date.now()
   const downloaded = await gh<ArrayBuffer>(
-    `/repos/${config.owner}/${config.repo}/releases/assets/${asset.id}`, config.token,
+    `/repos/${config.owner}/${config.repo}/releases/assets/${asset.id}`, token,
     { headers: { Accept: 'application/octet-stream' } }, fetchImpl, 'arrayBuffer',
   )
   const verifyMs = Date.now() - verifyStart
@@ -190,7 +200,7 @@ export async function uploadBackupToGithub(
     log(`github backup: deleted the local copy (confirmed on ${config.owner}/${config.repo}@${tag}): ${record.path}`)
   }
 
-  return { ok: true, htmlUrl: created.data.html_url, deletedLocal, verifyMs }
+  return { ok: true, htmlUrl: created.data.html_url, deletedLocal, verifyMs, tag }
 }
 
 /**
@@ -202,20 +212,55 @@ export async function uploadBackupToGithub(
  */
 export async function syncBackupToGithub(
   record: BackupRecord,
-  opts: { fetchImpl?: FetchLike; log?: (line: string) => void; configFile?: string; recordFile?: string } = {},
+  opts: {
+    fetchImpl?: FetchLike
+    log?: (line: string) => void
+    configFile?: string
+    recordFile?: string
+    /** Raised for the upload's own outcome — a SEPARATE thing from the backup's. A backup that was
+     *  written and failed to upload is not a failed backup: the archive is on disk and restores. */
+    onOutcome?: (n: {
+      phase: 'uploaded' | 'upload-failed'
+      layers: BackupLayer[]
+      scheduled: boolean
+      reason?: string
+      tag?: string
+    }) => void
+    scheduled?: boolean
+  } = {},
 ): Promise<void> {
   const log = opts.log ?? (() => {})
   const config = await readGithubConfig(opts.configFile)
+  // Not configured is a silent no-op, and raises NO toast: most machines never set this up, and a
+  // notification saying "this thing you did not enable did not happen" is noise on every run.
   if (!config) return
 
   const outcome = await uploadBackupToGithub(config, record, {
     fetchImpl: opts.fetchImpl, onLine: log, recordFile: opts.recordFile,
   })
-  if (!outcome.ok) return
+  const scheduled = opts.scheduled ?? false
+  if (!outcome.ok) {
+    opts.onOutcome?.({
+      phase: 'upload-failed', layers: record.layers, scheduled, reason: outcome.reason,
+    })
+    return
+  }
+  opts.onOutcome?.({
+    phase: 'uploaded', layers: record.layers, scheduled, tag: outcome.tag,
+  })
 
   if (config.keepRemote > 0) {
+    // Resolved again rather than carried out of the upload: on a `gh` config the token is asked for
+    // at the moment it is needed and never held, and retention is a separate moment. A `gh` that
+    // stopped answering between the two leaves the backup UPLOADED and unpruned — the safe half to
+    // fail on, and it is said rather than swallowed.
+    const auth = await resolveGithubAuth(config)
+    if (!auth.ok) {
+      log(`github backup: retention skipped — ${auth.reason}`)
+      return
+    }
     await pruneRemoteReleases(
-      config.owner, config.repo, config.token, config.keepRemote, opts.fetchImpl, log,
+      config.owner, config.repo, auth.token, config.keepRemote, opts.fetchImpl, log,
       // Same fallback the upload uses. On a config written before labels existed this is exactly
       // what those releases' bodies already record (`- host:` is `os.hostname()`), so the machine
       // still attributes — and therefore may still prune — its own history.

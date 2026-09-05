@@ -5,7 +5,7 @@
  * operator's own `~/.agentistics/github-backup.json`.
  */
 import { describe, test, expect } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { readGithubConfig, writeGithubConfig } from './backup/github-store'
@@ -38,7 +38,11 @@ describe('the GitHub versioning section — the token never leaves the machine',
   test('an unconfigured machine says so, and says nothing else', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghroute-'))
     const status = await readGithubSection(join(dir, 'nothing.json'))
-    expect(status).toEqual({ configured: false })
+    expect(status.configured).toBe(false)
+    // The unconfigured shape also says whether `gh` can be offered — the machine running the suite
+    // may or may not have it, so the assertion is on the SHAPE, never on this machine's answer.
+    if (status.configured) return
+    expect(typeof status.gh.usable).toBe('boolean')
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -85,7 +89,7 @@ test('the cockpit contract carries the GitHub section, and it is the SAME shape 
   // The tui mirror declares exactly these keys. A field added on one side and not the other is
   // what this assertion exists to catch, before a cockpit renders `undefined`.
   expect(Object.keys(section).sort())
-    .toEqual(['configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo', 'url'])
+    .toEqual(['auth', 'configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo', 'url'])
   expect(JSON.stringify(section)).not.toContain('ghp_')
   rmSync(dir, { recursive: true, force: true })
 })
@@ -148,4 +152,29 @@ describe('connecting a repository FROM the interface', () => {
     expect(called).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
+})
+
+test('connecting through the GitHub CLI stores NO token at all', async () => {
+  // The whole point of the `gh` mode. The credential gh hands over is used for the four checks and
+  // then dropped: writing it "just in case" would be the one thing this mode exists to avoid.
+  const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghcli-'))
+  const file = join(dir, 'github.json')
+  const res = await connectGithub({
+    url: 'https://github.com/me/backups', token: 'ghp_from_gh_only_for_the_check', auth: 'gh',
+    file,
+    fetchImpl: async () => new Response(
+      JSON.stringify({ private: true, permissions: { push: true } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  })
+  expect(res.ok).toBe(true)
+  const raw = readFileSync(file, 'utf-8')
+  expect(raw).not.toContain('ghp_')
+  const stored = await readGithubConfig(file)
+  expect(stored?.auth).toBe('gh')
+  expect(stored?.token).toBe('')
+  // And the interface is told which mode is in force, so it can say "nothing is stored here".
+  const section = await readGithubSection(file)
+  expect(section.configured && section.auth).toBe('gh')
+  rmSync(dir, { recursive: true, force: true })
 })
