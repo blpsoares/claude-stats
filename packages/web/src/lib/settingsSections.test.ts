@@ -4,7 +4,7 @@ import { visibleSettingsSections, SETTINGS_SECTIONS } from './settingsSections'
 const ids = (v: Parameters<typeof visibleSettingsSections>[0]) => visibleSettingsSections(v).map(s => s.id)
 
 test('solo/member: personal sections + live, no governance', () => {
-  expect(ids({ central: false })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'billing', 'install', 'connection', 'live', 'chat'])
+  expect(ids({ central: false })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'backup', 'harnesses', 'pricing', 'billing', 'install', 'connection', 'live', 'chat'])
 })
 
 test('central owner: personal (no live) + all governance sections', () => {
@@ -30,6 +30,12 @@ test('billing is a machine section — a central cannot price a fleet from one t
   expect(ids({ central: false })).toContain('billing')
   expect(ids({ central: true, role: 'owner' })).not.toContain('billing')
   expect(ids({ central: true, role: 'member', isManager: true })).not.toContain('billing')
+})
+
+test('backup is a machine section — a central has no local harness directories to back up', () => {
+  expect(ids({ central: false })).toContain('backup')
+  expect(ids({ central: true, role: 'owner' })).not.toContain('backup')
+  expect(ids({ central: true, role: 'member', isManager: true })).not.toContain('backup')
 })
 
 test('chat is a machine section — a central serves no local chat to configure', () => {

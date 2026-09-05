@@ -1,7 +1,7 @@
 /** Which settings sections a viewer can see. UX-only gate — the server enforces real authz. */
 export type SettingsSectionId =
   | 'preferences' | 'sessions' | 'data-sources' | 'harnesses' | 'pricing' | 'billing' | 'install' | 'connection' | 'live'
-  | 'chat' | 'notifications'
+  | 'chat' | 'notifications' | 'backup'
   | 'users' | 'teams' | 'machines' | 'repositories'
 
 export type SettingsGroup = 'personal' | 'governance'
@@ -22,6 +22,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'notifications', labelEn: 'Notifications', labelPt: 'Notificações', group: 'personal' },
   { id: 'sessions', labelEn: 'Sessions', labelPt: 'Sessões', group: 'personal' },
   { id: 'data-sources', labelEn: 'Data & sources', labelPt: 'Dados & fontes', group: 'personal' },
+  { id: 'backup', labelEn: 'Backup', labelPt: 'Backup', group: 'personal' },
   { id: 'harnesses', labelEn: 'Harnesses', labelPt: 'Harnesses', group: 'personal' },
   { id: 'pricing', labelEn: 'Pricing', labelPt: 'Preços', group: 'personal' },
   { id: 'billing', labelEn: 'Billing', labelPt: 'Cobrança', group: 'personal' },
@@ -40,6 +41,9 @@ export function visibleSettingsSections(v: SettingsViewer): SettingsSection[] {
     switch (s.id) {
       case 'connection': return !v.central
       case 'live': return !v.central
+      // A central aggregates other machines and has no local harness directories of its own to
+      // back up — same reason `connection` and `live` are machine-only.
+      case 'backup': return !v.central
       // Chat spawns an assistant CLI on THIS host. A central has no local harness to spawn, so
       // there is nothing there to configure — the same reason `connection` and `live` are hidden.
       // Two gates, not one. `chatEnabled` (the user's switch) gates the ROWS inside the section;

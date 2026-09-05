@@ -861,6 +861,44 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    if (url.pathname === '/api/backup/status' && req.method === 'GET') {
+      // A central aggregates other machines and has no local harness directories of its own to
+      // back up — the same reason Settings hides the `billing` and `live` sections there. The
+      // capability guard (localShell) has already run by here; this is the second gate.
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readBackupStatus } = await import('./backup-routes')
+        const status = await readBackupStatus()
+        return new Response(JSON.stringify(status), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/run' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { runBackupNow } = await import('./backup-routes')
+        const result = await runBackupNow()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/projects-list' && req.method === 'GET') {
       try {
         const dirs = await safeReadDir(PROJECTS_DIR)

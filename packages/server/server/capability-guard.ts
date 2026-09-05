@@ -54,6 +54,12 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   // next fleet route someone adds must be guarded by having been added AT ALL, never by having
   // remembered a second table.
   ['/api/fleet', 'localShell'],
+  // The web dashboard's read of the backup engine and its "run now" button. `status` walks the
+  // metrics layer and the backup history; `run` spawns `git bundle`/`git diff` across every known
+  // repository and, depending on the configured layers, copies the raw harness directories
+  // (`~/.claude`, `~/.codex`, …) into an archive on disk — the same shell-and-filesystem power
+  // `/api/exec` carries, so it rides the same capability rather than a softer one.
+  ['/api/backup', 'localShell'],
 ]
 
 export function routeCapability(pathname: string): keyof Capabilities | null {
