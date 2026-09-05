@@ -9,7 +9,7 @@
 
 import type { CliLang } from './lang'
 import { dimensionWordBook, type DimensionWordBook, type SessionDimensionId, type SessionGroupingId } from './session-dimensions'
-import type { BackupScheduleId, TabId, TeamMode } from './types'
+import type { BackupLayer, BackupScheduleId, TabId, TeamMode } from './types'
 
 export interface ControlStrings {
   tagline: string
@@ -607,12 +607,40 @@ export interface ControlStrings {
   keyBackupToggle: string
   keyBackupRun: string
   keyBackupSchedule: string
+  /** The layers editor's own keys, while it has the keyboard — see `Backup.tsx`'s `editingLayers`. */
+  keyLayerToggle: string
+  keyLayerSave: string
+  keyLayerCancel: string
   /** The verb the streaming output pane wears while a backup is running. */
   actBackupRun: string
   /** The verb the schedule row's action wears, and the outcome the config action's status line
    *  shows — the schedule change itself is host-localized (`cli-i18n.ts`'s `backupScheduleSet`). */
   actBackupSchedule: string
+  /** The verbs the `layers` and `scheduleLayers` config rows wear — `enter` opens the layers
+   *  editor in the detail pane, exactly like the setup wizard is a question drawn there. */
+  actBackupEditLayers: string
+  actBackupEditScheduleLayers: string
   backupLayersLabel: string
+  /** The config row summarizing what a SCHEDULED run writes — deliberately a separate row from
+   *  `backupLayersLabel`, right under `backupScheduleLabel`. */
+  backupScheduleLayersLabel: string
+  /**
+   * The four layers, under the names a person thinks in rather than the CLI's own vocabulary
+   * (`metrics`/`repos`/`archive`/`raw`) — the layers EDITOR's own row labels. `backupLayersLabel`'s
+   * summary value stays untranslated CLI vocabulary on purpose; this is the only place the friendly
+   * names are used.
+   */
+  backupLayerName: Record<BackupLayer, string>
+  /** The metrics row's own sentence in the editor — it renders always-on and non-interactive, and
+   *  says why rather than merely disabling a control silently. */
+  backupLayerAlwaysOn: string
+  /** A layer's size when it cannot be measured ahead of a run — `repos` only, whose bundles and
+   *  patches do not exist anywhere until a backup actually builds them. Never a guessed number. */
+  backupLayerSizeUnknown: string
+  /** Shown under the SCHEDULE layers editor only, when `repos` is checked there — a schedule never
+   *  actually carries it (see `schedule.ts` and `daemon.ts`), so the editor says so plainly rather
+   *  than silently dropping the box's own state. */
+  backupScheduleReposNote: string
   backupDestLabel: string
   backupScheduleLabel: string
   backupKeepLabel: string
@@ -1137,9 +1165,24 @@ const EN: ControlStrings = {
   keyBackupToggle: 'space toggle',
   keyBackupRun: 'b run backup',
   keyBackupSchedule: 's schedule',
+  keyLayerToggle: 'space toggle',
+  keyLayerSave: 'enter save',
+  keyLayerCancel: 'esc cancel',
   actBackupRun: 'Run backup',
   actBackupSchedule: 'Change schedule',
+  actBackupEditLayers: 'Edit layers',
+  actBackupEditScheduleLayers: 'Edit schedule layers',
   backupLayersLabel: 'layers',
+  backupScheduleLayersLabel: 'on schedule',
+  backupLayerName: {
+    metrics: 'Metrics',
+    repos: 'Repositories',
+    archive: 'Mirrored transcripts',
+    raw: 'Conversations',
+  },
+  backupLayerAlwaysOn: 'always on — a backup with no metrics restores nothing',
+  backupLayerSizeUnknown: 'known after running',
+  backupScheduleReposNote: 'a scheduled run never carries this — it is built by `agentop backup`, not on a schedule',
   backupDestLabel: 'destination',
   backupScheduleLabel: 'schedule',
   backupKeepLabel: 'keep',
@@ -1634,9 +1677,24 @@ const PT: ControlStrings = {
   keyBackupToggle: 'espaço alternar',
   keyBackupRun: 'b rodar backup',
   keyBackupSchedule: 's agenda',
+  keyLayerToggle: 'espaço alternar',
+  keyLayerSave: 'enter salvar',
+  keyLayerCancel: 'esc cancelar',
   actBackupRun: 'Rodar backup',
   actBackupSchedule: 'Mudar agenda',
+  actBackupEditLayers: 'Editar camadas',
+  actBackupEditScheduleLayers: 'Editar camadas da agenda',
   backupLayersLabel: 'camadas',
+  backupScheduleLayersLabel: 'na agenda',
+  backupLayerName: {
+    metrics: 'Métricas',
+    repos: 'Repositórios',
+    archive: 'Transcripts espelhados',
+    raw: 'Conversas',
+  },
+  backupLayerAlwaysOn: 'sempre ativo — um backup sem métricas não restaura nada',
+  backupLayerSizeUnknown: 'conhecido só depois de rodar',
+  backupScheduleReposNote: 'uma execução agendada nunca carrega isto — é construído por `agentop backup`, não numa agenda',
   backupDestLabel: 'destino',
   backupScheduleLabel: 'agenda',
   backupKeepLabel: 'manter',

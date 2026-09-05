@@ -479,6 +479,12 @@ export interface ControlBackupConfig {
   /** The layers the NEXT manual run writes. Deliberately untranslated — `metrics`/`repos`/
    *  `archive`/`raw` are the CLI's own vocabulary, the same convention as `native`/`docker`. */
   layers: BackupLayer[]
+  /**
+   * The layers a SCHEDULED run writes — deliberately separate from `layers`. `raw` is gigabytes a
+   * copy, so a daily schedule that inherited a manual run's layers would fill a disk the first
+   * time someone added it to one run. See `server/cli-backup.ts`'s `BackupPrefs.scheduleLayers`.
+   */
+  scheduleLayers: BackupLayer[]
   destDir: string
   schedule: BackupScheduleId
   /**
@@ -493,6 +499,13 @@ export interface ControlBackupConfig {
   retainedLabel: string
   /** How many secret paths are excluded from every backup. Always > 0 — see `omittedSecrets()`. */
   secretsCount: number
+  /**
+   * Every layer's measured weight on this machine, already formatted — what the format picker
+   * shows beside each row so the choice is informed. `repos` is `null`: it is produced during a
+   * run, not measurable ahead of one (see `cli-backup.ts`'s `measuredLayerSizes`) — rendered as
+   * "known after running", never as a guessed number or a confident `0`.
+   */
+  layerSizes: Record<BackupLayer, string | null>
   /** The newest backup on disk, or absent when there has never been one. */
   last?: ControlBackupLast
 }
@@ -1321,6 +1334,18 @@ export interface ControlHost {
 
   /** Cycle the schedule to the next id and persist it — `s`, from either pane. */
   setBackupSchedule?(schedule: BackupScheduleId): Promise<ActionResult>
+
+  /**
+   * Set the layers a MANUAL run writes — the layers editor's `enter`, from the `layers` config
+   * row. `metrics` is enforced server-side (`backup-plan.ts`'s `withMetrics`) even if the caller
+   * omitted it, so the editor's own metrics row can stay non-interactive without this ever
+   * silently dropping it.
+   */
+  setBackupLayers?(layers: BackupLayer[]): Promise<ActionResult>
+
+  /** Same as `setBackupLayers`, for the layers a SCHEDULED run writes — deliberately a separate
+   *  call, from the `scheduleLayers` config row, so the two preferences can never be conflated. */
+  setBackupScheduleLayers?(layers: BackupLayer[]): Promise<ActionResult>
 
   /**
    * Run a backup now, with the configured layers and harnesses — `b`.

@@ -28,6 +28,19 @@ export type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
 /** Every layer, metrics first because it is the one that is never optional. */
 export const BACKUP_LAYERS: BackupLayer[] = ['metrics', 'repos', 'archive', 'raw']
 
+/**
+ * `metrics` is never optional — every writer of `backup.layers` / `backup.scheduleLayers` runs its
+ * input through this before it reaches `writePreferences`, so a surface (the cockpit's layer
+ * editor, the web format picker, `agentop backup config`) cannot silently drop it by sending a list
+ * that omits it. Also normalizes ORDER to `BACKUP_LAYERS`, so a preference written by any of the
+ * three always reads back in the one order every surface already expects.
+ */
+export function withMetrics(layers: BackupLayer[]): BackupLayer[] {
+  const set = new Set(layers)
+  set.add('metrics')
+  return BACKUP_LAYERS.filter(l => set.has(l))
+}
+
 export type ExcludeReason = 'secret' | 'regenerable' | 'runtime'
 
 export interface ExcludeRule {

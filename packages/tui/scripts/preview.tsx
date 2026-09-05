@@ -488,12 +488,14 @@ const FAKE_BACKUP: ControlBackupStatus = {
   ],
   config: {
     layers: ['metrics', 'repos'],
+    scheduleLayers: ['metrics'],
     destDir: '/home/dev/backups',
     schedule: 'daily',
     scheduleActive: true,
     keep: 7,
     retainedLabel: '35 MB',
     secretsCount: 5,
+    layerSizes: { metrics: '3.4 MB', repos: null, archive: '12 MB', raw: '953 MB' },
     last: { at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(), bytesLabel: '4.1 MB', skipped: 0 },
   },
 }

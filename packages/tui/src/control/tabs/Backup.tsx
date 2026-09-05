@@ -27,8 +27,14 @@ import {
   harnessCells,
   harnessDetailLines,
   harnessRows,
+  layerEditorCells,
+  layerEditorRows,
   nextBackupSchedule,
+  scheduleReposNote,
+  toggleBackupLayer,
   type HarnessCells,
+  type LayerEditorRow,
+  type LayerRowCells,
 } from '../backup.ts'
 import {
   cockpitLayout,
@@ -43,8 +49,12 @@ import { windowLabel } from '../surface.ts'
 import { OutputView } from '../Output'
 import { resolveListKey, resolveTailKey, windowOffset, type NavKey, type TailState } from '../nav'
 import type { ControlStrings } from '../i18n'
-import type { ControlBackupStatus, ControlHost } from '../types'
+import type { BackupLayer, ControlBackupStatus, ControlHost } from '../types'
 import type { RunAction, TabChrome, TaskView } from '../ControlCenter'
+
+/** The two config rows whose `enter` opens the layers editor in the detail pane, rather than
+ *  acting inline the way `schedule` does. */
+type LayerEditTarget = 'layers' | 'scheduleLayers'
 
 /** `● ` / `○ ` — whether the harness rides the next backup. */
 const MARK_WIDTH = 2
@@ -79,6 +89,14 @@ export function Backup({
   const [configIndex, setConfigIndex] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [outputView, setOutputView] = useState<TailState>({ index: 0, follow: true })
+
+  // The layers editor — a QUESTION drawn in the detail pane, exactly like the setup wizard is one
+  // on the Services tab: `editingLayers` names which config row opened it (`layers` or
+  // `scheduleLayers`), `draft` is the set being edited (a COPY — nothing is written until `enter`),
+  // and `layerCursor` walks only the TOGGLABLE rows (metrics is drawn above them, never selectable).
+  const [editingLayers, setEditingLayers] = useState<LayerEditTarget | null>(null)
+  const [draft, setDraft] = useState<BackupLayer[]>([])
+  const [layerCursor, setLayerCursor] = useState(0)
 
   const readStatus = host.backupStatus
   const refreshStatus = useCallback(async () => {
@@ -141,6 +159,39 @@ export function Backup({
     void run(() => host.runBackup!(), s.actBackupRun).then(refreshStatus)
   }, [host, run, s, refreshStatus])
 
+  /** `enter` on the `layers` or `scheduleLayers` config row — opens the editor on a COPY of that
+   *  set, never the live config, so a cancel truly discards every change. */
+  const openLayerEditor = useCallback((target: LayerEditTarget) => {
+    if (!status) return
+    setDraft([...(target === 'layers' ? status.config.layers : status.config.scheduleLayers)])
+    setLayerCursor(0)
+    setEditingLayers(target)
+  }, [status])
+
+  const editorRows = useMemo(
+    () => (status ? layerEditorRows(draft, status.config.layerSizes, s) : []),
+    [status, draft, s],
+  )
+  const toggleRows = useMemo(() => editorRows.filter(r => !r.fixed), [editorRows])
+  const fixedRow = editorRows.find(r => r.fixed)
+  const editorNote = editingLayers === 'scheduleLayers' ? scheduleReposNote(draft, s) : null
+
+  const toggleDraftRow = useCallback(() => {
+    const row = toggleRows[layerCursor]
+    if (row) setDraft(d => toggleBackupLayer(d, row.layer))
+  }, [toggleRows, layerCursor])
+
+  const saveLayerEditor = useCallback(() => {
+    if (!editingLayers) return
+    const setter = editingLayers === 'layers' ? host.setBackupLayers : host.setBackupScheduleLayers
+    const verb = editingLayers === 'layers' ? s.actBackupEditLayers : s.actBackupEditScheduleLayers
+    setEditingLayers(null)
+    if (!setter) return
+    void run(() => setter(draft), verb).then(refreshStatus)
+  }, [editingLayers, host, draft, s, run, refreshStatus])
+
+  const cancelLayerEditor = useCallback(() => setEditingLayers(null), [])
+
   // -------------------------------------------------------------------------
   // geometry — measured from the rows about to be drawn, never guessed
   // -------------------------------------------------------------------------
@@ -173,8 +224,8 @@ export function Backup({
   }, [rows, configRows, configLabelWidth, detailLines.length])
 
   const layout = useMemo(
-    () => cockpitLayout(width, height, content, { question: taskOpen }),
-    [width, height, content, taskOpen],
+    () => cockpitLayout(width, height, content, { question: taskOpen || editingLayers !== null }),
+    [width, height, content, taskOpen, editingLayers],
   )
   const { heights } = layout
 
@@ -204,7 +255,8 @@ export function Backup({
   // keys
   // -------------------------------------------------------------------------
 
-  const capturing = taskOpen
+  const layersEditorOpen = editingLayers !== null
+  const capturing = taskOpen || layersEditorOpen
 
   useInput((input, key) => {
     const nav: NavKey = {
@@ -225,12 +277,26 @@ export function Backup({
     } else {
       const next = resolveListKey(nav, configIndex, configRows.length)
       if (next !== configIndex) { setConfigIndex(next); return }
-      if (key.return && configSelected?.action) return cycleSchedule()
+      if (key.return && configSelected?.key === 'schedule') return cycleSchedule()
+      if (key.return && (configSelected?.key === 'layers' || configSelected?.key === 'scheduleLayers')) {
+        return openLayerEditor(configSelected.key)
+      }
     }
 
     if (input === 'b') return runNow()
     if (input === 's') return cycleSchedule()
   }, { isActive: isActive && !capturing })
+
+  /** The layers editor's own keys, while it holds the detail pane — a QUESTION, so the global keys
+   *  stand down exactly like they do for a running task, per `capturing` above. */
+  useInput((input, key) => {
+    if (key.escape) return cancelLayerEditor()
+    if (key.return) return saveLayerEditor()
+    if (input === ' ') return toggleDraftRow()
+    const nav: NavKey = { input, upArrow: key.upArrow, downArrow: key.downArrow, return: false, tab: false, shift: false }
+    const next = resolveListKey(nav, layerCursor, toggleRows.length)
+    if (next !== layerCursor) setLayerCursor(next)
+  }, { isActive: isActive && layersEditorOpen })
 
   /** The output pane's own keys, exactly like the Services tab's second `useInput`. */
   useInput((input, key) => {
@@ -242,12 +308,12 @@ export function Backup({
       detailRows,
     )
     if (next) setOutputView(next)
-  }, { isActive: isActive && taskOpen })
+  }, { isActive: isActive && taskOpen && !layersEditorOpen })
 
   useEffect(() => {
     if (!isActive) return
-    onChrome({ capture: capturing, hints: backupHints(focus, s, { task: taskOpen }) })
-  }, [isActive, capturing, focus, s, taskOpen, onChrome])
+    onChrome({ capture: capturing, hints: backupHints(focus, s, { task: taskOpen, editing: layersEditorOpen }) })
+  }, [isActive, capturing, focus, s, taskOpen, layersEditorOpen, onChrome])
 
   // -------------------------------------------------------------------------
   // drawing
@@ -295,10 +361,17 @@ export function Backup({
     </Pane>
   ) : null
 
-  const detailTitle = focus === 'harnesses' ? (selected?.label ?? s.paneHarnesses) : s.tabsShort.backup
+  const detailTitle = layersEditorOpen
+    ? (editingLayers === 'layers' ? s.backupLayersLabel : s.backupScheduleLayersLabel)
+    : focus === 'harnesses' ? (selected?.label ?? s.paneHarnesses) : s.tabsShort.backup
   const detailPane = heights.detail > 0 ? (
     <Pane title={detailTitle} width={detailWidthPx} height={heights.detail}>
-      {taskOpen ? (
+      {layersEditorOpen ? (
+        <LayerEditor
+          fixed={fixedRow} toggleRows={toggleRows} cursor={layerCursor} note={editorNote}
+          width={paneBody(detailWidthPx)} s={s}
+        />
+      ) : taskOpen ? (
         <OutputView lines={taskLines} offset={outputOffset} rows={detailRows} width={paneBody(detailWidthPx)} />
       ) : (
         <DetailRows lines={detailLines} rows={detailRows} width={paneBody(detailWidthPx)} />
@@ -353,6 +426,56 @@ function HarnessLine({ enabled, label, sessions, size, last, selected, focused, 
       {cells.size > 0 ? <Text dimColor>{' ' + truncate(size, cells.size).padStart(cells.size)}</Text> : null}
       {cells.last > 0 ? <Text dimColor>{' ' + truncate(last, cells.last)}</Text> : null}
     </Text>
+  )
+}
+
+/**
+ * The layers editor — a QUESTION drawn in the detail pane, same relationship the setup wizard has
+ * with the Services tab's own detail region. `fixed` (metrics) is drawn first, dimmed and marked
+ * as always-on with a sentence explaining why rather than merely disabling a control silently;
+ * `toggleRows` are the three the cursor and `space` actually reach.
+ */
+function LayerEditor({ fixed, toggleRows, cursor, note, width, s }: {
+  fixed: LayerEditorRow | undefined
+  toggleRows: LayerEditorRow[]
+  cursor: number
+  note: string | null
+  width: number
+  s: ControlStrings
+}) {
+  const all = [...(fixed ? [fixed] : []), ...toggleRows]
+  const cells: LayerRowCells = layerEditorCells(all.map(r => r.label), all.map(r => r.sizeLabel), width)
+
+  const sizeCell = (label: string) => cells.size > 0
+    ? <Text dimColor>{'  ' + truncate(label, cells.size)}</Text>
+    : null
+
+  return (
+    <Box flexDirection="column" width={width} flexShrink={0}>
+      {fixed ? (
+        <Text>
+          <Text dimColor>{'  ● '}</Text>
+          <Text dimColor>{truncate(fixed.label, cells.label).padEnd(cells.label)}</Text>
+          {sizeCell(fixed.sizeLabel)}
+        </Text>
+      ) : null}
+      {fixed ? <Text dimColor>{truncate('  ' + s.backupLayerAlwaysOn, width)}</Text> : null}
+      <Text> </Text>
+      {toggleRows.map((row, i) => (
+        <Text key={row.layer}>
+          <Text color={i === cursor ? COLORS.accent : undefined}>{i === cursor ? '❯ ' : '  '}</Text>
+          <Text color={row.checked ? COLORS.success : COLORS.muted}>{row.checked ? '● ' : '○ '}</Text>
+          <Text color={COLORS.text} bold={i === cursor}>{truncate(row.label, cells.label).padEnd(cells.label)}</Text>
+          {sizeCell(row.sizeLabel)}
+        </Text>
+      ))}
+      {note ? (
+        <>
+          <Text> </Text>
+          <Text color={COLORS.accent}>{truncate(note, width)}</Text>
+        </>
+      ) : null}
+    </Box>
   )
 }
 

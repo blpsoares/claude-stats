@@ -1,24 +1,27 @@
 /**
  * backup-routes.ts — the web dashboard's read of the backup engine: per-harness coverage, the
- * current configuration, and the backup history, plus triggering a run.
+ * current configuration, and the backup history, plus triggering a run and configuring it.
  *
  * This is the THIRD surface over the same engine `agentop backup` and the cockpit's `backup` tab
- * call (`cli-backup.ts`'s `readBackupPrefs`/`performBackup`, `backup-store.ts`, `backup-size.ts`,
- * `schedule.ts`). It decides nothing: every number here is read straight off the same functions
- * `cli-start.ts`'s `backupStatus`/`runBackup` call for the cockpit, so the two front doors can
- * never disagree about what a backup covers.
+ * call (`cli-backup.ts`'s `readBackupPrefs`/`performBackup`/`measuredLayerSizes`, `backup-store.ts`,
+ * `backup-size.ts`, `schedule.ts`). It decides nothing: every number here is read straight off the
+ * same functions `cli-start.ts`'s `backupStatus`/`runBackup` call for the cockpit, and every write
+ * goes through the same three writers `agentop backup config` calls, so the three front doors can
+ * never disagree about what a backup covers or how it is configured.
  */
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
-import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
+import { AGENTISTICS_DATA_DIR } from './config'
 import { readPreferences } from './preferences'
-import { readBackupPrefs, performBackup } from './cli-backup'
-import { omittedSecrets, planSources } from './backup/backup-plan'
-import { walkSources } from './backup/backup'
+import {
+  readBackupPrefs, performBackup, measuredLayerSizes,
+  writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
+} from './cli-backup'
+import { BACKUP_LAYERS, omittedSecrets, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, retainedTotal } from './backup/backup-size'
 import { markPresence, readBackups, lastBackup, lastPerHarness } from './backup/backup-store'
-import { scheduleStatus } from './backup/schedule'
+import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 
 export interface BackupHarnessJson {
@@ -49,7 +52,11 @@ export interface BackupStatusJson {
   /** One row per `HARNESS_ORDER` member — never a literal list. */
   harnesses: BackupHarnessJson[]
   config: {
-    layers: string[]
+    layers: BackupLayer[]
+    /** Layers a SCHEDULED run writes — see `cli-backup.ts`'s `BackupPrefs.scheduleLayers`.
+     *  Deliberately separate from `layers`: a schedule that inherited a manual run's layers would
+     *  fill a disk the first time `raw` was added to one run. */
+    scheduleLayers: BackupLayer[]
     destDir: string
     schedule: string
     /** False while the server is stopped — see `schedule.ts`'s `inactive-no-server`. The row
@@ -60,9 +67,23 @@ export interface BackupStatusJson {
     retainedLabel: string
     secretsCount: number
     last?: { at: string; bytesLabel: string; skipped?: number }
+    /**
+     * Every layer's measured weight on this machine, already formatted — see `cli-backup.ts`'s
+     * `measuredLayerSizes`. `repos` is `null`: it is produced during a run, not measurable ahead of
+     * one, and the format picker renders that as "known after running" rather than a guessed number.
+     */
+    layerSizes: Record<BackupLayer, string | null>
   }
   /** Newest first. */
   history: BackupHistoryJson[]
+}
+
+/** Everything a format/recurrence picker may change in one call. All fields optional — a picker
+ *  sends only what it changed, `updateBackupConfig` normalizes and writes it. */
+export interface BackupConfigPatch {
+  layers?: BackupLayer[]
+  scheduleLayers?: BackupLayer[]
+  schedule?: ScheduleId
 }
 
 /**
@@ -71,10 +92,8 @@ export interface BackupStatusJson {
  */
 export async function readBackupStatus(): Promise<BackupStatusJson> {
   const prefs = readBackupPrefs(await readPreferences())
-  const [sizes, consolidated, entries] = await Promise.all([
-    walkSources(HOME_DIR, planSources({ layers: ['metrics'], harnesses: HARNESS_ORDER }))
-      .then(r => r.sizes)
-      .catch(() => null),
+  const [measured, consolidated, entries] = await Promise.all([
+    measuredLayerSizes().catch(() => null),
     loadConsolidated().catch(() => new Map()),
     readBackups().then(rs => markPresence(rs, p => existsSync(p))).catch(() => []),
   ])
@@ -84,7 +103,9 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
     const h = (sess.harness ?? 'claude') as HarnessId
     sessionCounts[h] = (sessionCounts[h] ?? 0) + 1
   }
-  const byHarness = sizes?.metrics.byHarness ?? {}
+  const byHarness = measured?.sizes.metrics.byHarness ?? {}
+  const emptyLayerLabels: Record<BackupLayer, string | null> = { metrics: null, repos: null, archive: null, raw: null }
+  const layerSizes = measured?.labels ?? emptyLayerLabels
   const perHarnessLast = lastPerHarness(entries)
 
   const harnesses: BackupHarnessJson[] = HARNESS_ORDER.map(id => {
@@ -114,12 +135,14 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
     harnesses,
     config: {
       layers: prefs.layers,
+      scheduleLayers: prefs.scheduleLayers,
       destDir: prefs.destDir,
       schedule: prefs.schedule,
       scheduleActive: st.kind === 'next',
       keep: prefs.keep,
       retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
       secretsCount: omittedSecrets().length,
+      layerSizes,
       ...(last
         ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
         : {}),
@@ -157,4 +180,36 @@ export async function runBackupNow(): Promise<
   return result.ok
     ? { ok: true, bytesLabel: formatBytes(result.record.archiveBytes), skipped: result.record.skipped }
     : { ok: false, reason: result.reason }
+}
+
+/**
+ * The web's format/recurrence pickers — `POST /api/backup/config`. Validates each field it was
+ * given (a picker sends only what changed), writes it through the same three functions
+ * `agentop backup config` and the cockpit's layer editor call, and hands back a fresh
+ * `readBackupStatus()` so the picker's own state and the server's never drift apart for the one
+ * round trip it takes to press a checkbox.
+ *
+ * `metrics` cannot be removed from either layer set — `writeBackupLayers` /
+ * `writeBackupScheduleLayers` enforce that (`backup-plan.ts`'s `withMetrics`), so a request that
+ * tried to drop it is normalized rather than rejected: the picker's own metrics row is
+ * non-interactive, so the only way this happens is a stale or hand-crafted request.
+ */
+export async function updateBackupConfig(
+  patch: BackupConfigPatch,
+): Promise<{ ok: true; status: BackupStatusJson } | { ok: false; reason: string }> {
+  if (patch.layers) {
+    const bad = patch.layers.filter(l => !BACKUP_LAYERS.includes(l))
+    if (bad.length) return { ok: false, reason: `unknown layer: ${bad.join(', ')}` }
+    await writeBackupLayers(patch.layers)
+  }
+  if (patch.scheduleLayers) {
+    const bad = patch.scheduleLayers.filter(l => !BACKUP_LAYERS.includes(l))
+    if (bad.length) return { ok: false, reason: `unknown layer: ${bad.join(', ')}` }
+    await writeBackupScheduleLayers(patch.scheduleLayers)
+  }
+  if (patch.schedule) {
+    if (!SCHEDULE_IDS.includes(patch.schedule)) return { ok: false, reason: `unknown schedule: ${patch.schedule}` }
+    await writeBackupSchedule(patch.schedule)
+  }
+  return { ok: true, status: await readBackupStatus() }
 }

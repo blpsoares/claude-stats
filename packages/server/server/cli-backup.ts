@@ -18,10 +18,10 @@ import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, writePreferences, type Preferences } from './preferences'
 import { CURRENT_VERSION } from './version'
 import { cliStrings, resolveLang } from './cli-i18n'
-import type { BackupLayer } from './backup/backup-plan'
-import { formatBytes, plannedTotal } from './backup/backup-size'
+import { BACKUP_LAYERS, planSources, withMetrics, type BackupLayer } from './backup/backup-plan'
+import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backup/backup-size'
 import { markPresence, readBackups, lastBackup, lastPerHarness, toPrune } from './backup/backup-store'
-import { runBackup } from './backup/backup'
+import { runBackup, walkSources } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, type RepoEntry } from './backup/repo-manifest'
 import { planRepos } from './backup/restore-plan'
@@ -60,6 +60,68 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
   }
 }
 
+export interface MeasuredLayers {
+  /**
+   * Every layer's measured weight on this machine, already formatted. `repos` is deliberately
+   * `null`, never an estimate: its content (bundles, patches) does not exist anywhere in $HOME
+   * until a backup actually runs `buildRepoManifest` — shelling out to git per candidate directory,
+   * which is not a "measure a size" operation, it is the operation itself. A surface renders `null`
+   * as "known after a backup runs", never as `0` — the same N/A-versus-a-confident-0 rule
+   * `HARNESS_CAPABILITIES` applies to a metric.
+   */
+  labels: Record<BackupLayer, string | null>
+  /** The raw walk, kept around so a caller that also needs the metrics layer's per-harness split
+   *  (the harness coverage table) does not have to walk $HOME a second time for it. */
+  sizes: BackupSizes
+}
+
+/**
+ * What each layer weighs on THIS machine right now — the numbers every format picker (cockpit,
+ * web, `agentop backup config`) shows beside its rows, so the choice is informed rather than a
+ * guess. Measured via the same `walkSources` a real backup walks, over `metrics`, `archive` and
+ * `raw` — the three layers that are files sitting in $HOME today.
+ */
+export async function measuredLayerSizes(): Promise<MeasuredLayers> {
+  const { sizes } = await walkSources(
+    HOME_DIR, planSources({ layers: ['metrics', 'archive', 'raw'], harnesses: HARNESS_ORDER }),
+  )
+  return {
+    labels: {
+      metrics: formatBytes(layerTotal(sizes, 'metrics')),
+      repos: null,
+      archive: formatBytes(layerTotal(sizes, 'archive')),
+      raw: formatBytes(layerTotal(sizes, 'raw')),
+    },
+    sizes,
+  }
+}
+
+/**
+ * The three writers behind every surface that configures a backup — the cockpit's layer editor and
+ * schedule row, the web format/recurrence pickers, and `agentop backup config`. One implementation
+ * each, so a preference written by any of the three reads back identically from any of the others.
+ */
+export async function writeBackupLayers(layers: BackupLayer[]): Promise<BackupLayer[]> {
+  const normalized = withMetrics(layers)
+  const p = await readPreferences()
+  await writePreferences({ ...p, backup: { ...(p.backup ?? {}), layers: normalized } })
+  return normalized
+}
+
+/** Deliberately separate from `writeBackupLayers` — see `BackupPrefs.scheduleLayers`: a schedule
+ *  that inherited the manual layers would fill a disk the first time `raw` was added to one run. */
+export async function writeBackupScheduleLayers(layers: BackupLayer[]): Promise<BackupLayer[]> {
+  const normalized = withMetrics(layers)
+  const p = await readPreferences()
+  await writePreferences({ ...p, backup: { ...(p.backup ?? {}), scheduleLayers: normalized } })
+  return normalized
+}
+
+export async function writeBackupSchedule(schedule: ScheduleId): Promise<void> {
+  const p = await readPreferences()
+  await writePreferences({ ...p, backup: { ...(p.backup ?? {}), schedule } })
+}
+
 export type BackupArgs =
   | {
       kind: 'run'
@@ -72,9 +134,26 @@ export type BackupArgs =
       planOnly: boolean
     }
   | { kind: 'schedule'; schedule: ScheduleId }
+  | {
+      kind: 'config'
+      /** Each field present only when the matching flag was given. All absent means "print the
+       *  current configuration" — `runBackupCli` tells the two apart, never a bare empty object. */
+      layers?: BackupLayer[]
+      schedule?: ScheduleId
+      scheduleLayers?: BackupLayer[]
+    }
   | { kind: 'status' }
   | { kind: 'help' }
   | { kind: 'error'; message: string }
+
+/** `a,b,c` -> `BackupLayer[]`, or an error message naming the bad token(s). Shared by `--layers`
+ *  and `--schedule-layers` — one parser, so the two flags can never accept different vocabularies. */
+function parseLayerList(raw: string): BackupLayer[] | { error: string } {
+  const list = raw.split(',').map(s => s.trim()).filter(Boolean)
+  const bad = list.filter(l => !BACKUP_LAYERS.includes(l as BackupLayer))
+  if (bad.length) return { error: `unknown layer: ${bad.join(', ')} (known: ${BACKUP_LAYERS.join(', ')})` }
+  return list as BackupLayer[]
+}
 
 export function parseBackupArgs(argv: string[]): BackupArgs {
   const [first, ...rest] = argv
@@ -87,6 +166,35 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
       return { kind: 'error', message: `schedule takes one of: ${SCHEDULE_IDS.join(', ')}` }
     }
     return { kind: 'schedule', schedule: id as ScheduleId }
+  }
+
+  if (first === 'config') {
+    const out: { layers?: BackupLayer[]; schedule?: ScheduleId; scheduleLayers?: BackupLayer[] } = {}
+
+    const li = rest.indexOf('--layers')
+    if (li !== -1) {
+      const parsed = parseLayerList(rest[li + 1] ?? '')
+      if ('error' in parsed) return { kind: 'error', message: parsed.error }
+      out.layers = parsed
+    }
+
+    const sli = rest.indexOf('--schedule-layers')
+    if (sli !== -1) {
+      const parsed = parseLayerList(rest[sli + 1] ?? '')
+      if ('error' in parsed) return { kind: 'error', message: parsed.error }
+      out.scheduleLayers = parsed
+    }
+
+    const si = rest.indexOf('--schedule')
+    if (si !== -1) {
+      const id = rest[si + 1]
+      if (!id || !SCHEDULE_IDS.includes(id as ScheduleId)) {
+        return { kind: 'error', message: `--schedule takes one of: ${SCHEDULE_IDS.join(', ')}` }
+      }
+      out.schedule = id as ScheduleId
+    }
+
+    return { kind: 'config', ...out }
   }
 
   const args = first === undefined ? [] : argv
@@ -133,6 +241,7 @@ const USAGE = `Usage:
   agentop backup [--with-archive] [--with-raw] [--harness a,b] [--dest DIR]
                  [--max-bundle MB] [--plan]
   agentop backup schedule <off|daily|weekly>
+  agentop backup config [--layers a,b] [--schedule <off|daily|weekly>] [--schedule-layers a,b]
   agentop backup status
   agentop restore <archive> [--repos] [--only <repo>]
 
@@ -141,6 +250,11 @@ Carry this machine's whole agentistics history to another one.
   A backup always holds your computed metrics and a repository manifest that can rebuild every
   checkout, worktree, unpushed branch and uncommitted diff. --with-archive adds the mirrored
   transcripts; --with-raw adds the harness directories themselves.
+
+  \`agentop backup config\` with no flags prints the current layers, schedule and schedule-layers.
+  Layers are metrics,repos,archive,raw — metrics is always included even if you leave it out.
+  A schedule never carries the repos layer; \`agentop backup\` (or the cockpit's \`b\`) is what
+  rebuilds the repository manifest.
 
   Live credentials are NEVER included. \`restore\` prints each one and the command that
   re-establishes it.`
@@ -284,11 +398,46 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   const prefs = readBackupPrefs(await readPreferences())
 
   if (parsed.kind === 'schedule') {
-    const p = await readPreferences()
-    await writePreferences({ ...p, backup: { ...(p.backup ?? {}), schedule: parsed.schedule } })
+    await writeBackupSchedule(parsed.schedule)
     log(`schedule: ${parsed.schedule}`)
     if (parsed.schedule !== 'off') {
       log('Scheduled backups run inside `agentop server`. With the server stopped, none run.')
+    }
+    return 0
+  }
+
+  if (parsed.kind === 'config') {
+    const nothingGiven = parsed.layers === undefined && parsed.schedule === undefined
+      && parsed.scheduleLayers === undefined
+    if (nothingGiven) {
+      const measured = await measuredLayerSizes().catch(() => null)
+      const sizeLabel = (l: BackupLayer) => measured ? (measured.labels[l] ?? 'known after running') : 'unknown'
+      log(`layers:          ${prefs.layers.join(', ')}`)
+      for (const l of BACKUP_LAYERS) log(`  ${l.padEnd(9)} ${prefs.layers.includes(l) ? 'on ' : 'off'}  ${sizeLabel(l)}`)
+      log(`schedule:        ${prefs.schedule}`)
+      log(`schedule-layers: ${prefs.scheduleLayers.join(', ')}`)
+      if (prefs.schedule !== 'off' && prefs.scheduleLayers.includes('repos')) {
+        log('  note: a scheduled run never carries the repos layer — `agentop backup` builds it, not a schedule.')
+      }
+      log(`dest:            ${prefs.destDir}`)
+      log(`keep:            ${prefs.keep}`)
+      return 0
+    }
+
+    if (parsed.layers) {
+      const written = await writeBackupLayers(parsed.layers)
+      log(`layers: ${written.join(', ')}`)
+    }
+    if (parsed.scheduleLayers) {
+      const written = await writeBackupScheduleLayers(parsed.scheduleLayers)
+      log(`schedule-layers: ${written.join(', ')}`)
+      if (written.includes('repos')) {
+        log('  note: a scheduled run never carries the repos layer — `agentop backup` builds it, not a schedule.')
+      }
+    }
+    if (parsed.schedule) {
+      await writeBackupSchedule(parsed.schedule)
+      log(`schedule: ${parsed.schedule}`)
     }
     return 0
   }

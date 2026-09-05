@@ -899,6 +899,32 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // The format/recurrence pickers — see `BackupSettings.tsx`. Same decisions as
+    // `agentop backup config` and the cockpit's layer editor, through the same three writers.
+    if (url.pathname === '/api/backup/config' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateBackupConfig } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateBackupConfig>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateBackupConfig(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/projects-list' && req.method === 'GET') {
       try {
         const dirs = await safeReadDir(PROJECTS_DIR)

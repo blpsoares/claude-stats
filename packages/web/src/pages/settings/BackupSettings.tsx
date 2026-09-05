@@ -15,7 +15,15 @@ import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import type { AppContext } from '../../lib/app-context'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { SectionHeader, Divider, RecordCard } from './primitives'
+import { SectionHeader, Divider, RecordCard, Checkbox } from './primitives'
+
+// Redeclared from `server/backup/backup-plan.ts` / `server/backup/schedule.ts` — `packages/web`
+// may never import `packages/server` (Vite would try to bundle it and fail on Bun/Node APIs).
+// `BACKUP_LAYERS` order matters: metrics leads, and every layer row below is drawn in this order.
+type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
+const BACKUP_LAYERS: BackupLayer[] = ['metrics', 'repos', 'archive', 'raw']
+type BackupScheduleId = 'off' | 'daily' | 'weekly'
+const SCHEDULE_IDS: BackupScheduleId[] = ['off', 'daily', 'weekly']
 
 // ---------------------------------------------------------------------------
 // wire shapes — mirrors packages/server/server/backup-routes.ts's BackupStatusJson. Redeclared
@@ -45,16 +53,31 @@ interface BackupHistoryJson {
 interface BackupStatusJson {
   harnesses: BackupHarnessJson[]
   config: {
-    layers: string[]
+    layers: BackupLayer[]
+    /** Layers a SCHEDULED run writes — deliberately separate from `layers`, so a daily schedule
+     *  cannot silently inherit `raw` from a manual run and fill a disk. */
+    scheduleLayers: BackupLayer[]
     destDir: string
     schedule: string
     scheduleActive: boolean
     keep: number
     retainedLabel: string
     secretsCount: number
+    /** Every layer's measured weight on this machine, already formatted. `repos` is `null` —
+     *  produced during a run, not measurable ahead of one — rendered as "known after running". */
+    layerSizes: Record<BackupLayer, string | null>
     last?: { at: string; bytesLabel: string; skipped?: number }
   }
   history: BackupHistoryJson[]
+}
+
+/** Everything the format/recurrence pickers can change in one call — mirrors the server's
+ *  `BackupConfigPatch` (`backup-routes.ts`). All fields optional: a picker sends only what it
+ *  changed. */
+interface BackupConfigPatch {
+  layers?: BackupLayer[]
+  scheduleLayers?: BackupLayer[]
+  schedule?: BackupScheduleId
 }
 
 type RunOutcome = { ok: true; bytesLabel: string; skipped?: number } | { ok: false; reason: string }
@@ -103,13 +126,21 @@ const SCHEDULE_WORD: Record<string, { en: string; pt: string }> = {
   weekly: { en: 'weekly', pt: 'semanal' },
 }
 
-function scheduleText(config: BackupStatusJson['config'], pt: boolean): string {
-  const word = SCHEDULE_WORD[config.schedule]
-  const base = word ? (pt ? word.pt : word.en) : config.schedule
-  if (config.schedule === 'off' || config.scheduleActive) return base
-  // With the server stopped, the schedule reads INACTIVE — never a "next at…" that will not
-  // arrive. Same N/A-versus-a-confident-answer rule the dashboard applies everywhere else.
-  return pt ? `${base} (inativo — o servidor não está rodando)` : `${base} (inactive — the server is not running)`
+/**
+ * The four layers, under the names a person thinks in — never the CLI's own `metrics`/`repos`/
+ * `archive`/`raw` vocabulary, which is what the read-only config rows above still use (that value
+ * is deliberately untranslated, the same convention as `native`/`docker`). This is the only place
+ * the friendly names are used, for the format/recurrence pickers below.
+ */
+const LAYER_NAME: Record<BackupLayer, { en: string; pt: string }> = {
+  metrics: { en: 'Metrics', pt: 'Métricas' },
+  repos: { en: 'Repositories', pt: 'Repositórios' },
+  archive: { en: 'Mirrored transcripts', pt: 'Transcripts espelhados' },
+  raw: { en: 'Conversations', pt: 'Conversas' },
+}
+
+function layerSizeText(sizes: BackupStatusJson['config']['layerSizes'], layer: BackupLayer, pt: boolean): string {
+  return sizes[layer] ?? (pt ? 'conhecido só depois de rodar' : 'known after running')
 }
 
 function lastOutcomeText(skipped: number | undefined, pt: boolean): string {
@@ -176,6 +207,41 @@ export default function BackupSettings() {
       setRunning(false)
     }
   }, [load, pt])
+
+  // The format/recurrence pickers' one write path — `POST /api/backup/config`, the same three
+  // writers `agentop backup config` and the cockpit's layers editor call. `savingConfig` disables
+  // every checkbox and the schedule buttons while a request is in flight, so a second tap cannot
+  // race the first: `writeBackupLayers`/`writeBackupScheduleLayers` read-modify-write preferences,
+  // and two overlapping writes would let the earlier one win after the later one already returned.
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [configError, setConfigError] = useState<string | null>(null)
+
+  const patchConfig = useCallback(async (patch: BackupConfigPatch) => {
+    setSavingConfig(true)
+    setConfigError(null)
+    try {
+      const r = await fetch('/api/backup/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      })
+      const data = await r.json() as { ok: true; status: BackupStatusJson } | { ok: false; reason: string }
+      if (data.ok) setStatus(data.status)
+      else setConfigError(data.reason || (pt ? 'não foi possível salvar' : 'could not save'))
+    } catch {
+      setConfigError(pt ? 'a requisição falhou' : 'the request failed')
+    } finally {
+      setSavingConfig(false)
+    }
+  }, [pt])
+
+  /** Metrics can never be toggled off — this only ever fires for `repos`/`archive`/`raw`, and
+   *  `updateBackupConfig` (server) normalizes the set regardless, so this is a UI convenience,
+   *  never the enforcement. */
+  const toggleLayer = useCallback((kind: 'layers' | 'scheduleLayers', layer: BackupLayer, checked: boolean) => {
+    if (!status || layer === 'metrics') return
+    const current = status.config[kind]
+    const next = checked ? [...current, layer] : current.filter(l => l !== layer)
+    void patchConfig({ [kind]: next })
+  }, [status, patchConfig])
 
   const byId = new Map((status?.harnesses ?? []).map(h => [h.id, h]))
   // HARNESS_ORDER, never the server array's own order — the same discipline every other surface
@@ -259,12 +325,10 @@ export default function BackupSettings() {
 
           <Divider />
 
-          {/* Configuration — read-only facts, exactly what the engine decided; this page changes
-              nothing about them. */}
+          {/* Configuration — the facts this page does not let you change: destination, retention,
+              excluded secrets, and the last run. Layers and the schedule are below, interactive. */}
           <SectionHeader label={pt ? 'Configuração' : 'Configuration'} />
-          <ConfigRow label={pt ? 'Camadas' : 'Layers'} value={status.config.layers.length > 0 ? status.config.layers.join(' + ') : '—'} />
           <ConfigRow label={pt ? 'Destino' : 'Destination'} value={status.config.destDir} mono />
-          <ConfigRow label={pt ? 'Agendamento' : 'Schedule'} value={scheduleText(status.config, pt)} />
           <ConfigRow
             label={pt ? 'Manter' : 'Keep'}
             value={pt
@@ -276,6 +340,66 @@ export default function BackupSettings() {
             value={pt ? `${status.config.secretsCount} excluídos` : `${status.config.secretsCount} excluded`}
           />
           <ConfigRow label={pt ? 'Último backup' : 'Last backup'} value={lastSummaryText(status.config, now, pt)} />
+
+          <Divider />
+
+          {configError && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 8,
+              background: 'color-mix(in srgb, #ef4444 8%, transparent)',
+              border: '1px solid color-mix(in srgb, #ef4444 28%, transparent)',
+              fontSize: 12.5, color: 'var(--text-secondary)', marginBottom: 16,
+            }}>
+              <AlertTriangle size={14} style={{ color: '#ef4444', flexShrink: 0 }} />
+              <span>{configError}</span>
+            </div>
+          )}
+
+          {/* Format — the four layers, under the names a person thinks in, each with its measured
+              size on this machine. Metrics is always on and non-interactive. */}
+          <SectionHeader label={pt ? 'Formato' : 'Format'} />
+          <p style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '-6px 0 12px' }}>
+            {pt
+              ? 'O que um backup MANUAL grava. Um sinalizador explícito da CLI (--with-archive/--with-raw) tem prioridade sobre esta escolha.'
+              : 'What a MANUAL backup writes. An explicit CLI flag (--with-archive/--with-raw) overrides this choice.'}
+          </p>
+          <LayerPicker
+            layers={status.config.layers}
+            sizes={status.config.layerSizes}
+            pt={pt}
+            disabled={savingConfig}
+            onToggle={(layer, checked) => toggleLayer('layers', layer, checked)}
+          />
+
+          <Divider />
+
+          {/* Recurrence — the schedule, and (deliberately separate) what a SCHEDULED run carries. */}
+          <SectionHeader label={pt ? 'Recorrência' : 'Recurrence'} />
+          <SchedulePicker
+            value={SCHEDULE_IDS.includes(status.config.schedule as BackupScheduleId)
+              ? status.config.schedule as BackupScheduleId : 'off'}
+            active={status.config.scheduleActive}
+            pt={pt}
+            disabled={savingConfig}
+            onChange={schedule => void patchConfig({ schedule })}
+          />
+          <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', margin: '18px 0 4px' }}>
+            {pt ? 'O que uma execução agendada grava' : 'What a scheduled run carries'}
+          </p>
+          <LayerPicker
+            layers={status.config.scheduleLayers}
+            sizes={status.config.layerSizes}
+            pt={pt}
+            disabled={savingConfig}
+            onToggle={(layer, checked) => toggleLayer('scheduleLayers', layer, checked)}
+          />
+          {status.config.scheduleLayers.includes('repos') && (
+            <p style={{ fontSize: 12, color: 'var(--anthropic-orange)', lineHeight: 1.5, margin: '8px 0 0' }}>
+              {pt
+                ? 'Uma execução agendada nunca carrega isto — é construído por `agentop backup`, não numa agenda.'
+                : 'A scheduled run never carries this — it is built by `agentop backup`, not on a schedule.'}
+            </p>
+          )}
 
           <Divider />
 
@@ -450,5 +574,107 @@ function HistoryBadge({ present, pt }: { present: boolean; pt: boolean }) {
       {present ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
       {present ? (pt ? 'no disco' : 'on disk') : (pt ? 'arquivo ausente' : 'file gone')}
     </span>
+  )
+}
+
+/**
+ * The FORMAT picker — one row per `BACKUP_LAYERS` member, each a checkbox (whole row is the
+ * control, ≥44px on mobile via the shared `Checkbox`) plus its measured size, right-aligned.
+ *
+ * `metrics` is always rendered checked and disabled, with the reason stated in a sentence right
+ * under its row — a backup without it restores nothing, and disabling a control silently is not
+ * the same as saying why. Used for BOTH the manual `layers` set and the SCHEDULE's own
+ * `scheduleLayers` — the caller decides which one `onToggle` writes to.
+ */
+function LayerPicker({ layers, sizes, pt, disabled, onToggle }: {
+  layers: BackupLayer[]
+  sizes: BackupStatusJson['config']['layerSizes']
+  pt: boolean
+  disabled: boolean
+  onToggle: (layer: BackupLayer, checked: boolean) => void
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {BACKUP_LAYERS.map(layer => {
+        const fixed = layer === 'metrics'
+        const checked = fixed || layers.includes(layer)
+        return (
+          <div key={layer}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <Checkbox
+                checked={checked}
+                onChange={c => onToggle(layer, c)}
+                label={pt ? LAYER_NAME[layer].pt : LAYER_NAME[layer].en}
+                disabled={fixed || disabled}
+              />
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                {layerSizeText(sizes, layer, pt)}
+              </span>
+            </div>
+            {fixed && (
+              <p style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: '2px 0 0 24px' }}>
+                {pt
+                  ? 'sempre ativo — um backup sem métricas não restaura nada'
+                  : 'always on — a backup with no metrics restores nothing'}
+              </p>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * The RECURRENCE picker — off / daily / weekly, as a segmented control. A custom row rather than
+ * the shared `TabSelect` (which uses fixed, sub-44px padding): this control must be a real touch
+ * target on mobile, exactly like the "Run backup now" button above it.
+ *
+ * `active` mirrors `ControlBackupConfig.scheduleActive` — with the server stopped, a schedule other
+ * than `off` reads INACTIVE rather than a "next at…" that will not arrive.
+ */
+function SchedulePicker({ value, active, pt, disabled, onChange }: {
+  value: BackupScheduleId
+  active: boolean
+  pt: boolean
+  disabled: boolean
+  onChange: (schedule: BackupScheduleId) => void
+}) {
+  const isMobile = useIsMobile()
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {SCHEDULE_IDS.map(id => {
+          const on = id === value
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => onChange(id)}
+              disabled={disabled}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                padding: isMobile ? '0 16px' : '7px 16px', minHeight: isMobile ? 44 : undefined,
+                flex: isMobile ? 1 : undefined, minWidth: isMobile ? 0 : 84,
+                borderRadius: 7, border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+                background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
+                color: on ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+                fontSize: 12.5, fontWeight: on ? 700 : 500, fontFamily: 'inherit',
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+              }}
+            >
+              {pt ? SCHEDULE_WORD[id]!.pt : SCHEDULE_WORD[id]!.en}
+            </button>
+          )
+        })}
+      </div>
+      {value !== 'off' && !active && (
+        <p style={{ fontSize: 11.5, color: 'var(--anthropic-orange)', margin: '8px 0 0' }}>
+          {pt
+            ? 'inativo — o servidor não está rodando, então nada vai disparar'
+            : 'inactive — the server is not running, so nothing will fire'}
+        </p>
+      )}
+    </div>
   )
 }

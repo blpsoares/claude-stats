@@ -20,6 +20,15 @@ const MARK_WIDTH = 2
 const LABEL_FLOOR = 8
 
 /**
+ * Redeclared from `server/backup/backup-plan.ts`'s `BACKUP_LAYERS` — `packages/tui` may not import
+ * from `packages/server`. Order matters here as much as membership: every layer row (the manual
+ * editor and the schedule editor alike) is drawn in this order, metrics first because it is the one
+ * that is never optional. Cross-checked in `backup-plan.test.ts`, the same discipline that test
+ * already runs for the `BackupLayer` union itself.
+ */
+export const BACKUP_LAYER_ORDER: BackupLayer[] = ['metrics', 'repos', 'archive', 'raw']
+
+/**
  * Two units at most, like `chrome.ts`'s `formatUptime` — "2h14m", never a stopwatch.
  *
  * Deliberately a separate function rather than an import: `chrome.ts` sits beside the cockpit's
@@ -167,9 +176,11 @@ export function harnessCells(
   return { ...picked, label: Math.min(label, picked.label + spare) }
 }
 
-/** One row of the config pane. `action` is present only on `schedule` — the one row `enter`/`s`
- *  changes; the rest are read-only facts here (layers, keep and destination are set outside the
- *  cockpit today, same as the web and CLI surfaces this design leaves for a later phase). */
+/** One row of the config pane. `action` is present on `layers`, `schedule` and `scheduleLayers` —
+ *  the three rows `enter` does something to (the two layer rows open the layers editor in the
+ *  detail pane, `schedule` cycles inline); `dest`, `keep`, `secrets` and `last` stay read-only
+ *  facts, set outside the cockpit today, same as the web and CLI surfaces this design leaves for a
+ *  later phase). */
 export interface BackupConfigRow {
   key: string
   label: string
@@ -187,20 +198,102 @@ function scheduleLabel(config: ControlBackupConfig, s: ControlStrings): string {
   return config.schedule === 'off' || config.scheduleActive ? word : `${word} ${s.backupScheduleInactive}`
 }
 
-/** The config pane's rows — layers, destination, schedule, keep (with the retained total),
- *  secrets excluded, last backup. Exactly the facts CLAUDE.md's mock names, in that order. */
+/** The config pane's rows — layers, destination, schedule, the schedule's own layers, keep (with
+ *  the retained total), secrets excluded, last backup. Exactly the facts CLAUDE.md's mock names,
+ *  in that order, with the schedule's own layers row added right under the schedule itself. */
 export function backupConfigRows(config: ControlBackupConfig, now: number, s: ControlStrings): BackupConfigRow[] {
   return [
-    { key: 'layers', label: s.backupLayersLabel, value: layersLabel(config.layers) },
+    { key: 'layers', label: s.backupLayersLabel, value: layersLabel(config.layers), action: s.actBackupEditLayers },
     { key: 'dest', label: s.backupDestLabel, value: config.destDir },
     {
       key: 'schedule', label: s.backupScheduleLabel, value: scheduleLabel(config, s),
       action: s.actBackupSchedule,
     },
+    {
+      key: 'scheduleLayers', label: s.backupScheduleLayersLabel, value: layersLabel(config.scheduleLayers),
+      action: s.actBackupEditScheduleLayers,
+    },
     { key: 'keep', label: s.backupKeepLabel, value: s.backupKeepValue(config.keep, config.retainedLabel) },
     { key: 'secrets', label: s.backupSecretsLabel, value: s.backupSecretsValue(config.secretsCount) },
     { key: 'last', label: s.backupLastLabel, value: lastSummary(config, now, s) },
   ]
+}
+
+/**
+ * The layers editor's own rows — one per `BACKUP_LAYER_ORDER` member, whether the given draft has
+ * it checked, and its measured size (already formatted by the host, or `backupLayerSizeUnknown`
+ * when the host reported `null` — the `repos` layer, unmeasurable ahead of a run).
+ *
+ * `metrics` is always reported checked and `fixed`, whatever the draft says — it cannot be removed
+ * (`backup-plan.ts`'s `withMetrics` enforces this server-side too), and the editor renders its row
+ * non-interactive rather than merely disabled, saying why via `backupLayerAlwaysOn`.
+ */
+export interface LayerEditorRow {
+  layer: BackupLayer
+  label: string
+  checked: boolean
+  sizeLabel: string
+  fixed: boolean
+}
+
+export function layerEditorRows(
+  draft: BackupLayer[], sizes: Record<BackupLayer, string | null>, s: ControlStrings,
+): LayerEditorRow[] {
+  return BACKUP_LAYER_ORDER.map(layer => ({
+    layer,
+    label: s.backupLayerName[layer],
+    checked: layer === 'metrics' || draft.includes(layer),
+    sizeLabel: sizes[layer] ?? s.backupLayerSizeUnknown,
+    fixed: layer === 'metrics',
+  }))
+}
+
+/** `space` on a layers-editor row: flips membership, except `metrics`, which the editor never even
+ *  lets the cursor land a toggle on — this is the belt to that braces. Order is not the editor's
+ *  concern; every writer (`ControlHost.setBackupLayers`/`setBackupScheduleLayers`, and the CLI's
+ *  and web's own writers) normalizes it on the way to disk. */
+export function toggleBackupLayer(draft: BackupLayer[], layer: BackupLayer): BackupLayer[] {
+  if (layer === 'metrics') return draft
+  return draft.includes(layer) ? draft.filter(l => l !== layer) : [...draft, layer]
+}
+
+/** The one caveat the SCHEDULE layers editor carries and the manual one never does: checking
+ *  `repos` there does not make a scheduled run build a repository manifest — `schedule.ts` and
+ *  `daemon.ts` filter it out regardless of what is stored. Null when the draft does not have it
+ *  checked, so a caller can render the sentence only when it is actually relevant. */
+export function scheduleReposNote(draft: BackupLayer[], s: ControlStrings): string | null {
+  return draft.includes('repos') ? s.backupScheduleReposNote : null
+}
+
+/** `❯ ● ` / `  ● ` — the cursor and check mark ahead of a layer editor row's label. */
+const LAYER_MARK_WIDTH = 4
+
+/** Cell widths inside a layers-editor row — the same ladder shape `harnessCells` uses, just for two
+ *  columns instead of four. `size` is the first to go, because at the width this editor is drawn
+ *  (the full-width detail pane, or a stacked narrow one) the checkbox and the layer's NAME are what
+ *  make the row actionable; its measured size is the reason to look, not the reason to act. */
+export interface LayerRowCells {
+  label: number
+  size: number
+}
+
+export function layerEditorCells(labels: string[], sizeLabels: string[], width: number): LayerRowCells {
+  const avail = width - LAYER_MARK_WIDTH
+  if (labels.length === 0 || avail <= 0) return { label: 0, size: 0 }
+
+  const label = labels.reduce((n, l) => Math.max(n, l.length), 0)
+  const size = sizeLabels.reduce((n, l) => Math.max(n, l.length), 0)
+  const floor = Math.min(label, LABEL_FLOOR)
+  const cost = (l: number, sz: number) => l + (sz > 0 ? sz + 2 : 0)
+
+  const ladder: LayerRowCells[] = [
+    { label, size },
+    { label: floor, size },
+    { label, size: 0 },
+    { label: floor, size: 0 },
+    { label: Math.max(1, avail), size: 0 },
+  ]
+  return ladder.find(c => cost(c.label, c.size) <= avail) ?? ladder[ladder.length - 1]!
 }
 
 /** The outcome word for a completed backup — mirrors `agentop backup status`'s own three
@@ -247,8 +340,15 @@ export function harnessDetailLines(row: HarnessRow | undefined, s: ControlString
  * The keys that work in the focused pane, most-important-first — the same shape `cockpitHints`
  * follows for the Services tab, and the same reason: a hint for a key that does nothing here is a
  * bug, not a cosmetic issue.
+ *
+ * `ctx.editing` is checked before `ctx.task` would ever be true — the layers editor and the output
+ * pane are mutually exclusive (see `Backup.tsx`'s `capturing`), but stating the same order here
+ * keeps this function total over every combination a future caller might pass.
  */
-export function backupHints(focus: 'harnesses' | 'config', s: ControlStrings, ctx: { task: boolean }): string[] {
+export function backupHints(
+  focus: 'harnesses' | 'config', s: ControlStrings, ctx: { task: boolean; editing?: boolean },
+): string[] {
+  if (ctx.editing) return [s.keyLayerToggle, s.keyLayerSave, s.keyLayerCancel]
   if (ctx.task) return [s.keyTaskClose, s.keyScroll, s.logFollow]
   const shared = [s.keyQuit, s.keyTabs, s.keyPane, s.keyMove]
   return focus === 'harnesses'

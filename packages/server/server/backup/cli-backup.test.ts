@@ -61,6 +61,49 @@ test('the schedule subcommand takes only the known ids', () => {
   expect(parseBackupArgs(['schedule', 'hourly']).kind).toBe('error')
 })
 
+// -----------------------------------------------------------------------------
+// `agentop backup config` — everything the format/recurrence pickers can set from the CLI
+// -----------------------------------------------------------------------------
+
+test('`config` with no flags asks to print the current configuration', () => {
+  const a = parseBackupArgs(['config'])
+  expect(a).toEqual({ kind: 'config' })
+})
+
+test('`config --layers` parses a comma list into the closed layer set', () => {
+  const a = parseBackupArgs(['config', '--layers', 'metrics,repos'])
+  if (a.kind !== 'config') throw new Error('expected config')
+  expect(a.layers).toEqual(['metrics', 'repos'])
+  expect(a.schedule).toBeUndefined()
+  expect(a.scheduleLayers).toBeUndefined()
+})
+
+test('`config --schedule-layers` is parsed independently of `--layers`', () => {
+  const a = parseBackupArgs(['config', '--schedule-layers', 'metrics'])
+  if (a.kind !== 'config') throw new Error('expected config')
+  expect(a.scheduleLayers).toEqual(['metrics'])
+  expect(a.layers).toBeUndefined()
+})
+
+test('`config` combines all three flags in one call', () => {
+  const a = parseBackupArgs(['config', '--layers', 'metrics,repos', '--schedule', 'daily', '--schedule-layers', 'metrics'])
+  if (a.kind !== 'config') throw new Error('expected config')
+  expect(a.layers).toEqual(['metrics', 'repos'])
+  expect(a.schedule).toBe('daily')
+  expect(a.scheduleLayers).toEqual(['metrics'])
+})
+
+test('`config --layers` refuses an unknown layer, naming it and the closed set', () => {
+  const a = parseBackupArgs(['config', '--layers', 'metrics,cloud'])
+  expect(a.kind).toBe('error')
+  if (a.kind !== 'error') return
+  expect(a.message).toContain('cloud')
+})
+
+test('`config --schedule` refuses an id outside the closed schedule set', () => {
+  expect(parseBackupArgs(['config', '--schedule', 'hourly']).kind).toBe('error')
+})
+
 test('an absent backup preference block yields safe defaults, not a crash', () => {
   const p = readBackupPrefs({})
   expect(p.schedule).toBe('off')

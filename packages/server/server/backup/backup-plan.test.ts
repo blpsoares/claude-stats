@@ -2,11 +2,23 @@ import { test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER } from '@agentistics/core'
-import { BACKUP_LAYERS, EXCLUDE_RULES, HARNESS_SECRETS, excludeFor, omittedSecrets, planSources } from './backup-plan'
+import { BACKUP_LAYERS, EXCLUDE_RULES, HARNESS_SECRETS, excludeFor, omittedSecrets, planSources, withMetrics } from './backup-plan'
 
 test('metrics is always planned, whatever the caller asked for', () => {
   const s = planSources({ layers: ['raw'], harnesses: ['claude'] })
   expect(s.some(e => e.layer === 'metrics')).toBe(true)
+})
+
+test('withMetrics adds metrics when it is missing, and orders the result by BACKUP_LAYERS', () => {
+  expect(withMetrics(['raw', 'repos'])).toEqual(['metrics', 'repos', 'raw'])
+})
+
+test('withMetrics is a no-op — up to order — when metrics is already there', () => {
+  expect(withMetrics(['metrics', 'archive'])).toEqual(['metrics', 'archive'])
+})
+
+test('withMetrics on an empty list yields metrics alone, never an empty backup', () => {
+  expect(withMetrics([])).toEqual(['metrics'])
 })
 
 test('a harness contributes its consolidate dir AND its raw dir', () => {
@@ -180,4 +192,15 @@ test('the control center\'s BackupLayer union matches BACKUP_LAYERS, member for 
   expect(decl).toBeDefined()
   const members = [...decl!.matchAll(/'([a-z]+)'/g)].map(m => m[1]!)
   expect(members.sort()).toEqual([...BACKUP_LAYERS].sort())
+})
+
+// `control/backup.ts`'s layers editor draws every row in this order — metrics leading — so the
+// ORDER, not only the membership, must match. A silent reorder there would put the always-on
+// metrics row somewhere a user could miss it.
+test('the control center\'s BACKUP_LAYER_ORDER matches BACKUP_LAYERS, in order', () => {
+  const source = readFileSync(join(import.meta.dir, '..', '..', '..', 'tui', 'src', 'control', 'backup.ts'), 'utf8')
+  const decl = source.match(/export const BACKUP_LAYER_ORDER: BackupLayer\[] = \[([^\]]+)]/)?.[1]
+  expect(decl).toBeDefined()
+  const members = [...decl!.matchAll(/'([a-z]+)'/g)].map(m => m[1]!)
+  expect(members).toEqual(BACKUP_LAYERS)
 })

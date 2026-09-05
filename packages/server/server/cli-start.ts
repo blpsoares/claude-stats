@@ -41,8 +41,10 @@ import type {
   ActionResult,
   ActionTarget,
   AttachTicket,
+  BackupLayer,
   BackupScheduleId,
   BootState,
+  ControlBackupConfig,
   ControlBackupHarness,
   ControlBackupStatus,
   ControlHost,
@@ -71,14 +73,16 @@ import type {
   RestoreCandidate,
 } from '@agentistics/tui/control'
 import { DEFAULT_SESSION_VIEW } from '@agentistics/tui/control'
-import { AGENTISTICS_DATA_DIR, HOME_DIR, PORT, WEB_PORT } from './config'
+import { AGENTISTICS_DATA_DIR, PORT, WEB_PORT } from './config'
 import {
   readPreferences, writePreferences, resolveArchiveMode, type ArchiveMode,
   clampSessionPollMs, sessionPollMsOrDefault, SESSION_POLL_DEFAULT_MS,
 } from './preferences'
-import { performBackup, readBackupPrefs } from './cli-backup'
-import { omittedSecrets, planSources } from './backup/backup-plan'
-import { walkSources } from './backup/backup'
+import {
+  performBackup, readBackupPrefs, measuredLayerSizes,
+  writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
+} from './cli-backup'
+import { omittedSecrets } from './backup/backup-plan'
 import { formatBytes, retainedTotal } from './backup/backup-size'
 import { lastBackup, lastPerHarness, markPresence, readBackups } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
@@ -2503,10 +2507,8 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      */
     async backupStatus(): Promise<ControlBackupStatus> {
       const prefs = readBackupPrefs(await readPreferences())
-      const [sizes, consolidated, entries] = await Promise.all([
-        walkSources(HOME_DIR, planSources({ layers: ['metrics'], harnesses: HARNESS_ORDER }))
-          .then(r => r.sizes)
-          .catch(() => null),
+      const [measured, consolidated, entries] = await Promise.all([
+        measuredLayerSizes().catch(() => null),
         loadConsolidated().catch(() => new Map()),
         readBackups().then(rs => markPresence(rs, p => existsSync(p))).catch(() => []),
       ])
@@ -2516,7 +2518,10 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         const h = (sess.harness ?? 'claude') as HarnessId
         sessionCounts[h] = (sessionCounts[h] ?? 0) + 1
       }
-      const byHarness = sizes?.metrics.byHarness ?? {}
+      const byHarness = measured?.sizes.metrics.byHarness ?? {}
+      const emptyLayerLabels: ControlBackupConfig['layerSizes'] =
+        { metrics: null, repos: null, archive: null, raw: null }
+      const layerSizes = measured?.labels ?? emptyLayerLabels
       const perHarnessLast = lastPerHarness(entries)
 
       const harnesses: ControlBackupHarness[] = HARNESS_ORDER.map(id => {
@@ -2545,12 +2550,14 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         harnesses,
         config: {
           layers: prefs.layers,
+          scheduleLayers: prefs.scheduleLayers,
           destDir: prefs.destDir,
           schedule: prefs.schedule,
           scheduleActive: st.kind === 'next',
           keep: prefs.keep,
           retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
           secretsCount: omittedSecrets().length,
+          layerSizes,
           ...(last
             ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
             : {}),
@@ -2576,10 +2583,28 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       } catch { /* best-effort — see above */ }
     },
 
+    // Delegates to the same writer `agentop backup schedule` calls (`cli-backup.ts`'s
+    // `writeBackupSchedule`) — one implementation of the read-modify-write, not three.
     async setBackupSchedule(schedule: BackupScheduleId): Promise<ActionResult> {
-      const p = await readPreferences()
-      await writePreferences({ ...p, backup: { ...(p.backup ?? {}), schedule } })
+      await writeBackupSchedule(schedule)
       return { ok: true, message: S().backupScheduleSet(schedule) }
+    },
+
+    /**
+     * The layers editor's `enter` — set the layers a MANUAL run writes. Delegates to
+     * `writeBackupLayers`, the same writer `agentop backup config --layers` and the web's format
+     * picker call, which is what enforces `metrics` staying in the set even if this were ever
+     * called with a draft that dropped it.
+     */
+    async setBackupLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupLayers(layers)
+      return { ok: true, message: S().backupLayersSet(written.join(', ')) }
+    },
+
+    /** Same, for the layers a SCHEDULED run writes. */
+    async setBackupScheduleLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupScheduleLayers(layers)
+      return { ok: true, message: S().backupScheduleLayersSet(written.join(', ')) }
     },
 
     /**
