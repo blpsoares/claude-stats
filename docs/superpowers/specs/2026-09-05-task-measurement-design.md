@@ -223,7 +223,10 @@ excluded and not padded.
 
 ## 5. The rollup, and the fact that there is no single currency
 
-Per attempt, and summed per task:
+Per attempt, and summed per task. **The source is `loadConsolidated()`'s `SessionMeta`, not
+`Conversation`** — the latter is a projection built by `toConversation` for the fleet row and carries
+neither `user_message_count` nor `active_minutes`, which are two of the metrics this feature exists
+for:
 
 | Metric | Source | Availability |
 |---|---|---|
@@ -283,13 +286,19 @@ a comparison, and treating it as merely "still open" would quietly inflate every
 `~/.agentistics/tasks.json`, with ids and `updatedAt` on every record so a later central sync needs
 no new model.
 
-**It must not inherit the registry's write race.** `registry.ts` serialises writes within one
-process, and agentop runs as several (cockpit, daemon, every one-shot command) — a record written by
-a short-lived process has been observed erased by a longer-lived one, which is what `session-adopt.ts`
-exists to repair. A lost task is worse than a lost session row: the session can be adopted back from
-a live process, while a task has no running thing to be recovered from. Every write therefore
-**reads itself back and retries once**, the way `takeover` does, and says so when the record still
-cannot be kept.
+**It reuses the cross-process lock that already exists.** An earlier draft of this section called
+for a bespoke read-back-and-retry; that was written against a stale reading of the codebase.
+`withFileLock` (`sessions/file-lock.ts`, `mkdir` as the lock) already serialises `managed-sessions.json`
+across the several processes agentop runs as, and the task store takes the same path — the
+`createLocalTagStore` shape (temp file + rename, corrupt bytes quarantined rather than overwritten,
+a no-op mutation writing nothing) wrapped in that lock.
+
+One property of the lock must be carried through rather than assumed away: **the wait is bounded**
+(`WAIT_MS`), and past it the caller proceeds without the lock and reports `contended`, because
+refusing to record a session that has already been spawned is the worse harm. For a task write the
+same trade does not hold — nothing has been spawned — so a contended task write is **retried once**
+and, if still contended, reported. A task silently lost has no live process to be adopted back from,
+which is what makes it different from a session row.
 
 Local-first and deliberately not Mongo in this phase: the fleet is local, the motivating use case is
 local, and a solo machine must have the whole feature. `TaskDoc`-shaped from the start so the central
