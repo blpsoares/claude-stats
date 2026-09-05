@@ -13,6 +13,7 @@ import {
 import { dependencyCommandLine } from './dependency-plan'
 import { probeDependency } from './dependency-probe'
 import { planPromptDelivery } from './initial-prompt'
+import { frameChanged } from './submit-check'
 import type {
   BackendInitialPrompt, BackendSession, BackendSpawn, SessionBackend, TerminalCapture,
 } from './types'
@@ -31,6 +32,19 @@ const DELIVER_DEADLINE_MS = Number(process.env.AGENTISTICS_DELIVER_DEADLINE_MS) 
   : 15_000
 /** How much of the pane to read to judge readiness — enough for the input box and its footer. */
 const DELIVER_CAPTURE_LINES = 40
+
+/**
+ * The gap between typing a prompt and submitting it, and how long the submit is given to show.
+ *
+ * The gap exists because the two `send-keys` calls were back to back, microseconds apart, and a
+ * terminal UI reading a burst that size has every reason to treat the `\r` at the end of it as part
+ * of the same burst rather than as a person pressing return.
+ *
+ * The wait is what makes the CHECK possible at all: a pane captured the instant after `Enter` has
+ * not repainted yet, so it always looks unchanged and every send would retry.
+ */
+const SUBMIT_SETTLE_MS = 200
+const SUBMIT_SHOW_MS = 600
 
 /** True when this host has the named terminfo entry (`infocmp` exits 0). Never throws. */
 async function terminfoHas(name: string): Promise<boolean> {
@@ -95,7 +109,21 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 async function sendTextTo(id: string, text: string): Promise<boolean> {
   const typed = await tmux(sendKeysLiteralArgs(id, text))
   if (typed.code !== 0) return false
-  return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+
+  // Let the burst end before the return key, then look at what the typing produced — that frame is
+  // the thing the submit has to change. See `submit-check.ts` for why the check is the SCREEN and
+  // not the prompt's own words.
+  await sleep(SUBMIT_SETTLE_MS)
+  const typedFrame = await captureFrame(id)
+  if ((await tmux(sendKeysNamedArgs(id, 'Enter'))).code !== 0) return false
+  await sleep(SUBMIT_SHOW_MS)
+  if (!frameChanged(typedFrame, await captureFrame(id))) {
+    // The pane did not move. That is NOT proof the submit was swallowed — measured: a screen that
+    // redraws identically looks the same either way — so it buys one more return rather than a
+    // verdict. An extra return on an emptied input does nothing.
+    await tmux(sendKeysNamedArgs(id, 'Enter'))
+  }
+  return true
 }
 
 async function captureFrame(id: string): Promise<string[]> {

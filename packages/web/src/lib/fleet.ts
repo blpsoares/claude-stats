@@ -19,6 +19,7 @@ import { fleetSeedNotice, fleetStaleNotice } from './fleetStale'
 import { cacheIsUsable, stripVolatile } from './fleetCache'
 import { getCentralMachine } from './centralMachinePick'
 import { relayedToSessions, type RelayedRow } from './relayedSessions'
+import { notifyFleetTransitions, type SessionActivity } from './sessionNotifications'
 
 /** Mirrors `SessionAction` in `@agentistics/tui/control/sessions`, minus the verbs a page cannot do. */
 export type FleetActionId =
@@ -117,7 +118,7 @@ export interface FleetState {
     action: FleetActionId
     text?: string
     choice?: number
-  }) => Promise<{ ok: boolean; message: string }>
+  }) => Promise<{ ok: boolean; message: string; id?: string }>
 }
 
 /**
@@ -245,6 +246,13 @@ async function pollCentralOnce(): Promise<void> {
   }
 }
 
+/**
+ * The previous snapshot's states, for the notifier. `null` until the first successful poll — see
+ * `notifyFleetTransitions`, where the distinction between "not asked yet" and "asked, nothing
+ * running" is what keeps a reopened page quiet.
+ */
+let lastActivity: Record<string, SessionActivity> | null = null
+
 async function pollOnce(): Promise<void> {
   if (pollCentral) return pollCentralOnce()
   try {
@@ -267,6 +275,11 @@ async function pollOnce(): Promise<void> {
     snapLastOkMs = Date.now()
     cachedAt = 0            // a live answer supersedes the seed; it is no longer "from before"
     writeFleetCache(json)
+    // The desktop notification for a session that just changed state. HERE, in the poll, and not in
+    // a component: it must fire while the reader is on the costs page or on another tab, which is
+    // the only situation where a notification is worth anything. `null` on the first snapshot is
+    // what stops a freshly opened page announcing everything that happened while it was closed.
+    lastActivity = notifyFleetTransitions(lastActivity, json.rows ?? [], pollLang)
   } catch {
     // Transient — keep the last known answer rather than reporting an empty fleet, and record that
     // it did not arrive.

@@ -1622,3 +1622,70 @@ describe('the header total never exceeds — and is never disconnected from — 
     expect(d.totalSessions).toBe(400)
   })
 })
+
+// "Active only" on the dashboard (Task 9) — the stored session set intersected with the live
+// fleet by conversation id, and the scope this forces to be cache-blind.
+
+describe('computeDerivedStats — active only', () => {
+  const cache: import('@agentistics/core').StatsCache = {
+    version: 1, lastComputedDate: '2026-08-01',
+    dailyActivity: [{ date: '2026-08-01', sessionCount: 500, messageCount: 5000, toolCallCount: 0 }],
+    dailyModelTokens: [],
+    // A deep cached history dwarfing the two live sessions below — if "active only" fell back to
+    // the cache instead of forcing the per-session sum, the totals would show this instead.
+    modelUsage: {
+      'claude-sonnet-4-5': {
+        inputTokens: 900_000_000, outputTokens: 400_000_000,
+        cacheReadInputTokens: 1_000_000_000, cacheCreationInputTokens: 50_000_000,
+        webSearchRequests: 0, costUSD: 0,
+      },
+    },
+    totalSessions: 500, totalMessages: 5000, hourCounts: {},
+  } as unknown as import('@agentistics/core').StatsCache
+
+  // Dated ON the cache's own covered day (its `dailyActivity` already has 2026-08-01), so the
+  // gap-fill supplement (sessions on days statsCache has not yet computed) does not also add
+  // these two — isolating the test to the cache-vs-per-session behaviour this task changes.
+  const running: SessionMeta = {
+    session_id: 'conv-running', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-08-01T10:00:00.000Z', end_time: '2026-08-01T11:00:00.000Z',
+    input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+  } as unknown as SessionMeta
+  const finished: SessionMeta = {
+    session_id: 'conv-finished', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-08-01T09:00:00.000Z', end_time: '2026-08-01T09:30:00.000Z',
+    input_tokens: 2_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: cache,
+    sessions: [running, finished],
+    allSessions: [],
+    projects: [],
+    harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  const filters = (over: Partial<import('@agentistics/core').Filters> = {}): import('@agentistics/core').Filters =>
+    ({ dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [], ...over })
+
+  test('off (default): reads the deep cache, not the two session documents', () => {
+    const d = computeDerivedStats(data, filters())!
+    expect(d.activeOnlyScoped).toBe(false)
+    expect(d.totalSessions).toBe(500)
+  })
+
+  test('on: keeps only the running conversation, and forces the per-session sum', () => {
+    const d = computeDerivedStats(data, filters(), [], true, new Set(['conv-running']))!
+    expect(d.activeOnlyScoped).toBe(true)
+    expect(d.totalSessions).toBe(1)
+    expect(d.filteredSessions.map(s => s.session_id)).toEqual(['conv-running'])
+    // Not the cache's 500 messages, and not the finished session's tokens either.
+    expect(totalTokens(d.tokenTotals)).toBe(1_000 + 500)
+  })
+
+  test('on with nothing running: reports zero, never the cache\'s totals', () => {
+    const d = computeDerivedStats(data, filters(), [], true, new Set())!
+    expect(d.totalSessions).toBe(0)
+    expect(d.totalCostUSD).toBe(0)
+  })
+})

@@ -1,9 +1,11 @@
 /**
  * AttachmentLightbox — one image attachment, full-size, with a way to step through its siblings.
  *
- * Scoped to the message that opened it: "if there's more than one" (the ask this answers) means
- * more than one attachment on THIS turn, not a scroll through every image in the conversation —
- * jumping to some other message's picture from here would answer a question nobody asked.
+ * THE CALLER OWNS THE SCOPE, and the two callers choose differently on purpose. In the CHAT it is
+ * the message that opened it: "if there's more than one" (the ask this answers) means more than one
+ * attachment on THIS turn, and jumping to some other message's picture while somebody reads a
+ * conversation would answer a question nobody asked. In the GALLERY it is every image on the
+ * screen, because there the pictures ARE the content and "the next one" plainly means the next one.
  */
 
 import { useEffect } from 'react'
@@ -16,9 +18,29 @@ export interface AttachmentLightboxProps {
   onIndexChange: (i: number) => void
   onClose: () => void
   lang: 'pt' | 'en'
+  /**
+   * A right-click ON THE IMAGE, for a caller that offers something about it.
+   *
+   * Optional, and absent in the chat: there the lightbox is scoped to one message and the reader is
+   * already looking at it, so "go to the message it was sent in" would take them where they are.
+   * The GALLERY steps across messages, so the picture on screen is routinely not from the message
+   * the reader last saw — which is the whole reason its menu exists here too.
+   */
+  onImageMenu?: (x: number, y: number, index: number) => void
+  /**
+   * How to turn a path into a URL, when the default is not right.
+   *
+   * The default is the attachments route, which is what the chat and the sent half of the gallery
+   * need. A file the SESSION produced lives wherever the session put it and is served by a
+   * different route bound to that session, so the caller that knows which is which resolves it —
+   * this component never guesses from the path.
+   */
+  srcFor?: (path: string) => string
 }
 
-export function AttachmentLightbox({ paths, index, onIndexChange, onClose, lang }: AttachmentLightboxProps) {
+export function AttachmentLightbox({
+  paths, index, onIndexChange, onClose, lang, onImageMenu, srcFor,
+}: AttachmentLightboxProps) {
   const pt = lang === 'pt'
   const many = paths.length > 1
 
@@ -77,9 +99,19 @@ export function AttachmentLightbox({ paths, index, onIndexChange, onClose, lang 
       )}
 
       <img
-        src={attachmentUrl(path)}
+        src={srcFor ? srcFor(path) : attachmentUrl(path)}
         alt=""
         onClick={e => e.stopPropagation()}
+        {...(onImageMenu ? {
+          onContextMenu: (e: React.MouseEvent) => {
+            e.preventDefault()
+            e.stopPropagation()
+            // The INDEX, not the path: the same file sent in two messages is two entries sharing
+            // a path, and the caller's menu is about the MESSAGE — resolving by path would offer
+            // the wrong one.
+            onImageMenu(e.clientX, e.clientY, index)
+          },
+        } : {})}
         style={{
           maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain',
           borderRadius: 8, boxShadow: '0 20px 60px rgba(0,0,0,0.5)',

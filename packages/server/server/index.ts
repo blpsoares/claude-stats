@@ -106,6 +106,7 @@ import {
 } from './sse'
 import { fullSync } from './archive'
 import { getArchiveMode } from './preferences'
+import { handleAccessibility } from './a11y-routes'
 import { registerAgent, unregisterAgent, onAgentMessage, onAgentPong, setPresenceChangeHook } from './team-agent'
 import { startAgentClient, reconcileNow } from './team-agent-client'
 import { validateIngestToken } from './team-tokens'
@@ -837,6 +838,10 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    if (url.pathname === '/api/accessibility') {
+      return await handleAccessibility(req, CORS_HEADERS)
+    }
+
     if (url.pathname === '/api/billing/plan-prices' && req.method === 'GET') {
       // Reads two public vendor pages — no host access, so no capability registration. It is
       // anchored: a page that fails its known-good figure returns nothing rather than a wrong
@@ -1225,6 +1230,40 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    // The skills the assistant in this session can be asked to run. Guarded by the `/api/fleet`
+    // PREFIX already registered in `capability-guard.ts` — a new fleet route is guarded by having
+    // been ADDED, never by remembering a second table.
+    if (url.pathname === '/api/fleet/skills' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetSkills, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetSkills(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ONE skill's own text. The request names a SKILL, never a path — see `readFleetSkillBody`.
+    if (url.pathname === '/api/fleet/skill' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const name = url.searchParams.get('name')
+      if (!id || !name) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetSkillBody, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetSkillBody(fleetLang(url.searchParams.get('lang')), id, name)
+      return new Response(JSON.stringify(out), {
+        status: out.ok ? 200 : 404,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
     // Start one. The most powerful thing on this route table: it spawns a billable coding assistant,
     // with a prompt, in a directory the request names — see the header of `runFleetSpawn` for why
     // this one call reads a directory from the body when `resume` refuses to, and `fleet-spawn.ts`
@@ -1320,6 +1359,46 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    // ONE stored attachment, BY NAME — the gallery's preview, and the size under it.
+    //
+    // Narrower than `/api/fleet/attachment` above in both directions, on purpose. It takes a NAME
+    // rather than a path, so `attachmentPathByName` can refuse a traversal by construction instead
+    // of resolving one; and it serves only IMAGES, so a preview route can never become a general
+    // reader of agentop's own directory. HEAD answers the SIZE without the bytes, which is what the
+    // list column is for — a size fetched by downloading the file is not a size, it is a download.
+    //
+    // Guarded by the `/api/fleet` PREFIX in `capability-guard.ts` (localShell) and 404'd on a
+    // central with the rest of `/api/fleet*`, both above — neither needs a new entry, which is the
+    // point of the prefix.
+    //
+    // A refused name, a non-image and a missing file all get the same bare 404. Which of the three
+    // it was is not this reader's to say, and the path is never echoed back.
+    if (url.pathname === '/api/fleet/attachment/by-name' && (req.method === 'GET' || req.method === 'HEAD')) {
+      const { attachmentPathByName, attachmentImageType } = await import('./sessions/attachment-web')
+      const name = url.searchParams.get('name') ?? ''
+      const resolved = attachmentPathByName(name)
+      const type = resolved === null ? null : attachmentImageType(name)
+      if (resolved === null || type === null) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      const file = Bun.file(resolved)
+      if (!(await file.exists())) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      // Only what this route OWNS. `nosniff` (so the browser cannot decide a type the extension
+      // did not), the CSP that keeps a directly-opened SVG's script from running, and `no-store`
+      // (a name can be reused by a later upload, and a cache keyed on the URL would then serve the
+      // wrong image under the right name) are all set by `handleRequest`'s own
+      // `securityHeaders` wrapper for every `/api/` response, and it SETS rather than appends —
+      // repeating them here would be a header that never ships, which is worse than none because
+      // it reads as a guarantee.
+      const headers = { ...CORS_HEADERS, 'Content-Type': type, 'Content-Length': String(file.size) }
+      // HEAD is the size question. It carries the same headers and no body — the whole reason it
+      // exists is that the answer must not cost the bytes.
+      if (req.method === 'HEAD') return new Response(null, { headers })
+      return new Response(file, { headers })
+    }
+
     // What this machine can start, and from where. `q` searches the LOCAL project store, so the
     // picker works with the server's own data cold.
     if (url.pathname === '/api/fleet/new' && req.method === 'GET') {
@@ -1344,10 +1423,14 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
-    // Start one session, or reopen everything that fell. Both spawn real assistants.
+    // REOPEN everything that fell. Starting ONE session is `/api/fleet/new`, and this route no
+    // longer does it: two spawn paths for one act meant the browser could reach an unvalidated
+    // reading of a body that starts a real assistant, beside a validated one that refuses a
+    // relative cwd, an unknown effort and a model a harness has no flag for. The route survives for
+    // the reopen, which takes no body fields at all.
     if (url.pathname === '/api/fleet/spawn' && req.method === 'POST') {
       try {
-        const { spawnFromWeb, reopenFellFromWeb } = await import('./sessions/spawn-web')
+        const { reopenFellFromWeb } = await import('./sessions/spawn-web')
         const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
         const lang = fleetLang(url.searchParams.get('lang'))
         const host = await hostForFleet(lang)
@@ -1359,17 +1442,18 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           })
         }
         const v = body.value
-        const out = v['reopenFell'] === true
-          ? await reopenFellFromWeb(host, lang)
-          : await spawnFromWeb(host, lang, {
-              harness: String(v['harness'] ?? ''),
-              cwd: String(v['cwd'] ?? ''),
-              ...(v['task'] ? { task: String(v['task']) } : {}),
-              ...(v['prompt'] ? { prompt: String(v['prompt']) } : {}),
-              ...(v['model'] ? { model: String(v['model']) } : {}),
-              ...(v['effort'] ? { effort: String(v['effort']) } : {}),
-              ...(v['label'] ? { label: String(v['label']) } : {}),
-            })
+        // Anything but the reopen is REFUSED here rather than quietly handled, and the refusal
+        // NAMES the route that does the job — a caller left with "bad request" would reasonably
+        // conclude its body was wrong when the route simply is not this one any more.
+        if (v['reopenFell'] !== true) {
+          return new Response(JSON.stringify({
+            ok: false,
+            message: lang === 'pt'
+              ? 'Esta rota só reabre o que caiu. Para iniciar uma sessão, use POST /api/fleet/new.'
+              : 'This route only reopens what fell. To start a session, use POST /api/fleet/new.',
+          }), { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } })
+        }
+        const out = await reopenFellFromWeb(host, lang)
         return new Response(JSON.stringify(out), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
@@ -1404,6 +1488,96 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         })
       } catch (err) {
         return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // One file this session wrote. Guarded by the `/api/fleet` PREFIX already registered in
+    // `capability-guard.ts` — a new fleet route is guarded by having been ADDED, never by remembering
+    // a second table — and 404'd on a central with the rest of `/api/fleet*`.
+    // The panel's LIST — what this session wrote that is still a readable file with content. It
+    // rides the same `/api/fleet` prefix, so `capability-guard.ts` guards it by having been added.
+    if (url.pathname === '/api/fleet/artifacts' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ files: [] }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { listFleetArtifacts, fleetLang } = await import('./sessions/fleet-web')
+        const out = await listFleetArtifacts(fleetLang(url.searchParams.get('lang')), id)
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ files: [], ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/fleet/file' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const path = url.searchParams.get('path')
+      if (!id || !path) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readFleetArtifact, fleetLang } = await import('./sessions/fleet-web')
+        const out = await readFleetArtifact(fleetLang(url.searchParams.get('lang')), id, path)
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // THE BYTES of an image or PDF a session produced. Separate from `/api/fleet/file`, which
+    // answers JSON with text and refuses binaries by design. Same allowlist, plus a closed content
+    // table (`artifact-media.ts`) — and the response is locked down so a mislabelled file cannot
+    // become script on this origin: `nosniff`, a `default-src 'none'` policy, and no `Vary` games.
+    if (url.pathname === '/api/fleet/media' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const path = url.searchParams.get('path')
+      if (!id || !path) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readFleetArtifactMedia, fleetLang } = await import('./sessions/fleet-web')
+        const out = await readFleetArtifactMedia(fleetLang(url.searchParams.get('lang')), id, path)
+        if (!out.ok) {
+          return new Response(JSON.stringify({ ok: false, message: out.message }), {
+            status: out.status,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(out.bytes as unknown as BodyInit, {
+          headers: {
+            ...CORS_HEADERS,
+            'Content-Type': out.mime,
+            'Content-Disposition': `inline; filename="${out.name.replace(/[^\w.-]/g, '_')}"`,
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'none'; sandbox",
+            // A session rewrites the file it is working on; a cached copy would show the old one.
+            'Cache-Control': 'no-store',
+          },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
           status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })

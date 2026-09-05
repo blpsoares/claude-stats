@@ -18,7 +18,7 @@
  * than the bubble, and letting it set the width is how a message ends up outside its own card.
  */
 
-import { memo, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 // A single newline is a LINE BREAK here. Without this plugin markdown collapses it to a space, so a
@@ -27,7 +27,9 @@ import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import { Check, Clock, CornerUpLeft, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
+import { splitSlashLine } from '../../lib/slashLine'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
+import { echoStatus } from '../../lib/echoStatus'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { AttachmentLightbox } from './AttachmentLightbox'
 import { HarnessMark } from './HarnessMark'
@@ -75,6 +77,10 @@ export interface ChatBubbleProps {
    * the message IS there, it is the reading that has not happened.
    */
   awaiting?: boolean
+  /** How long ago the message was handed to the session, ms. Absent when that is not known. */
+  awaitingSinceMs?: number
+  /** Whether the session is mid-turn — the reason an unread message is normal rather than stuck. */
+  awaitingWorking?: boolean
   /**
    * Quote THIS turn in the composer. Absent where the session cannot be written to — a reply
    * control on a row that will refuse the message is a control that teaches the wrong thing.
@@ -84,6 +90,20 @@ export interface ChatBubbleProps {
    * if `onReply` is actually stable across a re-render caused by something unrelated, like typing.
    */
   onReply?: (turn: ChatTurn) => void
+  /**
+   * Reply to the SELECTED PART of this turn.
+   *
+   * Offered only on the assistant's own messages, and only while a selection actually sits inside
+   * this bubble. Same stability requirement as `onReply` — see the note above.
+   */
+  onReplyExcerpt?: (turn: ChatTurn, excerpt: string) => void
+  /**
+   * A DOM id for this bubble, so something outside the conversation can scroll to it.
+   *
+   * The id is composed by `lastSent.ts`'s `turnAnchorId` — one rule shared by whatever renders the
+   * bubble and whatever goes looking for it, so "go to message" can never hunt an id nothing wrote.
+   */
+  anchorId?: string
 }
 
 /**
@@ -109,12 +129,101 @@ const SYSTEM_NOTE_PT: Record<string, string> = {
   'command output': 'saída de comando',
   'slash command': 'comando de barra',
   'shell command': 'comando de shell',
+  // The untagged `isMeta` entries — see `chat-envelope.ts`'s second measurement.
+  'a skill was loaded': 'uma skill foi carregada',
+  'a skill was re-invoked': 'uma skill foi reinvocada',
+  'a message from another session': 'uma mensagem de outra sessão',
+  'the conversation was compacted': 'a conversa foi compactada — o resumo do que veio antes',
+  'an image was attached': 'uma imagem foi anexada',
+  'the session was resumed': 'a sessão foi retomada',
+  'an idle notice about another session': 'aviso de ociosidade sobre outra sessão',
+  'a context-usage report': 'relatório de uso de contexto',
+  'injected by the assistant': 'injetado pelo assistente',
 }
 
-export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, onReply }: ChatBubbleProps) {
+export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId }: ChatBubbleProps) {
   const pt = lang === 'pt'
   const mine = turn.role === 'user'
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  /**
+   * The RIGHT-CLICK menu, positioned where the click landed inside this bubble.
+   *
+   * The hover control is the discoverable way in and stays exactly where it was; this is the one
+   * every messaging application has taught, and it is reachable without first finding a 24px
+   * button that only appears when the pointer is over the right message.
+   *
+   * ONE ENTRY, deliberately. A context menu offered on a conversation invites "copy", "quote",
+   * "open in the terminal" and four more, and each of those is a decision about what a session can
+   * do that has not been made. Reply is the one this file already supports.
+   */
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (menuAt === null) return
+    const close = () => setMenuAt(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuAt(null) }
+    // `mousedown` rather than `click`, so it closes on the press; and on SCROLL too, because the
+    // menu is anchored to a bubble that moves while the conversation does.
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [menuAt])
+
+  /**
+   * The floating "reply to this excerpt" control, anchored where the selection ended.
+   *
+   * WHY IT EXISTS: a reply quotes the message, and the assistant's messages are long. Somebody
+   * answering one sentence of a forty-line answer pays for the other thirty-nine in context they
+   * are asking about nothing. Selecting the sentence is what they already do to read it.
+   *
+   * THE SELECTION MUST BE INSIDE THIS BUBBLE, both ends of it. A drag that starts in one message
+   * and ends in another has a `toString()` that reads perfectly and belongs to neither turn, and
+   * attributing it to one of them is inventing a quote. Containment is asked of the DOM rather
+   * than by matching text: the bubble renders markdown, so what was selected legitimately differs
+   * from `turn.text`, which is also why `markExcerpt` marks an unlocatable excerpt at both ends.
+   *
+   * THE TEXT IS CAPTURED NOW, not when the button is pressed: pressing a button collapses the
+   * selection in some browsers, so reading it at click time reads an empty one.
+   */
+  const [excerpt, setExcerpt] = useState<{ x: number; y: number; text: string } | null>(null)
+  const readSelection = useCallback(() => {
+    if (!onReplyExcerpt || provisional) return
+    const sel = window.getSelection()
+    const body = bodyRef.current
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !body) { setExcerpt(null); return }
+    if (!body.contains(sel.anchorNode) || !body.contains(sel.focusNode)) { setExcerpt(null); return }
+    const text = sel.toString().trim()
+    if (text === '') { setExcerpt(null); return }
+    const rect = sel.getRangeAt(0).getBoundingClientRect()
+    const box = body.getBoundingClientRect()
+    setExcerpt({
+      // Below the selection's own end, clamped inside the bubble so a selection at the right edge
+      // does not put the control off the pane.
+      x: Math.max(0, Math.min(rect.right - box.left, box.width - 150)),
+      y: Math.min(rect.bottom - box.top + 6, box.height),
+      text,
+    })
+  }, [onReplyExcerpt, provisional])
+  useEffect(() => {
+    if (excerpt === null) return
+    // It goes away when the selection does — clicking elsewhere, or a keystroke that moves the
+    // caret. A control offering to quote a selection that no longer exists quotes the old one.
+    const check = () => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed || sel.toString().trim() === '') setExcerpt(null)
+    }
+    document.addEventListener('selectionchange', check)
+    window.addEventListener('scroll', () => setExcerpt(null), true)
+    return () => {
+      document.removeEventListener('selectionchange', check)
+      window.removeEventListener('scroll', () => setExcerpt(null), true)
+    }
+  }, [excerpt])
 
   // An attachment is a PATH the composer typed into the pane (see `attachmentPreview.ts`'s header),
   // so it arrives in `turn.text` like any other line — pulled out here rather than at the source, so
@@ -178,7 +287,7 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
   const name = (HARNESS_LABELS as Record<string, string>)[harness] ?? harness
 
   return (
-    <div className="ag-bubble" style={{
+    <div className="ag-bubble" {...(anchorId ? { id: anchorId } : {})} style={{
       display: 'flex', gap: 10, minWidth: 0,
       flexDirection: mine ? 'row-reverse' : 'row',
       alignItems: 'flex-start',
@@ -201,7 +310,19 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
         </span>
       )}
 
-      <div style={{
+      <div
+        ref={bodyRef}
+        onMouseUp={readSelection}
+        onTouchEnd={readSelection}
+        onContextMenu={e => {
+          // Only where a reply is actually possible. Swallowing the browser's own menu to offer
+          // one entry that is not there would be a control that teaches the wrong thing.
+          if (!onReply || provisional) return
+          e.preventDefault()
+          const r = bodyRef.current?.getBoundingClientRect()
+          setMenuAt(r ? { x: e.clientX - r.left, y: e.clientY - r.top } : { x: 8, y: 8 })
+        }}
+        style={{
         // `minWidth: 0` is what actually keeps wide content inside the card: without it a flex item
         // refuses to shrink below its content, and a long line pushes the bubble off the pane.
         minWidth: 0, maxWidth: mine ? '82%' : '100%',
@@ -237,18 +358,88 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
         {onReply && !provisional && (
           <button
             className="ag-bubble-reply"
-            onClick={() => onReply(turn)}
+            // THE SELECTION WINS. Reported: three words selected, reply pressed, and the whole
+            // message was quoted — because this button and the excerpt pill were two controls and
+            // the reader used the one that was already there. A selection inside this bubble is a
+            // more specific statement of what is being answered than "this message", so it is what
+            // gets quoted; with nothing selected the button means what it always meant.
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => {
+              if (excerpt && onReplyExcerpt) { const t = excerpt.text; setExcerpt(null); onReplyExcerpt(turn, t); return }
+              onReply(turn)
+            }}
             aria-label={pt ? 'Responder' : 'Reply'}
-            title={pt ? 'Responder' : 'Reply'}
-            style={{
-              position: 'absolute', top: 6, [mine ? 'left' : 'right']: 6,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 24, height: 24, borderRadius: 7, cursor: 'pointer',
-              border: '1px solid var(--border-subtle)', background: 'var(--bg-surface)',
-              color: 'var(--text-tertiary)', opacity: 0, transition: 'opacity 0.15s',
-            } as React.CSSProperties}
+            title={excerpt
+              ? (pt ? 'Responder ao trecho selecionado' : 'Reply to the selected excerpt')
+              : (pt ? 'Responder' : 'Reply')}
+            // POSITION only. Everything else — the size, the surface, and the `opacity: 0` the
+            // hover reveals — lives in `.ag-bubble-reply`, because an inline style beats a
+            // stylesheet rule without `!important`: written here, the reveal could never fire and
+            // the control was invisible on every message, at every width, forever.
+            style={{ position: 'absolute', top: 6, [mine ? 'left' : 'right']: 6 } as React.CSSProperties}
           >
             <CornerUpLeft size={12} />
+          </button>
+        )}
+
+        {/* The right-click menu. Anchored inside the bubble at the point that was clicked. */}
+        {menuAt && onReply && (
+          <div
+            role="menu"
+            onMouseDown={e => e.stopPropagation()}
+            style={{
+              position: 'absolute', top: menuAt.y, left: menuAt.x, zIndex: 40,
+              minWidth: 130, padding: 4, borderRadius: 9,
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            }}
+          >
+            <button
+              role="menuitem"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                setMenuAt(null)
+                if (excerpt && onReplyExcerpt) { const t = excerpt.text; setExcerpt(null); onReplyExcerpt(turn, t); return }
+                onReply(turn)
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                minHeight: 34, padding: '6px 8px', borderRadius: 6, border: 'none',
+                background: 'transparent', color: 'var(--text-primary)',
+                fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
+              }}
+            >
+              <CornerUpLeft size={13} style={{ flexShrink: 0 }} />
+              {excerpt
+                ? (pt ? 'Responder ao trecho' : 'Reply to excerpt')
+                : (pt ? 'Responder' : 'Reply')}
+            </button>
+          </div>
+        )}
+
+        {/* Reply to just what is selected. It is the only control that appears ON a selection, so
+            it says which of the two replies it is in words — an icon alone here reads as the same
+            button that is already sitting in the bubble's corner. */}
+        {excerpt && onReplyExcerpt && (
+          <button
+            onMouseDown={e => {
+              // The press must not collapse the selection before the click lands, and must not
+              // reach the document listener that closes the menu.
+              e.preventDefault(); e.stopPropagation()
+            }}
+            onClick={() => { const t = excerpt.text; setExcerpt(null); onReplyExcerpt(turn, t) }}
+            style={{
+              position: 'absolute', top: excerpt.y, left: excerpt.x, zIndex: 41,
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '5px 9px', borderRadius: 8, minHeight: 30,
+              background: 'var(--bg-elevated)', border: '1px solid var(--anthropic-orange)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+              color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 12, cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <CornerUpLeft size={12} style={{ flexShrink: 0, color: 'var(--anthropic-orange)' }} />
+            {pt ? 'Responder ao trecho' : 'Reply to excerpt'}
           </button>
         )}
 
@@ -274,23 +465,53 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
               fontSize: 13.5, lineHeight: 1.65, color: 'var(--text-primary)',
             }}
           >
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
+            {/* AN INVOCATION IS NOT PROSE. A message that opens with `/name` is a command to the
+                harness, and in a column of prose it reads as prose. It is split off and drawn in
+                the accent — the same colour the panel's "use this skill" button wears, so the
+                thing you pressed and the thing that appears are visibly the same act. The rule is
+                `slashLine.ts` and it is anchored: a `/home/...` path is not a command. */}
+            {(() => {
+              const { command, rest } = splitSlashLine(text)
+              if (command === '') {
+                return <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{text}</ReactMarkdown>
+              }
+              return (
+                <>
+                  <span style={{
+                    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                    fontWeight: 650, color: 'var(--anthropic-orange)',
+                  }}>{command}</span>
+                  {rest.trim() !== '' && (
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{rest}</ReactMarkdown>
+                  )}
+                </>
+              )
+            })()}
           </div>
         )}
 
         {/* The label sits INSIDE the bubble, under the text: it is a fact about this message, and
             a line floating beside the bubble would read as another message. `role="status"` so a
             screen reader is told, since the fading alone says nothing to one. */}
-        {awaiting && (
-          <div role="status" style={{
-            display: 'flex', alignItems: 'center', gap: 5,
-            fontSize: 10, color: 'var(--text-tertiary)',
-            alignSelf: mine ? 'flex-end' : 'flex-start',
-          }}>
-            <Clock size={10} style={{ flexShrink: 0 }} />
-            <span>{pt ? 'aguardando a sessão ler' : 'waiting for the session to read it'}</span>
-          </div>
-        )}
+        {awaiting && (() => {
+          // The wording is `echoStatus`'s, not this file's — see it for why the sentence leads with
+          // DELIVERY rather than with waiting.
+          const st = echoStatus(awaitingSinceMs ?? null, awaitingWorking === true, pt ? 'pt' : 'en')
+          return (
+            <div role="status" style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: 10,
+              // A wait long enough to be worth a second look is the ONLY one that changes colour.
+              // Colouring every unread message would make the ordinary case look like a fault,
+              // which is the mistake the old wording already made.
+              color: st.notable ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+              alignSelf: mine ? 'flex-end' : 'flex-start',
+            }}>
+              <Clock size={10} style={{ flexShrink: 0 }} />
+              <span>{st.text}</span>
+            </div>
+          )
+        })()}
       </div>
 
       {lightboxIndex !== null && (

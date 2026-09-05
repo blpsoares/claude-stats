@@ -25,9 +25,18 @@ import { join } from 'node:path'
 import { PROJECTS_DIR } from '../config'
 import { UUID_RE } from '../git'
 import { isHumanUserEntry } from '../jsonl'
-import { classifyUserText, type UserEntry } from './chat-envelope'
+import { commandSummary, hasUnreadableWrite, shellWrites } from './shell-writes'
+import { classifyUserEntry, type UserEntry } from './chat-envelope'
 
 export interface ChatTurn {
+  /**
+   * When the transcript recorded this turn, ISO.
+   *
+   * Optional because an older transcript may not carry one, and a turn with no time is shown
+   * without one rather than given a made-up "now" — a feed whose ordering is the whole point cannot
+   * afford an invented timestamp.
+   */
+  at?: string
   role: 'user' | 'assistant'
   text: string
   /**
@@ -38,7 +47,24 @@ export interface ChatTurn {
    * the assistant talking to itself between long silences, when what happened in the silence is
    * most of the work.
    */
-  tools?: Array<{ name: string; detail?: string }>
+  tools?: Array<{
+    name: string
+    detail?: string
+    /**
+     * For a SHELL call, the paths that command writes — read by the pure `shell-writes.ts`.
+     *
+     * `detail` is only the command's first LINE, which is where the artifacts panel went blind: a
+     * session that writes through heredocs showed 263 shell calls and no files. The paths are
+     * computed here rather than by shipping whole multi-line commands to the browser, which is a
+     * chat bubble's worth of shell script per turn.
+     */
+    writes?: string[]
+    /**
+     * The command wrote through something that cannot be read off the command line — an interpreter
+     * fed a program on stdin. The panel says so rather than claiming nothing was written.
+     */
+    opaqueWrite?: boolean
+  }>
   /**
    * The assistant's extended thinking, when the transcript carries it.
    *
@@ -157,7 +183,12 @@ function extractUserEntry(e: Record<string, unknown>): UserEntry | null {
       .find(p => p.type === 'text' && typeof p.text === 'string')?.text as string | undefined
   }
   if (raw === undefined || raw.trim() === '') return null
-  const entry = classifyUserText(raw)
+  // `isMeta` is the harness's own flag, and it travels with the RAW entry — 148 of the 192 meta
+  // entries measured on this machine carry no envelope tag at all, so the tag table alone drew them
+  // in the person's bubble. See `chat-envelope.ts`'s header.
+  const entry = classifyUserEntry({
+    text: raw, isMeta: e.isMeta === true, isCompactSummary: e.isCompactSummary === true,
+  })
   // A system entry with nothing to name is dropped outright rather than drawn as a blank note.
   if (entry.kind === 'system' && entry.note === '') return null
   return entry
@@ -228,15 +259,45 @@ function taskNotificationFor(text: string): string | null {
  * entries, showed the assistant answering a question nobody could see it being asked. Reported
  * exactly that way: "esse ultimo prompt que te mandei n apareceu na interface de sessao".
  *
- * It is the PERSON's own words, typed by them, and it is rendered as theirs. It is read here and
- * not through `classifyUserText`'s envelope table because it is not an envelope: nothing wraps the
- * text, the entry's SHAPE is what identifies it.
+ * IT IS NOT ALWAYS THE PERSON, and that assumption is what this function used to get wrong. The
+ * note here read: "it is not an envelope: nothing wraps the text, the entry's SHAPE is what
+ * identifies it" — so the text was pushed straight into a `user` turn, and the envelope table
+ * never saw it. But the HARNESS queues through this very shape too: a `<task-notification>`
+ * reporting a background task's completion arrives as an `attachment` / `queued_command`, exactly
+ * like a message typed while the assistant was working.
+ *
+ * Measured on a live transcript: 7 of them were drawn in the reader's own bubble, and were
+ * reported the same way the injected skill body was — "essas mensagens não são minhas". The shape
+ * says WHERE the text came from; it says nothing about WHO wrote it, and only the envelope table
+ * answers the second question.
+ *
+ * So the classification happens HERE rather than at each call site. There are two of them
+ * (`readRecentChatTurns` and `readChatTurns`), both of which had the identical raw push, and a
+ * rule enforced at the call site is a rule the next call site forgets — the same argument
+ * `rowMenu.ts` and `task-reopen.ts` make about their own duplicated gestures.
  */
-function extractQueuedText(e: Record<string, unknown>): string | null {
+function extractQueuedEntry(e: Record<string, unknown>): UserEntry | null {
   if (e.type !== 'attachment') return null
   const a = e.attachment as Record<string, unknown> | undefined
   if (!a || a.type !== 'queued_command') return null
-  const prompt = a.prompt
+  const raw = queuedPromptText(a.prompt)
+  if (raw === null) return null
+  // THE TWO HALVES OF ONE BUG MEET HERE. The queued path reaches `classifyUserEntry` — the
+  // `isMeta`-aware classifier — and not the tag-only `classifyUserText` it was written against:
+  // a queued entry can carry BOTH an envelope tag (a task notification) and the harness's own
+  // meta flag (a loaded skill body), and reading only the tag leaves the second in the user's
+  // bubble. `isMeta` is read off the attachment entry itself, which is where the harness sets it.
+  const entry = classifyUserEntry({
+    text: raw, isMeta: e.isMeta === true, isCompactSummary: e.isCompactSummary === true,
+  })
+  // A system entry with nothing to name is dropped outright rather than drawn as a blank note —
+  // the same call `extractUserEntry` makes on the other path.
+  if (entry.kind === 'system' && entry.note === '') return null
+  return entry
+}
+
+/** The prompt's text, whether it was stored as a string or as content blocks. */
+function queuedPromptText(prompt: unknown): string | null {
   if (typeof prompt === 'string') return prompt.trim() || null
   if (!Array.isArray(prompt)) return null
   const text = (prompt as Record<string, unknown>[])
@@ -272,7 +333,19 @@ function extractToolCalls(e: Record<string, unknown>): Array<{ name: string; det
   const out: Array<{ name: string; detail?: string }> = []
   for (const part of msgContent as Record<string, unknown>[]) {
     if (part.type !== 'tool_use' || typeof part.name !== 'string') continue
-    out.push({ name: part.name, ...(toolDetail(part.input) ? { detail: toolDetail(part.input)! } : {}) })
+    const detail = toolDetail(part.input)
+    // The FULL command, for the write reader — `toolDetail` keeps only the first line, and the
+    // redirection is usually on a later one.
+    const cmd = typeof (part.input as Record<string, unknown> | null)?.['command'] === 'string'
+      ? (part.input as Record<string, string>)['command']!
+      : ''
+    const writes = cmd === '' ? [] : shellWrites(cmd)
+    out.push({
+      name: part.name,
+      ...(detail ? { detail } : {}),
+      ...(writes.length > 0 ? { writes } : {}),
+      ...(cmd !== '' && writes.length === 0 && hasUnreadableWrite(cmd) ? { opaqueWrite: true } : {}),
+    })
   }
   return out
 }
@@ -290,6 +363,10 @@ function toolDetail(input: unknown): string | null {
   for (const key of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'description']) {
     const v = o[key]
     if (typeof v === 'string' && v.trim() !== '') {
+      // A SHELL command is summarised rather than truncated to its first line: a session that opens
+      // nearly every command with `cd <worktree>` otherwise shows a column of identical `cd` rows,
+      // which says where the work happened and never what it was.
+      if (key === 'command') return commandSummary(v)
       const line = v.trim().split('\n')[0]!
       return line.length > 200 ? `${line.slice(0, 200)}…` : line
     }
@@ -431,6 +508,12 @@ async function readTurnsFromTail(
     const isNewest = newest
     newest = false
 
+    // The event's own time, stamped onto whatever this iteration pushes. A turn with no recorded
+    // time gets none rather than "now" — the Live feed's whole promise is its ordering, and an
+    // invented timestamp is the one thing that could quietly break it.
+    const at = typeof e.timestamp === 'string' ? e.timestamp : undefined
+    const add = (t: ChatTurn): void => { turns.push(at ? { ...t, at } : t) }
+
     const done = taskNotificationFor(rawEntryText(e))
     if (done) finishedTasks.add(done)
 
@@ -438,20 +521,20 @@ async function readTurnsFromTail(
     if (bg) {
       // A status line, never a message — nobody said it. `running` is settled after the walk,
       // once every completion in the file has been seen.
-      turns.push({ role: 'assistant', text: bg.label, task: { label: bg.label, running: true }, pending: true })
+      add({ role: 'assistant', text: bg.label, task: { label: bg.label, running: true }, pending: true })
       taskTurns.push({ id: bg.id, turn: turns[turns.length - 1]! })
       continue
     }
 
     const userEntry = extractUserEntry(e)
-    if (userEntry) { turns.push(userTurn(userEntry)); continue }
-    const queued = extractQueuedText(e)
-    if (queued) { turns.push({ role: 'user', text: queued }); continue }
+    if (userEntry) { add(userTurn(userEntry)); continue }
+    const queued = extractQueuedEntry(e)
+    if (queued) { add(userTurn(queued)); continue }
     const assistantText = extractAssistantText(e)
-    if (assistantText) { turns.push({ role: 'assistant', text: assistantText }); continue }
+    if (assistantText) { add({ role: 'assistant', text: assistantText }); continue }
     if (isNewest) {
       const tools = extractToolActivity(e)
-      if (tools) turns.push({ role: 'assistant', text: toolActivityLabel(tools), pending: true })
+      if (tools) add({ role: 'assistant', text: toolActivityLabel(tools), pending: true })
     }
   }
   // Settled AFTER the walk: a completion always comes later in the file than its start, so this is
@@ -502,6 +585,13 @@ export async function readChatTurns(path: string, max = 400): Promise<ChatTurn[]
     const isNewest = newest
     newest = false
 
+    // The event's own time. Stamped onto whatever this iteration pushes — the Live feed's whole
+    // promise is its ordering, and a turn with no recorded time gets none rather than an invented
+    // "now". THIS is the loop the chat view reads; an earlier one in this file builds the six-row
+    // tail and was stamped first by mistake, which is why the feed showed no times at all.
+    const at = typeof e.timestamp === 'string' ? e.timestamp : undefined
+    const add = (t: ChatTurn): void => { turns.push(at ? { ...t, at } : t) }
+
     const done = taskNotificationFor(rawEntryText(e))
     if (done) finishedTasks.add(done)
 
@@ -509,15 +599,15 @@ export async function readChatTurns(path: string, max = 400): Promise<ChatTurn[]
     if (bg) {
       // A status line, never a message — nobody said it. `running` is settled after the walk,
       // once every completion in the file has been seen.
-      turns.push({ role: 'assistant', text: bg.label, task: { label: bg.label, running: true }, pending: true })
+      add({ role: 'assistant', text: bg.label, task: { label: bg.label, running: true }, pending: true })
       taskTurns.push({ id: bg.id, turn: turns[turns.length - 1]! })
       continue
     }
 
     const userEntry = extractUserEntry(e)
-    if (userEntry) { turns.push(userTurn(userEntry)); continue }
-    const queued = extractQueuedText(e)
-    if (queued) { turns.push({ role: 'user', text: queued }); continue }
+    if (userEntry) { add(userTurn(userEntry)); continue }
+    const queued = extractQueuedEntry(e)
+    if (queued) { add(userTurn(queued)); continue }
 
     // An assistant event can carry text, thinking and tool calls at once, and all three belong to
     // the same turn. Emitted together rather than as separate rows: they happened together, and
@@ -526,7 +616,7 @@ export async function readChatTurns(path: string, max = 400): Promise<ChatTurn[]
     const calls = extractToolCalls(e)
     const thinking = extractThinking(e)
     if (assistantText || calls.length > 0 || thinking) {
-      turns.push({
+      add({
         role: 'assistant',
         text: assistantText ?? '',
         ...(calls.length > 0 ? { tools: calls } : {}),

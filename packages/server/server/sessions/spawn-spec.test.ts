@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { HARNESS_ORDER } from '@agentistics/core'
+import { HARNESS_ORDER, SPAWN_SPECS_MODEL_IDS } from '@agentistics/core'
 import { SPAWN_SPECS, conversationLinkable, planSpawn } from './spawn-spec'
 
 describe('SPAWN_SPECS', () => {
@@ -230,4 +230,39 @@ describe('conversationLinkable', () => {
       expect(conversationLinkable(harness)).toBe(false)
     }
   })
+})
+
+it('offers exactly the ids harnessModels names, so the picker and the flag agree', () => {
+  for (const [harness, spec] of Object.entries(SPAWN_SPECS)) {
+    if (!spec) continue
+    expect(spec.modelSuggestions ?? [], harness).toEqual(
+      SPAWN_SPECS_MODEL_IDS[harness as keyof typeof SPAWN_SPECS_MODEL_IDS] ?? [],
+    )
+  }
+})
+
+/**
+ * A DEFAULT MAY NOT EXIST WITHOUT PROVENANCE, and today none of the six CLIs publishes one.
+ *
+ * The test is here so that filling either field is a deliberate act with a command behind it —
+ * exactly the `MODEL_PRICING` / `ContextWindow` rule applied to a third number. Measured
+ * 2026-09-04 against claude 2.1.261, codex-cli 0.113.0, gemini 0.55.1, copilot 1.0.82,
+ * agy 1.1.25 and kimi 0.38.0; the defaults block in `spawn-spec.ts` records what was run.
+ */
+it('claims no default model or effort, because no CLI publishes one', () => {
+  for (const [harness, spec] of Object.entries(SPAWN_SPECS)) {
+    if (!spec) continue
+    expect(spec.defaultModel, `${harness} defaultModel`).toBeUndefined()
+    expect(spec.defaultEffort, `${harness} defaultEffort`).toBeUndefined()
+  }
+})
+
+it('never pairs a default with a flag the CLI does not have', () => {
+  // A `defaultEffort` on a harness with no `--effort` would be a sentence about a question the
+  // wizard never asks — the same shape as reporting "Model: default" where there is no model flag.
+  for (const [harness, spec] of Object.entries(SPAWN_SPECS)) {
+    if (!spec) continue
+    if (spec.defaultModel !== undefined) expect(spec.modelFlag, harness).toBeDefined()
+    if (spec.defaultEffort !== undefined) expect(spec.effortFlag, harness).toBeDefined()
+  }
 })

@@ -14,6 +14,12 @@
 }
 
 :root {
+  /* How much the fixed top strip occupies RIGHT NOW — the control row plus the active-filter band
+     under it, measured in App.tsx and written here. Everything positioned below the strip reads
+     this instead of a constant, so the header growing can never leave the body sliding under it.
+     The 44px here is the control row alone: the value a first paint uses before the measurement. */
+  --ag-topbar-h: 44px;
+
   --bg-base: #0a0a0f;
   --bg-surface: #111118;
   --bg-card: #16161f;
@@ -508,6 +514,12 @@ html, body {
 /* The working spinner. `lucide` ships a static glyph; the rotation is ours. */
 @keyframes ag-working-spin { to { transform: rotate(360deg); } }
 .ag-working-spin { animation: ag-working-spin 900ms linear infinite; }
+
+/* The live marker's dot. It reports something happening NOW, and a static dot beside a static
+   line is a label. Opacity only — a scaling dot moves the text beside it. */
+@keyframes ag-hint-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.ag-hint-pulse { animation: ag-hint-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ag-hint-pulse { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .ag-working-spin { animation: none; } }
 
 /* The row's pin. Hidden until the row is hovered or something in it has focus — a column of pin
@@ -567,7 +579,119 @@ button:focus-within .ag-row-pin,
   --ag-text-on-scrim-dim: rgba(255, 255, 255, 0.55);
 }
 
+/*
+ * "Go to message" landed here.
+ *
+ * A scroll on its own answers "did it move, and to what?" with nothing — on a conversation of
+ * similar-looking bubbles the reader has to guess which one was meant. The flash names it and then
+ * gets out of the way; it is removed after it runs, so nothing on the page stays marked.
+ */
+@keyframes ag-turn-flash {
+  0%, 100% { background: transparent; }
+  15%, 55% { background: color-mix(in srgb, var(--anthropic-orange) 22%, transparent); }
+}
+.ag-turn-flash {
+  animation: ag-turn-flash 1.6s ease-in-out;
+  border-radius: 14px;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No pulse, but the message is still MARKED — dropping the highlight entirely would leave the
+     control with no visible effect at all for anyone who asked for less motion. */
+  .ag-turn-flash {
+    animation: none;
+    background: color-mix(in srgb, var(--anthropic-orange) 18%, transparent);
+  }
+}
+
 /* The bubble's reply control. Revealed with the bubble — a column of controls down a conversation
-   competes with the words — and always reachable by keyboard. */
+   competes with the words — and always reachable by keyboard.
+
+   ITS WHOLE APPEARANCE IS HERE, not on the element. It used to carry `opacity: 0` as an inline
+   style, which beats any stylesheet rule without `!important` — so the reveal below could never
+   fire and the control was invisible on every message, at every width, while still being clickable
+   by anyone who happened to guess where it was. */
+.ag-bubble-reply {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
 .ag-bubble:hover .ag-bubble-reply,
 .ag-bubble:focus-within .ag-bubble-reply { opacity: 1; }
+
+/* A touch screen has no hover and no right-click, so on a phone this is the ONLY way to reply and
+   it is always visible. The BOX stays 24px — a 44px square parked on the corner of every message
+   would sit on top of the words — while the pseudo-element gives the finger the 44px target the
+   box does not have. */
+@media (hover: none) {
+  .ag-bubble-reply { opacity: 1; }
+  .ag-bubble-reply::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * The composer's ground.
+ *
+ * A conversation should pass UNDER the place you type and fade out, not be cut by a solid band.
+ * Two layers do that: a blur over whatever is behind, and a gradient from transparent at the top to
+ * the page's own colour at the bottom, so the text dissolves instead of ending at an edge.
+ *
+ * `mask-image` on the blur layer is what keeps the TOP edge soft: a uniform backdrop-filter has a
+ * hard boundary of its own, which is the very edge this exists to remove.
+ *
+ * The layer is the pseudo-element at `z-index: -1`, NOT a wrapper around the composer's children.
+ * `position: sticky` creates a stacking context, so a negative-z child paints above the element's
+ * own background and below everything in it — which is exactly the ground — and it costs no DOM
+ * change. A wrapper would have moved the "jump to the latest message" button, which is positioned
+ * against the composer's own padding box.
+ */
+.ag-composer-ground {
+  position: relative;
+}
+.ag-composer-ground::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  /* Plain first, so a browser without `color-mix` still gets the fade rather than no ground. */
+  background: linear-gradient(to bottom, transparent 0%, var(--bg-base) 100%);
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--bg-base) 72%, transparent) 45%,
+    var(--bg-base) 100%
+  );
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+}
+
+/*
+ * Where the effect cannot run, it degrades to TODAY'S behaviour — a solid ground — and never to
+ * unreadable text over a live conversation.
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ag-composer-ground::before {
+    background: var(--bg-base);
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}

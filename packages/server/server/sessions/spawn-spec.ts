@@ -29,6 +29,35 @@
  * The lists stay a convenience and never a validation set (`planSpawn` does not check membership):
  * every one of these CLIs also accepts a full model name, and several of them scope what is
  * available to the signed-in account, so refusing an unlisted value would reject valid input.
+ *
+ * DEFAULTS (`defaultModel` / `defaultEffort`) FOLLOW THE SAME RULE AND ARE, TODAY, ALL ABSENT.
+ *
+ * A wizard that says "the assistant's default" names a thing without saying what it is, so the
+ * fields exist to say "Default (sonnet)" wherever the CLI publishes the answer. Measured
+ * 2026-09-04 on the versions below, NONE of the six does — and in four of the six the absence is
+ * EVIDENCE rather than an omission, because those help formatters print a default wherever one
+ * exists and print none here:
+ *
+ * - claude 2.1.261 — `claude --help`. `--model` documents the aliases and a full name; `--effort`
+ *   documents `(low, medium, high, xhigh, max)`. Commander prints `(default: …)` on eight other
+ *   options in the same output and on neither of these two.
+ * - codex-cli 0.113.0 — `codex --help`, `codex exec --help`. `-m, --model <MODEL>` names no value.
+ *   This help prints no `[default …]` anywhere, so its silence proves nothing either way; it
+ *   simply does not publish one.
+ * - gemini 0.55.1 — `gemini --help`. yargs prints `[default: false]` on six other options;
+ *   `-m, --model  Model  [string]` carries none.
+ * - copilot 1.0.82 — `copilot --help`, `copilot help config`. That config page writes "defaults
+ *   to …" 37 times; the `model` key is not one of them. `--help` names `auto` as something you MAY
+ *   pass, which is not the same as what happens when you pass nothing.
+ * - antigravity 1.1.25 — `agy --help`, `agy models`. The help prints `(default …)` on three other
+ *   flags and none on `--model` or `--effort`; `agy models` marks no row as current.
+ * - kimi 0.38.0 — `kimi --help`. `--model` says "Defaults to default_model in config.toml", which
+ *   names a KEY, not a value. `kimi provider list` does print a resolved default, but it is THIS
+ *   MACHINE's configuration rather than the CLI's — a per-machine answer cannot live in a pure
+ *   static table, and it is the user's own setting, not something the tool publishes.
+ *
+ * So every entry below omits both fields, and the wizard keeps its honest wording. The day one of
+ * these CLIs prints its default, add it HERE with the command in a comment — never anywhere else.
  */
 
 import type { HarnessId } from '@agentistics/core'

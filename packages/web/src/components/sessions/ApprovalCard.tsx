@@ -26,7 +26,7 @@ export interface ApprovalCardProps {
   row: FleetRow
   lang: 'pt' | 'en'
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
 }
 
 export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {

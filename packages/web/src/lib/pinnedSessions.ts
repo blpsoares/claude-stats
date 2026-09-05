@@ -32,6 +32,47 @@ export function planPinToggle(current: readonly string[], id: string, max = MAX_
   return { next: [...current, id], ok: true }
 }
 
+/**
+ * PURE: reorder the pinned set.
+ *
+ * Total — an index outside the list returns it unchanged rather than throwing or silently
+ * appending. A drag can end anywhere, including outside the list, and a reorder that invents a
+ * position is worse than one that does nothing.
+ *
+ * Membership is never touched here: only `planPinToggle` adds or removes.
+ */
+export function planPinMove(current: readonly string[], from: number, to: number): string[] {
+  const next = [...current]
+  if (from < 0 || from >= next.length) return next
+  if (to < 0 || to >= next.length) return next
+  if (from === to) return next
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved!)
+  return next
+}
+
+/**
+ * PURE: which of the pinned KEYS resolve to a row right now, and to which one.
+ *
+ * Deliberately takes the row list the caller passes, and does no filtering of its own — the
+ * pinned band's whole point is that a filter, a search or "active only" must never remove a row
+ * from it, so the caller must pass the UNNARROWED fleet. A pinned row that finished while the
+ * person was away is exactly the case this exists for: `activeOnly` (on by default in the
+ * Sessions workspace) used to cut `pinnedRows` from the same already-`activeOnly`-filtered list
+ * the bands read, which silently dropped a pinned session the instant it finished — "pin it,
+ * leave, come back, it's gone" needed no reload and no id change to reproduce, only the pinned
+ * session finishing before the next look.
+ */
+export function resolvePinnedRows<T>(
+  pins: readonly string[],
+  rows: readonly T[],
+  keyOf: (row: T) => string,
+): T[] {
+  return pins
+    .map(k => rows.find(r => keyOf(r) === k))
+    .filter((r): r is T => r !== undefined)
+}
+
 function readInitial(): string[] {
   try {
     const raw = localStorage.getItem(KEY)
@@ -72,6 +113,14 @@ export function togglePinnedSession(id: string): PinToggleResult {
     persist()
   }
   return result
+}
+
+/** Reorder and persist. Subscribers are notified exactly as `togglePinnedSession` notifies them. */
+export function movePinnedSession(from: number, to: number): void {
+  const next = planPinMove(current, from, to)
+  if (next.length === current.length && next.every((x, i) => x === current[i])) return
+  current = next
+  persist()
 }
 
 export function subscribePinnedSessions(fn: () => void): () => void {

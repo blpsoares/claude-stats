@@ -3200,8 +3200,12 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
           id,
           label: id,
           modelSuggestions: spec.modelSuggestions,
+          // Spread only when the spec HAS one: an explicit `undefined` and an absent key read the
+          // same in TypeScript and differently once JSON.stringify has been over them.
+          ...(spec.defaultModel ? { defaultModel: spec.defaultModel } : {}),
           supportsModel: spec.modelFlag !== undefined,
           efforts: spec.efforts ?? [],
+          ...(spec.defaultEffort ? { defaultEffort: spec.defaultEffort } : {}),
         }]
       })
     },

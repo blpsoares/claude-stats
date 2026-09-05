@@ -94,3 +94,65 @@ describe('formatUptime', () => {
     expect(formatUptime(2 * 3600_000 + 59 * 60_000)).toBe('2h 59m')
   })
 })
+
+describe('summarizeFleet — how many of those projects are repositories', () => {
+  test('counts the projects that carry a git remote, beside the total', () => {
+    const s = summarizeFleet([
+      row({ id: 'a', project: 'app', repo: 'org/app' }),
+      row({ id: 'b', project: 'docs' }),
+      row({ id: 'c', project: 'api', repo: 'org/api' }),
+    ], NOW)
+    expect(s.projects).toBe(3)
+    expect(s.projectRepos).toBe(2)
+  })
+
+  test('counts a project ONCE however many of its sessions are open', () => {
+    // Three sessions in one repository is one project, not three — the card counts places, and
+    // a fleet that fans out inside one checkout would otherwise read as a fleet spread wide.
+    const s = summarizeFleet([
+      row({ id: 'a', project: 'app', repo: 'org/app' }),
+      row({ id: 'b', project: 'app', repo: 'org/app' }),
+      row({ id: 'c', project: 'app', repo: 'org/app' }),
+    ], NOW)
+    expect(s.projects).toBe(1)
+    expect(s.projectRepos).toBe(1)
+  })
+
+  test('folds a worktree into its main checkout on BOTH counts', () => {
+    // `projectGroup` is what makes a worktree and its checkout one project; the repo count has to
+    // agree with the project count or the card can read "2 of 1 are repositories".
+    const s = summarizeFleet([
+      row({ id: 'a', project: 'app', projectGroup: 'app', repo: 'org/app' }),
+      row({ id: 'b', project: 'app-fix', projectGroup: 'app', repo: 'org/app' }),
+    ], NOW)
+    expect(s.projects).toBe(1)
+    expect(s.projectRepos).toBe(1)
+  })
+
+  test('a project is a repository if ANY of its sessions knows the remote', () => {
+    // `repo` is resolved per row and a `lost` row whose directory is gone carries none
+    // (`resolveRepoFacts` reports `missing`). One row knowing it is the fact; the others not
+    // knowing it is an absence, and an absence must not unmake it.
+    const s = summarizeFleet([
+      row({ id: 'a', project: 'app', repo: 'org/app' }),
+      row({ id: 'b', project: 'app' }),
+    ], NOW)
+    expect(s.projects).toBe(1)
+    expect(s.projectRepos).toBe(1)
+  })
+
+  test('never counts more repositories than projects', () => {
+    const s = summarizeFleet([
+      row({ id: 'a', project: 'app', repo: 'org/app' }),
+      row({ id: 'b', project: 'docs' }),
+    ], NOW)
+    expect(s.projectRepos).toBeLessThanOrEqual(s.projects)
+  })
+
+  test('is zero, not undefined, when nothing carries a project', () => {
+    const s = summarizeFleet([row({ id: 'a', project: '' })], NOW)
+    expect(s.projects).toBe(0)
+    expect(s.projectRepos).toBe(0)
+  })
+})
+

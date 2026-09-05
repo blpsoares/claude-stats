@@ -26,7 +26,7 @@ import { MessagesSquare, TerminalSquare } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
 import { TerminalRegion } from '../RecentSessions'
-import { SessionChat } from './SessionChat'
+import { SessionChat, type SessionChatProps } from './SessionChat'
 import { SessionActions } from './SessionActions'
 
 export type SessionView = 'chat' | 'terminal'
@@ -38,7 +38,7 @@ export interface SessionPanelProps {
   lang: 'pt' | 'en'
   theme: 'dark' | 'light'
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
   /** Called after a verb that removes the row — the panel has nothing left to show. */
   onGone?: () => void
@@ -46,9 +46,11 @@ export interface SessionPanelProps {
    *  App.tsx already shows the title/tabs/actions for this session; draw none of your own." */
   view?: SessionView
   onViewChange?: (v: SessionView) => void
+  /** Passed straight to `SessionChat` — see its own `onArtifacts`. This panel reads none of it. */
+  onArtifacts?: SessionChatProps['onArtifacts']
 }
 
-export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, view: viewProp, onViewChange }: SessionPanelProps) {
+export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, view: viewProp, onViewChange, onArtifacts }: SessionPanelProps) {
   const pt = lang === 'pt'
 
   /**
@@ -136,7 +138,7 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {active === 'chat' ? (
-          <SessionChat session={session} {...(row ? { row } : {})} lang={lang} act={act} />
+          <SessionChat session={session} {...(row ? { row } : {})} lang={lang} act={act} {...(onArtifacts ? { onArtifacts } : {})} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, padding: 16, display: 'flex', flexDirection: 'column' }}>
             {/* The very component the sessions list uses. Assembling a second one from the stream

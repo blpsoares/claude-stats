@@ -1,7 +1,7 @@
 import { join, dirname } from 'path'
 import { mkdir, rename, writeFile, open, unlink, stat, readFile, utimes } from 'node:fs/promises'
 import { AGENTISTICS_DATA_DIR, DEFAULT_AGENTISTICS_DATA_DIR, CLAUDE_DIR } from './config'
-import type { BillingSettings, SavedComparison, TeamConfig } from '@agentistics/core'
+import type { AccessibilityPrefs, BillingSettings, SavedComparison, TeamConfig } from '@agentistics/core'
 import { migrateTeamConfig } from '@agentistics/core'
 // TYPE-only, and the allowed direction: `server -> tui`. The arrangements are declared once, in
 // `session-dimensions.ts`, and this file stores whichever one was chosen.
@@ -92,6 +92,9 @@ export interface Preferences {
   /** true once the user dismissed the install prompt with "don't show again".
    *  Persisted server-side (not localStorage) so it survives incognito windows. */
   installDismissed?: boolean
+  /** Magnifier lenses and their settings, for a MACHINE. On a central the same object lives per
+   *  account in the `userPrefs` collection instead — see a11y-prefs.ts, which owns that choice. */
+  accessibility?: AccessibilityPrefs
   /** How this machine is actually billed — a timeline of periods per harness, plus the display
    *  basis. Drives the "plan" cost basis; see `billing.ts` in @agentistics/core.
    *

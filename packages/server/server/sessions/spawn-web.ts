@@ -19,11 +19,18 @@
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
+import { modelsFor, type ModelOption } from '@agentistics/core'
 
 export interface WebHarnessOption {
   id: string
   label: string
+  /**
+   * The ids alone. KEPT for one release: the VS Code extension reads this field, and a client on
+   * an older build is exactly the one that would break silently.
+   */
   modelSuggestions: string[]
+  /** The same models, each with the NAME the harness prints. See `harnessModels.ts`. */
+  models: ModelOption[]
   supportsModel: boolean
   efforts: string[]
 }
@@ -56,7 +63,8 @@ export interface SpawnWebResult {
 /** What this machine can start, and which questions each one earns. */
 export async function webHarnesses(host: StartHost): Promise<WebHarnessOption[]> {
   if (!host.startableHarnesses) return []
-  return await host.startableHarnesses()
+  const found = await host.startableHarnesses()
+  return found.map(h => ({ ...h, models: modelsFor(h.id) }))
 }
 
 /** Directories to offer, from the LOCAL store — so the picker works with the server's data cold. */
@@ -85,29 +93,6 @@ export async function webTasks(host: StartHost): Promise<string[]> {
  * back as a sentence rather than as a session that starts and immediately dies with a usage error
  * on a screen nobody sees.
  */
-export async function spawnFromWeb(
-  host: StartHost,
-  lang: CliLang,
-  req: SpawnWebRequest,
-): Promise<SpawnWebResult> {
-  const s = controlStrings(lang)
-  if (!host.spawnSession) return { ok: false, message: s.sessionsNoHost }
-
-  const out = await host.spawnSession({
-    harness: req.harness,
-    cwd: req.cwd,
-    // Always detached. A browser has no terminal to hand over, and the request type carries no
-    // `attach` field precisely so this cannot be set from outside.
-    attach: false,
-    ...(req.task ? { task: req.task } : {}),
-    ...(req.prompt ? { prompt: req.prompt } : {}),
-    ...(req.model ? { model: req.model } : {}),
-    ...(req.effort ? { effort: req.effort } : {}),
-    ...(req.label ? { label: req.label } : {}),
-  })
-
-  return { ok: out.ok, message: out.message, ...(out.id ? { id: out.id } : {}) }
-}
 
 /** Reopen everything the machine took at once. Recomputed by the host, never from a snapshot. */
 export async function reopenFellFromWeb(

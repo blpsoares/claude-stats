@@ -19,6 +19,13 @@ const assistantTurn = (text: string) => line({
 const toolResultTurn = () => line({
   type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] },
 })
+/** A `queued_command` attachment — how a message typed while the assistant was busy is recorded,
+ *  and also how the harness's own `<task-notification>` reaches the transcript. */
+const queuedTurn = (prompt: string) => line({
+  type: 'attachment',
+  attachment: { type: 'queued_command', prompt, commandMode: 'prompt' },
+})
+
 const toolUseTurn = (...names: string[]) => line({
   type: 'assistant',
   message: { content: names.map(name => ({ type: 'tool_use', name, input: {} })) },
@@ -315,3 +322,49 @@ function turns2(turns: { task?: { label: string; running: boolean } }[]): { labe
   if (!t) throw new Error('no task line')
   return t
 }
+
+describe('a queued_command carries envelopes too', () => {
+  let root: string
+  let file: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-tail-queued-'))
+    file = join(root, 'transcript.jsonl')
+    forgetChatTailContent()
+  })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  test('a task notification queued by the harness is not shown as the user\'s message', async () => {
+    // Measured on a real transcript: a background task's completion reaches the file as an
+    // `attachment` / `queued_command`, not as a `user` entry — so the envelope filter, which only
+    // ever ran on the `user` path, never saw it. Seven of them were drawn in the reader's own
+    // bubble, and they were reported exactly as the skill body was: "that message wasn't me".
+    await writeFile(file, [
+      userTurn('go ahead'),
+      queuedTurn('<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => (t.text ?? '').includes('<task-notification>'))).toBe(false)
+    expect(turns.some(t => (t.text ?? '').includes('<task-id>'))).toBe(false)
+  })
+
+  test('a real message queued while the assistant was busy still appears', async () => {
+    // The whole point of reading this entry type. Filtering must not cost the feature it serves.
+    await writeFile(file, [
+      userTurn('go ahead'),
+      queuedTurn('also fix the header while you are there'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => t.role === 'user' && t.text === 'also fix the header while you are there')).toBe(true)
+  })
+
+  test('a slash command queued by the user is unwrapped, not hidden', async () => {
+    // `<command-name>` is the person ACTING — dropping it would erase a turn that happened.
+    await writeFile(file, [
+      queuedTurn('<command-name>/login</command-name>'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => t.role === 'user' && (t.text ?? '').includes('/login'))).toBe(true)
+    expect(turns.some(t => (t.text ?? '').includes('<command-name>'))).toBe(false)
+  })
+})

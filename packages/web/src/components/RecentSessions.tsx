@@ -91,7 +91,7 @@ interface Props {
    */
   fleet?: Map<string, FleetRow>
   onFleetAction?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   /** Dashboard theme — the live terminal's palette follows it. Only the Sessions page needs it. */
   theme?: 'dark' | 'light'
   /** Initial grouping. Defaults to 'project' for the history surfaces; the Sessions page opens on
@@ -1372,7 +1372,7 @@ interface SessionCardProps {
   /** The live fleet row driving this conversation, when one is. Absent = a history row. */
   fleetRow?: FleetRow
   onFleetAction?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   viewMode?: 'list' | 'grid'
   theme?: 'dark' | 'light'
   /** Who a write-channel send is attributed to (threaded to the actions controller for the audit). */
@@ -1660,7 +1660,7 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
    *  INTERACTIVE — a consent-gated line composer under the screen (see `TerminalComposer`). */
   row?: FleetRow
   act?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
 }) {
   const isMobile = useIsMobile()
@@ -1795,7 +1795,7 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
 function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange }: {
   row: FleetRow
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
   lang: 'pt' | 'en'
   isMobile: boolean

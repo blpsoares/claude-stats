@@ -9,6 +9,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
+import { capClosedConversations } from './closed-cap'
 import { matchesQuery, type SearchFields } from '@agentistics/tui/control/search-scope'
 import { type HarnessProcess, sessionAtCwd } from '../live-sessions'
 import { rulesFor } from './attention-rules'
@@ -743,9 +744,16 @@ export function buildSessionViews(o: {
   // It stays bounded rather than unbounded — several hundred rows is a list a person scrolls, a few
   // thousand is one a browser renders slowly for no one's benefit — and `closedTotal` below reports
   // what the bound withheld, so a capped list can say so instead of looking complete.
+  //
+  // The cap is applied by `capClosedConversations`, not by a slice: a plain recency cut deletes
+  // whole HARNESSES on a machine where one of them dominates (measured: the newest 300 here were
+  // 296 claude, and antigravity, kimi and gemini began at ranks 311, 379 and 575). A list that says
+  // a harness has no sessions is not a truncated list, it is a wrong one — and the harness FILTER
+  // is built from these rows, so it offered three options while the dashboard offered six.
   const closedCandidates = conversations.filter(c => !shown.has(c.sessionId))
-  const closed: SessionView[] = closedCandidates
-    .slice(0, o.closedLimit ?? DEFAULT_CLOSED_LIMIT)
+  const closed: SessionView[] = capClosedConversations(
+    closedCandidates, o.closedLimit ?? DEFAULT_CLOSED_LIMIT,
+  )
     .map(c => {
       /**
        * The name the SESSION gave itself, when its own record can be found by conversation id.

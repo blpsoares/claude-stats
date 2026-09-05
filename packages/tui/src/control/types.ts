@@ -1594,8 +1594,17 @@ export interface SessionHarnessOption {
   modelSuggestions: string[]
   /** Absent when the CLI has no model flag at all, which is a different thing from an empty list. */
   supportsModel: boolean
+  /**
+   * What the CLI uses when nothing is passed, ONLY where the CLI itself publishes it — so a
+   * picker can say "Default (sonnet)" rather than naming a default without saying what it is.
+   * Absent is the honest answer, and is what every harness reports today: see the defaults block
+   * in `spawn-spec.ts` for what was checked and how.
+   */
+  defaultModel?: string
   /** A genuine closed enum printed by the CLI itself, so this one IS validated. Empty = none. */
   efforts: string[]
+  /** The effort used when `--effort` is not passed, under exactly `defaultModel`'s rule. */
+  defaultEffort?: string
 }
 
 /** One place a session could start. */

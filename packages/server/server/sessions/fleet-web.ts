@@ -25,6 +25,10 @@ import { fleetRow, type FleetActionRequest, type FleetRow } from './fleet-row'
 import { planFleetSpawn, type FleetSpawnBody } from './fleet-spawn'
 import { arrangeFleet, type FleetArrangement, type FleetViewRequest } from './fleet-arrange'
 import { markFleetPhase, timeFleetPhase } from './fleet-profile'
+import { readHarnessSkills, skillsReason, type HarnessSkill } from './harness-skills'
+import { modelsFor, type ModelOption } from '@agentistics/core'
+import { artifactPathsFromTurns } from './artifact-file'
+import type { ArtifactResponse } from './artifact-web'
 
 // The REQUEST shape lives in the leaf `fleet-row.ts` so `index.ts` can name it without naming
 // this module — see the note there.
@@ -75,6 +79,16 @@ export interface FleetActionResponse {
   ok: boolean
   /** Already localized, and always present: a refusal that says nothing is a broken control. */
   message: string
+  /**
+   * The id of the session an action CREATED, when it created one.
+   *
+   * `resume` is the only one today. A reopen mints a new managed row and retires the row it was
+   * asked about, so a caller that stays where it was is looking at a dead session — which is
+   * exactly how "the reopen did nothing" was reported, about an action the server had performed
+   * correctly. The spawn is the only place that knows the id; asking the registry afterwards would
+   * be a guess between two rows of the same conversation.
+   */
+  id?: string
 }
 
 /**
@@ -254,7 +268,10 @@ export async function runFleetAction(
         ...(row.actionable ? { replaces: row.id } : {}),
         attach: false,
       })
-      return { ok: out.ok, message: out.message }
+      // THE NEW ID TRAVELS. A reopen mints a new managed row and retires the old one, so a caller
+      // that stays on the id it asked about is looking at a dead session — which is exactly how
+      // "reopen does nothing" was reported, on an action the server had performed correctly.
+      return { ok: out.ok, message: out.message, ...(out.id ? { id: out.id } : {}) }
     }
   }
 }
@@ -309,6 +326,98 @@ export async function readAttachTicket(
   return { argv: [...ticket.argv], detachHint: ticket.detachHint, label: ticket.label }
 }
 
+/** What the skills picker is handed for one session. */
+export interface FleetSkills {
+  skills: HarnessSkill[]
+  /**
+   * Why the list is empty — a harness with no verified command, or a row this machine cannot name.
+   * Absent when the list is genuinely just empty, which is a different fact and reads differently.
+   */
+  reason?: string
+}
+
+/**
+ * The skills for ONE session, resolved from the row's own harness and cwd.
+ *
+ * SCOPE IS CHECKED FIRST, like `readAttachTicket`: an unknown id must not be answered with a
+ * plausible list assembled from this server's own home directory. `readHarnessSkills` is given the
+ * ROW's cwd, so a project's own `.claude/skills` is the project the session is actually in.
+ *
+ * Never throws — the picker's whole job is to save typing, and it must not be the thing that takes
+ * the composer's menu down.
+ */
+export async function readFleetSkills(lang: CliLang, id: string): Promise<FleetSkills> {
+  const s = controlStrings(lang)
+  try {
+    const host = await hostFor(lang)
+    if (!host.sessions) return { skills: [], reason: s.sessionsNoHost }
+    const fleet = await host.sessions()
+    const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+    if (!row) {
+      return {
+        skills: [],
+        reason: lang === 'pt'
+          ? 'Esta máquina não conhece essa sessão.'
+          : 'This machine does not know that session.',
+      }
+    }
+    const reason = skillsReason(row.harness, lang === 'pt' ? 'pt' : 'en')
+    if (reason) return { skills: [], reason }
+    return { skills: await readHarnessSkills(row.harness, row.cwd) }
+  } catch (e) {
+    return { skills: [], reason: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * ONE skill, with its own text.
+ *
+ * The panel lists skills and can now OPEN one, which means showing the `SKILL.md` behind it. The
+ * request names the SKILL, never a path: the name is resolved back through the very list the panel
+ * was given, so the only files this can ever open are ones `readHarnessSkills` already found. A
+ * path from a client is not narrowed here, it is never accepted.
+ */
+export async function readFleetSkillBody(
+  lang: CliLang, id: string, name: string,
+): Promise<
+  | { ok: true; name: string; description: string; scope: string; text: string; truncated: boolean }
+  | { ok: false; message: string }
+> {
+  const pt = lang === 'pt'
+  const list = await readFleetSkills(lang, id)
+  if (list.reason && list.skills.length === 0) return { ok: false, message: list.reason }
+  const skill = list.skills.find(sk => sk.name === name)
+  if (!skill) {
+    return {
+      ok: false,
+      message: pt
+        ? 'Essa skill não está entre as que esta sessão pode invocar.'
+        : 'That skill is not among the ones this session can invoke.',
+    }
+  }
+  const MAX = 64 * 1024
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const raw = await readFile(skill.path, 'utf8')
+    const truncated = raw.length > MAX
+    return {
+      ok: true,
+      name: skill.name,
+      description: skill.description,
+      scope: skill.scope,
+      text: truncated ? raw.slice(0, MAX) : raw,
+      truncated,
+    }
+  } catch {
+    return {
+      ok: false,
+      message: pt
+        ? 'O arquivo dessa skill não pôde ser lido.'
+        : 'That skill’s file could not be read.',
+    }
+  }
+}
+
 /** The questions a start EARNS, and the places it could happen — the wizard, as data. */
 export interface FleetNewOptions {
   /**
@@ -320,9 +429,27 @@ export interface FleetNewOptions {
     label: string
     /** Suggestions to OFFER, never a validation list — see `planFleetSpawn`. */
     modelSuggestions: string[]
+    /**
+     * The same ids, each with the NAME the harness itself prints — `harnessModels.ts`, which
+     * carries the command that established every pair. Empty exactly where `modelSuggestions` is.
+     *
+     * Both fields travel because they answer different questions and one of them is on the wire
+     * already: `modelSuggestions` is what a client SENDS, `models` is what a person READS. A client
+     * on an older build keeps working off the first and simply prints ids.
+     */
+    models: ModelOption[]
+    /**
+     * What this CLI uses when no `--model` is passed, and ONLY where the CLI publishes it. Absent
+     * for every harness today — see the defaults block in `spawn-spec.ts`. A client renders the
+     * name when it is here and its own "the assistant's default" when it is not; it may never
+     * invent one.
+     */
+    defaultModel?: string
     supportsModel: boolean
     /** A genuine closed enum, printed by the CLI itself. Empty means it has no effort flag. */
     efforts: string[]
+    /** The effort used when none is passed, under exactly `defaultModel`'s rule. */
+    defaultEffort?: string
   }[]
   /** Ranked places, from the LOCAL store — so the picker answers with no network and a cold cache. */
   projects: { path: string; label: string; repo?: string; detail: string; source: string }[]
@@ -356,8 +483,11 @@ export async function readNewOptions(lang: CliLang, query: string): Promise<Flee
         id: h.id,
         label: h.label,
         modelSuggestions: [...h.modelSuggestions],
+        models: modelsFor(h.id),
+        ...(h.defaultModel ? { defaultModel: h.defaultModel } : {}),
         supportsModel: h.supportsModel,
         efforts: [...h.efforts],
+        ...(h.defaultEffort ? { defaultEffort: h.defaultEffort } : {}),
       })),
       projects: projects.map(p => ({
         path: p.path,
@@ -430,4 +560,187 @@ export async function runFleetSpawn(
 
   const out = await host.spawnSession(decision.plan)
   return { ok: out.ok, message: out.message, ...(out.id ? { id: out.id } : {}) }
+}
+
+/**
+ * Read one artifact of ONE session.
+ *
+ * SCOPE IS CHECKED FIRST, exactly as `readAttachTicket` checks it: an unknown id must not be
+ * answered with a file assembled from anything this server happens to have. And the ALLOWLIST is
+ * REBUILT here from the session's own transcript — the browser's list is not sent and would not be
+ * believed if it were. A client asking for a path is asking a question; the answer comes from what
+ * the session actually did on this machine.
+ *
+ * A row with NO `cwd` is refused in its own sentence rather than passed on with an empty one. The
+ * containment gate is the whole second half of the rule, and a session whose folder was never
+ * recorded gives it nothing to contain against — handing `''` down would resolve to an
+ * `unreadable`, whose sentence ("it may have been moved or deleted") describes something else
+ * entirely.
+ */
+export async function readFleetArtifact(
+  lang: CliLang,
+  id: string,
+  path: string,
+): Promise<ArtifactResponse> {
+  const host = await hostFor(lang)
+  if (!host.sessions) return { ok: false, message: controlStrings(lang).sessionsNoHost }
+
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row) {
+    return {
+      ok: false,
+      message: lang === 'pt'
+        ? 'Essa sessão não está na lista desta máquina.'
+        : 'That session is not in this machine’s list.',
+    }
+  }
+  if (!row.cwd) {
+    return {
+      ok: false,
+      message: lang === 'pt'
+        ? 'Esta sessão não tem uma pasta registrada, então não há contra o que resolver um caminho.'
+        : 'This session has no recorded folder, so there is nothing to resolve a path against.',
+    }
+  }
+
+  const { readSessionChat } = await import('./chat-web')
+  const chat = await readSessionChat(host, lang, row.id)
+  // The allowlist is resolved against the session's own directory, because a shell write is
+  // recorded AS WRITTEN and after a `cd` that is relative. Both forms are admitted: the browser
+  // asks with whichever string the transcript gave it.
+  const { resolveArtifactPath } = await import('./artifact-list')
+  const raw = artifactPathsFromTurns(chat.turns)
+  const allowed = [...new Set(raw.flatMap(p => {
+    const r = resolveArtifactPath(p, row.cwd!)
+    return r ? [p, r] : [p]
+  }))]
+  const { readArtifact } = await import('./artifact-web')
+  const asked = resolveArtifactPath(path, row.cwd) ?? path
+  return await readArtifact(lang, row.cwd, allowed, allowed.includes(path) ? asked : path)
+}
+
+/**
+ * The BYTES of one media file a session produced — a screenshot, a diagram, a PDF.
+ *
+ * A second route rather than a flag on `/api/fleet/file`, because that one answers JSON with text
+ * in it and deliberately refuses binaries. This one answers the file.
+ *
+ * IT REUSES THE SAME ALLOWLIST, and that is the whole safety of it: the path must be one this
+ * session actually wrote, resolved inside the session's own directory, symlinks and all — the exact
+ * `planArtifactRead` the text route goes through. What is added here is a CONTENT decision
+ * (`artifact-media.ts`), and it is a closed table: an extension it does not know is refused rather
+ * than served as `application/octet-stream`, or this becomes a general download for anything a
+ * session ever touched.
+ */
+export async function readFleetArtifactMedia(
+  lang: CliLang, id: string, path: string,
+): Promise<
+  | { ok: true; bytes: Uint8Array; mime: string; name: string }
+  | { ok: false; message: string; status: number }
+> {
+  const { mediaTypeFor, MAX_MEDIA_BYTES, REFUSED_EXT, extensionOf } = await import('./artifact-media')
+  const pt = lang === 'pt'
+  const type = mediaTypeFor(path)
+  if (!type) {
+    const refused = REFUSED_EXT.has(extensionOf(path))
+    return {
+      ok: false, status: 415,
+      message: refused
+        ? (pt
+          ? 'Esse formato pode carregar script, então não é exibido aqui. Abra o arquivo pela aba de arquivos.'
+          : 'That format can carry script, so it is not displayed here. Open it from the files tab.')
+        : (pt
+          ? 'Esse arquivo não é uma imagem nem um PDF.'
+          : 'That file is not an image or a PDF.'),
+    }
+  }
+
+  const host = await hostFor(lang)
+  if (!host.sessions) return { ok: false, status: 404, message: controlStrings(lang).sessionsNoHost }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row?.cwd) {
+    return {
+      ok: false, status: 404,
+      message: pt
+        ? 'Essa sessão não está na lista desta máquina, ou não tem uma pasta registrada.'
+        : 'That session is not in this machine’s list, or has no recorded folder.',
+    }
+  }
+
+  const { readSessionChat } = await import('./chat-web')
+  const chat = await readSessionChat(host, lang, row.id)
+  const { resolveArtifactPath } = await import('./artifact-list')
+  const raw = artifactPathsFromTurns(chat.turns)
+  const allowed = [...new Set(raw.flatMap(p => {
+    const r = resolveArtifactPath(p, row.cwd!)
+    return r ? [p, r] : [p]
+  }))]
+  const asked = resolveArtifactPath(path, row.cwd) ?? path
+  const { planArtifactRead } = await import('./artifact-file')
+  const plan = planArtifactRead({
+    path: allowed.includes(path) ? asked : path, cwd: row.cwd, allowed,
+  })
+  if (!plan.ok) {
+    return {
+      ok: false, status: 403,
+      message: pt
+        ? 'Esse arquivo não está entre os que esta sessão escreveu.'
+        : 'That file is not among the ones this session wrote.',
+    }
+  }
+
+  const { stat, readFile } = await import('node:fs/promises')
+  try {
+    const st = await stat(plan.path)
+    if (!st.isFile()) return { ok: false, status: 404, message: pt ? 'Não é um arquivo.' : 'Not a file.' }
+    if (st.size > MAX_MEDIA_BYTES) {
+      return {
+        ok: false, status: 413,
+        message: pt
+          ? 'Esse arquivo é grande demais para ser exibido aqui.'
+          : 'That file is too large to display here.',
+      }
+    }
+    const buf = await readFile(plan.path)
+    return {
+      ok: true, bytes: new Uint8Array(buf), mime: type.mime,
+      name: plan.path.split('/').pop() ?? 'file',
+    }
+  } catch {
+    return {
+      ok: false, status: 404,
+      message: pt ? 'Esse arquivo não está mais no disco.' : 'That file is no longer on disk.',
+    }
+  }
+}
+
+/**
+ * The panel's LIST: what this session wrote that is still a readable file with content.
+ *
+ * Answered by the server because only it can look at the disk. The browser keeps deriving the kind,
+ * the touch count and which file is being written now from the same turns it already renders — this
+ * says which of those rows can actually be opened, and the panel shows no others.
+ */
+export async function listSessionArtifacts(
+  host: StartHost, lang: CliLang, id: string,
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+  if (!host.sessions) return { files: [] }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id)
+  if (!row?.cwd) return { files: [] }
+  const { readSessionChat } = await import('./chat-web')
+  const chat = await readSessionChat(host, lang, row.id)
+  if (chat.unavailable) return { files: [], unavailable: chat.unavailable }
+  const { listExistingArtifacts } = await import('./artifact-list')
+  return { files: await listExistingArtifacts(artifactPathsFromTurns(chat.turns), row.cwd) }
+}
+
+/** The route's entry point: resolve the host, then list. Mirrors `readFleetArtifact`. */
+export async function listFleetArtifacts(
+  lang: CliLang, id: string,
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+  const host = await hostFor(lang)
+  return await listSessionArtifacts(host, lang, id)
 }

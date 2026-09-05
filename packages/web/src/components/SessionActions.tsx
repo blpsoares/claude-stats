@@ -127,7 +127,7 @@ export interface SessionMenuExtraItem {
 }
 
 type ActFn = (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-  => Promise<{ ok: boolean; message: string }>
+  => Promise<{ ok: boolean; message: string; id?: string }>
 
 /**
  * The shared controller behind the menu and the panel. The card holds it so the kebab (on the

@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { SessionMeta } from '@agentistics/core'
 import {
-  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, type SessionActivity,
+  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notifyFleetTransitions,
+  type SessionActivity,
 } from './sessionNotifications'
 
 /**
@@ -96,5 +97,44 @@ describe('the language of the sentence', () => {
   it('keeps a Portuguese notification Portuguese', () => {
     handleSessionStateTransitions({ a: 'working' }, { a: 'waiting' }, map, 'pt')
     expect(captured[0]!.body).toContain(' em agentistics')
+  })
+})
+
+
+describe('the caller that was missing — the live fleet', () => {
+  it('announces nothing on the FIRST snapshot, and returns the states to compare against', () => {
+    // Opening a machine with nine blocked sessions must not greet the reader with nine toasts
+    // about things that happened while they were away.
+    const rows = [{ id: 'a', state: 'waiting-approval' }, { id: 'b', state: 'working' }]
+    const out = notifyFleetTransitions(null, rows, 'en')
+    expect(out).toEqual({ a: 'waiting-approval', b: 'working' })
+    expect(captured).toHaveLength(0)
+  })
+
+  it('rings on a transition and stays quiet on the level', () => {
+    const first = notifyFleetTransitions(null, [{ id: 'a', state: 'working' }], 'en')
+    expect(captured).toHaveLength(0)
+    const second = notifyFleetTransitions(first, [{ id: 'a', state: 'waiting' }], 'en')
+    expect(captured).toHaveLength(1)
+    notifyFleetTransitions(second, [{ id: 'a', state: 'waiting' }], 'en')
+    expect(captured).toHaveLength(1)
+  })
+
+  it('has no words for what a row IS, so those are not events', () => {
+    const out = notifyFleetTransitions(null, [
+      { id: 'a', state: 'lost' }, { id: 'b', state: 'closed' }, { id: 'c', state: 'unknown' },
+    ], 'en')
+    expect(out).toEqual({})
+  })
+
+  it('names the session from the fleet ROW — it is not a transcript', () => {
+    const first = notifyFleetTransitions(null, [
+      { id: 'a', state: 'working', title: 'the migration one', cwd: '/home/padawan/agentistics', harness: 'claude' },
+    ], 'en')
+    notifyFleetTransitions(first, [
+      { id: 'a', state: 'waiting', title: 'the migration one', cwd: '/home/padawan/agentistics', harness: 'claude' },
+    ], 'en')
+    expect(captured[0]?.title).toContain('the migration one')
+    expect(captured[0]?.body).toContain('agentistics')
   })
 })

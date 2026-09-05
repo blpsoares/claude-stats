@@ -1,8 +1,10 @@
 import type { BillingReadiness, BillingSettings, CostBasis, MonthlyCommitment, SavedComparison, Filters, Lang, Theme, SessionMeta, AppData, StatsCache, HarnessId, Project } from '@agentistics/core'
 import type { useDerivedStats } from '../hooks/useData'
 import type { PlanBasisView } from '../hooks/usePlanBasis'
+import type { A11yState } from '../hooks/useAccessibility'
 import type { TagDef } from './tagMatch'
 import type { ChatModelId } from './chatModels'
+import type { CardId } from './cardOrder'
 
 type DerivedStats = NonNullable<ReturnType<typeof useDerivedStats>>
 
@@ -145,8 +147,8 @@ export interface AppContext {
   infoItems: InfoItem[]
 
   // card order for home page (managed via preferences)
-  cardOrder: string[]
-  setCardOrder: React.Dispatch<React.SetStateAction<string[]>>
+  cardOrder: CardId[]
+  setCardOrder: React.Dispatch<React.SetStateAction<CardId[]>>
 
   // per-card full precision toggle
   cardPrecision: Record<string, boolean>
@@ -200,4 +202,7 @@ export interface AppContext {
    *  never keep claiming "Hidden from N centrals" after the rule is gone. OPTIONAL for the same
    *  reason `deniedRepoLabels` is — every page consumes `AppContext`. */
   refreshDeniedRepoLabels?: () => void
+
+  /** Magnifier lenses — the accessibility feature. Always present; `prefs.enabled` is the switch. */
+  a11y: A11yState
 }

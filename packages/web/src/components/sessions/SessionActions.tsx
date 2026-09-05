@@ -24,9 +24,14 @@ export interface SessionActionsProps {
   row: FleetRow
   lang: 'pt' | 'en'
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   /** Called after a verb that removes the row, so the panel can step away from it. */
   onGone?: () => void
+  /**
+   * An action created a session and this is where it is. Absent on a surface with nowhere to go —
+   * the action still runs, it simply does not navigate.
+   */
+  onOpened?: (id: string) => void
 }
 
 /** The verbs that take a line of text before they can run. */
@@ -35,7 +40,7 @@ const TEXT_VERBS = new Set<string>(['rename', 'note', 'task'])
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
 
-export function SessionActions({ row, lang, act, onGone }: SessionActionsProps) {
+export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActionsProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState<FleetVerb | null>(null)
@@ -64,6 +69,10 @@ export function SessionActions({ row, lang, act, onGone }: SessionActionsProps) 
     if (!out.ok) return
     setAsking(null); setDraft(''); setConfirming(false); setOpen(false)
     if (action === 'kill') onGone?.()
+    // A REOPEN LANDS SOMEWHERE. It mints a NEW row and retires the one it was asked about, so
+    // staying put leaves the reader on a dead session with a success message over it — reported as
+    // "the reopen did nothing". The server hands back the new id precisely so this can follow it.
+    if (action === 'resume' && out.id) onOpened?.(out.id)
   }
 
   function pick(v: FleetVerb) {

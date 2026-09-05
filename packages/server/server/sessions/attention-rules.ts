@@ -63,6 +63,27 @@ export const ATTENTION_RULES: Record<HarnessId, AttentionRules | null> = {
       // harness draws, not the first one it shows you — is now a measured pattern rather than an
       // inference: assume there is another until somebody has looked.
       /Enter to select · ↑\/↓ to navigate/,
+      // **THE FOOTERS CHANGED, AND THE DETECTION WENT BLIND WITH THEM.** Measured 2026-09-04
+      // against the INSTALLED claude 2.1.261: `Tab to amend` appears 0 times in the binary and
+      // `↑/↓ to navigate` never appears in the order the line above expects. So on a current
+      // claude none of the three rules above match anything, and a session sitting on a question
+      // read as plain `waiting`: no approval card in the web chat, no refusal when a prompt was
+      // sent into it. Reported with the terminal open beside the browser — an `AskUserQuestion`
+      // with four answers on screen and a chat that said nothing about it.
+      //
+      // Captured LIVE from that report's own screenshot (claude 2.1.261, 2026-09-04):
+      //   `Enter to select · Tab/Arrow keys to navigate · Esc to cancel`
+      // and confirmed present in the 2.1.261 binary. Matched on the navigation half, which is the
+      // part that names the COMPONENT — `Esc to cancel` alone is shared with dialogs that are not
+      // questions, and `Enter to select` alone appears in pickers that are not blocking.
+      /Tab\/Arrow keys to navigate/,
+      //
+      // **STILL UNVERIFIED on 2.1.261: the PERMISSION prompt.** Its old footer is gone and a live
+      // one could not be captured on this machine — Bash is auto-approved here, so the dialog
+      // never opens (measured: two commands that should have asked, neither did). It is left
+      // UNGUESSED rather than approximated from strings in the binary: a wrong approval pattern is
+      // worse than a missing one, because it makes a session that is NOT blocked refuse prompts.
+      // The next person with a machine that asks should capture it and add it here.
     ],
     // The footer while a turn runs. `? for shortcuts` takes its place when the turn ends.
     working: [/esc to interrupt/],

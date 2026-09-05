@@ -33,10 +33,23 @@ export interface SpawnSpec {
    * would reject valid input the day a model ships.
    */
   modelSuggestions: string[]
+  /**
+   * The model this CLI uses when `--model` is not passed — ONLY when the CLI itself publishes it.
+   *
+   * It exists so a picker can say "Default (sonnet)" instead of "the assistant's default", which
+   * names a thing without saying what it is. ABSENT is the honest answer everywhere it cannot be
+   * read out of the tool's own output, and absent is what every entry is today — see the block
+   * above `SPAWN_SPECS` for what was checked, per harness, and how. Never fill this from a vendor
+   * page, a config file, or memory: a wrong default is stated with the same confidence as a right
+   * one and is read at a glance.
+   */
+  defaultModel?: string
   /** Absent when the CLI has no effort flag. Paired with `efforts`; never one without the other. */
   effortFlag?: string
   /** A genuine closed enum, printed by the CLI itself — so this one IS validated. */
   efforts?: string[]
+  /** The effort used when `--effort` is not passed, under exactly `defaultModel`'s rule. */
+  defaultEffort?: string
   /**
    * The argv (after `bin`) that reopens an existing conversation by ID.
    *

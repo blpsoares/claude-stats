@@ -37,6 +37,16 @@ export interface FleetSummary {
   activeUnknown: number
   /** Distinct projects the fleet is spread across. */
   projects: number
+  /**
+   * How many of those projects are REPOSITORIES — the ones a git remote could be resolved for.
+   *
+   * Counted per PROJECT, never per session, so it can be read as a fraction of `projects` and can
+   * never exceed it. A project counts as a repository if ANY of its rows knows the remote:
+   * `repo` is resolved per row and a `lost` row whose directory is gone carries none
+   * (`resolveRepoFacts` reports `missing`), so one row knowing it is the fact while the others
+   * not knowing it is an absence — and an absence must not unmake a fact.
+   */
+  projectRepos: number
 }
 
 const RUNNING = new Set(['working', 'waiting', 'waiting-approval'])
@@ -45,6 +55,8 @@ const WAITING = new Set(['waiting', 'waiting-approval'])
 export function summarizeFleet(rows: readonly ControlSession[], now: number): FleetSummary {
   const byHarness = new Map<string, HarnessSlice>()
   const projects = new Set<string>()
+  /** The subset of `projects` that at least one row could name a remote for. See `projectRepos`. */
+  const repoProjects = new Set<string>()
   let running = 0
   let waiting = 0
   let activeMs = 0
@@ -55,7 +67,13 @@ export function summarizeFleet(rows: readonly ControlSession[], now: number): Fl
     const isRunning = RUNNING.has(s.state)
     if (isRunning) running++
     if (WAITING.has(s.state)) waiting++
-    if (s.project) projects.add(s.projectGroup || s.project)
+    if (s.project) {
+      // The GROUP is the key on both sets, so a worktree and its main checkout stay one project on
+      // both counts — keying the repo set differently would let the card read "2 of 1".
+      const key = s.projectGroup || s.project
+      projects.add(key)
+      if (s.repo) repoProjects.add(key)
+    }
 
     const slice = byHarness.get(s.harness) ?? { harness: s.harness, count: 0, running: 0 }
     slice.count++
@@ -81,6 +99,7 @@ export function summarizeFleet(rows: readonly ControlSession[], now: number): Fl
     ...(activeKnown > 0 ? { activeMs } : {}),
     activeUnknown,
     projects: projects.size,
+    projectRepos: repoProjects.size,
   }
 }
 

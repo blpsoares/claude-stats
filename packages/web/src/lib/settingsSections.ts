@@ -1,6 +1,6 @@
 /** Which settings sections a viewer can see. UX-only gate — the server enforces real authz. */
 export type SettingsSectionId =
-  | 'preferences' | 'sessions' | 'data-sources' | 'harnesses' | 'pricing' | 'billing' | 'install' | 'connection' | 'live'
+  | 'preferences' | 'accessibility' | 'sessions' | 'data-sources' | 'harnesses' | 'pricing' | 'billing' | 'install' | 'connection' | 'live'
   | 'chat' | 'notifications' | 'backup'
   | 'users' | 'teams' | 'machines' | 'repositories'
 
@@ -19,6 +19,9 @@ export interface SettingsViewer {
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'preferences', labelEn: 'Preferences', labelPt: 'Preferências', group: 'personal' },
+  // Visible in BOTH modes: the magnifiers are stored per account on a central and per machine
+  // otherwise, so there is no mode in which this screen has nothing to configure.
+  { id: 'accessibility', labelEn: 'Accessibility', labelPt: 'Acessibilidade', group: 'personal' },
   { id: 'notifications', labelEn: 'Notifications', labelPt: 'Notificações', group: 'personal' },
   { id: 'sessions', labelEn: 'Sessions', labelPt: 'Sessões', group: 'personal' },
   { id: 'data-sources', labelEn: 'Data & sources', labelPt: 'Dados & fontes', group: 'personal' },

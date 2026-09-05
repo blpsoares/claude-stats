@@ -1,12 +1,16 @@
 import { expect, it, test, describe } from 'bun:test'
 import type { Filters } from '@agentistics/core'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
-import { filterFleet, fleetFilterOptions } from './fleetFilter'
+import { filterFleet, fleetFilterOptions, ignoredDimensions, SESSION_FILTER_DIMS } from './fleetFilter'
 
 const BASE: Filters = {
-  dateRange: '7d' as Filters['dateRange'],
+  // 'all' is the neutral default — `ignoredDimensions` reads a SET date range as one it cannot
+  // answer, so a base fixture with '7d' baked in would flag every test that does not override it.
+  dateRange: 'all' as Filters['dateRange'],
   customStart: '', customEnd: '', projects: [], models: [],
 }
+
+const f = (o: Partial<Filters>): Filters => ({ ...BASE, ...o })
 
 function row(o: Partial<ControlSession> & { id: string }): ControlSession {
   return {
@@ -158,12 +162,54 @@ describe('fleetFilterOptions', () => {
 
   it('drops empty values rather than offering a blank chip', () => {
     const o = fleetFilterOptions([repoRow('a', '', { harness: '', project: '', model: '' })])
-    expect(o).toEqual({ harnesses: [], repos: [], projects: [], models: [] })
+    expect(o).toEqual({
+      harnesses: [], repos: [], projects: [], models: [],
+      harnessesAll: [], reposAll: [], projectsAll: [], modelsAll: [],
+    })
+  })
+
+  it('the WHOLE fleet is offered even when the active-only switch hides every row of a harness', () => {
+    // The reported case: six assistants in the history, one of them running. Narrowing the OPTIONS
+    // to what is running made the harness dimension vanish, so the workspace looked like it had
+    // never heard of the other five — while Compare listed all six two clicks away.
+    const rows = [
+      repoRow('live', 'org/r', { harness: 'claude', state: 'waiting' }),
+      repoRow('old', 'org/r', { harness: 'codex', state: 'closed' }),
+      repoRow('older', 'org/r', { harness: 'kimi', state: 'exited' }),
+    ]
+    const o = fleetFilterOptions(rows, true)
+    expect(o.harnesses).toEqual(['claude'])
+    expect(o.harnessesAll).toEqual(['claude', 'codex', 'kimi'])
+  })
+
+  it('with the switch off the two agree — there is nothing being withheld to mark', () => {
+    const rows = [
+      repoRow('live', 'org/r', { harness: 'claude', state: 'waiting' }),
+      repoRow('old', 'org/r', { harness: 'codex', state: 'closed' }),
+    ]
+    const o = fleetFilterOptions(rows, false)
+    expect(o.harnesses).toEqual(o.harnessesAll)
   })
 
   it('is stable and deduped, so the chips do not shuffle between polls', () => {
     const rows = [repoRow('b', 'z/b'), repoRow('a', 'a/a'), repoRow('c', 'z/b')]
     expect(fleetFilterOptions(rows).repos).toEqual(['a/a', 'z/b'])
+  })
+})
+
+describe('ignoredDimensions', () => {
+  it('names a date range the fleet cannot answer', () => {
+    expect(ignoredDimensions(f({ dateRange: '7d' as Filters['dateRange'] }), 'en'))
+      .toBe('The date range does not narrow a live fleet.')
+  })
+  it('names several at once, in one sentence', () => {
+    const s = ignoredDimensions(f({ dateRange: '7d' as Filters['dateRange'], tags: ['t1'] }), 'en')!
+    expect(s).toContain('date range')
+    expect(s).toContain('tags')
+  })
+  it('is null when nothing set is ignored', () => {
+    expect(ignoredDimensions(f({ harnesses: ['claude'] }), 'en')).toBeNull()
+    expect(ignoredDimensions(f({ dateRange: 'all' as Filters['dateRange'] }), 'en')).toBeNull()
   })
 })
 
@@ -194,5 +240,32 @@ describe('fleetFilterOptions — the activeOnly promise', () => {
     const o = fleetFilterOptions(mixed, true)
     expect(o.repos).toEqual(['o/live'])
     expect(o.models).toEqual(['opus'])
+  })
+})
+
+describe('SESSION_FILTER_DIMS', () => {
+  it('offers every dimension filterFleet honours — a filter nobody can reach is not a filter', () => {
+    // The four `Filters` keys this module reads, plus the fleet's own switch.
+    expect([...SESSION_FILTER_DIMS].sort()).toEqual(
+      ['activeOnly', 'harnesses', 'models', 'projects', 'repos'],
+    )
+  })
+
+  it('includes activeOnly, which is ALSO a chip and was therefore a one-way switch', () => {
+    // It could be turned off from the chip's x and never back on: the menu entry that would have
+    // done it was gated out by this very list, and a one-way switch reads as a broken filter.
+    expect(SESSION_FILTER_DIMS).toContain('activeOnly')
+  })
+
+  it('offers nothing filterFleet ignores — a control that does nothing is worse than none', () => {
+    const rows = [
+      repoRow('a', 'org/r', { harness: 'claude', project: 'p', model: 'opus', state: 'waiting' }),
+      repoRow('b', 'org/other', { harness: 'codex', project: 'q', model: 'gpt', state: 'waiting' }),
+    ]
+    // Each dimension must actually narrow, or it has no business being in the menu.
+    expect(filterFleet({ rows, filters: { harnesses: ['claude'] } as never, activeOnly: false }).rows).toHaveLength(1)
+    expect(filterFleet({ rows, filters: { repos: ['org/r'] } as never, activeOnly: false }).rows).toHaveLength(1)
+    expect(filterFleet({ rows, filters: { projects: ['p'] } as never, activeOnly: false }).rows).toHaveLength(1)
+    expect(filterFleet({ rows, filters: { models: ['opus'] } as never, activeOnly: false }).rows).toHaveLength(1)
   })
 })

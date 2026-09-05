@@ -13,6 +13,7 @@ import { backfillTokenTeamIds, listMachines, mintMachineToken, mintMachine, mach
 import { getCentralConfig } from './central-config'
 import { packConnectToken, machineSessionsAllowed, canGrantMachineSessions, machineSessionAccounts, resolveSessionGrant } from '@agentistics/core'
 import { backfillRepoTeamIds } from './team-repos'
+import { deleteUserPrefs } from './user-prefs-store'
 import {
   makePrincipalSessionCookieHeader,
   getPrincipal,
@@ -863,6 +864,9 @@ export async function handleAccounts(req: Request, ip = 'unknown'): Promise<Resp
     // Detach the deleted account from any machines it owned — the machines survive, they just lose
     // the dead owner relation (no orphaned accountId left dangling).
     await detachAccountFromAllMachines(id).catch(() => {})
+    // Their UI preferences have no owner left. Best effort: a failure here must not fail a delete
+    // that already happened.
+    await deleteUserPrefs(id).catch(() => {})
     void writeAudit({ action: 'account.delete', ip, actorId: principal.accountId, targetId: id })
     return json({ ok: true })
   }

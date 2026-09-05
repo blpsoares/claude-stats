@@ -251,10 +251,30 @@ export function triggerSessionNotification(options: {
   }
 }
 
+/**
+ * What a notification needs to know about a session in order to NAME it.
+ *
+ * Widened from `SessionMeta` so the live FLEET can be notified about — which is the whole point of
+ * the feature and was, for a while, the one caller that did not exist: the settings screen could
+ * send a test notification, the tests exercised the transitions, and nothing in the running app
+ * ever called this. Reported as "as notificações web não estão funcionando", and it was exactly
+ * that: a feature wired to nothing.
+ *
+ * A fleet row is not a `SessionMeta` and never will be — it is a live process, not a transcript —
+ * so the parameter states the three things actually read here instead of demanding the whole type.
+ */
+export interface NotifiableSession {
+  user_label?: string
+  title?: string
+  first_prompt?: string
+  project_path?: string
+  harness?: string
+}
+
 export function handleSessionStateTransitions(
   prevActivities: Record<string, SessionActivity>,
   nextActivities: Record<string, SessionActivity>,
-  sessionsMap: Map<string, SessionMeta>,
+  sessionsMap: Map<string, NotifiableSession>,
   lang: 'pt' | 'en' = 'pt'
 ): void {
   const settings = getNotificationSettings()
@@ -271,7 +291,9 @@ export function handleSessionStateTransitions(
     const sessionTitle = session ? sessionLabel(session) : ''
     const folderName = session?.project_path ? (session.project_path.split('/').filter(Boolean).pop() || '') : ''
     const sessionSubject = sessionTitle || folderName || id.slice(0, 8)
-    const harnessName = session?.harness ? (HARNESS_LABELS[session.harness] || session.harness.toUpperCase()) : ''
+    const harnessName = session?.harness
+      ? ((HARNESS_LABELS as Record<string, string>)[session.harness] || session.harness.toUpperCase())
+      : ''
     // The connector is LOCALIZED. It was a hardcoded Portuguese `em` used by both branches, so an
     // English notification read "Session X (CLAUDE CODE em agentistics) is waiting for your
     // response" — one Portuguese word in the middle of an English sentence, on the surface a user
@@ -320,4 +342,56 @@ export function handleSessionStateTransitions(
       })
     }
   }
+}
+
+
+/**
+ * The live fleet's transitions, as notifications. THE CALLER THAT WAS MISSING.
+ *
+ * Two rules it must keep, and they are the same two the cockpit's bell and the VS Code extension
+ * keep — stated here because this is a third implementation of the same idea and they have to agree:
+ *
+ * - IT RINGS ON THE TRANSITION, NEVER ON THE LEVEL. A session sitting in `waiting` is the normal
+ *   end of every turn; notifying on the state rather than the change is a notification per poll.
+ * - THE FIRST SNAPSHOT ANNOUNCES NOTHING. Opening a machine with nine blocked sessions would
+ *   otherwise greet the reader with nine toasts about things that happened while they were away —
+ *   the header's own counter is what reports a standing situation.
+ *
+ * `states` is exported for the caller to hold: it keeps the previous snapshot, and holding it here
+ * would make the module remember something across a page it no longer belongs to.
+ */
+export function fleetActivityStates(
+  rows: readonly { id: string; state: string }[],
+): Record<string, SessionActivity> {
+  const out: Record<string, SessionActivity> = {}
+  for (const r of rows) {
+    // Only the four this feature has words for. `lost`, `closed` and `unknown` are not events that
+    // happened to a person — they are what a row IS — and inventing a sentence for them would put
+    // "your session is unknown" on someone's desktop.
+    if (r.state === 'working' || r.state === 'waiting' || r.state === 'waiting-approval' || r.state === 'exited') {
+      out[r.id] = r.state
+    }
+  }
+  return out
+}
+
+export function notifyFleetTransitions(
+  prev: Record<string, SessionActivity> | null,
+  rows: readonly { id: string; state: string; title?: string; cwd?: string; harness?: string }[],
+  lang: 'pt' | 'en',
+): Record<string, SessionActivity> {
+  const next = fleetActivityStates(rows)
+  // `null` is the first snapshot — see the rule above. It is deliberately distinct from `{}`, which
+  // is a machine that genuinely had no sessions a moment ago and now has one.
+  if (prev === null) return next
+  const map = new Map<string, NotifiableSession>()
+  for (const r of rows) {
+    map.set(r.id, {
+      ...(r.title ? { title: r.title } : {}),
+      ...(r.cwd ? { project_path: r.cwd } : {}),
+      ...(r.harness ? { harness: r.harness } : {}),
+    })
+  }
+  handleSessionStateTransitions(prev, next, map, lang)
+  return next
 }

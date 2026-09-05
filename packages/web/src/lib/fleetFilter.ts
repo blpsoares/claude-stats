@@ -102,6 +102,32 @@ function matchesProject(r: ControlSession, projects: ReadonlySet<string>): boole
 }
 
 /**
+ * The dimensions that are SET and that this fleet cannot answer, in one sentence.
+ *
+ * The module's header records why each is ignored, and none of that changes. What changes is that
+ * it is now SAID: a filter that appears to apply and does not is indistinguishable from one that
+ * is broken, and every ignored dimension here was reported as exactly that at least once.
+ *
+ * `dateRange: 'all'` is not a filter, so it raises nothing.
+ */
+export function ignoredDimensions(filters: Filters, lang: 'en' | 'pt'): string | null {
+  const pt = lang === 'pt'
+  const named: string[] = []
+  if (filters.dateRange && filters.dateRange !== 'all') named.push(pt ? 'o período' : 'the date range')
+  if ((filters.tags?.length ?? 0) > 0) named.push(pt ? 'as tags' : 'tags')
+  if ((filters.users?.length ?? 0) > 0) named.push(pt ? 'os membros' : 'members')
+  if ((filters.teams?.length ?? 0) > 0) named.push(pt ? 'os times' : 'teams')
+  if ((filters.machines?.length ?? 0) > 0) named.push(pt ? 'as máquinas' : 'machines')
+  if (named.length === 0) return null
+  const list = named.length === 1
+    ? named[0]!
+    : `${named.slice(0, -1).join(', ')} ${pt ? 'e' : 'and'} ${named[named.length - 1]}`
+  return pt
+    ? `${list.charAt(0).toUpperCase()}${list.slice(1)} não estreita uma frota viva.`
+    : `${list.charAt(0).toUpperCase()}${list.slice(1)} does not narrow a live fleet.`
+}
+
+/**
  * The values this fleet can actually be filtered BY.
  *
  * The Sessions workspace used to hand its filter bar the DASHBOARD's options — every harness, repo,
@@ -119,6 +145,20 @@ function matchesProject(r: ControlSession, projects: ReadonlySet<string>): boole
  * shapes for the same reason `matchesRepo` accepts both: the chip the user clicks may have come
  * from either vocabulary.
  */
+/**
+ * THE DIMENSIONS THE SESSIONS WORKSPACE CAN ACT ON — the `only` list its filter bar is given.
+ *
+ * It lives here, beside `filterFleet`, because the two must agree: a dimension this module HONOURS
+ * and the menu does not OFFER is a filter nobody can reach, and a dimension the menu offers and
+ * this module ignores is a control that does nothing. `fleetFilter.test.ts` cross-checks them.
+ *
+ * `activeOnly` was missing, and the way it failed is the argument for pinning it: the switch is
+ * ALSO drawn as a chip while it is on, so it could be turned OFF from the chip's × and then never
+ * turned back on — the menu entry that would have done it was gated out by this very list. A
+ * one-way switch reads as the filter having broken.
+ */
+export const SESSION_FILTER_DIMS = ['activeOnly', 'harnesses', 'repos', 'projects', 'models'] as const
+
 export function fleetFilterOptions(
   rows: readonly ControlSession[],
   /**
@@ -136,16 +176,43 @@ export function fleetFilterOptions(
    */
   activeOnly = false,
 ): {
+  /** Values the CURRENT view can show — every one of them promises at least one row. */
   harnesses: string[]
   repos: string[]
   projects: string[]
   models: string[]
+  /**
+   * Every value the WHOLE fleet holds, `activeOnly` ignored.
+   *
+   * Withholding an option that promises nothing was right; letting the DIMENSION disappear with it
+   * was not, and the difference was reported. On a machine with six assistants in its history and
+   * one of them running, the harness filter vanished from the menu entirely — so the workspace
+   * looked like it had never heard of the other five, while the Compare page listed all six with
+   * real session counts two clicks away. That is the same false impression the narrowing rule
+   * exists to prevent, produced by the rule itself.
+   *
+   * So the caller offers THESE and marks the ones the current view cannot show. The reader sees
+   * their assistants exist, and the ones that would answer "nothing" say why instead of being
+   * silently absent.
+   */
+  harnessesAll: string[]
+  reposAll: string[]
+  projectsAll: string[]
+  modelsAll: string[]
 } {
   const harnesses = new Set<string>()
   const repos = new Set<string>()
   const projects = new Set<string>()
   const models = new Set<string>()
+  const harnessesAll = new Set<string>()
+  const reposAll = new Set<string>()
+  const projectsAll = new Set<string>()
+  const modelsAll = new Set<string>()
   for (const r of rows) {
+    if (r.harness) harnessesAll.add(r.harness)
+    if (r.repo) reposAll.add(r.repo)
+    if (r.project) projectsAll.add(r.project)
+    if (r.model) modelsAll.add(r.model)
     if (activeOnly && !ACTIVE.has(r.state)) continue
     if (r.harness) harnesses.add(r.harness)
     if (r.repo) repos.add(r.repo)
@@ -153,5 +220,9 @@ export function fleetFilterOptions(
     if (r.model) models.add(r.model)
   }
   const sorted = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b))
-  return { harnesses: sorted(harnesses), repos: sorted(repos), projects: sorted(projects), models: sorted(models) }
+  return {
+    harnesses: sorted(harnesses), repos: sorted(repos), projects: sorted(projects), models: sorted(models),
+    harnessesAll: sorted(harnessesAll), reposAll: sorted(reposAll),
+    projectsAll: sorted(projectsAll), modelsAll: sorted(modelsAll),
+  }
 }

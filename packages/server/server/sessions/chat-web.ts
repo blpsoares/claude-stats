@@ -73,6 +73,20 @@ export async function readSessionChat(
 
   const path = await resolveChatTranscriptPath(row.cwd, row.conversationId).catch(() => null)
   if (!path) {
+    // A LIVE session whose transcript is not on disk YET is an EMPTY conversation, not a missing
+    // one — and the difference is the whole usability of a new session. A harness writes its
+    // transcript when the conversation first says something, so every session agentop has just
+    // started has no file for as long as nobody has spoken to it. Reporting that as `unavailable`
+    // made the chat view render its refusal INSTEAD of the composer, so the one thing that would
+    // create the transcript — sending the first message — was the one thing the view withheld. A
+    // session created from the workspace was therefore un-chattable for its whole life, and the
+    // only way in was the terminal tab.
+    //
+    // So the empty answer is reserved for the case the shape already documents: `turns: []` with no
+    // `unavailable` means "a conversation with nothing in it". A session that is NOT running keeps
+    // the refusal, because there its missing transcript really is a transcript that is gone — the
+    // same N/A-versus-a-confident-0 rule, applied to "not yet" against "no longer".
+    if (live) return { turns: [], live }
     return {
       turns: [],
       unavailable: lang === 'pt'

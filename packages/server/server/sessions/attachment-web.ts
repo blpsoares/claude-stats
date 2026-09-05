@@ -43,6 +43,61 @@ export function resolveAttachmentRead(requested: string): string | null {
 }
 
 /**
+ * ONE stored attachment, named the way it is stored — PURE, and the whole security model of
+ * `GET /api/fleet/attachment/by-name`.
+ *
+ * This is the NARROWER twin of `resolveAttachmentRead`. That one has to accept a whole path,
+ * because a message carries the attachment's path verbatim and the chat shows it back from the
+ * message. The GALLERY does not need that: it is a grid of this directory's own files, so it can
+ * ask by NAME, and a name that is a single segment cannot express a traversal at all — there is no
+ * `resolve()` race to reason about, and no way for the answer to land outside `ATTACHMENT_DIR`.
+ *
+ * The accepted set is exactly what `storedAttachmentName` produces: one segment of
+ * `[A-Za-z0-9._-]`. Anything this machine could not itself have written is refused, which is a
+ * stronger statement than "contains no separator" and costs nothing — the names are minted here.
+ * The separator, NUL and dot-segment cases are still checked and named, because they are the ones a
+ * reader comes here to check for.
+ */
+export function attachmentPathByName(name: string): string | null {
+  if (name === '' || name.length > 200) return null
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return null
+  if (name === '.' || name === '..') return null
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return null
+  return join(ATTACHMENT_DIR, name)
+}
+
+/**
+ * The content type to serve a stored attachment as, or `null` when it is not an image — PURE.
+ *
+ * The route serves IMAGES and refuses everything else, which is what stops a gallery preview route
+ * becoming a general reader of agentop's own directory. The type is read off the EXTENSION and
+ * never sniffed: the answer must be decidable before anything is opened, and it is paired with
+ * `nosniff` on the response so the browser cannot decide differently.
+ *
+ * The set matches the browser side's `isImageAttachment` deliberately, SVG included — a preview the
+ * client believes exists and the server refuses is a broken image, which is the one thing the panel
+ * may not show. SVG is a document that can carry script, so its response additionally carries a
+ * `sandbox` CSP for the case where somebody opens the URL directly; inside an `<img>` an SVG's
+ * script never runs.
+ */
+const IMAGE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+}
+
+export function attachmentImageType(name: string): string | null {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return null
+  return IMAGE_TYPES[name.slice(dot + 1).toLowerCase()] ?? null
+}
+
+/**
  * The ceiling on one upload.
  *
  * Generous enough for a screenshot or a log, far below anything that would make writing it a

@@ -4,19 +4,19 @@ import { visibleSettingsSections, SETTINGS_SECTIONS } from './settingsSections'
 const ids = (v: Parameters<typeof visibleSettingsSections>[0]) => visibleSettingsSections(v).map(s => s.id)
 
 test('solo/member: personal sections + live, no governance', () => {
-  expect(ids({ central: false })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'backup', 'harnesses', 'pricing', 'billing', 'install', 'connection', 'live', 'chat'])
+  expect(ids({ central: false })).toEqual(['preferences', 'accessibility', 'notifications', 'sessions', 'data-sources', 'backup', 'harnesses', 'pricing', 'billing', 'install', 'connection', 'live', 'chat'])
 })
 
 test('central owner: personal (no live) + all governance sections', () => {
-  expect(ids({ central: true, role: 'owner' })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'users', 'teams', 'machines', 'repositories'])
+  expect(ids({ central: true, role: 'owner' })).toEqual(['preferences', 'accessibility', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'users', 'teams', 'machines', 'repositories'])
 })
 
 test('central manager: personal + governance (users/teams/machines)', () => {
-  expect(ids({ central: true, role: 'member', isManager: true })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'users', 'teams', 'machines'])
+  expect(ids({ central: true, role: 'member', isManager: true })).toEqual(['preferences', 'accessibility', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'users', 'teams', 'machines'])
 })
 
 test('central plain user: personal + machines (to view/manage their own), no users/teams', () => {
-  expect(ids({ central: true, role: 'member', isManager: false })).toEqual(['preferences', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'machines'])
+  expect(ids({ central: true, role: 'member', isManager: false })).toEqual(['preferences', 'accessibility', 'notifications', 'sessions', 'data-sources', 'harnesses', 'pricing', 'install', 'machines'])
 })
 
 test('every section has a group', () => {

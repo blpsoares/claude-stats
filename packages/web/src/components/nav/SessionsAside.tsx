@@ -22,11 +22,14 @@ import {
   type ControlSession,
 } from '@agentistics/tui/control/session-fleet'
 import { rowSelected } from '../../lib/fleetSelection'
-import { filterFleet } from '../../lib/fleetFilter'
-import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
+import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
+import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
+import { SessionRowMenu } from '../sessions/SessionRowMenu'
+import { SessionFacts } from '../sessions/SessionFacts'
 import {
-  MAX_PINNED, getPinnedIds, pinnedServerSnapshot, subscribePinnedSessions, togglePinnedSession,
+  MAX_PINNED, getPinnedIds, movePinnedSession, pinnedServerSnapshot, resolvePinnedRows,
+  subscribePinnedSessions, togglePinnedSession,
 } from '../../lib/pinnedSessions'
 
 export interface SessionsAsideProps {
@@ -76,6 +79,15 @@ export interface SessionsAsideProps {
    * is a refusal is a button that teaches the wrong thing.
    */
   hideNew?: boolean
+  /**
+   * The fleet's own verb-carrying rows, keyed by id — for the row's context menu (Task 6).
+   *
+   * Absent on a surface that cannot act (a central relaying a machine that has not granted the
+   * screen/action switches yet): the menu is then not opened at all, rather than opened inert.
+   */
+  rowsById?: Map<string, { verbs: RowVerb[] }>
+  /** Performs a verb. Absent exactly where `rowsById` is absent. */
+  act?: (req: { id: string; action: string; text?: string }) => Promise<{ ok: boolean; message: string; id?: string }>
 }
 
 /** The colour a state is said in. `running` is its own token, not `success`, which reads teal. */
@@ -112,25 +124,13 @@ const STATE_WASH: Record<string, string> = {
  * the moment somebody who pinned it wants it back. Where no conversation link can ever exist
  * (codex, kimi, gemini, agy — see `conversationBlind`) the row id is the only key there is.
  */
-/**
- * A model id, shortened for a narrow column.
- *
- * The provider prefix and the dated suffix are what a person already knows or does not care about
- * in a sidebar — `anthropic/claude-sonnet-4-5-20250929` becomes `claude-sonnet-4-5`. The full id is
- * on the row's `title` attribute, so nothing is lost.
- */
-function shortModel(model: string): string {
-  const bare = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model
-  return bare.replace(/-\d{8}$/, '')
-}
-
 function pinKeyOf(row: ControlSession): string {
   return row.conversationId ?? row.id
 }
 
 export function SessionsAside({
   lang, rows, loading, unsupported, unavailable, filters, activeOnly, finishedTasks, stale,
-  onOpenRow, hideNew,
+  onOpenRow, hideNew, rowsById, act,
 }: SessionsAsideProps) {
   const pt = lang === 'pt'
   const navigate = useNavigate()
@@ -153,15 +153,39 @@ export function SessionsAside({
   const flip = (row: ControlSession) => {
     const out = togglePinnedSession(pinKeyOf(row))
     if (!out.ok && out.reason === 'limit') {
-      setPinNotice(pt
+      setNotice(pt
         ? `No máximo ${MAX_PINNED} conversas fixadas. Solte uma antes de fixar outra.`
         : `At most ${MAX_PINNED} pinned conversations. Unpin one first.`)
       return
     }
-    setPinNotice(null)
+    setNotice(null)
   }
-  const [pinNotice, setPinNotice] = useState<string | null>(null)
+  /** No longer only about pins — the row menu's action results land here too. */
+  const [notice, setNotice] = useState<string | null>(null)
+  /** Which pinned row is being dragged, and where it would land. Local: a drag is not shared state. */
+  const [dragFrom, setDragFrom] = useState<number | null>(null)
+  const [dragOver, setDragOver] = useState<number | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string; state: string; verbs: RowVerb[] } | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
   const searchRef = useRef<HTMLInputElement>(null)
+
+  const openMenu = (session: ControlSession, x: number, y: number, verbs: RowVerb[]) => {
+    setMenu({ x, y, id: session.id, state: session.state, verbs })
+  }
+
+  const pickMenuAction = (action: string) => {
+    if (!menu) return
+    const { id } = menu
+    if (action === 'rename') {
+      const target = rows.find(r => r.id === id)
+      setRenaming({ id, title: target?.title ?? '' })
+      setRenameDraft(target?.title ?? '')
+      return
+    }
+    if (!act) return
+    void act({ id, action }).then(out => setNotice(out.message))
+  }
 
   // The top bar's magnifier focuses this field. An event rather than a prop because the button and
   // the field are in two different subtrees, and threading a ref through the whole shell to join
@@ -192,12 +216,17 @@ export function SessionsAside({
     () => (activeOnly ? searched.filter(r => !active.has(r.state)).length : 0),
     [searched, activeOnly, active],
   )
+  /** Which SET filter dimensions this fleet cannot answer at all, said in one line — never silent. */
+  const ignoredNote = useMemo(() => ignoredDimensions(filters, lang), [filters, lang])
 
   /** The pinned rows, in the order they were pinned. Their own band, above everything. */
-  const pinnedRows = useMemo(
-    () => pins.map(k => matched.find(r => pinKeyOf(r) === k)).filter((r): r is ControlSession => r !== undefined),
-    [pins, matched],
-  )
+  // Resolved from the RAW `rows`, never from `matched` — a filter, a search or "active only" must
+  // never remove a row from the pinned band (see the header comment, and `resolvePinnedRows`'s
+  // own). Reading from `matched` was the bug: it is already cut by `activeOnly` (on by default
+  // here), so a pinned session that finished while the person was away vanished from the band the
+  // moment its state left `ACTIVE_STATES` — no reload needed, just the ordinary case of a pinned
+  // session finishing.
+  const pinnedRows = useMemo(() => resolvePinnedRows(pins, rows, pinKeyOf), [pins, rows])
 
   /**
    * TWO bands — Active and Inactive.
@@ -297,11 +326,11 @@ export function SessionsAside({
         )}
       </div>
 
-      {pinNotice && (
+      {notice && (
         <p role="status" style={{
           margin: '0 4px', fontSize: 11, lineHeight: 1.45, color: 'var(--anthropic-orange)',
         }}>
-          {pinNotice}
+          {notice}
         </p>
       )}
 
@@ -329,6 +358,20 @@ export function SessionsAside({
         </p>
       )}
 
+      {/* A filter dimension that is SET but cannot narrow a live fleet (date range, tags, members,
+          teams, machines) is said here, above the scroller — the same placement `stale` uses, and
+          for the same reason: a caveat about every row below must be readable wherever the reader
+          has scrolled. Silence here reads as a broken filter, not an honest one. */}
+      {ignoredNote && (
+        <p role="status" style={{
+          margin: '0 2px', padding: '7px 9px', borderRadius: 8,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+          fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)',
+        }}>
+          {ignoredNote}
+        </p>
+      )}
+
       <div className="ag-noscroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
         {/* The pinned band, above everything — that is what pinning is for: the two or three
             sessions that must not move when the arrangement changes. */}
@@ -344,16 +387,40 @@ export function SessionsAside({
               <span style={{ marginLeft: 'auto', fontWeight: 600, opacity: 0.75 }}>{pinnedRows.length}</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {pinnedRows.map(s => (
-                <SessionRow
+              {pinnedRows.map((s, i) => (
+                <div
                   key={`pin-${s.id}`}
-                  session={s}
-                  selected={rowSelected(s, sessionId)}
-                  pinned
-                  {...(tap ? { tap } : {})}
-                  onPin={() => flip(s)}
-                  onOpen={() => (onOpenRow ? onOpenRow(s) : navigate(`/sessions/${s.id}`))}
-                />
+                  draggable
+                  onDragStart={e => { setDragFrom(i); e.dataTransfer.effectAllowed = 'move' }}
+                  onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOver(i) }}
+                  onDragEnd={() => { setDragFrom(null); setDragOver(null) }}
+                  onDrop={e => {
+                    e.preventDefault()
+                    if (dragFrom !== null) movePinnedSession(dragFrom, i)
+                    setDragFrom(null); setDragOver(null)
+                  }}
+                  style={{
+                    // The drop target is shown as an EDGE, not by moving the rows: a list that
+                    // reflows under the cursor moves the target you were aiming at.
+                    boxShadow: dragOver === i && dragFrom !== null && dragFrom !== i
+                      ? 'inset 0 2px 0 var(--anthropic-orange)'
+                      : undefined,
+                    opacity: dragFrom === i ? 0.45 : 1,
+                    ...(tap ? { touchAction: 'none' as const } : {}),
+                  }}
+                >
+                  <SessionRow
+                    session={s}
+                    selected={rowSelected(s, sessionId)}
+                    pinned
+                    {...(tap ? { tap } : {})}
+                    onPin={() => flip(s)}
+                    onOpen={() => (onOpenRow ? onOpenRow(s) : navigate(`/sessions/${s.id}`))}
+                    onMoveBy={d => movePinnedSession(i, i + d)}
+                    {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
+                    onOpenMenu={(x, y, verbs) => openMenu(s, x, y, verbs)}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -375,18 +442,103 @@ export function SessionsAside({
                 label={b.label} rows={b.rows} pinned={pinned}
                 sessionId={sessionId} tap={tap} onPin={flip}
                 onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(`/sessions/${s.id}`))}
+                {...(rowsById ? { rowsById } : {})}
+                onOpenMenu={openMenu}
               />
             ))}
           </>
         )}
       </div>
+
+      {/* The row's context menu (Task 6) — rename / stop / reopen, exactly the row's own verbs. */}
+      {menu && (
+        <SessionRowMenu
+          x={menu.x} y={menu.y}
+          entries={rowMenuEntries(menu.verbs, menu.state)}
+          onPick={pickMenuAction}
+          onClose={() => setMenu(null)}
+        />
+      )}
+
+      {/* A tiny rename prompt, seeded with the row's current title — the same shape the panel's own
+          rename flow uses (`SessionActions`'s `asking` form), reachable here for a row that may not
+          be the one currently open. */}
+      {renaming && (
+        <div
+          role="dialog"
+          aria-label={pt ? 'Renomear sessão' : 'Rename session'}
+          style={{ position: 'fixed', inset: 0, zIndex: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <div
+            onClick={() => setRenaming(null)}
+            style={{ position: 'absolute', inset: 0, background: 'var(--ag-scrim, rgba(0,0,0,0.4))' }}
+          />
+          <form
+            onSubmit={e => {
+              e.preventDefault()
+              if (!act) return
+              const id = renaming.id
+              void act({ id, action: 'rename', text: renameDraft.trim() }).then(out => {
+                setNotice(out.message)
+                setRenaming(null)
+              })
+            }}
+            style={{
+              position: 'relative', zIndex: 1, minWidth: 260, maxWidth: 340,
+              background: 'var(--bg-surface)', border: '1px solid var(--border)',
+              borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10,
+              boxShadow: 'var(--ag-shadow-menu)',
+            }}
+          >
+            <label style={{
+              fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: '0.05em', color: 'var(--text-tertiary)',
+            }}>
+              {pt ? 'Novo nome' : 'New name'}
+            </label>
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={e => setRenameDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') setRenaming(null) }}
+              style={{
+                width: '100%', boxSizing: 'border-box', padding: '8px 10px', borderRadius: 8,
+                border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+                color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 13, outline: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <button
+                type="button" onClick={() => setRenaming(null)}
+                style={{
+                  padding: '6px 11px', borderRadius: 8, cursor: 'pointer',
+                  border: '1px solid var(--border-subtle)', background: 'transparent',
+                  color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12,
+                }}
+              >
+                {pt ? 'Cancelar' : 'Cancel'}
+              </button>
+              <button
+                type="submit"
+                style={{
+                  padding: '6px 12px', borderRadius: 8, cursor: 'pointer', border: 'none',
+                  background: 'var(--anthropic-orange)', color: '#fff',
+                  fontFamily: 'inherit', fontSize: 12, fontWeight: 650,
+                }}
+              >
+                {pt ? 'Salvar' : 'Save'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
 
 /** One band of the two-way (active/inactive) split. Absent when it would be empty — an empty
  *  band with a heading and no rows under it is a label pretending to be information. */
-function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen }: {
+function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
   label: string
   rows: readonly ControlSession[]
   pinned: ReadonlySet<string>
@@ -394,6 +546,8 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen }: {
   tap?: number
   onPin: (row: ControlSession) => void
   onOpen: (row: ControlSession) => void
+  rowsById?: Map<string, { verbs: RowVerb[] }>
+  onOpenMenu: (session: ControlSession, x: number, y: number, verbs: RowVerb[]) => void
 }) {
   if (rows.length === 0) return null
   return (
@@ -416,6 +570,8 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen }: {
             {...(tap ? { tap } : {})}
             onPin={() => onPin(s)}
             onOpen={() => onOpen(s)}
+            {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
+            onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
           />
         ))}
       </div>
@@ -474,16 +630,26 @@ function EmptyReason({
 }
 
 
-function SessionRow({ session, selected, pinned, tap, onPin, onOpen }: {
+function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, verbs, onOpenMenu }: {
   session: ControlSession; selected: boolean
   /** Minimum row height on mobile — 44px, and undefined on desktop. */
   tap?: number
   pinned?: boolean
   onPin?: () => void
   onOpen: () => void
+  /** Reorder this pinned row by `delta` places. Only ever passed for a row in the Pinned band. */
+  onMoveBy?: (delta: number) => void
+  /** This row's own verbs, for the context menu (Task 6). Absent where the caller has none to offer. */
+  verbs?: RowVerb[]
+  /** Opens the context menu at a point, carrying the verbs it was opened with. */
+  onOpenMenu?: (x: number, y: number, verbs: RowVerb[]) => void
 }) {
   const wants = sessionNotify(session)
   const color = STATE_COLOR[session.state] ?? 'var(--text-tertiary)'
+  const longPress = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearLongPress = () => {
+    if (longPress.current !== null) { clearTimeout(longPress.current); longPress.current = null }
+  }
   return (
     <button
       onClick={onOpen}
@@ -514,6 +680,32 @@ function SessionRow({ session, selected, pinned, tap, onPin, onOpen }: {
       onMouseLeave={e => {
         if (!selected) e.currentTarget.style.background = STATE_WASH[session.state] ?? 'transparent'
       }}
+      onKeyDown={e => {
+        // alt+arrows, so the plain arrows keep whatever the browser and the list do with them. A
+        // reorder that exists only for a mouse is a reorder half the readers do not have.
+        if (onMoveBy && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          e.preventDefault()
+          onMoveBy(e.key === 'ArrowUp' ? -1 : 1)
+        }
+      }}
+      onContextMenu={e => {
+        // No verbs to show is not an error — it lets the browser's own menu through rather than
+        // opening one with nothing in it.
+        if (!verbs || verbs.length === 0 || !onOpenMenu) return
+        e.preventDefault()
+        onOpenMenu(e.clientX, e.clientY, verbs)
+      }}
+      onTouchStart={e => {
+        if (!verbs || verbs.length === 0 || !onOpenMenu) return
+        const touch = e.touches[0]
+        if (!touch) return
+        const x = touch.clientX
+        const y = touch.clientY
+        longPress.current = setTimeout(() => onOpenMenu(x, y, verbs), 500)
+      }}
+      onTouchMove={clearLongPress}
+      onTouchEnd={clearLongPress}
+      onTouchCancel={clearLongPress}
       aria-current={selected ? 'true' : undefined}
       title={session.model ? `${session.title}\n${session.model}` : session.title}
     >
@@ -527,45 +719,7 @@ function SessionRow({ session, selected, pinned, tap, onPin, onOpen }: {
           opacity: wants ? 1 : 0.55,
         }}
       />
-      <span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <span style={{
-          fontSize: 12.5, fontWeight: selected || wants ? 650 : 500,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {session.title}
-        </span>
-        <span style={{
-          display: 'flex', alignItems: 'center', gap: 5, minWidth: 0,
-          fontSize: 10.5, color: wants ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
-        }}>
-          <span style={{ flexShrink: 0 }}>{session.stateLabel}</span>
-          <span style={{ opacity: 0.4, flexShrink: 0 }}>·</span>
-          <span style={{
-            color: (HARNESS_COLORS as Record<string, string>)[session.harness] ?? 'var(--text-tertiary)',
-            fontWeight: 650, flexShrink: 0,
-          }}>
-            {(HARNESS_LABELS as Record<string, string>)[session.harness] ?? session.harness}
-          </span>
-          {/* The model, when the row knows one. A row that does not is not "some default model" —
-              it is unknown, and inventing a name there is the confident-zero defect in words. */}
-          {session.model && (
-            <>
-              <span style={{ opacity: 0.4, flexShrink: 0 }}>·</span>
-              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {shortModel(session.model)}
-              </span>
-            </>
-          )}
-          {session.task && (
-            <>
-              <span style={{ opacity: 0.4, flexShrink: 0 }}>·</span>
-              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {session.task}
-              </span>
-            </>
-          )}
-        </span>
-      </span>
+      <SessionFacts session={session} selected={selected} />
       {/* The assistant, NAMED. It was a 5px dot, which carries the fact in colour alone — and a
           colour is not a name. The model sits with it on the meta line below. */}
       {/* The pin lives on the row rather than in a menu: it is a one-click decision about the row

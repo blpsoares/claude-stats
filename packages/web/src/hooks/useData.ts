@@ -1037,7 +1037,22 @@ export function resolvePresenceScope(
  * It reads nothing but its arguments; `useDerivedStats` below is the memoized single-scope wrapper
  * every page uses.
  */
-export function computeDerivedStats(data: AppData | null, filters: Filters, tags: TagDef[] = []) {
+export function computeDerivedStats(
+  data: AppData | null,
+  filters: Filters,
+  tags: TagDef[] = [],
+  /**
+   * The fleet's own "only what is running" switch, and — when it is on — the exact conversations
+   * it is running right now. Not part of `Filters` (see `fleetFilter.ts`'s header): it is a
+   * statement about what a session is DOING, which no stored metric has.
+   *
+   * `runningIds` is required whenever `activeOnly` is true rather than defaulted to "everything
+   * running" — a caller that cannot read the fleet must not silently report the unfiltered totals
+   * under a switch that claims to have narrowed them.
+   */
+  activeOnly = false,
+  runningIds: ReadonlySet<string> = new Set(),
+) {
   {
     if (!data) return null
 
@@ -1140,13 +1155,14 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
     const inDateRange = (s: { start_time?: string }) =>
       isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
 
-    // Filter sessions (date + projects + model)
+    // Filter sessions (date + projects + model + active-only)
     const filteredSessions = harnessSessions.filter(s => {
       if (!inDateRange(s)) return false
       if (projectFiltered && !projectSet.has(s.project_path)) return false
       if (repoFiltered && !repoSet.has(s.git_remote || '')) return false
       if (tagMatches && !tagMatches(s)) return false
       if (modelSet && (!s.model || !modelSet.has(s.model))) return false
+      if (activeOnly && !runningIds.has(s.session_id)) return false
       return true
     })
 
@@ -1197,6 +1213,11 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       // member's cache may be missing from this viewer's pruned copy. Keying on `hasUserStats`
       // left that case cache-backed and reported the empty merge as a real zero.
       || (userFiltered && !userCacheUsable)
+      // A live-fleet intersection has no cache granularity of any kind: `stats-cache.json` is
+      // keyed by day and model, never by conversation. Treating it as cache-backed would report
+      // the CACHE's totals under a scope the cache cannot express — the same scope reporting a
+      // fraction of itself, which `resolveMachineCacheScope` exists to prevent for team/machine.
+      || activeOnly
 
     let allTimeTotalSessions: number
     if (nonClaudeHarness || cacheBlindScope) {
@@ -1375,6 +1396,47 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       heatmapData = Object.entries(heatmapByDay).map(([date, v]) => ({ date, ...v }))
     }
     heatmapData.sort((a, b) => a.date.localeCompare(b.date))
+
+    /**
+     * The same days, split BY HARNESS — one series each, for the trend beside the calendar.
+     *
+     * It follows the two branches above exactly rather than re-deriving anything, and that is the
+     * whole reason it lives here: `stats-cache.json` is Claude-only, so in the unfiltered branch
+     * Claude's days come from its OWN cache (which reaches back past the transcripts Claude
+     * deletes) while every other harness is summed per session — the rule this file already keeps
+     * for the totals. A single session-sum for all six would have drawn a Claude line that stops
+     * 30 days ago beside a calendar that does not.
+     *
+     * A harness with no day in the window gets NO entry, never an all-zero series: a flat line
+     * along the axis reads as a measurement that came back zero.
+     */
+    const heatmapByHarness: Record<string, { date: string; value: number; sessions: number }[]> = {}
+    {
+      const perSession = sessionFiltered ? filteredSessions : nonClaudeInRange
+      const byHarnessDay: Record<string, Record<string, { value: number; sessions: number }>> = {}
+      for (const s of perSession) {
+        if (!isDateStr(s.start_time)) continue
+        const day = format(parseISO(s.start_time), 'yyyy-MM-dd')
+        const h = s.harness ?? 'claude'
+        const days = byHarnessDay[h] ?? (byHarnessDay[h] = {})
+        const cell = days[day] ?? (days[day] = { value: 0, sessions: 0 })
+        cell.value += (s.user_message_count ?? 0) + (s.assistant_message_count ?? 0)
+        cell.sessions += 1
+      }
+      for (const [h, days] of Object.entries(byHarnessDay)) {
+        heatmapByHarness[h] = Object.entries(days)
+          .map(([date, v]) => ({ date, ...v }))
+          .sort((a, b) => a.date.localeCompare(b.date))
+      }
+      if (!sessionFiltered) {
+        // Claude's own history, from the cache. `add` is unused on this path by design — the cache
+        // carries a count per day, not one row per session.
+        const claude = extendedDailyActivity
+          .filter(d => d.sessionCount > 0)
+          .map(d => ({ date: d.date, value: d.messageCount, sessions: d.sessionCount }))
+        if (claude.length > 0) heatmapByHarness.claude = claude
+      }
+    }
 
     // Model usage — respects date + model filters
     const globalModelUsage = effectiveStatsCache.modelUsage ?? {}
@@ -1870,6 +1932,10 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
 
     return {
       presenceScope,
+      /** True when "active only" narrowed this scope to conversations running right now — the
+       *  page must say so, exactly as every other cache-blind scope does (see `fleetFilter.ts`'s
+       *  header and `activeConversations.ts`'s). */
+      activeOnlyScoped: activeOnly,
       totalMessages,
       totalSessions,
       allTimeTotalSessions,
@@ -1883,6 +1949,7 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       longestStreak,
       streakDayBreakdown,
       heatmapData,
+      heatmapByHarness,
       modelUsage: filteredModelUsage,
       modelTokensByDate,
       toolCounts,
@@ -1927,6 +1994,15 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
   }
 }
 
-export function useDerivedStats(data: AppData | null, filters: Filters, tags: TagDef[] = []) {
-  return useMemo(() => computeDerivedStats(data, filters, tags), [data, filters, tags])
+export function useDerivedStats(
+  data: AppData | null,
+  filters: Filters,
+  tags: TagDef[] = [],
+  activeOnly = false,
+  runningIds: ReadonlySet<string> = new Set(),
+) {
+  return useMemo(
+    () => computeDerivedStats(data, filters, tags, activeOnly, runningIds),
+    [data, filters, tags, activeOnly, runningIds],
+  )
 }
