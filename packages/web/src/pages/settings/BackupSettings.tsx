@@ -10,7 +10,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { PlayCircle, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { PlayCircle, Loader2, AlertTriangle, CheckCircle2, Clock, ChevronLeft, ChevronRight } from 'lucide-react'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import type { AppContext } from '../../lib/app-context'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../../lib/harness'
@@ -40,15 +40,24 @@ interface BackupHarnessJson {
   lastBackupGone?: boolean
 }
 
+/** `present` / `pruned` / `missing` — computed server-side by `backup-store.ts`'s `markPresence`,
+ *  never re-derived here. `pruned` (we deleted it on purpose, by retention) and `missing` (gone
+ *  for some other reason) look identical from a client's point of view — only the server, holding
+ *  the prune events, can tell them apart. */
+type BackupPresence = 'present' | 'pruned' | 'missing'
+
 interface BackupHistoryJson {
   at: string
-  path: string
   layers: string[]
   harnesses: HarnessId[]
   bytesLabel: string
   skipped?: number
-  present: boolean
+  presence: BackupPresence
 }
+
+/** `fits` / `maybe-not` — see `backup-github.ts`. NOT the "push to GitHub" feature (it does not
+ *  exist yet); this is the honest indicator computed from the measured uncompressed total. */
+type GithubFitVerdict = 'fits' | 'maybe-not'
 
 interface BackupStatusJson {
   harnesses: BackupHarnessJson[]
@@ -66,6 +75,13 @@ interface BackupStatusJson {
     /** Every layer's measured weight on this machine, already formatted. `repos` is `null` —
      *  produced during a run, not measurable ahead of one — rendered as "known after running". */
     layerSizes: Record<BackupLayer, string | null>
+    /** Whether the ticked layers would fit a single GitHub Release asset (2 GB per file),
+     *  recomputed by the server on every read — see `backup-github.ts`. */
+    githubFit: GithubFitVerdict
+    scheduleGithubFit: GithubFitVerdict
+    /** This machine's history-preservation mode, when chosen. Absent reads the same as anything
+     *  other than `'full'` — the `archive` layer is frozen either way. */
+    archiveMode?: 'off' | 'consolidate' | 'full'
     last?: { at: string; bytesLabel: string; skipped?: number }
   }
   history: BackupHistoryJson[]
@@ -139,6 +155,74 @@ const LAYER_NAME: Record<BackupLayer, { en: string; pt: string }> = {
   raw: { en: 'Conversations', pt: 'Conversas' },
 }
 
+/**
+ * What each layer ACTUALLY saves — the truth about the code, not marketing. Shown under its row
+ * in the format/recurrence pickers so a checked box is never unexplained. The same wording the
+ * cockpit's `backup` tab uses (`control/i18n.ts`'s `backupLayerDescription`) — the two surfaces
+ * must teach the same vocabulary, never two different ones for the same checkbox.
+ */
+const LAYER_DESCRIPTION: Record<BackupLayer, { en: string; pt: string }> = {
+  metrics: {
+    en: 'The computed record of every session — cost, tokens, model, duration, files touched — '
+      + 'plus the deep Claude aggregate, tags, workflows and your preferences.',
+    pt: 'O registro calculado de cada sessão — custo, tokens, modelo, duração, arquivos tocados — '
+      + 'mais o agregado profundo do Claude, tags, workflows e suas preferências.',
+  },
+  repos: {
+    en: 'A map of every project directory, plus a bundle of each repository\'s commits that are '
+      + 'not on its remote, and a patch of the uncommitted changes in each working tree. Restores '
+      + 'your repository layout and unpushed work.',
+    pt: 'Um mapa de cada diretório de projeto, mais um bundle dos commits de cada repositório que '
+      + 'não estão no remoto, e um patch das mudanças não commitadas de cada working tree. Restaura '
+      + 'a estrutura dos seus repositórios e o trabalho não enviado.',
+  },
+  archive: {
+    en: 'Transcripts already mirrored into ~/.agentistics/archive.',
+    pt: 'Transcripts que já foram espelhados em ~/.agentistics/archive.',
+  },
+  raw: {
+    en: 'The harness directories themselves — the conversation text. Lets a session be resumed '
+      + 'after a restore. Gigabytes.',
+    pt: 'Os diretórios dos harnesses em si — o texto das conversas. Permite retomar uma sessão '
+      + 'depois de um restore. Gigabytes.',
+  },
+}
+
+/** `metrics` ALWAYS carries this — the one fact its own name does not carry. */
+function metricsNoResumeText(pt: boolean): string {
+  return pt
+    ? 'Isto sozinho não permite retomar uma sessão — não guarda texto de conversa.'
+    : 'This alone does not let you resume a session — it holds no conversation text.'
+}
+
+/** `archive` only grows while `archiveMode === 'full'`. Named on the row when it is anything
+ *  else (including never chosen), so a frozen layer does not look live. `mode` is the CLI's own
+ *  untranslated word, same convention as `native`/`docker`. */
+function archiveFrozenText(mode: string, pt: boolean): string {
+  return pt
+    ? `congelado nesta máquina — a preservação de histórico está em \`${mode}\`, não em \`full\``
+    : `frozen on this machine — history preservation is set to \`${mode}\`, not \`full\``
+}
+
+/** One row's own legend — description, plus a caveat in parentheses when it has one. */
+function layerLegendText(
+  layer: BackupLayer, archiveMode: BackupStatusJson['config']['archiveMode'], pt: boolean,
+): string {
+  const description = pt ? LAYER_DESCRIPTION[layer].pt : LAYER_DESCRIPTION[layer].en
+  const caveat = layer === 'metrics' ? metricsNoResumeText(pt)
+    : layer === 'archive' && archiveMode !== 'full' ? archiveFrozenText(archiveMode ?? (pt ? 'ainda não escolhido' : 'not chosen yet'), pt)
+    : null
+  return caveat ? `${description} ${caveat}` : description
+}
+
+const GITHUB_FIT_TEXT: Record<GithubFitVerdict, { en: string; pt: string }> = {
+  fits: { en: 'fits a GitHub Release, for certain', pt: 'cabe num release do GitHub, com certeza' },
+  'maybe-not': {
+    en: 'might not fit a GitHub Release (2 GB per file) — the real size is only known after compressing',
+    pt: 'pode não caber num release do GitHub (limite de 2 GB por arquivo) — o tamanho real só é conhecido depois de comprimir',
+  },
+}
+
 function layerSizeText(sizes: BackupStatusJson['config']['layerSizes'], layer: BackupLayer, pt: boolean): string {
   return sizes[layer] ?? (pt ? 'conhecido só depois de rodar' : 'known after running')
 }
@@ -168,6 +252,10 @@ export default function BackupSettings() {
   const [running, setRunning] = useState(false)
   const [runOutcome, setRunOutcome] = useState<RunOutcome | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  // The history list is paginated client-side, newest first (the server already sorts it that
+  // way) — a machine with months of daily backups must not render as one endless table.
+  const [historyPage, setHistoryPage] = useState(0)
+  const HISTORY_PAGE_SIZE = 10
 
   const load = useCallback(async () => {
     try {
@@ -247,6 +335,15 @@ export default function BackupSettings() {
   // HARNESS_ORDER, never the server array's own order — the same discipline every other surface
   // that lists harnesses follows.
   const harnessRows = HARNESS_ORDER.filter(id => byId.has(id)).map(id => byId.get(id)!)
+
+  // The history page — clamped rather than trusted, so a page left pointing past the end after
+  // the list shrinks (a prune) corrects itself instead of rendering nothing.
+  const historyAll = status?.history ?? []
+  const historyPages = Math.max(1, Math.ceil(historyAll.length / HISTORY_PAGE_SIZE))
+  const historyPageClamped = Math.min(Math.max(0, historyPage), historyPages - 1)
+  const historyShown = historyAll.slice(
+    historyPageClamped * HISTORY_PAGE_SIZE, historyPageClamped * HISTORY_PAGE_SIZE + HISTORY_PAGE_SIZE,
+  )
 
   return (
     <div>
@@ -366,10 +463,12 @@ export default function BackupSettings() {
           <LayerPicker
             layers={status.config.layers}
             sizes={status.config.layerSizes}
+            archiveMode={status.config.archiveMode}
             pt={pt}
             disabled={savingConfig}
             onToggle={(layer, checked) => toggleLayer('layers', layer, checked)}
           />
+          <GithubFitNote verdict={status.config.githubFit} pt={pt} />
 
           <Divider />
 
@@ -389,10 +488,12 @@ export default function BackupSettings() {
           <LayerPicker
             layers={status.config.scheduleLayers}
             sizes={status.config.layerSizes}
+            archiveMode={status.config.archiveMode}
             pt={pt}
             disabled={savingConfig}
             onToggle={(layer, checked) => toggleLayer('scheduleLayers', layer, checked)}
           />
+          <GithubFitNote verdict={status.config.scheduleGithubFit} pt={pt} />
           {status.config.scheduleLayers.includes('repos') && (
             <p style={{ fontSize: 12, color: 'var(--anthropic-orange)', lineHeight: 1.5, margin: '8px 0 0' }}>
               {pt
@@ -469,21 +570,22 @@ export default function BackupSettings() {
 
           <Divider />
 
-          {/* History */}
+          {/* History — paginated, newest first. Unpaginated was an actual bug report: a machine
+              with months of daily backups rendered as one endless, unreadable table. */}
           <SectionHeader label={pt ? 'Histórico' : 'History'} />
-          {status.history.length === 0 ? (
+          {historyAll.length === 0 ? (
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', padding: '8px 0 20px' }}>
               {pt ? 'Nenhum backup registrado ainda.' : 'No backups recorded yet.'}
             </div>
           ) : isMobile ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {status.history.map((h, i) => (
+              {historyShown.map((h, i) => (
                 <RecordCard
                   key={`${h.at}-${i}`}
                   title={new Date(h.at).toLocaleString()}
                   subtitle={h.layers.join(' + ')}
                   badge={
-                    <HistoryBadge present={h.present} pt={pt} />
+                    <HistoryBadge presence={h.presence} pt={pt} />
                   }
                   fields={[
                     { label: pt ? 'Tamanho' : 'Size', value: h.bytesLabel },
@@ -506,22 +608,94 @@ export default function BackupSettings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {status.history.map((h, i) => (
+                  {historyShown.map((h, i) => (
                     <tr key={`${h.at}-${i}`}>
                       <Td>{new Date(h.at).toLocaleString()}</Td>
                       <Td>{h.layers.join(' + ')}</Td>
                       <Td>{h.bytesLabel}</Td>
                       <Td>{h.harnesses.length}</Td>
-                      <Td><HistoryBadge present={h.present} pt={pt} /></Td>
+                      <Td><HistoryBadge presence={h.presence} pt={pt} /></Td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+          {historyAll.length > 0 && (
+            <HistoryPager
+              page={historyPageClamped} pages={historyPages} total={historyAll.length}
+              pageSize={HISTORY_PAGE_SIZE} pt={pt}
+              onChange={p => setHistoryPage(p)}
+            />
+          )}
         </>
       )}
     </div>
+  )
+}
+
+/** `1–10 of 42`, with prev/next buttons — real ≥44px touch targets on mobile. Clamped by the
+ *  caller (`historyPageClamped`), so this component never has to guess whether `page` is valid. */
+function HistoryPager({ page, pages, total, pageSize, pt, onChange }: {
+  page: number
+  pages: number
+  total: number
+  pageSize: number
+  pt: boolean
+  onChange: (page: number) => void
+}) {
+  const isMobile = useIsMobile()
+  if (pages <= 1) return null
+  const from = page * pageSize + 1
+  const to = Math.min(total, from + pageSize - 1)
+  const btnStyle = (enabled: boolean): React.CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 44, height: 44, borderRadius: 7,
+    border: '1px solid var(--border)', background: 'transparent',
+    color: enabled ? 'var(--text-secondary)' : 'var(--text-tertiary)',
+    cursor: enabled ? 'pointer' : 'not-allowed', opacity: enabled ? 1 : 0.4,
+  })
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+      marginTop: 12, flexWrap: 'wrap',
+    }}>
+      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+        {pt ? `${from}–${to} de ${total}` : `${from}–${to} of ${total}`}
+      </span>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          type="button" aria-label={pt ? 'Página anterior' : 'Previous page'}
+          disabled={page === 0} onClick={() => onChange(page - 1)}
+          style={{ ...btnStyle(page > 0), minHeight: isMobile ? 44 : 36, minWidth: isMobile ? 44 : 36, width: isMobile ? 44 : 36, height: isMobile ? 44 : 36 }}
+        >
+          <ChevronLeft size={16} />
+        </button>
+        <button
+          type="button" aria-label={pt ? 'Próxima página' : 'Next page'}
+          disabled={page >= pages - 1} onClick={() => onChange(page + 1)}
+          style={{ ...btnStyle(page < pages - 1), minHeight: isMobile ? 44 : 36, minWidth: isMobile ? 44 : 36, width: isMobile ? 44 : 36, height: isMobile ? 44 : 36 }}
+        >
+          <ChevronRight size={16} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The GitHub-fit indicator beside the format picker — NOT the "push to GitHub" feature (it does
+ * not exist yet). Reasoned only from the measured UNCOMPRESSED total; see `backup-github.ts`.
+ */
+function GithubFitNote({ verdict, pt }: { verdict: GithubFitVerdict; pt: boolean }) {
+  const text = pt ? GITHUB_FIT_TEXT[verdict].pt : GITHUB_FIT_TEXT[verdict].en
+  return (
+    <p style={{
+      fontSize: 11.5, color: verdict === 'fits' ? 'var(--text-tertiary)' : 'var(--anthropic-orange)',
+      lineHeight: 1.5, margin: '8px 0 0',
+    }}>
+      {text}
+    </p>
   )
 }
 
@@ -564,15 +738,37 @@ function Td({ children }: { children: React.ReactNode }) {
   )
 }
 
-/** A recorded backup whose file is gone says so — never a reassuring "ok". */
-function HistoryBadge({ present, pt }: { present: boolean; pt: boolean }) {
+/**
+ * Three states, not two — see `backup-store.ts`'s `markPresence`. A backup pruned by RETENTION
+ * (the normal, expected outcome of a week of daily backups) is neutral wording in the muted
+ * colour; only a genuinely MISSING file — recorded, not pruned by us, and not on disk — gets the
+ * warning red. Rendering both the same red is exactly the "looks full of errors" complaint this
+ * fix answers.
+ */
+function HistoryBadge({ presence, pt }: { presence: BackupPresence; pt: boolean }) {
+  if (presence === 'present') {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--accent-green)' }}>
+        <CheckCircle2 size={12} />
+        {pt ? 'no disco' : 'on disk'}
+      </span>
+    )
+  }
+  if (presence === 'pruned') {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)' }}>
+        <Clock size={12} />
+        {pt ? 'removido pela retenção' : 'pruned by retention'}
+      </span>
+    )
+  }
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
-      color: present ? 'var(--accent-green)' : '#ef4444',
+      color: '#ef4444',
     }}>
-      {present ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
-      {present ? (pt ? 'no disco' : 'on disk') : (pt ? 'arquivo ausente' : 'file gone')}
+      <AlertTriangle size={12} />
+      {pt ? 'arquivo ausente' : 'file gone'}
     </span>
   )
 }
@@ -586,9 +782,12 @@ function HistoryBadge({ present, pt }: { present: boolean; pt: boolean }) {
  * the same as saying why. Used for BOTH the manual `layers` set and the SCHEDULE's own
  * `scheduleLayers` — the caller decides which one `onToggle` writes to.
  */
-function LayerPicker({ layers, sizes, pt, disabled, onToggle }: {
+function LayerPicker({ layers, sizes, archiveMode, pt, disabled, onToggle }: {
   layers: BackupLayer[]
   sizes: BackupStatusJson['config']['layerSizes']
+  /** Absent reads the same as anything other than `'full'` — the `archive` row's caveat covers
+   *  both cases identically, never a confident "it's fine". */
+  archiveMode: BackupStatusJson['config']['archiveMode']
   pt: boolean
   disabled: boolean
   onToggle: (layer: BackupLayer, checked: boolean) => void
@@ -618,6 +817,12 @@ function LayerPicker({ layers, sizes, pt, disabled, onToggle }: {
                   : 'always on — a backup with no metrics restores nothing'}
               </p>
             )}
+            {/* What this layer actually saves, and its caveat if it has one (metrics: cannot
+                resume a session; archive: frozen outside `full` mode) — the legend this whole fix
+                exists to put beside every checked box. */}
+            <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '2px 0 0 24px' }}>
+              {layerLegendText(layer, archiveMode, pt)}
+            </p>
           </div>
         )
       })}

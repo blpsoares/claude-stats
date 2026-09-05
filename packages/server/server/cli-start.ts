@@ -83,8 +83,8 @@ import {
   writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
 } from './cli-backup'
 import { omittedSecrets } from './backup/backup-plan'
-import { formatBytes, retainedTotal } from './backup/backup-size'
-import { lastBackup, lastPerHarness, markPresence, readBackups } from './backup/backup-store'
+import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
+import { lastBackup, lastPerHarness, loadBackupHistory } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
@@ -2506,11 +2506,12 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * metrics-only weight, the same figure `agentop backup --plan` would report for that layer.
      */
     async backupStatus(): Promise<ControlBackupStatus> {
-      const prefs = readBackupPrefs(await readPreferences())
+      const p = await readPreferences()
+      const prefs = readBackupPrefs(p)
       const [measured, consolidated, entries] = await Promise.all([
         measuredLayerSizes().catch(() => null),
         loadConsolidated().catch(() => new Map()),
-        readBackups().then(rs => markPresence(rs, p => existsSync(p))).catch(() => []),
+        loadBackupHistory().catch(() => []),
       ])
 
       const sessionCounts: Partial<Record<HarnessId, number>> = {}
@@ -2522,6 +2523,16 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       const emptyLayerLabels: ControlBackupConfig['layerSizes'] =
         { metrics: null, repos: null, archive: null, raw: null }
       const layerSizes = measured?.labels ?? emptyLayerLabels
+      // The same measurement, in raw bytes — see `ControlBackupConfig.layerBytes`. `repos` stays
+      // null for the same reason its label does: unmeasurable ahead of a run.
+      const layerBytes: ControlBackupConfig['layerBytes'] = measured
+        ? {
+            metrics: layerTotal(measured.sizes, 'metrics'),
+            repos: null,
+            archive: layerTotal(measured.sizes, 'archive'),
+            raw: layerTotal(measured.sizes, 'raw'),
+          }
+        : { metrics: null, repos: null, archive: null, raw: null }
       const perHarnessLast = lastPerHarness(entries)
 
       const harnesses: ControlBackupHarness[] = HARNESS_ORDER.map(id => {
@@ -2558,10 +2569,21 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
           retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
           secretsCount: omittedSecrets().length,
           layerSizes,
+          layerBytes,
+          ...(resolveArchiveMode(p) ? { archiveMode: resolveArchiveMode(p) } : {}),
           ...(last
             ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
             : {}),
         },
+        // Newest first already — see `loadBackupHistory`.
+        history: entries.map(e => ({
+          at: e.at,
+          layers: e.layers,
+          harnesses: e.harnesses,
+          bytesLabel: formatBytes(e.archiveBytes),
+          skipped: e.skipped,
+          presence: e.presence,
+        })),
       }
     },
 

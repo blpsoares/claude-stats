@@ -11,7 +11,10 @@
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { SERVICE_MARKER, type DetailLine } from './chrome.ts'
 import type { ControlStrings } from './i18n'
-import type { BackupLayer, BackupScheduleId, ControlBackupConfig, ControlBackupHarness } from './types'
+import type {
+  ArchiveMode, BackupLayer, BackupPresence, BackupScheduleId, ControlBackupConfig,
+  ControlBackupHarness, ControlBackupHistoryEntry,
+} from './types'
 
 /** `● ` / `○ ` — whether the harness rides the next backup, ahead of its name. */
 const MARK_WIDTH = 2
@@ -199,9 +202,13 @@ function scheduleLabel(config: ControlBackupConfig, s: ControlStrings): string {
 }
 
 /** The config pane's rows — layers, destination, schedule, the schedule's own layers, keep (with
- *  the retained total), secrets excluded, last backup. Exactly the facts CLAUDE.md's mock names,
- *  in that order, with the schedule's own layers row added right under the schedule itself. */
-export function backupConfigRows(config: ControlBackupConfig, now: number, s: ControlStrings): BackupConfigRow[] {
+ *  the retained total), secrets excluded, last backup, and the history — exactly the facts
+ *  CLAUDE.md's mock names, in that order, with the schedule's own layers row added right under
+ *  the schedule itself. `enter` on `history` opens the paginated viewer, the same relationship
+ *  `layers`/`scheduleLayers` have with the layers editor. */
+export function backupConfigRows(
+  config: ControlBackupConfig, now: number, s: ControlStrings, historyCount: number,
+): BackupConfigRow[] {
   return [
     { key: 'layers', label: s.backupLayersLabel, value: layersLabel(config.layers), action: s.actBackupEditLayers },
     { key: 'dest', label: s.backupDestLabel, value: config.destDir },
@@ -216,6 +223,7 @@ export function backupConfigRows(config: ControlBackupConfig, now: number, s: Co
     { key: 'keep', label: s.backupKeepLabel, value: s.backupKeepValue(config.keep, config.retainedLabel) },
     { key: 'secrets', label: s.backupSecretsLabel, value: s.backupSecretsValue(config.secretsCount) },
     { key: 'last', label: s.backupLastLabel, value: lastSummary(config, now, s) },
+    { key: 'history', label: s.paneHistory, value: s.backupHistoryCount(historyCount), action: s.actBackupViewHistory },
   ]
 }
 
@@ -234,10 +242,32 @@ export interface LayerEditorRow {
   checked: boolean
   sizeLabel: string
   fixed: boolean
+  /** What this layer actually saves — the truth about the code, not marketing. Shown under its
+   *  row so a person ticking boxes knows what they are asking for, in the same words the web's
+   *  format picker uses (see `backupLayerDescription`). */
+  description: string
+  /**
+   * A caveat specific to THIS row, or null when there is none:
+   *  - `metrics` always carries one — alone, it cannot resume a session.
+   *  - `archive` carries one only when the machine's history-preservation mode is not `full` — a
+   *    frozen layer must not look like it is still growing.
+   *  - `repos`/`raw` never do.
+   */
+  caveat: string | null
+}
+
+/** `archive` only grows while `archiveMode === 'full'`. Anything else — `undefined` (never
+ *  chosen), `'consolidate'`, `'off'` — means the layer is frozen, and the caveat says so by
+ *  naming the mode in the CLI's own untranslated vocabulary, same convention as `native`/`docker`. */
+function layerCaveat(layer: BackupLayer, archiveMode: ArchiveMode | undefined, s: ControlStrings): string | null {
+  if (layer === 'metrics') return s.backupMetricsNoResume
+  if (layer === 'archive' && archiveMode !== 'full') return s.backupArchiveFrozen(archiveMode ?? s.archiveUnset)
+  return null
 }
 
 export function layerEditorRows(
   draft: BackupLayer[], sizes: Record<BackupLayer, string | null>, s: ControlStrings,
+  archiveMode?: ArchiveMode,
 ): LayerEditorRow[] {
   return BACKUP_LAYER_ORDER.map(layer => ({
     layer,
@@ -245,6 +275,8 @@ export function layerEditorRows(
     checked: layer === 'metrics' || draft.includes(layer),
     sizeLabel: sizes[layer] ?? s.backupLayerSizeUnknown,
     fixed: layer === 'metrics',
+    description: s.backupLayerDescription[layer],
+    caveat: layerCaveat(layer, archiveMode, s),
   }))
 }
 
@@ -316,8 +348,10 @@ function lastSummary(config: ControlBackupConfig, now: number, s: ControlStrings
  * the pane goes through the cockpit's own `fitDetailLines`/`detailPlan` rather than a second set
  * of rules for one more list of facts.
  */
-export function backupDetailLines(config: ControlBackupConfig, now: number, s: ControlStrings): DetailLine[] {
-  const rows = backupConfigRows(config, now, s)
+export function backupDetailLines(
+  config: ControlBackupConfig, now: number, s: ControlStrings, historyCount: number,
+): DetailLine[] {
+  const rows = backupConfigRows(config, now, s, historyCount)
   return rows.map(r => ({ kind: 'row' as const, label: r.label, value: r.value, tone: 'plain' as const }))
 }
 
@@ -346,9 +380,11 @@ export function harnessDetailLines(row: HarnessRow | undefined, s: ControlString
  * keeps this function total over every combination a future caller might pass.
  */
 export function backupHints(
-  focus: 'harnesses' | 'config', s: ControlStrings, ctx: { task: boolean; editing?: boolean },
+  focus: 'harnesses' | 'config', s: ControlStrings,
+  ctx: { task: boolean; editing?: boolean; history?: boolean },
 ): string[] {
   if (ctx.editing) return [s.keyLayerToggle, s.keyLayerSave, s.keyLayerCancel]
+  if (ctx.history) return [s.keyHistoryPage, s.keyHistoryClose]
   if (ctx.task) return [s.keyTaskClose, s.keyScroll, s.logFollow]
   const shared = [s.keyQuit, s.keyTabs, s.keyPane, s.keyMove]
   return focus === 'harnesses'
@@ -363,4 +399,138 @@ const SCHEDULE_CYCLE: BackupScheduleId[] = ['off', 'daily', 'weekly']
 export function nextBackupSchedule(current: BackupScheduleId): BackupScheduleId {
   const i = SCHEDULE_CYCLE.indexOf(current)
   return SCHEDULE_CYCLE[(i + 1) % SCHEDULE_CYCLE.length]!
+}
+
+// -----------------------------------------------------------------------------
+// GitHub-fit — NOT the "push to GitHub Releases" feature (that does not exist yet). This is the
+// honest indicator that belongs beside the format picker: a Release asset is capped at 2 GiB PER
+// FILE, and reasoning about it is possible today from the layer sizes already measured.
+// -----------------------------------------------------------------------------
+
+/** GitHub's own cap on one Release asset. Binary units, matching every other size in this
+ *  product (`backup-size.ts`'s `formatBytes`). Mirrored server-side in `backup-github.ts` — kept
+ *  in sync by `backup-plan.test.ts`'s cross-check, the same discipline `BACKUP_LAYER_ORDER` gets. */
+export const GITHUB_RELEASE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+
+export type GithubFitVerdict = 'fits' | 'maybe-not'
+
+/**
+ * Whether `layers` would fit a single Release asset, reasoned ONLY from the measured
+ * UNCOMPRESSED total — compression can only shrink further, so under the cap is a certain fit and
+ * at or over it is an honest "might not," never a guessed compressed figure (that number does not
+ * exist until an archive is actually written; see `backup-size.ts`'s header). A layer with no
+ * measured size yet (`repos`, before a run has built a manifest) contributes nothing to the sum.
+ *
+ * Computed LOCALLY, live, as `draft` changes in the layers editor — no round trip, so the
+ * sentence updates the instant a box is ticked, which is the whole point of showing it here.
+ */
+export function githubFitVerdict(
+  layers: BackupLayer[], layerBytes: Record<BackupLayer, number | null>,
+): GithubFitVerdict {
+  const total = layers.reduce((n, l) => n + (layerBytes[l] ?? 0), 0)
+  return total < GITHUB_RELEASE_LIMIT_BYTES ? 'fits' : 'maybe-not'
+}
+
+export function githubFitLabel(verdict: GithubFitVerdict, s: ControlStrings): string {
+  return verdict === 'fits' ? s.backupGithubFits : s.backupGithubMayNotFit
+}
+
+// -----------------------------------------------------------------------------
+// history — paginated, and "gone" is two different facts (pruned by retention vs. really missing)
+// -----------------------------------------------------------------------------
+
+/** One row of the history viewer, cells already composed as text. */
+export interface HistoryRow {
+  at: string
+  layers: string
+  size: string
+  harnesses: string
+  presence: BackupPresence
+  status: string
+}
+
+function presenceLabel(p: BackupPresence, s: ControlStrings): string {
+  if (p === 'present') return s.backupHistoryPresent
+  if (p === 'pruned') return s.backupHistoryPruned
+  return s.backupHistoryMissing
+}
+
+/** `entries` is already newest-first (the host's `loadBackupHistory` sorts it) — this only
+ *  formats, never reorders, so a caller that DID sort differently is not silently corrected. */
+export function historyRows(entries: ControlBackupHistoryEntry[], s: ControlStrings): HistoryRow[] {
+  return entries.map(e => ({
+    at: new Date(e.at).toLocaleString(),
+    layers: e.layers.join(' + '),
+    size: e.bytesLabel,
+    harnesses: String(e.harnesses.length),
+    presence: e.presence,
+    status: presenceLabel(e.presence, s),
+  }))
+}
+
+export interface HistoryPage {
+  rows: HistoryRow[]
+  /** Zero-based, already clamped into range. */
+  page: number
+  pages: number
+}
+
+/**
+ * Slices `rows` into `pageSize`-row pages. `page` is CLAMPED rather than trusted — the same rule
+ * `tablePaging.ts` documents for the web's restriction tables: a page left pointing past the end
+ * after the history shrinks (a prune, a machine with fewer runs than before) corrects itself
+ * instead of rendering nothing.
+ */
+export function paginateHistory(rows: HistoryRow[], page: number, pageSize: number): HistoryPage {
+  const size = Math.max(1, pageSize)
+  const pages = Math.max(1, Math.ceil(rows.length / size))
+  const clamped = Math.min(Math.max(0, page), pages - 1)
+  const start = clamped * size
+  return { rows: rows.slice(start, start + size), page: clamped, pages }
+}
+
+/** Cell widths for one history row — the same ladder shape `harnessCells`/`layerEditorCells`
+ *  use. Under pressure `harnesses` goes first (it is one digit and the least actionable fact
+ *  here), then `layers`, then `size`; the date and the status word never give way — the status
+ *  word is the one fact this whole fix exists to make trustworthy. */
+export interface HistoryCells {
+  at: number
+  layers: number
+  size: number
+  harnesses: number
+  status: number
+}
+
+const HISTORY_GAP = 1
+
+function historyRowCost(c: HistoryCells): number {
+  return c.at
+    + (c.layers > 0 ? c.layers + HISTORY_GAP : 0)
+    + (c.size > 0 ? c.size + HISTORY_GAP : 0)
+    + (c.harnesses > 0 ? c.harnesses + HISTORY_GAP : 0)
+    + (c.status > 0 ? c.status + HISTORY_GAP : 0)
+}
+
+export function historyCells(rows: HistoryRow[], width: number): HistoryCells {
+  if (rows.length === 0 || width <= 0) return { at: 0, layers: 0, size: 0, harnesses: 0, status: 0 }
+
+  const widest = (pick: (r: HistoryRow) => string) => rows.reduce((n, r) => Math.max(n, pick(r).length), 0)
+  const at = widest(r => r.at)
+  const layers = widest(r => r.layers)
+  const size = widest(r => r.size)
+  const harnesses = widest(r => r.harnesses)
+  const status = widest(r => r.status)
+  const atFloor = Math.min(at, LABEL_FLOOR)
+
+  const ladder: HistoryCells[] = [
+    { at, layers, size, harnesses, status },
+    { at, layers, size, harnesses: 0, status },
+    { at, layers: 0, size, harnesses: 0, status },
+    { at, layers: 0, size: 0, harnesses: 0, status },
+    // The status word is what this whole fix exists to make trustworthy, so it is the last thing
+    // to go — `at` shrinks to a floor before it does.
+    { at: atFloor, layers: 0, size: 0, harnesses: 0, status },
+    { at: Math.max(1, width), layers: 0, size: 0, harnesses: 0, status: 0 },
+  ]
+  return ladder.find(c => historyRowCost(c) <= width) ?? ladder[ladder.length - 1]!
 }

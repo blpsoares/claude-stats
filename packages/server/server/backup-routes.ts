@@ -13,14 +13,15 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR } from './config'
-import { readPreferences } from './preferences'
+import { readPreferences, resolveArchiveMode, type ArchiveMode } from './preferences'
 import {
   readBackupPrefs, performBackup, measuredLayerSizes,
   writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
 } from './cli-backup'
 import { BACKUP_LAYERS, omittedSecrets, type BackupLayer } from './backup/backup-plan'
-import { formatBytes, retainedTotal } from './backup/backup-size'
-import { markPresence, readBackups, lastBackup, lastPerHarness } from './backup/backup-store'
+import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
+import { githubFitVerdict, type GithubFitVerdict } from './backup/backup-github'
+import { lastBackup, lastPerHarness, loadBackupHistory, type BackupPresence } from './backup/backup-store'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 
@@ -38,14 +39,16 @@ export interface BackupHarnessJson {
 
 export interface BackupHistoryJson {
   at: string
-  path: string
   layers: string[]
   harnesses: HarnessId[]
   bytesLabel: string
   /** How many paths the walk skipped — `undefined` reads as "not known", never as zero. */
   skipped?: number
-  /** Whether the archive file is still on disk — see `backup-store.ts`'s `markPresence`. */
-  present: boolean
+  /** `present` / `pruned` / `missing` — see `backup-store.ts`'s `markPresence`. Computed here,
+   *  never re-derived by the client: a `missing` file and one that was `pruned` on purpose, by
+   *  retention, look identical from the outside (both are simply "not on disk"), and only the
+   *  server, holding the prune events, can tell them apart. */
+  presence: BackupPresence
 }
 
 export interface BackupStatusJson {
@@ -73,6 +76,18 @@ export interface BackupStatusJson {
      * one, and the format picker renders that as "known after running" rather than a guessed number.
      */
     layerSizes: Record<BackupLayer, string | null>
+    /**
+     * Whether the layers ticked for a MANUAL run would fit a single GitHub Release asset (2 GB
+     * per file), reasoned only from the measured uncompressed total — see `backup-github.ts`.
+     * Recomputed on every read, so it changes the moment a checkbox's round trip lands.
+     */
+    githubFit: GithubFitVerdict
+    /** The same verdict for the SCHEDULED run's own layer set. */
+    scheduleGithubFit: GithubFitVerdict
+    /** This machine's history-preservation mode, when chosen — see `preferences.ts`'s
+     *  `resolveArchiveMode`. Absent reads the same as anything other than `'full'`: the `archive`
+     *  layer is frozen either way. */
+    archiveMode?: ArchiveMode
   }
   /** Newest first. */
   history: BackupHistoryJson[]
@@ -91,11 +106,12 @@ export interface BackupConfigPatch {
  * builds for the cockpit, plus the history list the design's web surface also shows.
  */
 export async function readBackupStatus(): Promise<BackupStatusJson> {
-  const prefs = readBackupPrefs(await readPreferences())
+  const p = await readPreferences()
+  const prefs = readBackupPrefs(p)
   const [measured, consolidated, entries] = await Promise.all([
     measuredLayerSizes().catch(() => null),
     loadConsolidated().catch(() => new Map()),
-    readBackups().then(rs => markPresence(rs, p => existsSync(p))).catch(() => []),
+    loadBackupHistory().catch(() => []),
   ])
 
   const sessionCounts: Partial<Record<HarnessId, number>> = {}
@@ -106,6 +122,16 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
   const byHarness = measured?.sizes.metrics.byHarness ?? {}
   const emptyLayerLabels: Record<BackupLayer, string | null> = { metrics: null, repos: null, archive: null, raw: null }
   const layerSizes = measured?.labels ?? emptyLayerLabels
+  // The same measurement, in raw bytes — see `BackupStatusJson.config.layerBytes`.
+  const layerBytes: Record<BackupLayer, number | null> = measured
+    ? {
+        metrics: layerTotal(measured.sizes, 'metrics'),
+        repos: null,
+        archive: layerTotal(measured.sizes, 'archive'),
+        raw: layerTotal(measured.sizes, 'raw'),
+      }
+    : { metrics: null, repos: null, archive: null, raw: null }
+  const archiveMode = resolveArchiveMode(p)
   const perHarnessLast = lastPerHarness(entries)
 
   const harnesses: BackupHarnessJson[] = HARNESS_ORDER.map(id => {
@@ -143,18 +169,20 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
       retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
       secretsCount: omittedSecrets().length,
       layerSizes,
+      githubFit: githubFitVerdict(prefs.layers, layerBytes),
+      scheduleGithubFit: githubFitVerdict(prefs.scheduleLayers, layerBytes),
+      ...(archiveMode ? { archiveMode } : {}),
       ...(last
         ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
         : {}),
     },
     history: entries.map(e => ({
       at: e.at,
-      path: e.path,
       layers: e.layers,
       harnesses: e.harnesses,
       bytesLabel: formatBytes(e.archiveBytes),
       skipped: e.skipped,
-      present: e.present,
+      presence: e.presence,
     })),
   }
 }

@@ -637,6 +637,24 @@ export interface ControlStrings {
   /** A layer's size when it cannot be measured ahead of a run — `repos` only, whose bundles and
    *  patches do not exist anywhere until a backup actually builds them. Never a guessed number. */
   backupLayerSizeUnknown: string
+  /**
+   * One line per layer saying what it ACTUALLY saves — the truth about the code, shown under its
+   * row in the layers editor. `HISTORY_LABEL` never explains itself from its name alone (does
+   * "conversations" mean the transcript, or the metrics ABOUT it?), so this is stated rather than
+   * left to be inferred. The same words the web's format picker uses.
+   */
+  backupLayerDescription: Record<BackupLayer, string>
+  /** `metrics` alone cannot resume a session — the one fact its own name does not carry, stated on
+   *  its row rather than left to be discovered on the far side of a restore. */
+  backupMetricsNoResume: string
+  /** `archive` only grows while this machine's history-preservation mode is `full` — named on the
+   *  row when it is anything else, so a frozen layer does not look live. `mode` is the CLI's own
+   *  untranslated word (`consolidate`/`off`/`archiveUnset`), same convention as `native`/`docker`. */
+  backupArchiveFrozen: (mode: string) => string
+  /** The GitHub-fit indicator beside the format picker — NOT the upload feature itself, which does
+   *  not exist yet. Reasoned only from the measured UNCOMPRESSED total; see `githubFitVerdict`. */
+  backupGithubFits: string
+  backupGithubMayNotFit: string
   /** Shown under the SCHEDULE layers editor only, when `repos` is checked there — a schedule never
    *  actually carries it (see `schedule.ts` and `daemon.ts`), so the editor says so plainly rather
    *  than silently dropping the box's own state. */
@@ -672,6 +690,25 @@ export interface ControlStrings {
   backupLastOk: string
   backupLastUnknown: string
   backupLastSkipped: (n: number) => string
+
+  /**
+   * The history viewer — every recorded backup, paginated, newest first. Opened from the config
+   * pane's `history` row; see `control/backup.ts`'s `historyRows`/`paginateHistory`.
+   */
+  paneHistory: string
+  /** The config row's own value — "N backups" — and the verb that opens the viewer. */
+  backupHistoryCount: (n: number) => string
+  actBackupViewHistory: string
+  backupHistoryEmpty: string
+  /** The three states `backup-store.ts`'s `markPresence` computes — never re-derived here.
+   *  `pruned` is neutral wording on purpose: it is the normal, expected outcome of retention, and
+   *  reads nothing like a warning. `missing` is the one that does. */
+  backupHistoryPresent: string
+  backupHistoryPruned: string
+  backupHistoryMissing: string
+  /** `12–21 / 42` style position, composed with `windowLabel`, plus which keys move the page. */
+  keyHistoryPage: string
+  keyHistoryClose: string
 }
 
 const EN: ControlStrings = {
@@ -1182,6 +1219,20 @@ const EN: ControlStrings = {
   },
   backupLayerAlwaysOn: 'always on — a backup with no metrics restores nothing',
   backupLayerSizeUnknown: 'known after running',
+  backupLayerDescription: {
+    metrics: 'The computed record of every session — cost, tokens, model, duration, files touched — '
+      + 'plus the deep Claude aggregate, tags, workflows and your preferences.',
+    repos: 'A map of every project directory, plus a bundle of each repository\'s commits that are '
+      + 'not on its remote, and a patch of the uncommitted changes in each working tree. Restores '
+      + 'your repository layout and unpushed work.',
+    archive: 'Transcripts already mirrored into ~/.agentistics/archive.',
+    raw: 'The harness directories themselves — the conversation text. Lets a session be resumed '
+      + 'after a restore. Gigabytes.',
+  },
+  backupMetricsNoResume: 'This alone does not let you resume a session — it holds no conversation text.',
+  backupArchiveFrozen: mode => `frozen on this machine — history preservation is set to \`${mode}\`, not \`full\``,
+  backupGithubFits: 'fits a GitHub Release, for certain',
+  backupGithubMayNotFit: 'might not fit a GitHub Release (2 GB per file) — the real size is only known after compressing',
   backupScheduleReposNote: 'a scheduled run never carries this — it is built by `agentop backup`, not on a schedule',
   backupDestLabel: 'destination',
   backupScheduleLabel: 'schedule',
@@ -1202,6 +1253,16 @@ const EN: ControlStrings = {
   backupLastOk: 'ok',
   backupLastUnknown: '(unknown whether anything was skipped)',
   backupLastSkipped: n => `${n} skipped`,
+
+  paneHistory: 'history',
+  backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
+  actBackupViewHistory: 'View history',
+  backupHistoryEmpty: 'no backups recorded yet',
+  backupHistoryPresent: 'on disk',
+  backupHistoryPruned: 'pruned by retention',
+  backupHistoryMissing: 'file missing',
+  keyHistoryPage: 'pgup/pgdn page',
+  keyHistoryClose: 'esc close',
 }
 
 const PT: ControlStrings = {
@@ -1694,6 +1755,20 @@ const PT: ControlStrings = {
   },
   backupLayerAlwaysOn: 'sempre ativo — um backup sem métricas não restaura nada',
   backupLayerSizeUnknown: 'conhecido só depois de rodar',
+  backupLayerDescription: {
+    metrics: 'O registro calculado de cada sessão — custo, tokens, modelo, duração, arquivos '
+      + 'tocados — mais o agregado profundo do Claude, tags, workflows e suas preferências.',
+    repos: 'Um mapa de cada diretório de projeto, mais um bundle dos commits de cada repositório '
+      + 'que não estão no remoto, e um patch das mudanças não commitadas de cada working tree. '
+      + 'Restaura a estrutura dos seus repositórios e o trabalho não enviado.',
+    archive: 'Transcripts que já foram espelhados em ~/.agentistics/archive.',
+    raw: 'Os diretórios dos harnesses em si — o texto das conversas. Permite retomar uma sessão '
+      + 'depois de um restore. Gigabytes.',
+  },
+  backupMetricsNoResume: 'Isto sozinho não permite retomar uma sessão — não guarda texto de conversa.',
+  backupArchiveFrozen: mode => `congelado nesta máquina — a preservação de histórico está em \`${mode}\`, não em \`full\``,
+  backupGithubFits: 'cabe num release do GitHub, com certeza',
+  backupGithubMayNotFit: 'pode não caber num release do GitHub (limite de 2 GB por arquivo) — o tamanho real só é conhecido depois de comprimir',
   backupScheduleReposNote: 'uma execução agendada nunca carrega isto — é construído por `agentop backup`, não numa agenda',
   backupDestLabel: 'destino',
   backupScheduleLabel: 'agenda',
@@ -1714,6 +1789,16 @@ const PT: ControlStrings = {
   backupLastOk: 'ok',
   backupLastUnknown: '(desconhecido se algo foi pulado)',
   backupLastSkipped: n => `${n} pulado${n === 1 ? '' : 's'}`,
+
+  paneHistory: 'histórico',
+  backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
+  actBackupViewHistory: 'Ver histórico',
+  backupHistoryEmpty: 'nenhum backup registrado ainda',
+  backupHistoryPresent: 'no disco',
+  backupHistoryPruned: 'removido pela retenção',
+  backupHistoryMissing: 'arquivo ausente',
+  keyHistoryPage: 'pgup/pgdn página',
+  keyHistoryClose: 'esc fechar',
 }
 
 const TABLE: Record<CliLang, ControlStrings> = { en: EN, pt: PT }

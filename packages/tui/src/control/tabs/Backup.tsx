@@ -24,15 +24,24 @@ import {
   backupConfigRows,
   backupDetailLines,
   backupHints,
+  githubFitLabel,
+  githubFitVerdict,
   harnessCells,
   harnessDetailLines,
   harnessRows,
+  historyCells,
+  historyRows,
   layerEditorCells,
   layerEditorRows,
   nextBackupSchedule,
+  paginateHistory,
   scheduleReposNote,
   toggleBackupLayer,
+  type GithubFitVerdict,
   type HarnessCells,
+  type HistoryCells,
+  type HistoryPage,
+  type HistoryRow,
   type LayerEditorRow,
   type LayerRowCells,
 } from '../backup.ts'
@@ -98,6 +107,14 @@ export function Backup({
   const [draft, setDraft] = useState<BackupLayer[]>([])
   const [layerCursor, setLayerCursor] = useState(0)
 
+  // The history viewer — a READ-ONLY view drawn in the detail pane, opened from the config
+  // pane's `history` row exactly like `layers`/`scheduleLayers` open the editor. `historyPage` is
+  // zero-based and CLAMPED on every render by `paginateHistory`, never trusted, so a page left
+  // pointing past the end after the history shrinks (a prune) corrects itself instead of going
+  // blank.
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyPage, setHistoryPage] = useState(0)
+
   const readStatus = host.backupStatus
   const refreshStatus = useCallback(async () => {
     if (!readStatus) return
@@ -120,9 +137,10 @@ export function Backup({
   useEffect(() => { setOutputView({ index: 0, follow: true }) }, [task?.id])
 
   const rows = useMemo(() => harnessRows(status?.harnesses ?? [], now, s), [status, now, s])
+  const historyCount = status?.history.length ?? 0
   const configRows = useMemo(
-    () => (status ? backupConfigRows(status.config, now, s) : []),
-    [status, now, s],
+    () => (status ? backupConfigRows(status.config, now, s, historyCount) : []),
+    [status, now, s, historyCount],
   )
   const selected = rows[Math.min(selection, Math.max(0, rows.length - 1))]
   const configSelected = configRows[Math.min(configIndex, Math.max(0, configRows.length - 1))]
@@ -135,8 +153,10 @@ export function Backup({
    * short form (`harnessLastShort`), or one long sentence would force the whole band's width.
    */
   const detailLines = useMemo(
-    () => (focus === 'harnesses' ? harnessDetailLines(selected, s) : status ? backupDetailLines(status.config, now, s) : []),
-    [focus, selected, status, now, s],
+    () => (focus === 'harnesses'
+      ? harnessDetailLines(selected, s)
+      : status ? backupDetailLines(status.config, now, s, historyCount) : []),
+    [focus, selected, status, now, s, historyCount],
   )
 
   // -------------------------------------------------------------------------
@@ -169,12 +189,28 @@ export function Backup({
   }, [status])
 
   const editorRows = useMemo(
-    () => (status ? layerEditorRows(draft, status.config.layerSizes, s) : []),
+    () => (status ? layerEditorRows(draft, status.config.layerSizes, s, status.config.archiveMode) : []),
     [status, draft, s],
   )
   const toggleRows = useMemo(() => editorRows.filter(r => !r.fixed), [editorRows])
   const fixedRow = editorRows.find(r => r.fixed)
   const editorNote = editingLayers === 'scheduleLayers' ? scheduleReposNote(draft, s) : null
+  // Live, local, no round trip — the whole point of showing this beside the picker is that it
+  // changes the instant a box is ticked.
+  const editorGithubFit = useMemo(
+    () => (status ? githubFitVerdict(draft, status.config.layerBytes) : null),
+    [status, draft],
+  )
+
+  // -------------------------------------------------------------------------
+  // the history viewer — a READ-ONLY question, same relationship to the config pane the layers
+  // editor has
+  // -------------------------------------------------------------------------
+
+  const openHistory = useCallback(() => { setHistoryPage(0); setHistoryOpen(true) }, [])
+  const closeHistory = useCallback(() => setHistoryOpen(false), [])
+
+  const historyAll = useMemo(() => (status ? historyRows(status.history, s) : []), [status, s])
 
   const toggleDraftRow = useCallback(() => {
     const row = toggleRows[layerCursor]
@@ -224,8 +260,8 @@ export function Backup({
   }, [rows, configRows, configLabelWidth, detailLines.length])
 
   const layout = useMemo(
-    () => cockpitLayout(width, height, content, { question: taskOpen || editingLayers !== null }),
-    [width, height, content, taskOpen, editingLayers],
+    () => cockpitLayout(width, height, content, { question: taskOpen || editingLayers !== null || historyOpen }),
+    [width, height, content, taskOpen, editingLayers, historyOpen],
   )
   const { heights } = layout
 
@@ -251,12 +287,25 @@ export function Backup({
   const outputOffset = windowOffset(outputAnchor, outputLen, detailRows)
   const detailWidthPx = layout.kind === 'columns' ? layout.leftWidth + layout.rightWidth : width
 
+  // One row of the detail body is given to the pager position (`12–21 / 42`) so the reader always
+  // knows where they are — reserved whenever the viewer is open, not only once a second page
+  // exists, or crossing that threshold would reflow every row above it.
+  const historyBodyRows = Math.max(1, detailRows - 1)
+  const historyPageData = useMemo(
+    () => paginateHistory(historyAll, historyPage, historyBodyRows),
+    [historyAll, historyPage, historyBodyRows],
+  )
+  const historyRowCells = useMemo(
+    () => historyCells(historyPageData.rows, paneBody(detailWidthPx)),
+    [historyPageData.rows, detailWidthPx],
+  )
+
   // -------------------------------------------------------------------------
   // keys
   // -------------------------------------------------------------------------
 
   const layersEditorOpen = editingLayers !== null
-  const capturing = taskOpen || layersEditorOpen
+  const capturing = taskOpen || layersEditorOpen || historyOpen
 
   useInput((input, key) => {
     const nav: NavKey = {
@@ -281,6 +330,7 @@ export function Backup({
       if (key.return && (configSelected?.key === 'layers' || configSelected?.key === 'scheduleLayers')) {
         return openLayerEditor(configSelected.key)
       }
+      if (key.return && configSelected?.key === 'history') return openHistory()
     }
 
     if (input === 'b') return runNow()
@@ -298,6 +348,16 @@ export function Backup({
     if (next !== layerCursor) setLayerCursor(next)
   }, { isActive: isActive && layersEditorOpen })
 
+  /** The history viewer's own keys — a READ-ONLY question, so there is nothing to save: `esc`
+   *  closes it, and page up/down (plus left/right, for a soft keyboard with no page keys) move
+   *  between pages. `paginateHistory` clamps, so overshooting either end is a no-op rather than a
+   *  wrap — a page position is not a ring. */
+  useInput((_input, key) => {
+    if (key.escape) return closeHistory()
+    if (key.pageDown || key.rightArrow) return setHistoryPage(p => p + 1)
+    if (key.pageUp || key.leftArrow) return setHistoryPage(p => Math.max(0, p - 1))
+  }, { isActive: isActive && historyOpen })
+
   /** The output pane's own keys, exactly like the Services tab's second `useInput`. */
   useInput((input, key) => {
     if (key.escape) return onDismissTask()
@@ -308,12 +368,15 @@ export function Backup({
       detailRows,
     )
     if (next) setOutputView(next)
-  }, { isActive: isActive && taskOpen && !layersEditorOpen })
+  }, { isActive: isActive && taskOpen && !layersEditorOpen && !historyOpen })
 
   useEffect(() => {
     if (!isActive) return
-    onChrome({ capture: capturing, hints: backupHints(focus, s, { task: taskOpen, editing: layersEditorOpen }) })
-  }, [isActive, capturing, focus, s, taskOpen, layersEditorOpen, onChrome])
+    onChrome({
+      capture: capturing,
+      hints: backupHints(focus, s, { task: taskOpen, editing: layersEditorOpen, history: historyOpen }),
+    })
+  }, [isActive, capturing, focus, s, taskOpen, layersEditorOpen, historyOpen, onChrome])
 
   // -------------------------------------------------------------------------
   // drawing
@@ -363,13 +426,19 @@ export function Backup({
 
   const detailTitle = layersEditorOpen
     ? (editingLayers === 'layers' ? s.backupLayersLabel : s.backupScheduleLayersLabel)
+    : historyOpen ? s.paneHistory
     : focus === 'harnesses' ? (selected?.label ?? s.paneHarnesses) : s.tabsShort.backup
   const detailPane = heights.detail > 0 ? (
     <Pane title={detailTitle} width={detailWidthPx} height={heights.detail}>
       {layersEditorOpen ? (
         <LayerEditor
           fixed={fixedRow} toggleRows={toggleRows} cursor={layerCursor} note={editorNote}
-          width={paneBody(detailWidthPx)} s={s}
+          githubFit={editorGithubFit} width={paneBody(detailWidthPx)} s={s}
+        />
+      ) : historyOpen ? (
+        <HistoryViewer
+          page={historyPageData} total={historyAll.length} pageSize={historyBodyRows}
+          cells={historyRowCells} width={paneBody(detailWidthPx)} s={s}
         />
       ) : taskOpen ? (
         <OutputView lines={taskLines} offset={outputOffset} rows={detailRows} width={paneBody(detailWidthPx)} />
@@ -429,17 +498,27 @@ function HarnessLine({ enabled, label, sessions, size, last, selected, focused, 
   )
 }
 
+/** One row's own explanation, folded into a SINGLE line — the description, plus its caveat (if
+ *  any) in parentheses — so ticking boxes costs exactly one extra line per row rather than a
+ *  second block per row eating the `QUESTION_ROWS` budget twice over. */
+function layerLegend(row: LayerEditorRow): string {
+  return row.caveat ? `${row.description} (${row.caveat})` : row.description
+}
+
 /**
  * The layers editor — a QUESTION drawn in the detail pane, same relationship the setup wizard has
- * with the Services tab's own detail region. `fixed` (metrics) is drawn first, dimmed and marked
- * as always-on with a sentence explaining why rather than merely disabling a control silently;
- * `toggleRows` are the three the cursor and `space` actually reach.
+ * with the Services tab's own detail region. `fixed` (metrics) is drawn first, dimmed; `toggleRows`
+ * are the ones the cursor and `space` actually reach. Every row carries its own legend — what it
+ * actually saves, and any caveat (`metrics` cannot resume a session; `archive` is frozen outside
+ * `full` mode) — because a checked box with no explanation is exactly the complaint this fix exists
+ * to answer.
  */
-function LayerEditor({ fixed, toggleRows, cursor, note, width, s }: {
+function LayerEditor({ fixed, toggleRows, cursor, note, githubFit, width, s }: {
   fixed: LayerEditorRow | undefined
   toggleRows: LayerEditorRow[]
   cursor: number
   note: string | null
+  githubFit: GithubFitVerdict | null
   width: number
   s: ControlStrings
 }) {
@@ -453,28 +532,63 @@ function LayerEditor({ fixed, toggleRows, cursor, note, width, s }: {
   return (
     <Box flexDirection="column" width={width} flexShrink={0}>
       {fixed ? (
-        <Text>
-          <Text dimColor>{'  ● '}</Text>
-          <Text dimColor>{truncate(fixed.label, cells.label).padEnd(cells.label)}</Text>
-          {sizeCell(fixed.sizeLabel)}
-        </Text>
-      ) : null}
-      {fixed ? <Text dimColor>{truncate('  ' + s.backupLayerAlwaysOn, width)}</Text> : null}
-      <Text> </Text>
-      {toggleRows.map((row, i) => (
-        <Text key={row.layer}>
-          <Text color={i === cursor ? COLORS.accent : undefined}>{i === cursor ? '❯ ' : '  '}</Text>
-          <Text color={row.checked ? COLORS.success : COLORS.muted}>{row.checked ? '● ' : '○ '}</Text>
-          <Text color={COLORS.text} bold={i === cursor}>{truncate(row.label, cells.label).padEnd(cells.label)}</Text>
-          {sizeCell(row.sizeLabel)}
-        </Text>
-      ))}
-      {note ? (
         <>
-          <Text> </Text>
-          <Text color={COLORS.accent}>{truncate(note, width)}</Text>
+          <Text>
+            <Text dimColor>{'  ● '}</Text>
+            <Text dimColor>{truncate(fixed.label, cells.label).padEnd(cells.label)}</Text>
+            {sizeCell(fixed.sizeLabel)}
+          </Text>
+          <Text dimColor>{truncate('    ' + layerLegend(fixed), width)}</Text>
         </>
       ) : null}
+      {toggleRows.map((row, i) => (
+        <React.Fragment key={row.layer}>
+          <Text>
+            <Text color={i === cursor ? COLORS.accent : undefined}>{i === cursor ? '❯ ' : '  '}</Text>
+            <Text color={row.checked ? COLORS.success : COLORS.muted}>{row.checked ? '● ' : '○ '}</Text>
+            <Text color={COLORS.text} bold={i === cursor}>{truncate(row.label, cells.label).padEnd(cells.label)}</Text>
+            {sizeCell(row.sizeLabel)}
+          </Text>
+          <Text dimColor>{truncate('    ' + layerLegend(row), width)}</Text>
+        </React.Fragment>
+      ))}
+      {githubFit ? <Text dimColor>{truncate(githubFitLabel(githubFit, s), width)}</Text> : null}
+      {note ? <Text color={COLORS.accent}>{truncate(note, width)}</Text> : null}
+    </Box>
+  )
+}
+
+/**
+ * The history viewer — every recorded backup, paginated and newest first, one page at a time
+ * against the pane's own row budget (`Backup.tsx`'s `historyBodyRows`). This is the fix for "a
+ * giant list that looks like it's full of errors": `pruned` (deleted on purpose, by retention) and
+ * `missing` (gone for some other reason) are rendered in different colours, never the same red.
+ */
+function HistoryViewer({ page, total, pageSize, cells, width, s }: {
+  page: HistoryPage
+  total: number
+  pageSize: number
+  cells: HistoryCells
+  width: number
+  s: ControlStrings
+}) {
+  const statusColor = (row: HistoryRow) => row.presence === 'missing' ? COLORS.danger
+    : row.presence === 'pruned' ? COLORS.muted : COLORS.success
+
+  return (
+    <Box flexDirection="column" width={width} flexShrink={0}>
+      {page.rows.length === 0 ? (
+        <Text dimColor>{truncate(s.backupHistoryEmpty, width)}</Text>
+      ) : page.rows.map((row, i) => (
+        <Text key={i}>
+          <Text color={COLORS.text}>{truncate(row.at, cells.at).padEnd(cells.at)}</Text>
+          {cells.layers > 0 ? <Text dimColor>{'  ' + truncate(row.layers, cells.layers).padEnd(cells.layers)}</Text> : null}
+          {cells.size > 0 ? <Text dimColor>{'  ' + truncate(row.size, cells.size).padStart(cells.size)}</Text> : null}
+          {cells.harnesses > 0 ? <Text dimColor>{'  ' + truncate(row.harnesses, cells.harnesses).padStart(cells.harnesses)}</Text> : null}
+          {cells.status > 0 ? <Text color={statusColor(row)}>{'  ' + truncate(row.status, cells.status)}</Text> : null}
+        </Text>
+      ))}
+      <Text dimColor>{truncate(windowLabel(page.page * pageSize, page.rows.length, total), width)}</Text>
     </Box>
   )
 }

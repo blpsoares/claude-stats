@@ -3,22 +3,28 @@ import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { controlStrings } from './i18n'
 import {
   BACKUP_LAYER_ORDER,
+  GITHUB_RELEASE_LIMIT_BYTES,
   backupConfigRows,
   backupDetailLines,
   backupHints,
+  githubFitLabel,
+  githubFitVerdict,
   harnessCells,
   harnessDetailLines,
   harnessLastLabel,
   harnessLastShort,
   harnessRows,
+  historyCells,
+  historyRows,
   layerEditorCells,
   layerEditorRows,
   nextBackupSchedule,
+  paginateHistory,
   scheduleReposNote,
   toggleBackupLayer,
   formatElapsed,
 } from './backup'
-import type { BackupLayer, ControlBackupConfig, ControlBackupHarness } from './types'
+import type { BackupLayer, ControlBackupConfig, ControlBackupHarness, ControlBackupHistoryEntry } from './types'
 
 const s = controlStrings('en')
 
@@ -160,37 +166,45 @@ function config(extra: Partial<ControlBackupConfig> = {}): ControlBackupConfig {
     retainedLabel: '35 MB',
     secretsCount: 5,
     layerSizes: { metrics: '3.4 MB', repos: null, archive: '12 MB', raw: '953 MB' },
+    layerBytes: { metrics: 3_400_000, repos: null, archive: 12_000_000, raw: 953_000_000 },
     ...extra,
   }
 }
 
-test('the config rows are the seven facts, in order, and layers/schedule/scheduleLayers act', () => {
-  const rows = backupConfigRows(config(), Date.now(), s)
-  expect(rows.map(r => r.key)).toEqual(['layers', 'dest', 'schedule', 'scheduleLayers', 'keep', 'secrets', 'last'])
-  expect(rows.filter(r => r.action).map(r => r.key)).toEqual(['layers', 'schedule', 'scheduleLayers'])
+test('the config rows are the eight facts, in order, and layers/schedule/scheduleLayers/history act', () => {
+  const rows = backupConfigRows(config(), Date.now(), s, 4)
+  expect(rows.map(r => r.key)).toEqual(
+    ['layers', 'dest', 'schedule', 'scheduleLayers', 'keep', 'secrets', 'last', 'history'],
+  )
+  expect(rows.filter(r => r.action).map(r => r.key)).toEqual(['layers', 'schedule', 'scheduleLayers', 'history'])
+})
+
+test('the history row states the count the host reported, never re-derived', () => {
+  const rows = backupConfigRows(config(), Date.now(), s, 12)
+  expect(rows.find(r => r.key === 'history')!.value).toBe(s.backupHistoryCount(12))
 })
 
 test('an inactive schedule says so instead of a next time that will not arrive', () => {
-  const rows = backupConfigRows(config({ scheduleActive: false }), Date.now(), s)
+  const rows = backupConfigRows(config({ scheduleActive: false }), Date.now(), s, 0)
   const schedule = rows.find(r => r.key === 'schedule')!
   expect(schedule.value).toContain(s.backupScheduleWord.daily)
   expect(schedule.value).toContain(s.backupScheduleInactive)
 })
 
 test('an off schedule never carries the inactive caveat — it is off on purpose, not stalled', () => {
-  const rows = backupConfigRows(config({ schedule: 'off', scheduleActive: false }), Date.now(), s)
+  const rows = backupConfigRows(config({ schedule: 'off', scheduleActive: false }), Date.now(), s, 0)
   expect(rows.find(r => r.key === 'schedule')!.value).toBe(s.backupScheduleWord.off)
 })
 
 test('with no backup on disk yet, the last row says so plainly', () => {
-  const rows = backupConfigRows(config(), Date.now(), s)
+  const rows = backupConfigRows(config(), Date.now(), s, 0)
   expect(rows.find(r => r.key === 'last')!.value).toBe(s.backupNoneOnDisk)
 })
 
 test('a complete backup reports its age, size and "ok"', () => {
   const now = Date.now()
   const at = new Date(now - 6 * 3_600_000).toISOString()
-  const rows = backupConfigRows(config({ last: { at, bytesLabel: '4.1 MB', skipped: 0 } }), now, s)
+  const rows = backupConfigRows(config({ last: { at, bytesLabel: '4.1 MB', skipped: 0 } }), now, s, 0)
   const last = rows.find(r => r.key === 'last')!.value
   expect(last).toContain('4.1 MB')
   expect(last).toContain(s.backupLastOk)
@@ -199,18 +213,18 @@ test('a complete backup reports its age, size and "ok"', () => {
 test('a backup that skipped paths says how many, and one that predates tracking says unknown', () => {
   const now = Date.now()
   const at = new Date(now - 1000).toISOString()
-  const skipped = backupConfigRows(config({ last: { at, bytesLabel: '1 KB', skipped: 3 } }), now, s)
+  const skipped = backupConfigRows(config({ last: { at, bytesLabel: '1 KB', skipped: 3 } }), now, s, 0)
     .find(r => r.key === 'last')!.value
   expect(skipped).toContain(s.backupLastSkipped(3))
 
-  const unknown = backupConfigRows(config({ last: { at, bytesLabel: '1 KB' } }), now, s)
+  const unknown = backupConfigRows(config({ last: { at, bytesLabel: '1 KB' } }), now, s, 0)
     .find(r => r.key === 'last')!.value
   expect(unknown).toContain(s.backupLastUnknown)
 })
 
 test('backupDetailLines mirrors the config rows, unabbreviated, as plain rows', () => {
-  const lines = backupDetailLines(config(), Date.now(), s)
-  expect(lines.length).toBe(7)
+  const lines = backupDetailLines(config(), Date.now(), s, 4)
+  expect(lines.length).toBe(8)
   expect(lines.every(l => l.kind === 'row' && l.tone === 'plain')).toBe(true)
   expect(lines[1]!.value).toBe('~/backups')
 })
@@ -301,6 +315,42 @@ test('a measured layer shows its size; the unmeasurable repos layer shows the ho
 })
 
 // -----------------------------------------------------------------------------
+// layerEditorRows — every row carries its own legend, so a checked box is never unexplained
+// -----------------------------------------------------------------------------
+
+test('every layer states what it actually saves, in the vocabulary CLAUDE.md pins', () => {
+  const rows = layerEditorRows(['metrics', 'repos', 'archive', 'raw'], SIZES, s, 'full')
+  for (const layer of BACKUP_LAYER_ORDER) {
+    expect(rows.find(r => r.layer === layer)!.description).toBe(s.backupLayerDescription[layer])
+  }
+})
+
+test('metrics ALWAYS carries the "cannot resume" caveat — the one fact its name does not carry', () => {
+  const rows = layerEditorRows(['metrics'], SIZES, s, 'full')
+  expect(rows.find(r => r.layer === 'metrics')!.caveat).toBe(s.backupMetricsNoResume)
+})
+
+test('archive carries no caveat in full mode — it is actually growing', () => {
+  const rows = layerEditorRows(['metrics', 'archive'], SIZES, s, 'full')
+  expect(rows.find(r => r.layer === 'archive')!.caveat).toBeNull()
+})
+
+test('archive names the machine\'s own mode when it is not full, so a frozen layer never looks live', () => {
+  const consolidate = layerEditorRows(['metrics', 'archive'], SIZES, s, 'consolidate')
+  expect(consolidate.find(r => r.layer === 'archive')!.caveat).toBe(s.backupArchiveFrozen('consolidate'))
+
+  // Never chosen at all reads the same as anything other than full — never a confident "it's fine".
+  const unset = layerEditorRows(['metrics', 'archive'], SIZES, s, undefined)
+  expect(unset.find(r => r.layer === 'archive')!.caveat).toBe(s.backupArchiveFrozen(s.archiveUnset))
+})
+
+test('repos and raw carry no caveat, whatever the archive mode is', () => {
+  const rows = layerEditorRows(['metrics', 'repos', 'raw'], SIZES, s, 'off')
+  expect(rows.find(r => r.layer === 'repos')!.caveat).toBeNull()
+  expect(rows.find(r => r.layer === 'raw')!.caveat).toBeNull()
+})
+
+// -----------------------------------------------------------------------------
 // scheduleReposNote — the one caveat the schedule editor carries and the manual one never does
 // -----------------------------------------------------------------------------
 
@@ -342,4 +392,139 @@ test('every picked cell combination stays within the available width, at every w
     const cost = cells.label + (cells.size > 0 ? cells.size + 2 : 0)
     expect(cost).toBeLessThanOrEqual(Math.max(0, width - 4))
   }
+})
+
+// -----------------------------------------------------------------------------
+// githubFitVerdict / githubFitLabel — NOT the upload feature, just the honest indicator
+// -----------------------------------------------------------------------------
+
+const BYTES = (over: Partial<Record<BackupLayer, number | null>> = {}): Record<BackupLayer, number | null> => ({
+  metrics: 0, repos: null, archive: 0, raw: 0, ...over,
+})
+
+test('well under the cap fits, for certain — compression only shrinks further', () => {
+  expect(githubFitVerdict(['metrics'], BYTES({ metrics: 1_000_000 }))).toBe('fits')
+})
+
+test('at or over the cap is an honest "maybe-not", never a confident no', () => {
+  expect(githubFitVerdict(['raw'], BYTES({ raw: GITHUB_RELEASE_LIMIT_BYTES }))).toBe('maybe-not')
+  expect(githubFitVerdict(['raw'], BYTES({ raw: GITHUB_RELEASE_LIMIT_BYTES - 1 }))).toBe('fits')
+})
+
+test('only the TICKED layers are summed — an unticked heavy layer never counts against it', () => {
+  expect(githubFitVerdict(['metrics'], BYTES({ metrics: 100, raw: GITHUB_RELEASE_LIMIT_BYTES * 5 }))).toBe('fits')
+})
+
+test('an unmeasurable layer (repos, before a run) contributes nothing to the sum', () => {
+  expect(githubFitVerdict(['metrics', 'repos'], BYTES({ metrics: 100 }))).toBe('fits')
+})
+
+test('the label names the right sentence for each verdict', () => {
+  expect(githubFitLabel('fits', s)).toBe(s.backupGithubFits)
+  expect(githubFitLabel('maybe-not', s)).toBe(s.backupGithubMayNotFit)
+})
+
+// -----------------------------------------------------------------------------
+// historyRows / paginateHistory — the fix for "a giant list that looks full of errors"
+// -----------------------------------------------------------------------------
+
+function historyEntry(over: Partial<ControlBackupHistoryEntry> & { at: string }): ControlBackupHistoryEntry {
+  return {
+    layers: ['metrics'], harnesses: ['claude'], bytesLabel: '4.1 MB', presence: 'present',
+    ...over,
+  }
+}
+
+test('the three presence states are rendered as three different sentences, computed by the host', () => {
+  const rows = historyRows([
+    historyEntry({ at: '2026-09-01T00:00:00Z', presence: 'present' }),
+    historyEntry({ at: '2026-09-02T00:00:00Z', presence: 'pruned' }),
+    historyEntry({ at: '2026-09-03T00:00:00Z', presence: 'missing' }),
+  ], s)
+  expect(rows.map(r => r.status)).toEqual([s.backupHistoryPresent, s.backupHistoryPruned, s.backupHistoryMissing])
+})
+
+test('historyRows never reorders — the host already sorted newest first', () => {
+  const rows = historyRows([
+    historyEntry({ at: '2026-09-01T00:00:00Z' }),
+    historyEntry({ at: '2026-09-03T00:00:00Z' }),
+  ], s)
+  expect(rows.map(r => r.at)).toEqual([new Date('2026-09-01T00:00:00Z').toLocaleString(), new Date('2026-09-03T00:00:00Z').toLocaleString()])
+})
+
+test('paginateHistory slices into pages of the given size, newest-first order preserved', () => {
+  const rows = historyRows(
+    Array.from({ length: 25 }, (_, i) => historyEntry({ at: `2026-09-${String(i + 1).padStart(2, '0')}T00:00:00Z` })),
+    s,
+  )
+  const page0 = paginateHistory(rows, 0, 10)
+  expect(page0.rows).toHaveLength(10)
+  expect(page0.pages).toBe(3)
+  expect(page0.page).toBe(0)
+
+  const page2 = paginateHistory(rows, 2, 10)
+  expect(page2.rows).toHaveLength(5)
+  expect(page2.page).toBe(2)
+})
+
+test('a page number past the end is CLAMPED, never rendered blank', () => {
+  const rows = historyRows([historyEntry({ at: '2026-09-01T00:00:00Z' })], s)
+  const page = paginateHistory(rows, 99, 10)
+  expect(page.page).toBe(0)
+  expect(page.rows).toHaveLength(1)
+})
+
+test('a negative page number is clamped to the first page', () => {
+  const rows = historyRows([historyEntry({ at: '2026-09-01T00:00:00Z' })], s)
+  expect(paginateHistory(rows, -3, 10).page).toBe(0)
+})
+
+test('an empty history is one page, empty, never a division by zero', () => {
+  const page = paginateHistory([], 0, 10)
+  expect(page.pages).toBe(1)
+  expect(page.rows).toEqual([])
+})
+
+// -----------------------------------------------------------------------------
+// historyCells — the ladder, harnesses first to go
+// -----------------------------------------------------------------------------
+
+const HISTORY_ROWS = historyRows([
+  historyEntry({ at: '2026-09-01T00:00:00Z', layers: ['metrics', 'repos', 'archive', 'raw'], harnesses: ['claude', 'codex'], bytesLabel: '953 MB', presence: 'missing' }),
+], s)
+
+test('at a generous width every cell is drawn', () => {
+  const cells = historyCells(HISTORY_ROWS, 80)
+  expect(cells.at).toBeGreaterThan(0)
+  expect(cells.layers).toBeGreaterThan(0)
+  expect(cells.size).toBeGreaterThan(0)
+  expect(cells.harnesses).toBeGreaterThan(0)
+  expect(cells.status).toBeGreaterThan(0)
+})
+
+test('harnesses is the first cell to give way under width pressure', () => {
+  let width = 80
+  while (width > 0 && historyCells(HISTORY_ROWS, width).harnesses > 0) width--
+  const atDrop = historyCells(HISTORY_ROWS, width)
+  expect(atDrop.harnesses).toBe(0)
+  expect(atDrop.layers).toBeGreaterThan(0)
+  expect(width).toBeLessThan(80)
+})
+
+test('the status word outlasts layers/size — it shrinks the date before it drops it', () => {
+  let width = 80
+  while (width > 0 && historyCells(HISTORY_ROWS, width).size > 0) width--
+  const atDrop = historyCells(HISTORY_ROWS, width)
+  expect(atDrop.size).toBe(0)
+  expect(atDrop.status).toBeGreaterThan(0)
+})
+
+test('the name never gives way to zero while any width remains', () => {
+  const cells = historyCells(HISTORY_ROWS, 6)
+  expect(cells.at).toBeGreaterThan(0)
+})
+
+test('an empty row list or a non-positive width fits nothing', () => {
+  expect(historyCells([], 40)).toEqual({ at: 0, layers: 0, size: 0, harnesses: 0, status: 0 })
+  expect(historyCells(HISTORY_ROWS, 0)).toEqual({ at: 0, layers: 0, size: 0, harnesses: 0, status: 0 })
 })

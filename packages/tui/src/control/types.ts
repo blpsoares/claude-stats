@@ -475,6 +475,34 @@ export interface ControlBackupLast {
   skipped?: number
 }
 
+/**
+ * A backup once covered this harness or the machine, and its file is no longer on disk —
+ * three-way, not two. See `backup-store.ts`'s `markPresence`, the single source of this
+ * classification: no surface re-derives it.
+ *
+ *  - `present` — the archive is on disk, restorable.
+ *  - `pruned` — WE deleted it, on purpose, by retention (`agentop backup`'s `keep`). Expected,
+ *    routine, and neutral — a week of daily backups puts most of the history here, and rendering
+ *    it the same as a real loss cries wolf on every row past `keep`.
+ *  - `missing` — recorded, not pruned by us, and not on disk. The one state a warning colour
+ *    belongs on.
+ */
+export type BackupPresence = 'present' | 'pruned' | 'missing'
+
+/** One row of the backup history — every recorded run, newest first, however it ended up on this
+ *  machine's disk (or not). See `BackupPresence`. */
+export interface ControlBackupHistoryEntry {
+  /** ISO. */
+  at: string
+  layers: BackupLayer[]
+  harnesses: HarnessId[]
+  /** Already-formatted, e.g. "4.1 MB" — the archive's real, measured size. */
+  bytesLabel: string
+  /** How many paths the walk skipped — see `ControlBackupLast.skipped`. */
+  skipped?: number
+  presence: BackupPresence
+}
+
 export interface ControlBackupConfig {
   /** The layers the NEXT manual run writes. Deliberately untranslated — `metrics`/`repos`/
    *  `archive`/`raw` are the CLI's own vocabulary, the same convention as `native`/`docker`. */
@@ -506,6 +534,22 @@ export interface ControlBackupConfig {
    * "known after running", never as a guessed number or a confident `0`.
    */
   layerSizes: Record<BackupLayer, string | null>
+  /**
+   * The SAME measurement as `layerSizes`, in raw bytes rather than a formatted string — what lets
+   * a surface reason about a GitHub Release asset's 2 GB-per-file cap the instant a checkbox is
+   * ticked, with no round trip. `repos` stays `null` for the same reason its label does: its
+   * bundles and patches do not exist anywhere until a backup actually builds them, so a byte count
+   * for it would be a guess wearing a measurement's clothes.
+   */
+  layerBytes: Record<BackupLayer, number | null>
+  /**
+   * This machine's history-preservation mode, when it has been chosen at all — see
+   * `preferences.ts`'s `resolveArchiveMode`. Absent means never chosen (the consent gate has not
+   * run), which reads the same as anything other than `'full'`: the `archive` layer is frozen
+   * either way, and the layers editor says so on that row rather than showing a size that will
+   * never grow as if it were still live.
+   */
+  archiveMode?: ArchiveMode
   /** The newest backup on disk, or absent when there has never been one. */
   last?: ControlBackupLast
 }
@@ -514,6 +558,9 @@ export interface ControlBackupStatus {
   /** One row per `HARNESS_ORDER` member the host actually reported — never a literal list. */
   harnesses: ControlBackupHarness[]
   config: ControlBackupConfig
+  /** Every recorded backup, newest first — the WHOLE history; a surface pages it, it does not ask
+   *  the host to page it. See `ControlBackupHistoryEntry`. */
+  history: ControlBackupHistoryEntry[]
 }
 
 // ---------------------------------------------------------------------------

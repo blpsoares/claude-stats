@@ -1,6 +1,10 @@
 import { test, expect } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
-  lastBackup, lastPerHarness, markPresence, toPrune, type BackupRecord,
+  lastBackup, lastPerHarness, loadBackupHistory, markPresence, readBackups, readPrunedPaths,
+  recordBackup, recordPrune, toPrune, type BackupRecord,
 } from './backup-store'
 
 const rec = (over: Partial<BackupRecord> & { at: string; path: string }): BackupRecord => ({
@@ -9,12 +13,16 @@ const rec = (over: Partial<BackupRecord> & { at: string; path: string }): Backup
   ...over,
 })
 
-test('a record whose file is gone is marked absent, not dropped', () => {
+const NONE = new Set<string>()
+
+test('a record whose file is gone, and never pruned, is marked missing — not dropped', () => {
   const out = markPresence(
     [rec({ at: '2026-09-01T00:00:00Z', path: '/b/one.tar.zst' })],
+    NONE,
     p => p !== '/b/one.tar.zst',
   )
   expect(out).toHaveLength(1)
+  expect(out[0]!.presence).toBe('missing')
   expect(out[0]!.present).toBe(false)
 })
 
@@ -25,12 +33,12 @@ test('the last backup ignores records whose file is gone', () => {
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/new.tar.zst' }),
     rec({ at: '2026-09-01T00:00:00Z', path: '/b/old.tar.zst' }),
-  ], p => p === '/b/old.tar.zst')
+  ], NONE, p => p === '/b/old.tar.zst')
   expect(lastBackup(entries)?.at).toBe('2026-09-01T00:00:00Z')
 })
 
 test('with nothing present there is no last backup — never a stale date', () => {
-  const entries = markPresence([rec({ at: '2026-09-03T00:00:00Z', path: '/b/x' })], () => false)
+  const entries = markPresence([rec({ at: '2026-09-03T00:00:00Z', path: '/b/x' })], NONE, () => false)
   expect(lastBackup(entries)).toBeNull()
 })
 
@@ -38,7 +46,7 @@ test('last-backup is per harness, and a harness never backed up has none', () =>
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/a', harnesses: ['claude', 'codex'] }),
     rec({ at: '2026-09-01T00:00:00Z', path: '/b/b', harnesses: ['claude'] }),
-  ], () => true)
+  ], NONE, () => true)
   const per = lastPerHarness(entries)
   expect(per.claude).toBe('2026-09-03T00:00:00Z')
   expect(per.codex).toBe('2026-09-03T00:00:00Z')
@@ -48,7 +56,7 @@ test('last-backup is per harness, and a harness never backed up has none', () =>
 test('a harness only in a backup whose file is gone counts as never backed up', () => {
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/a', harnesses: ['copilot'] }),
-  ], () => false)
+  ], NONE, () => false)
   expect(lastPerHarness(entries).copilot).toBeUndefined()
 })
 
@@ -56,9 +64,9 @@ test('a harness only in a backup whose file is gone counts as never backed up', 
 // function that depended on its caller having sorted would go wrong the day one did not.
 test('last-per-harness keeps the maximum, whatever order it is given', () => {
   const unsorted = [
-    { ...rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }), present: true },
-    { ...rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }), present: true },
-    { ...rec({ at: '2026-09-02T00:00:00Z', path: '/b/2' }), present: true },
+    { ...rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }), presence: 'present' as const, present: true },
+    { ...rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }), presence: 'present' as const, present: true },
+    { ...rec({ at: '2026-09-02T00:00:00Z', path: '/b/2' }), presence: 'present' as const, present: true },
   ]
   expect(lastPerHarness(unsorted).claude).toBe('2026-09-03T00:00:00Z')
 })
@@ -68,7 +76,7 @@ test('pruning keeps the newest N present records and returns the rest', () => {
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }),
     rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }),
     rec({ at: '2026-09-02T00:00:00Z', path: '/b/2' }),
-  ], () => true)
+  ], NONE, () => true)
   expect(toPrune(entries, 2).map(r => r.path)).toEqual(['/b/1'])
 })
 
@@ -76,12 +84,113 @@ test('pruning never proposes deleting a file that is already gone', () => {
   const entries = markPresence([
     rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' }),
     rec({ at: '2026-09-01T00:00:00Z', path: '/b/1' }),
-  ], p => p === '/b/3')
+  ], NONE, p => p === '/b/3')
   expect(toPrune(entries, 1)).toEqual([])
 })
 
 test('keep 0 or below prunes nothing — an accidental zero must not wipe the history', () => {
-  const entries = markPresence([rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' })], () => true)
+  const entries = markPresence([rec({ at: '2026-09-03T00:00:00Z', path: '/b/3' })], NONE, () => true)
   expect(toPrune(entries, 0)).toEqual([])
   expect(toPrune(entries, -1)).toEqual([])
+})
+
+// -----------------------------------------------------------------------------
+// three-state presence — the fix for "a giant list that looks like it's full of errors"
+// -----------------------------------------------------------------------------
+
+test('a file we deleted ON PURPOSE, by retention, reads pruned — neutral, not a warning', () => {
+  const entries = markPresence(
+    [rec({ at: '2026-09-01T00:00:00Z', path: '/b/old.tar.zst' })],
+    new Set(['/b/old.tar.zst']),
+    () => false,
+  )
+  expect(entries[0]!.presence).toBe('pruned')
+  // Still not restorable — the legacy boolean keeps meaning exactly that.
+  expect(entries[0]!.present).toBe(false)
+})
+
+test('a file gone for any OTHER reason reads missing, and only that one earns the warning', () => {
+  const entries = markPresence(
+    [rec({ at: '2026-09-01T00:00:00Z', path: '/b/vanished.tar.zst' })],
+    new Set(['/b/some-other-file.tar.zst']),
+    () => false,
+  )
+  expect(entries[0]!.presence).toBe('missing')
+})
+
+test('present wins over pruned when the same path is somehow on disk again', () => {
+  const entries = markPresence(
+    [rec({ at: '2026-09-01T00:00:00Z', path: '/b/x.tar.zst' })],
+    new Set(['/b/x.tar.zst']),
+    () => true,
+  )
+  expect(entries[0]!.presence).toBe('present')
+})
+
+test('pruned and missing both count as absent for lastBackup/lastPerHarness/toPrune', () => {
+  const entries = markPresence([
+    rec({ at: '2026-09-03T00:00:00Z', path: '/b/pruned', harnesses: ['claude'] }),
+    rec({ at: '2026-09-02T00:00:00Z', path: '/b/missing', harnesses: ['claude'] }),
+  ], new Set(['/b/pruned']), () => false)
+  expect(lastBackup(entries)).toBeNull()
+  expect(lastPerHarness(entries).claude).toBeUndefined()
+  expect(toPrune(entries, 0)).toEqual([])
+})
+
+// -----------------------------------------------------------------------------
+// the on-disk round trip — recordBackup / recordPrune / readBackups / readPrunedPaths /
+// loadBackupHistory, all against a temp file so the suite never touches the real store.
+// -----------------------------------------------------------------------------
+
+function tempStore(): { file: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'agentistics-backup-store-'))
+  const file = join(dir, 'backups.jsonl')
+  return { file, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('a prune event is its own line, never a rewrite of the backup record', async () => {
+  const { file, cleanup } = tempStore()
+  try {
+    await recordBackup(rec({ at: '2026-09-01T00:00:00Z', path: '/b/a.tar.zst' }), file)
+    await recordPrune('/b/a.tar.zst', file)
+
+    const records = await readBackups(file)
+    expect(records).toHaveLength(1)
+    expect(records[0]!.path).toBe('/b/a.tar.zst')
+
+    const pruned = await readPrunedPaths(file)
+    expect(pruned.has('/b/a.tar.zst')).toBe(true)
+  } finally {
+    cleanup()
+  }
+})
+
+test('loadBackupHistory composes the read + presence check end to end', async () => {
+  const { file, cleanup } = tempStore()
+  try {
+    await recordBackup(rec({ at: '2026-09-01T00:00:00Z', path: '/b/pruned.tar.zst' }), file)
+    await recordBackup(rec({ at: '2026-09-02T00:00:00Z', path: '/b/never-existed.tar.zst' }), file)
+    await recordPrune('/b/pruned.tar.zst', file)
+
+    const entries = await loadBackupHistory(file)
+    expect(entries.find(e => e.path === '/b/pruned.tar.zst')!.presence).toBe('pruned')
+    expect(entries.find(e => e.path === '/b/never-existed.tar.zst')!.presence).toBe('missing')
+  } finally {
+    cleanup()
+  }
+})
+
+test('a torn or hand-edited line is skipped on both reads, never thrown on', async () => {
+  const { file, cleanup } = tempStore()
+  try {
+    await recordBackup(rec({ at: '2026-09-01T00:00:00Z', path: '/b/good.tar.zst' }), file)
+    const fs = await import('fs/promises')
+    await fs.appendFile(file, '{not json\n')
+    await recordPrune('/b/good.tar.zst', file)
+
+    expect(await readBackups(file)).toHaveLength(1)
+    expect((await readPrunedPaths(file)).has('/b/good.tar.zst')).toBe(true)
+  } finally {
+    cleanup()
+  }
 })

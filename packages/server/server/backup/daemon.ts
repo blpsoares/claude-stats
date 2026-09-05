@@ -9,12 +9,11 @@
  * rather than trying to be clever about when to wake up.
  */
 import { hostname } from 'os'
-import { existsSync } from 'fs'
 import { HOME_DIR } from '../config'
 import { readPreferences } from '../preferences'
 import { CURRENT_VERSION } from '../version'
 import { pruneOldBackups, readBackupPrefs } from '../cli-backup'
-import { markPresence, readBackups, lastBackup } from './backup-store'
+import { lastBackup, loadBackupHistory } from './backup-store'
 import { isDue } from './schedule'
 import { runBackup } from './backup'
 
@@ -34,7 +33,7 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
     running = true
     try {
       const prefs = readBackupPrefs(await readPreferences())
-      const entries = markPresence(await readBackups(), p => existsSync(p))
+      const entries = await loadBackupHistory()
       const last = lastBackup(entries)
       // serverRunning is true by construction: this code only runs inside the daemon.
       const verdict = isDue({

@@ -35,6 +35,7 @@ import { render } from 'ink-testing-library'
 import { ControlCenter } from '../src/control/ControlCenter'
 import {
   TAB_ORDER,
+  type BackupLayer,
   type ControlBackupStatus,
   type ControlHost,
   type ControlSession,
@@ -47,6 +48,7 @@ import {
   type TabId,
   DEFAULT_SESSION_VIEW,
 } from '../src/control/types'
+import type { HarnessId } from '@agentistics/core'
 import { GROUPINGS, type SessionGroupingId } from '../src/control/sessions'
 import type { CliLang } from '../src/control/lang'
 // The real string table, not a copy of it. Every label on this screen arrives from the host already
@@ -496,8 +498,25 @@ const FAKE_BACKUP: ControlBackupStatus = {
     retainedLabel: '35 MB',
     secretsCount: 5,
     layerSizes: { metrics: '3.4 MB', repos: null, archive: '12 MB', raw: '953 MB' },
+    layerBytes: { metrics: 3_400_000, repos: null, archive: 12_000_000, raw: 953_000_000 },
+    archiveMode: 'consolidate',
     last: { at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(), bytesLabel: '4.1 MB', skipped: 0 },
   },
+  // A real mix: several PRESENT, several PRUNED by retention (neutral — expected after a week of
+  // daily backups), and one genuinely MISSING (the one row that should read as a warning). This is
+  // the fixture the history-viewer fix is checked against.
+  history: Array.from({ length: 14 }, (_, i) => {
+    const at = new Date(Date.now() - i * 24 * 60 * 60_000).toISOString()
+    const presence = i === 3 ? 'missing' as const : i < 7 ? 'present' as const : 'pruned' as const
+    return {
+      at,
+      layers: (i % 2 === 0 ? ['metrics', 'repos'] : ['metrics']) as BackupLayer[],
+      harnesses: ['claude', 'codex', 'gemini'] as HarnessId[],
+      bytesLabel: i % 2 === 0 ? '4.1 MB' : '3.6 MB',
+      skipped: i === 5 ? 2 : 0,
+      presence,
+    }
+  }),
 }
 
 /**

@@ -20,7 +20,7 @@ import { CURRENT_VERSION } from './version'
 import { cliStrings, resolveLang } from './cli-i18n'
 import { BACKUP_LAYERS, planSources, withMetrics, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backup/backup-size'
-import { markPresence, readBackups, lastBackup, lastPerHarness, toPrune } from './backup/backup-store'
+import { lastBackup, lastPerHarness, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
 import { runBackup, walkSources } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, type RepoEntry } from './backup/repo-manifest'
@@ -28,6 +28,9 @@ import { planRepos } from './backup/restore-plan'
 import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState, restoreStateFile } from './backup/restore'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
+import { maskedInput } from './cli-ui'
+import { readGithubConfig } from './backup/github-store'
+import { setupGithubBackup } from './backup/github-setup'
 
 const DEFAULT_LAYERS: BackupLayer[] = ['metrics', 'repos']
 const DEFAULT_KEEP = 7
@@ -143,6 +146,8 @@ export type BackupArgs =
       scheduleLayers?: BackupLayer[]
     }
   | { kind: 'status' }
+  | { kind: 'github-status' }
+  | { kind: 'github-setup'; url: string }
   | { kind: 'help' }
   | { kind: 'error'; message: string }
 
@@ -160,6 +165,22 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
 
   if (first === 'help' || first === '--help' || first === '-h') return { kind: 'help' }
   if (first === 'status') return { kind: 'status' }
+  if (first === 'github') {
+    const sub = rest[0]
+    if (sub === 'status') return { kind: 'github-status' }
+    if (sub === 'setup') {
+      const url = rest[1]
+      if (!url) {
+        return {
+          kind: 'error',
+          message: 'github setup requires a repository URL, e.g. '
+            + 'agentop backup github setup https://github.com/you/agentistics-backups',
+        }
+      }
+      return { kind: 'github-setup', url }
+    }
+    return { kind: 'error', message: 'github takes one of: setup <url>, status' }
+  }
   if (first === 'schedule') {
     const id = rest[0]
     if (!id || !SCHEDULE_IDS.includes(id as ScheduleId)) {
@@ -243,6 +264,8 @@ const USAGE = `Usage:
   agentop backup schedule <off|daily|weekly>
   agentop backup config [--layers a,b] [--schedule <off|daily|weekly>] [--schedule-layers a,b]
   agentop backup status
+  agentop backup github setup <url>
+  agentop backup github status
   agentop restore <archive> [--repos] [--only <repo>]
 
 Carry this machine's whole agentistics history to another one.
@@ -257,7 +280,11 @@ Carry this machine's whole agentistics history to another one.
   rebuilds the repository manifest.
 
   Live credentials are NEVER included. \`restore\` prints each one and the command that
-  re-establishes it.`
+  re-establishes it.
+
+  \`github setup <url>\` connects a PRIVATE GitHub repository to hold versioned backups (asks for a
+  token, never echoed). The repository must already be private and the token must be able to push
+  to it — both are checked before anything is written. \`github status\` prints what is configured.`
 
 /**
  * Build the repository manifest: probe every directory the store knows, bundle, patch.
@@ -336,11 +363,16 @@ async function buildRepoManifest(
 /**
  * Delete the FILES of backups beyond `keep`, newest first. The records stay: the store is
  * append-only and `markPresence` reports a missing file as absent from then on.
+ *
+ * Each deletion is itself RECORDED (`recordPrune`) — the history distinguishes a backup deleted
+ * on purpose, by retention, from one that vanished for some other reason. Without that second
+ * event, every row past `keep` would read exactly like a real loss.
  */
 export async function pruneOldBackups(keep: number, log: (l: string) => void): Promise<void> {
-  const entries = markPresence(await readBackups(), p => existsSync(p))
+  const entries = await loadBackupHistory()
   for (const old of toPrune(entries, keep)) {
     await rm(old.path, { force: true }).catch(() => {})
+    await recordPrune(old.path)
     log(`pruned ${old.path}`)
   }
 }
@@ -406,6 +438,34 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     return 0
   }
 
+  if (parsed.kind === 'github-status') {
+    const config = await readGithubConfig()
+    if (!config) {
+      log('github backup: not configured.')
+      log('Run `agentop backup github setup <url>` to connect a private GitHub repository.')
+      return 0
+    }
+    log('github backup: configured')
+    log(`  repository: ${config.owner}/${config.repo}`)
+    log(`  url:        ${config.url}`)
+    log(`  keep:       ${config.keepRemote === 0 ? 'all releases' : `${config.keepRemote} release(s)`}`)
+    log(`  delete local after a confirmed upload: ${config.deleteLocalAfterUpload ? 'yes' : 'no'}`)
+    return 0
+  }
+
+  if (parsed.kind === 'github-setup') {
+    // The token is asked for HERE, never taken as an argv token — a value on the command line ends
+    // up in shell history and in `ps`. `maskedInput` suppresses the terminal echo.
+    const token = await maskedInput('GitHub personal access token (never echoed)')
+    if (!token) { console.error('a token is required.'); return 1 }
+    const result = await setupGithubBackup({ url: parsed.url, token })
+    if (!result.ok) { console.error(result.message); return 1 }
+    log(`github backup configured: ${result.config.owner}/${result.config.repo}`)
+    log(`The token is stored at ${join(AGENTISTICS_DATA_DIR, 'github-backup.json')} (mode 0600) `
+      + 'and is never included in a backup.')
+    return 0
+  }
+
   if (parsed.kind === 'config') {
     const nothingGiven = parsed.layers === undefined && parsed.schedule === undefined
       && parsed.scheduleLayers === undefined
@@ -443,7 +503,7 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   }
 
   if (parsed.kind === 'status') {
-    const entries = markPresence(await readBackups(), p => existsSync(p))
+    const entries = await loadBackupHistory()
     const last = lastBackup(entries)
     log(last
       ? `last backup: ${last.at} · ${formatBytes(last.archiveBytes)} · ${last.path}`

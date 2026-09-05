@@ -14,7 +14,17 @@
  *
  * `toPrune` inherits it: it never proposes deleting a file that is already gone, and a `keep` of
  * zero or below prunes nothing — a config typo must not be a way to wipe every backup at once.
+ *
+ * **A missing file is not one fact, it is two.** `pruneOldBackups` deletes a file ON PURPOSE, by
+ * retention — that is the normal, expected outcome of a week of daily backups, and rendering it
+ * the same red "gone" as a file that vanished for some OTHER reason (a tidied directory, a dead
+ * external disk) cries wolf on every row past `keep`. So a prune is itself a recorded EVENT — a
+ * `PruneRecord` line appended beside the backup records it is about — and `markPresence` reads
+ * both to tell three states apart: `present` (the file is there), `pruned` (we deleted it, on
+ * purpose, by retention — neutral, not an error), `missing` (recorded, not pruned, and not on
+ * disk — the one that earns a warning colour).
  */
+import { existsSync } from 'fs'
 import { dirname, join } from 'path'
 import { appendFile, mkdir, readFile } from 'fs/promises'
 import type { HarnessId } from '@agentistics/core'
@@ -63,16 +73,52 @@ export interface BackupRecord {
   skipped?: number
 }
 
+/** A prune deletes the FILE, on purpose, by retention — it is an event, not a correction of the
+ *  backup record, so it is its own append-only line rather than a rewrite of one. `kind: 'prune'`
+ *  is the discriminant; a plain `BackupRecord` line predates this field and has none, which reads
+ *  as "not a prune" exactly like `skipped: undefined` reads as "not known" elsewhere in this file. */
+export interface PruneRecord {
+  kind: 'prune'
+  /** ISO. */
+  at: string
+  path: string
+}
+
+type BackupLine = BackupRecord | PruneRecord
+
+function isPruneRecord(x: BackupLine): x is PruneRecord {
+  return (x as { kind?: string }).kind === 'prune'
+}
+
+export type BackupPresence = 'present' | 'pruned' | 'missing'
+
 export interface BackupHistoryEntry extends BackupRecord {
+  /** Three states, not two — see the module header. */
+  presence: BackupPresence
+  /**
+   * Legacy convenience, true only for `presence === 'present'`. Every caller that only cares
+   * whether a backup is actually RESTORABLE from — `lastBackup`, `lastPerHarness`, `toPrune`, the
+   * retained-total sum — keeps reading this, unchanged: a pruned backup is still not a backup you
+   * can restore from, exactly like a missing one.
+   */
   present: boolean
 }
 
-/** Newest first, each marked with whether its file is still on disk. */
+/**
+ * Newest first, each marked `present` / `pruned` / `missing`.
+ *
+ * `prunedPaths` is a SET, not a boolean flag on the record — a record on its own cannot know its
+ * own future, so whether it was later pruned has to come from a separate read of the prune events.
+ */
 export function markPresence(
-  records: BackupRecord[], exists: (path: string) => boolean,
+  records: BackupRecord[], prunedPaths: ReadonlySet<string>, exists: (path: string) => boolean,
 ): BackupHistoryEntry[] {
   return records
-    .map(r => ({ ...r, present: exists(r.path) }))
+    .map(r => {
+      const onDisk = exists(r.path)
+      const presence: BackupPresence = onDisk ? 'present' : prunedPaths.has(r.path) ? 'pruned' : 'missing'
+      return { ...r, presence, present: presence === 'present' }
+    })
     .sort((a, b) => b.at.localeCompare(a.at))
 }
 
@@ -106,18 +152,16 @@ export function toPrune(entries: BackupHistoryEntry[], keep: number): BackupHist
   return entries.filter(e => e.present).slice(keep)
 }
 
-/**
- * Every recorded backup. A line that will not parse is SKIPPED, not thrown on: an append
- * interrupted by a crash or a full disk leaves a torn last line, and one bad line must not cost the
- * user every record before it.
- */
-export async function readBackups(file = BACKUPS_FILE): Promise<BackupRecord[]> {
+/** Every line of the store, parsed. A line that will not parse is SKIPPED, not thrown on: an
+ *  append interrupted by a crash or a full disk leaves a torn last line, and one bad line must
+ *  not cost the user every record before it. */
+async function readLines(file: string): Promise<BackupLine[]> {
   const text = await readFile(file, 'utf-8').catch(() => '')
-  const out: BackupRecord[] = []
+  const out: BackupLine[] = []
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     try {
-      out.push(JSON.parse(line) as BackupRecord)
+      out.push(JSON.parse(line) as BackupLine)
     } catch {
       // torn or hand-edited line — the records around it are still good
     }
@@ -125,8 +169,40 @@ export async function readBackups(file = BACKUPS_FILE): Promise<BackupRecord[]> 
   return out
 }
 
+/** Every recorded backup — prune events are a different line shape and are not among them. */
+export async function readBackups(file = BACKUPS_FILE): Promise<BackupRecord[]> {
+  return (await readLines(file)).filter((l): l is BackupRecord => !isPruneRecord(l))
+}
+
+/** The paths a prune event named — never a backup RECORD, only the fact that its file was
+ *  deleted on purpose, by retention. */
+export async function readPrunedPaths(file = BACKUPS_FILE): Promise<Set<string>> {
+  const out = new Set<string>()
+  for (const l of await readLines(file)) if (isPruneRecord(l)) out.add(l.path)
+  return out
+}
+
 /** Append one record. Atomic by construction; see BACKUPS_FILE. */
 export async function recordBackup(record: BackupRecord, file = BACKUPS_FILE): Promise<void> {
   await mkdir(dirname(file), { recursive: true })
   await appendFile(file, JSON.stringify(record) + '\n')
+}
+
+/** Append one prune event — deliberately never a rewrite of the backup record it is about; see
+ *  the module header. */
+export async function recordPrune(path: string, file = BACKUPS_FILE): Promise<void> {
+  const rec: PruneRecord = { kind: 'prune', at: new Date().toISOString(), path }
+  await mkdir(dirname(file), { recursive: true })
+  await appendFile(file, JSON.stringify(rec) + '\n')
+}
+
+/**
+ * The whole history, ready to render: every recorded backup, marked `present` / `pruned` /
+ * `missing` against what is actually on disk and what was deliberately pruned. The one function
+ * every caller that just wants "the history" should use, rather than re-composing
+ * `readBackups`/`readPrunedPaths`/`markPresence` by hand at each of the (several) call sites.
+ */
+export async function loadBackupHistory(file = BACKUPS_FILE): Promise<BackupHistoryEntry[]> {
+  const [records, pruned] = await Promise.all([readBackups(file), readPrunedPaths(file)])
+  return markPresence(records, pruned, p => existsSync(p))
 }
