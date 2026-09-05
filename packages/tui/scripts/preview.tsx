@@ -517,6 +517,16 @@ const FAKE_BACKUP: ControlBackupStatus = {
       presence,
     }
   }),
+  // CONFIGURED, because that is the state with rows to fit. An unconfigured section is one short
+  // line and would never catch a row that overflows; the preview exists to catch exactly that.
+  github: {
+    configured: true,
+    url: 'https://github.com/you/agentistics-backups',
+    repo: 'you/agentistics-backups',
+    label: 'notebook',
+    keepRemote: 5,
+    deleteLocalAfterUpload: true,
+  },
 }
 
 /**

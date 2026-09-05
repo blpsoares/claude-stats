@@ -55,8 +55,8 @@ interface BackupHistoryJson {
   presence: BackupPresence
 }
 
-/** `fits` / `maybe-not` — see `backup-github.ts`. NOT the "push to GitHub" feature (it does not
- *  exist yet); this is the honest indicator computed from the measured uncompressed total. */
+/** `fits` / `maybe-not` — see `backup-github.ts`. NOT the versioning section below; this is only
+ *  the honest size indicator computed from the measured uncompressed total. */
 type GithubFitVerdict = 'fits' | 'maybe-not'
 
 interface BackupStatusJson {
@@ -97,6 +97,40 @@ interface BackupConfigPatch {
 }
 
 type RunOutcome = { ok: true; bytesLabel: string; skipped?: number } | { ok: false; reason: string }
+
+/**
+ * GitHub versioning — mirrors `backup-routes.ts`'s `GithubSection`. There is NO token field here
+ * and there must never be one: the GET does not carry it, this page has no input for it, and
+ * connecting a repository (the one step that genuinely needs a PAT, verified against the API and
+ * refused on a public repository) lives in `agentop backup github setup`.
+ */
+type GithubSectionJson =
+  | { configured: false }
+  | {
+    configured: true
+    url: string
+    /** `owner/repo`, for display. */
+    repo: string
+    /** What this machine is called in its release tags. */
+    label: string
+    /** How many of THIS machine's releases to keep. 0 = keep them all. */
+    keepRemote: number
+    deleteLocalAfterUpload: boolean
+  }
+
+/** Mirrors the server's `GithubSectionUpdate` — every field optional, a control sends only its own. */
+interface GithubUpdate {
+  label?: string
+  keepRemote?: number
+  deleteLocalAfterUpload?: boolean
+}
+
+type GithubSaveOutcome = { ok: true; section: GithubSectionJson } | { ok: false; reason: string }
+
+/** Which control is writing / which one a message belongs to. Feedback is rendered under the
+ *  control that produced it — one shared status line would leave a reader guessing which of three
+ *  saves it is talking about. */
+type GithubField = 'label' | 'keepRemote' | 'deleteLocalAfterUpload'
 
 // ---------------------------------------------------------------------------
 // pure display helpers — the presentation twin of packages/tui/src/control/backup.ts's
@@ -223,6 +257,38 @@ const GITHUB_FIT_TEXT: Record<GithubFitVerdict, { en: string; pt: string }> = {
   },
 }
 
+/** The exact command that connects a repository. Kept as one constant so the copy and the block
+ *  the user reads can never drift apart. */
+const GITHUB_SETUP_COMMAND = 'agentop backup github setup https://github.com/OWNER/REPO'
+
+/**
+ * The server's refusal reasons, in words. An unknown reason is printed AS IS rather than replaced
+ * by a friendly generic — a code the reader can quote is worth more than a sentence that hides it.
+ */
+const GITHUB_REASON_TEXT: Record<string, { en: string; pt: string }> = {
+  not_configured: {
+    en: 'no GitHub repository is connected on this machine',
+    pt: 'nenhum repositório do GitHub está conectado nesta máquina',
+  },
+  bad_label: {
+    en: 'the machine name cannot be empty',
+    pt: 'o nome da máquina não pode ficar vazio',
+  },
+  bad_keep_remote: {
+    en: 'the number must be a whole number, 0 or greater',
+    pt: 'o número precisa ser inteiro, 0 ou maior',
+  },
+  bad_request: {
+    en: 'the request was malformed',
+    pt: 'a requisição estava malformada',
+  },
+}
+
+function githubReasonText(reason: string, pt: boolean): string {
+  const entry = GITHUB_REASON_TEXT[reason]
+  return entry ? (pt ? entry.pt : entry.en) : reason
+}
+
 function layerSizeText(sizes: BackupStatusJson['config']['layerSizes'], layer: BackupLayer, pt: boolean): string {
   return sizes[layer] ?? (pt ? 'conhecido só depois de rodar' : 'known after running')
 }
@@ -320,6 +386,89 @@ export default function BackupSettings() {
       setSavingConfig(false)
     }
   }, [pt])
+
+  // GitHub versioning — its OWN read, and its own silence. A central answers 404 here
+  // (`index.ts`'s `TEAM_CENTRAL` guard) and 404 renders NOTHING: a central aggregates other
+  // machines and has no local machine to version, so an error box would report a fault that isn't
+  // one. `github === null` therefore means "not available here", never "failed".
+  const [github, setGithub] = useState<GithubSectionJson | null>(null)
+  // The two text fields are drafts with an explicit Save — a rename or a retention change that
+  // fired on every keystroke would write a half-typed name into every future release tag.
+  const [labelDraft, setLabelDraft] = useState('')
+  const [keepDraft, setKeepDraft] = useState('')
+  const [githubSaving, setGithubSaving] = useState<GithubField | null>(null)
+  const [githubResult, setGithubResult] = useState<{ field: GithubField; ok: boolean; text: string } | null>(null)
+
+  const loadGithub = useCallback(async () => {
+    try {
+      const r = await fetch('/api/backup/github')
+      if (!r.ok) { setGithub(null); return }
+      const data = (await r.json()) as GithubSectionJson
+      setGithub(data)
+      if (data.configured) {
+        setLabelDraft(data.label)
+        setKeepDraft(String(data.keepRemote))
+      }
+    } catch {
+      setGithub(null)
+    }
+  }, [])
+
+  useEffect(() => { void loadGithub() }, [loadGithub])
+
+  /** The one write path. Every control is disabled while a write is in flight (`githubSaving`),
+   *  and every outcome — success or the server's own reason — lands under the control that asked
+   *  for it. A click that resolves into nothing is the state this guards against. */
+  const saveGithub = useCallback(async (field: GithubField, patch: GithubUpdate) => {
+    setGithubSaving(field)
+    setGithubResult(null)
+    try {
+      const r = await fetch('/api/backup/github', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      })
+      const data = (await r.json()) as GithubSaveOutcome
+      if (data.ok) {
+        setGithub(data.section)
+        if (data.section.configured) {
+          setLabelDraft(data.section.label)
+          setKeepDraft(String(data.section.keepRemote))
+        }
+        setGithubResult({ field, ok: true, text: pt ? 'Salvo.' : 'Saved.' })
+      } else {
+        setGithubResult({ field, ok: false, text: githubReasonText(data.reason, pt) })
+      }
+    } catch {
+      setGithubResult({ field, ok: false, text: pt ? 'a requisição falhou' : 'the request failed' })
+    } finally {
+      setGithubSaving(null)
+    }
+  }, [pt])
+
+  /** An empty name is refused HERE rather than by leaving Save greyed out: a control that is
+   *  disabled for a reason it does not state is indistinguishable from a broken one. The server
+   *  refuses the same input with the same `bad_label`. */
+  const saveLabelName = useCallback(() => {
+    const name = labelDraft.trim()
+    if (!name) {
+      setGithubResult({ field: 'label', ok: false, text: githubReasonText('bad_label', pt) })
+      return
+    }
+    void saveGithub('label', { label: name })
+  }, [labelDraft, pt, saveGithub])
+
+  /** Parsed here so a non-number never reaches the wire — the server refuses it with the same
+   *  `bad_keep_remote`, and the round trip would only make the answer slower. An EMPTY field is
+   *  refused explicitly: `Number('')` is 0, and 0 means "keep every release", which is the one
+   *  answer a blank box must not silently become. */
+  const saveKeepRemote = useCallback(() => {
+    const raw = keepDraft.trim()
+    const value = Number(raw)
+    if (!raw || !Number.isInteger(value) || value < 0) {
+      setGithubResult({ field: 'keepRemote', ok: false, text: githubReasonText('bad_keep_remote', pt) })
+      return
+    }
+    void saveGithub('keepRemote', { keepRemote: value })
+  }, [keepDraft, pt, saveGithub])
 
   /** Metrics can never be toggled off — this only ever fires for `repos`/`archive`/`raw`, and
    *  `updateBackupConfig` (server) normalizes the set regardless, so this is a UI convenience,
@@ -500,6 +649,27 @@ export default function BackupSettings() {
                 ? 'Uma execução agendada nunca carrega isto — é construído por `agentop backup`, não numa agenda.'
                 : 'A scheduled run never carries this — it is built by `agentop backup`, not on a schedule.'}
             </p>
+          )}
+
+          {/* GitHub versioning. Absent entirely when the endpoint 404s (a central) — see
+              `loadGithub`. */}
+          {github && (
+            <>
+              <Divider />
+              <GithubVersioning
+                section={github}
+                labelDraft={labelDraft}
+                keepDraft={keepDraft}
+                saving={githubSaving}
+                result={githubResult}
+                pt={pt}
+                onLabelDraft={setLabelDraft}
+                onKeepDraft={setKeepDraft}
+                onSaveLabel={saveLabelName}
+                onSaveKeep={saveKeepRemote}
+                onToggleDeleteLocal={checked => void saveGithub('deleteLocalAfterUpload', { deleteLocalAfterUpload: checked })}
+              />
+            </>
           )}
 
           <Divider />
@@ -699,7 +869,7 @@ function GithubFitNote({ verdict, pt }: { verdict: GithubFitVerdict; pt: boolean
   )
 }
 
-function ConfigRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function ConfigRow({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
   return (
     <div style={{
       display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12,
@@ -881,5 +1051,240 @@ function SchedulePicker({ value, active, pt, disabled, onChange }: {
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * GITHUB VERSIONING — each backup becomes a Release on a private GitHub repository the user owns.
+ *
+ * Two shapes, and the unconfigured one is deliberately NOT a form. Connecting a repository needs a
+ * GitHub token, which `agentop backup github setup` verifies against the API and refuses on a
+ * public repository; a token box on a settings page is exactly the habit that flow avoids teaching.
+ * So an unconfigured machine gets the explanation plus the command to run, and nothing to type.
+ *
+ * The configured shape changes only what can be changed WITHOUT a token — the machine name, how
+ * many of this machine's releases to keep, and whether the local archive goes after a confirmed
+ * upload. Nothing on this page is, or could be, a credential.
+ */
+function GithubVersioning({
+  section, labelDraft, keepDraft, saving, result, pt,
+  onLabelDraft, onKeepDraft, onSaveLabel, onSaveKeep, onToggleDeleteLocal,
+}: {
+  section: GithubSectionJson
+  labelDraft: string
+  keepDraft: string
+  /** Which control is writing right now, if any — every control is disabled while one is. */
+  saving: GithubField | null
+  result: { field: GithubField; ok: boolean; text: string } | null
+  pt: boolean
+  onLabelDraft: (v: string) => void
+  onKeepDraft: (v: string) => void
+  onSaveLabel: () => void
+  onSaveKeep: () => void
+  onToggleDeleteLocal: (checked: boolean) => void
+}) {
+  const busy = saving !== null
+
+  return (
+    <div>
+      <SectionHeader label={pt ? 'Versionamento no GitHub' : 'GitHub versioning'} />
+
+      {!section.configured ? (
+        <>
+          <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
+            {pt
+              ? 'Cada backup vira um Release num repositório privado do GitHub que é seu — o histórico desta máquina passa a viver fora dela, e o arquivo local pode ser apagado depois que o upload é conferido. Conectar o repositório pede um token do GitHub, que é verificado contra a API, então esse passo mora na CLI:'
+              : 'Each backup becomes a Release on a private GitHub repository you own — this machine’s history then lives off the machine, and the local archive can be deleted once the upload is confirmed. Connecting the repository asks for a GitHub token, which is verified against the API, so that step lives in the CLI:'}
+          </p>
+          <div style={{
+            overflowX: 'auto', maxWidth: '100%', padding: '10px 12px', borderRadius: 8,
+            background: 'var(--bg-elevated)', border: '1px solid var(--border)', marginBottom: 10,
+          }}>
+            <code style={{
+              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'pre',
+            }}>
+              {GITHUB_SETUP_COMMAND}
+            </code>
+          </div>
+          <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: 0 }}>
+            {pt
+              ? 'O repositório precisa ser privado — a configuração recusa um público. O token fica guardado só nesta máquina e nunca entra num backup.'
+              : 'The repository must be private — the setup refuses a public one. The token is stored only on this machine and never goes into a backup.'}
+          </p>
+        </>
+      ) : (
+        <>
+          <ConfigRow
+            label={pt ? 'Repositório' : 'Repository'}
+            value={
+              <a
+                href={section.url}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word' }}
+              >
+                {section.repo}
+              </a>
+            }
+          />
+
+          <div style={{ marginTop: 16 }}>
+            <GithubTextField
+              label={pt ? 'Nome da máquina' : 'Machine name'}
+              hint={pt
+                ? `Várias máquinas podem versionar no MESMO repositório, e este nome é o que separa os backups delas: ele entra na tag do release, e a retenção só apaga releases desta máquina — nunca os de outra. \`agentop restore <url> --from ${section.label}\` restaura especificamente esta máquina.`
+                : `Several machines can version to the SAME repository, and this name is what tells their backups apart: it rides in the release tag, and retention only ever deletes this machine’s own releases — never another machine’s. \`agentop restore <url> --from ${section.label}\` restores this machine specifically.`}
+              value={labelDraft}
+              onChange={onLabelDraft}
+              onSave={onSaveLabel}
+              saveLabel={pt ? 'Salvar' : 'Save'}
+              savingLabel={pt ? 'Salvando…' : 'Saving…'}
+              saving={saving === 'label'}
+              busy={busy}
+              dirty={labelDraft.trim() !== section.label}
+              feedback={result?.field === 'label' ? result : null}
+            />
+          </div>
+
+          <GithubTextField
+            label={pt ? 'Manter no GitHub' : 'Keep on GitHub'}
+            hint={pt
+              ? 'Quantos releases DESTA máquina manter. 0 mantém todos. A retenção conta só os releases desta máquina e nunca toca nos de outra.'
+              : 'How many of THIS machine’s releases to keep. 0 keeps every one. Retention counts only this machine’s releases and never touches another machine’s.'}
+            value={keepDraft}
+            onChange={onKeepDraft}
+            onSave={onSaveKeep}
+            saveLabel={pt ? 'Salvar' : 'Save'}
+            savingLabel={pt ? 'Salvando…' : 'Saving…'}
+            saving={saving === 'keepRemote'}
+            busy={busy}
+            dirty={keepDraft.trim() !== String(section.keepRemote)}
+            numeric
+            feedback={result?.field === 'keepRemote' ? result : null}
+          />
+
+          {/* The same `Checkbox` the layer rows use — whole row is the control, ≥44px on mobile.
+              It writes immediately, so its own outcome is stated right under it. */}
+          <Checkbox
+            checked={section.deleteLocalAfterUpload}
+            onChange={onToggleDeleteLocal}
+            label={pt
+              ? 'Apagar o arquivo local depois de um upload confirmado'
+              : 'Delete the local archive after a confirmed upload'}
+            disabled={busy}
+          />
+          <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '2px 0 0 24px' }}>
+            {pt
+              ? 'O arquivo local só é apagado depois que o upload é conferido byte a byte contra o release.'
+              : 'The local archive is only deleted after the upload has been checked byte for byte against the release.'}
+          </p>
+          <div style={{ marginLeft: 24 }}>
+            <GithubFeedback feedback={result?.field === 'deleteLocalAfterUpload' ? result : null} />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One editable value with its own explicit Save and its own resolution.
+ *
+ * Styled like `primitives.tsx`'s `FieldInput` (same box, same focus accent) but carrying a Save
+ * button and a pending state, which that one has no notion of. The input deliberately sets NO
+ * inline `font-size`: `index.css` forces 16px on every mobile input to stop iOS Safari zooming
+ * the viewport, and a value here would only be a live-looking line that rule already overrides.
+ */
+function GithubTextField({
+  label, hint, value, onChange, onSave, saveLabel, savingLabel, saving, busy, dirty, numeric, feedback,
+}: {
+  label: string
+  hint: string
+  value: string
+  onChange: (v: string) => void
+  onSave: () => void
+  saveLabel: string
+  savingLabel: string
+  /** THIS field is the one writing. */
+  saving: boolean
+  /** ANY field is writing — two overlapping read-modify-writes of the same config file would let
+   *  the earlier one win after the later one already returned. */
+  busy: boolean
+  /** Nothing to save is a disabled Save, never a request that reports "Saved." having changed
+   *  nothing. */
+  dirty: boolean
+  numeric?: boolean
+  feedback: { ok: boolean; text: string } | null
+}) {
+  const isMobile = useIsMobile()
+  const canSave = dirty && !busy
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>{label}</div>
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>{hint}</p>
+      <div style={{
+        display: 'flex', flexDirection: isMobile ? 'column' : 'row',
+        alignItems: isMobile ? 'stretch' : 'center', gap: 8,
+      }}>
+        <input
+          type={numeric ? 'number' : 'text'}
+          {...(numeric ? { min: 0, step: 1, inputMode: 'numeric' as const } : null)}
+          value={value}
+          disabled={busy}
+          readOnly={busy}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && canSave) { e.preventDefault(); onSave() } }}
+          style={{
+            flex: isMobile ? undefined : 1, width: isMobile ? '100%' : undefined,
+            minWidth: 0, boxSizing: 'border-box',
+            padding: '7px 10px', minHeight: isMobile ? 44 : undefined,
+            background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+            fontFamily: 'inherit', color: 'var(--text-primary)', outline: 'none',
+            transition: 'border-color 0.15s',
+            ...(busy ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+          }}
+          onFocus={e => { if (!busy) e.currentTarget.style.borderColor = 'var(--anthropic-orange)' }}
+          onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+        />
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!canSave}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+            width: isMobile ? '100%' : undefined, flexShrink: 0,
+            borderRadius: 7, border: `1px solid ${canSave ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+            background: canSave ? 'var(--anthropic-orange-dim)' : 'transparent',
+            color: canSave ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+            fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit',
+            cursor: canSave ? 'pointer' : 'not-allowed', opacity: canSave ? 1 : 0.6,
+          }}
+        >
+          {saving
+            ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> {savingLabel}</>
+            : saveLabel}
+        </button>
+      </div>
+      <GithubFeedback feedback={feedback} />
+    </div>
+  )
+}
+
+/** A save's outcome, in the two shapes the rest of this page already uses for one — never a click
+ *  that resolves into silence. */
+function GithubFeedback({ feedback }: { feedback: { ok: boolean; text: string } | null }) {
+  if (!feedback) return null
+  return (
+    <p style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      fontSize: 11.5, lineHeight: 1.45, margin: '6px 0 0',
+      color: feedback.ok ? 'var(--accent-green)' : '#ef4444',
+    }}>
+      {feedback.ok
+        ? <CheckCircle2 size={12} style={{ flexShrink: 0 }} />
+        : <AlertTriangle size={12} style={{ flexShrink: 0 }} />}
+      <span>{feedback.text}</span>
+    </p>
   )
 }

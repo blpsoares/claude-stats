@@ -9,6 +9,7 @@
 
 import type { HarnessId } from '@agentistics/core'
 import type { CliLang } from './lang'
+import type { GithubSection } from './backup'
 import type { SearchFields, SearchScope } from './search-scope'
 // The default ARRANGEMENT is derived from the dimension vocabulary rather than written out beside
 // it. `session-dimensions.ts` imports this file for TYPES only, so this is the one value direction.
@@ -561,6 +562,16 @@ export interface ControlBackupStatus {
   /** Every recorded backup, newest first — the WHOLE history; a surface pages it, it does not ask
    *  the host to page it. See `ControlBackupHistoryEntry`. */
   history: ControlBackupHistoryEntry[]
+  /**
+   * GitHub versioning, as `GET /api/backup/github` reports it — the shape mirrored in
+   * `control/backup.ts` (tui may not import from server). Carries NO token and must never grow one.
+   *
+   * Optional because a host may not be able to read it, and `githubRows` renders an absent section
+   * as "not configured, here is the command that turns it on" — never as blank. The field exists so
+   * a machine that IS configured is not told the opposite: a screen stating the reverse of the
+   * truth is worse than one saying nothing.
+   */
+  github?: GithubSection
 }
 
 // ---------------------------------------------------------------------------

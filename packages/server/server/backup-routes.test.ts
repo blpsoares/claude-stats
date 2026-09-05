@@ -68,3 +68,24 @@ describe('the GitHub versioning section — the token never leaves the machine',
     rmSync(dir, { recursive: true, force: true })
   })
 })
+
+test('the cockpit contract carries the GitHub section, and it is the SAME shape the route returns', async () => {
+  // The cockpit's `backup` tab renders `githubRows` from `ControlBackupStatus.github`. Without the
+  // field the tab drew "not configured" on a machine that WAS configured — a screen stating the
+  // opposite of the truth, which is worse than one saying nothing. `GithubSection` is declared once
+  // here and mirrored (never imported — tui may not import from server) in `tui/control/backup.ts`.
+  const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghcontract-'))
+  const file = join(dir, 'github.json')
+  await writeGithubConfig({
+    url: 'https://github.com/me/backups', owner: 'me', repo: 'backups',
+    token: 'ghp_never_leaves', keepRemote: 3, deleteLocalAfterUpload: true, label: 'notebook',
+  }, file)
+
+  const section = await readGithubSection(file)
+  // The tui mirror declares exactly these keys. A field added on one side and not the other is
+  // what this assertion exists to catch, before a cockpit renders `undefined`.
+  expect(Object.keys(section).sort())
+    .toEqual(['configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo', 'url'])
+  expect(JSON.stringify(section)).not.toContain('ghp_')
+  rmSync(dir, { recursive: true, force: true })
+})

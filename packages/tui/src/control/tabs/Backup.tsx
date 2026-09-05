@@ -24,6 +24,7 @@ import {
   backupConfigRows,
   backupDetailLines,
   backupHints,
+  expandDetailText,
   githubFitLabel,
   githubFitVerdict,
   harnessCells,
@@ -38,6 +39,7 @@ import {
   scheduleReposNote,
   toggleBackupLayer,
   type GithubFitVerdict,
+  type GithubSection,
   type HarnessCells,
   type HistoryCells,
   type HistoryPage,
@@ -138,9 +140,21 @@ export function Backup({
 
   const rows = useMemo(() => harnessRows(status?.harnesses ?? [], now, s), [status, now, s])
   const historyCount = status?.history.length ?? 0
+
+  /**
+   * The GitHub versioning section, as the host reports it (`cli-start.ts` fills it from
+   * `readGithubSection()`).
+   *
+   * OPTIONAL, and the two absences are deliberately one here: a host that could not read the
+   * config sends `undefined`, and `githubRows` renders that as "not configured, here is the
+   * command that turns it on" — never as a blank block. A section that renders nothing reads as
+   * broken.
+   */
+  const github = status?.github
+
   const configRows = useMemo(
-    () => (status ? backupConfigRows(status.config, now, s, historyCount) : []),
-    [status, now, s, historyCount],
+    () => (status ? backupConfigRows(status.config, now, s, historyCount, github) : []),
+    [status, now, s, historyCount, github],
   )
   const selected = rows[Math.min(selection, Math.max(0, rows.length - 1))]
   const configSelected = configRows[Math.min(configIndex, Math.max(0, configRows.length - 1))]
@@ -155,8 +169,8 @@ export function Backup({
   const detailLines = useMemo(
     () => (focus === 'harnesses'
       ? harnessDetailLines(selected, s)
-      : status ? backupDetailLines(status.config, now, s, historyCount) : []),
-    [focus, selected, status, now, s, historyCount],
+      : status ? backupDetailLines(status.config, now, s, historyCount, github) : []),
+    [focus, selected, status, now, s, historyCount, github],
   )
 
   // -------------------------------------------------------------------------
@@ -599,8 +613,14 @@ function HistoryViewer({ page, total, pageSize, cells, width, s }: {
  * of that one: a trailing section or blank never survives alone.
  */
 function DetailRows({ lines, rows, width }: { lines: DetailLine[]; rows: number; width: number }) {
-  const plan = detailPlan(rows, lines.length, false)
-  const shown = fitDetailLines(lines, plan.facts)
+  // Prose is wrapped BEFORE the budget is spent, never after — `fitDetailLines` counts drawn rows,
+  // and a sentence that turns into three lines on the far side of the cut paints two rows this
+  // pane does not have. Ink composites that overflow onto the rows below rather than clipping it.
+  const plan = detailPlan(rows, expandDetailText(lines, width).length, false)
+  // Twice on purpose: the first pass only says how many rows the wrapped prose WANTS, so the plan
+  // can be made; the second is told the budget, and drops whole any sentence that would otherwise
+  // be cut off mid-clause.
+  const shown = fitDetailLines(expandDetailText(lines, width, plan.facts), plan.facts)
   const labelWidth = shown.reduce((n, l) => (l.kind === 'row' ? Math.max(n, l.label.length) : n), 0)
 
   return (

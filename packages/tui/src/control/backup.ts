@@ -10,6 +10,7 @@
 
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { SERVICE_MARKER, type DetailLine } from './chrome.ts'
+import { wrapText } from './surface.ts'
 import type { ControlStrings } from './i18n'
 import type {
   ArchiveMode, BackupLayer, BackupPresence, BackupScheduleId, ControlBackupConfig,
@@ -208,10 +209,15 @@ function scheduleLabel(config: ControlBackupConfig, s: ControlStrings): string {
  *  `layers`/`scheduleLayers` have with the layers editor. */
 export function backupConfigRows(
   config: ControlBackupConfig, now: number, s: ControlStrings, historyCount: number,
+  github?: GithubSection,
 ): BackupConfigRow[] {
   return [
     { key: 'layers', label: s.backupLayersLabel, value: layersLabel(config.layers), action: s.actBackupEditLayers },
     { key: 'dest', label: s.backupDestLabel, value: config.destDir },
+    // The OTHER destination, right under the local one, and read-only: there is no verb the
+    // cockpit can honestly offer here (see `githubRows`), so the row carries no `action` rather
+    // than a control that would refuse. The full block is the detail pane's own section.
+    { key: 'github', label: s.backupGithubLabel, value: githubSummary(github, s) },
     {
       key: 'schedule', label: s.backupScheduleLabel, value: scheduleLabel(config, s),
       action: s.actBackupSchedule,
@@ -350,9 +356,15 @@ function lastSummary(config: ControlBackupConfig, now: number, s: ControlStrings
  */
 export function backupDetailLines(
   config: ControlBackupConfig, now: number, s: ControlStrings, historyCount: number,
+  github?: GithubSection,
 ): DetailLine[] {
-  const rows = backupConfigRows(config, now, s, historyCount)
-  return rows.map(r => ({ kind: 'row' as const, label: r.label, value: r.value, tone: 'plain' as const }))
+  const rows = backupConfigRows(config, now, s, historyCount, github)
+  const facts = rows
+    // The config pane's one-line summary is superseded here by the block's own section — stating
+    // the same fact twice in one pane is how a reader stops trusting either copy.
+    .filter(r => r.key !== 'github')
+    .map(r => ({ kind: 'row' as const, label: r.label, value: r.value, tone: 'plain' as const }))
+  return [...facts, ...githubDetailLines(github, s)]
 }
 
 /**
@@ -399,6 +411,146 @@ const SCHEDULE_CYCLE: BackupScheduleId[] = ['off', 'daily', 'weekly']
 export function nextBackupSchedule(current: BackupScheduleId): BackupScheduleId {
   const i = SCHEDULE_CYCLE.indexOf(current)
   return SCHEDULE_CYCLE[(i + 1) % SCHEDULE_CYCLE.length]!
+}
+
+// -----------------------------------------------------------------------------
+// GitHub versioning — what the cockpit may say about the repository holding the backups
+// -----------------------------------------------------------------------------
+
+/**
+ * Redeclared from `server/backup-routes.ts`'s `GithubSection` — `packages/tui` may not import from
+ * `packages/server`, the same reason `BACKUP_LAYER_ORDER` is redeclared above.
+ *
+ * There is NO token field here and there must never be one. The server's own type makes that
+ * promise for the wire; this one makes it for the screen, and `backup.test.ts` asserts it over the
+ * JOINED text of every row rather than field by field — a field added later that happened to carry
+ * the credential would sail through a key-by-key check.
+ */
+export type GithubSection =
+  | { configured: false }
+  | {
+    configured: true
+    url: string
+    /** `owner/repo`, for display. */
+    repo: string
+    /** What this machine is called in its release tags. */
+    label: string
+    /** How many of THIS machine's releases to keep. 0 = keep them all. */
+    keepRemote: number
+    deleteLocalAfterUpload: boolean
+  }
+
+/**
+ * One drawable row of the GitHub block. `note` is the sentence that goes UNDER the row when the
+ * value cannot carry its own meaning — the machine name is the case this exists for: `notebook`
+ * says nothing on its own about why a name is being asked for at all.
+ */
+export interface GithubRow {
+  key: string
+  label: string
+  value: string
+  note: string | null
+}
+
+/**
+ * The block, as rows.
+ *
+ * An UNCONFIGURED machine still gets a row, and that row names the command that turns versioning
+ * on. A section that renders nothing reads as broken — the same rule the `last` row follows when
+ * there has never been a backup, and the same reason a capability-less metric renders `N/A` rather
+ * than vanishing. An ABSENT section (a host too old to report one) is treated as unconfigured
+ * rather than as blank, for exactly that reason.
+ *
+ * Every row here is READ-ONLY. Nothing in this tab can change them: setting the repository up
+ * needs a token, and the label and retention are changed from Settings -> Backup on this machine's
+ * dashboard (`POST /api/backup/github`). A control that would refuse is worse than a stated fact,
+ * so the machine row SAYS where its name is changed instead of offering a key that cannot work.
+ */
+export function githubRows(section: GithubSection | undefined, s: ControlStrings): GithubRow[] {
+  if (!section || !section.configured) {
+    return [{ key: 'off', label: s.backupGithubVersioningLabel, value: s.backupGithubOffValue, note: null }]
+  }
+  return [
+    { key: 'repo', label: s.backupGithubRepoLabel, value: section.repo, note: null },
+    { key: 'machine', label: s.backupGithubMachineLabel, value: section.label, note: s.backupGithubMachineNote },
+    { key: 'keep', label: s.backupGithubKeepLabel, value: s.backupGithubKeepValue(section.keepRemote), note: null },
+    {
+      key: 'local',
+      label: s.backupGithubLocalLabel,
+      value: section.deleteLocalAfterUpload ? s.backupGithubLocalDeleted : s.backupGithubLocalKept,
+      note: null,
+    },
+  ]
+}
+
+/** The config pane's one-line summary — the repository and this machine's name, or the one word
+ *  that says versioning is off. The COMMAND lives in the block, not here: this row is one line of
+ *  a narrow pane, and a truncated command is a command nobody can run. */
+export function githubSummary(section: GithubSection | undefined, s: ControlStrings): string {
+  return section?.configured ? s.backupGithubSummary(section.repo, section.label) : s.backupGithubOff
+}
+
+/**
+ * The block as detail-pane lines — a blank, its section heading, then each row with its note
+ * under it.
+ *
+ * It goes LAST on the pane on purpose: `fitDetailLines` cuts from the bottom, so a short terminal
+ * gives up this block (and, one line earlier, a note before the row it explains) rather than a
+ * fact about the backup itself. That is the "give up a piece it can afford to lose" rule, spent
+ * where it costs least.
+ */
+export function githubDetailLines(section: GithubSection | undefined, s: ControlStrings): DetailLine[] {
+  const lines: DetailLine[] = [
+    { kind: 'blank', label: '', value: '', tone: 'plain' },
+    { kind: 'section', label: s.backupGithubLabel, value: '', tone: 'plain' },
+  ]
+  const rows = githubRows(section, s)
+  for (const row of rows) lines.push({ kind: 'row', label: row.label, value: row.value, tone: 'plain' })
+  // The notes come after EVERY row, not each under its own, so the FACTS outlast the prose: this
+  // block sits at the foot of a pane that cuts from the bottom, and a note wrapped to three lines
+  // between two rows takes the rows below it with it. A footnote that reads a line late is a
+  // smaller loss than a fact that is not on screen at all.
+  for (const row of rows) {
+    if (row.note) lines.push({ kind: 'text', label: '', value: row.note, tone: 'muted' })
+  }
+  return lines
+}
+
+/**
+ * Wraps every `text` line to `width`, leaving `row`/`section`/`blank` alone.
+ *
+ * It runs BEFORE `fitDetailLines`, never after: the pane's budget counts DRAWN rows, so expanding
+ * a sentence into three lines after the cut would paint two rows the pane does not have — and Ink
+ * composites the overflow onto whatever is below rather than clipping it, which reads as a
+ * corrupted frame. Truncating instead is not the answer for these: the machine-name note is the
+ * one sentence explaining why a name is being asked for at all, and a truncated explanation
+ * explains nothing.
+ */
+export function expandDetailText(
+  lines: readonly DetailLine[], width: number, max?: number,
+): DetailLine[] {
+  const out: DetailLine[] = []
+  /** Where each wrapped sentence starts and ends in `out` — a sentence is one unit, see below. */
+  const groups: { start: number; end: number }[] = []
+  for (const line of lines) {
+    if (line.kind !== 'text' || width <= 0) { out.push(line); continue }
+    const start = out.length
+    for (const piece of wrapText(line.value, width)) out.push({ ...line, value: piece })
+    groups.push({ start, end: out.length })
+  }
+  if (max === undefined) return out
+
+  // A wrapped sentence is ATOMIC. `fitDetailLines` cuts from the bottom, which for a wrapped note
+  // means stopping mid-clause — and half an explanation explains nothing while still spending the
+  // rows. So a note that cannot be shown WHOLE is not shown at all, and the pane gives those rows
+  // back to the facts. Walking backwards keeps every earlier index valid: removing a later group
+  // never moves an earlier one.
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const g = groups[i]!
+    if (g.end <= max) break
+    out.splice(g.start, g.end - g.start)
+  }
+  return out
 }
 
 // -----------------------------------------------------------------------------

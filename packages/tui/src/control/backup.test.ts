@@ -23,6 +23,10 @@ import {
   scheduleReposNote,
   toggleBackupLayer,
   formatElapsed,
+  githubRows,
+  expandDetailText,
+  type GithubRow,
+  type GithubSection,
 } from './backup'
 import type { BackupLayer, ControlBackupConfig, ControlBackupHarness, ControlBackupHistoryEntry } from './types'
 
@@ -171,10 +175,10 @@ function config(extra: Partial<ControlBackupConfig> = {}): ControlBackupConfig {
   }
 }
 
-test('the config rows are the eight facts, in order, and layers/schedule/scheduleLayers/history act', () => {
+test('the config rows are the nine facts, in order, and layers/schedule/scheduleLayers/history act', () => {
   const rows = backupConfigRows(config(), Date.now(), s, 4)
   expect(rows.map(r => r.key)).toEqual(
-    ['layers', 'dest', 'schedule', 'scheduleLayers', 'keep', 'secrets', 'last', 'history'],
+    ['layers', 'dest', 'github', 'schedule', 'scheduleLayers', 'keep', 'secrets', 'last', 'history'],
   )
   expect(rows.filter(r => r.action).map(r => r.key)).toEqual(['layers', 'schedule', 'scheduleLayers', 'history'])
 })
@@ -224,9 +228,11 @@ test('a backup that skipped paths says how many, and one that predates tracking 
 
 test('backupDetailLines mirrors the config rows, unabbreviated, as plain rows', () => {
   const lines = backupDetailLines(config(), Date.now(), s, 4)
-  expect(lines.length).toBe(8)
-  expect(lines.every(l => l.kind === 'row' && l.tone === 'plain')).toBe(true)
-  expect(lines[1]!.value).toBe('~/backups')
+  // The eight config facts, minus the github summary the block below supersedes, then the block.
+  const facts = lines.slice(0, 7)
+  expect(facts.every(l => l.kind === 'row' && l.tone === 'plain')).toBe(true)
+  expect(facts.map(l => l.label)).not.toContain(s.backupGithubLabel)
+  expect(facts[1]!.value).toBe('~/backups')
 })
 
 // -----------------------------------------------------------------------------
@@ -527,4 +533,162 @@ test('the name never gives way to zero while any width remains', () => {
 test('an empty row list or a non-positive width fits nothing', () => {
   expect(historyCells([], 40)).toEqual({ at: 0, layers: 0, size: 0, harnesses: 0, status: 0 })
   expect(historyCells(HISTORY_ROWS, 0)).toEqual({ at: 0, layers: 0, size: 0, harnesses: 0, status: 0 })
+})
+
+// -----------------------------------------------------------------------------
+// githubRows — the versioning block, and the one thing it may never carry
+// -----------------------------------------------------------------------------
+
+const CONFIGURED: GithubSection = {
+  configured: true,
+  url: 'https://github.com/you/agentistics-backups',
+  repo: 'you/agentistics-backups',
+  label: 'notebook',
+  keepRemote: 5,
+  deleteLocalAfterUpload: true,
+}
+
+const rowText = (rows: GithubRow[]) =>
+  rows.map(r => `${r.label} ${r.value} ${r.note ?? ''}`).join('\n')
+
+test('an unconfigured machine still gets a row — a block that renders nothing reads as broken', () => {
+  const rows = githubRows({ configured: false }, s)
+  expect(rows).toHaveLength(1)
+  expect(rowText(rows)).toContain('agentop backup github setup <url>')
+})
+
+test('a host that never reported the section at all is treated as unconfigured, not as blank', () => {
+  expect(githubRows(undefined, s)).toEqual(githubRows({ configured: false }, s))
+})
+
+test('a configured machine names its repository and what this machine is called', () => {
+  const rows = githubRows(CONFIGURED, s)
+  const text = rowText(rows)
+  expect(text).toContain('you/agentistics-backups')
+  expect(text).toContain('notebook')
+})
+
+test('the machine-name row carries the sentence that one repository holds several machines', () => {
+  const row = githubRows(CONFIGURED, s).find(r => r.key === 'machine')!
+  expect(row.value).toBe('notebook')
+  expect(row.note).toBe(s.backupGithubMachineNote)
+})
+
+test('keepRemote 0 says every release is kept, never a bare "0"', () => {
+  const kept = (n: number) => githubRows({ ...CONFIGURED, keepRemote: n }, s).find(r => r.key === 'keep')!.value
+  expect(kept(0)).toBe(s.backupGithubKeepValue(0))
+  expect(kept(0)).not.toBe('0')
+  expect(kept(5)).toBe(s.backupGithubKeepValue(5))
+})
+
+test('whether the local archive survives a confirmed upload is stated, both ways', () => {
+  const local = (on: boolean) =>
+    githubRows({ ...CONFIGURED, deleteLocalAfterUpload: on }, s).find(r => r.key === 'local')!.value
+  expect(local(true)).toBe(s.backupGithubLocalDeleted)
+  expect(local(false)).toBe(s.backupGithubLocalKept)
+  expect(local(true)).not.toBe(local(false))
+})
+
+// The rows are read off a `GithubSection`, which has no token field and must never grow one. This
+// asserts over the JOINED text rather than field by field, the same discipline
+// `backup-routes.test.ts` runs server-side: a field added later that happened to carry the
+// credential would sail through a key-by-key check.
+test('nothing token-shaped ever reaches a row, in either language', () => {
+  for (const lang of ['en', 'pt'] as const) {
+    const strings = controlStrings(lang)
+    const text = [
+      rowText(githubRows({ configured: false }, strings)),
+      rowText(githubRows(CONFIGURED, strings)),
+      rowText(githubRows({ ...CONFIGURED, keepRemote: 0, deleteLocalAfterUpload: false }, strings)),
+    ].join('\n')
+    expect(text).not.toMatch(/ghp_|gho_|ghs_|ghu_|ghr_|github_pat_/)
+    expect(text).not.toMatch(/token|senha|password|secret|segredo/i)
+  }
+})
+
+test('a token smuggled onto the section object is not drawn — the rows read named fields only', () => {
+  const smuggled = { ...CONFIGURED, token: 'ghp_0123456789abcdef' } as unknown as GithubSection
+  expect(rowText(githubRows(smuggled, s))).not.toContain('ghp_')
+})
+
+// -----------------------------------------------------------------------------
+// the block on screen — the config row's summary and the detail pane's section
+// -----------------------------------------------------------------------------
+
+test('the config pane carries a github row, configured or not', () => {
+  const off = backupConfigRows(config(), Date.now(), s, 0, { configured: false })
+  const on = backupConfigRows(config(), Date.now(), s, 0, CONFIGURED)
+  expect(off.find(r => r.key === 'github')!.value).toBe(s.backupGithubOff)
+  expect(on.find(r => r.key === 'github')!.value).toContain('you/agentistics-backups')
+})
+
+test('the github config row is read-only — it offers no verb the cockpit cannot perform', () => {
+  const row = backupConfigRows(config(), Date.now(), s, 0, CONFIGURED).find(r => r.key === 'github')!
+  expect(row.action).toBeUndefined()
+})
+
+test('the detail pane states the block once — a section, never the summary row repeated', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  expect(lines.filter(l => l.kind === 'section' && l.label === s.backupGithubLabel)).toHaveLength(1)
+  expect(lines.filter(l => l.kind === 'row' && l.label === s.backupGithubLabel)).toHaveLength(0)
+  const values = lines.map(l => l.value).join('\n')
+  expect(values).toContain('you/agentistics-backups')
+  expect(values).toContain('notebook')
+})
+
+test('the detail pane draws the block even when the host reported no section', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0)
+  expect(lines.some(l => l.kind === 'section' && l.label === s.backupGithubLabel)).toBe(true)
+  expect(lines.map(l => l.value).join('\n')).toContain('agentop backup github setup <url>')
+})
+
+test('the block is the LAST thing on the detail pane, so a short pane gives it up first', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  const start = lines.findIndex(l => l.kind === 'section' && l.label === s.backupGithubLabel)
+  const configLines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+    .slice(0, start)
+    .filter(l => l.kind === 'row')
+  expect(configLines.length).toBeGreaterThan(0)
+  expect(start).toBeGreaterThan(0)
+  // Nothing about the backup itself lives below the block.
+  expect(lines.slice(start).some(l => l.kind === 'row' && l.label === s.backupDestLabel)).toBe(false)
+})
+
+// -----------------------------------------------------------------------------
+// expandDetailText — prose is wrapped BEFORE the pane's budget is spent
+// -----------------------------------------------------------------------------
+
+test('a note too long for the pane becomes several lines rather than a truncated one', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  const expanded = expandDetailText(lines, 40)
+  const note = expanded.filter(l => l.kind === 'text')
+  expect(note.length).toBeGreaterThan(1)
+  expect(note.every(l => l.value.length <= 40)).toBe(true)
+  expect(note.map(l => l.value).join(' ')).toBe(s.backupGithubMachineNote)
+})
+
+test('rows, sections and blanks are left exactly as they were', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  const structural = (ls: readonly typeof lines[number][]) => ls.filter(l => l.kind !== 'text')
+  expect(structural(expandDetailText(lines, 40))).toEqual(structural(lines))
+})
+
+test('a non-positive width expands nothing — there is no line to wrap to', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  expect(expandDetailText(lines, 0)).toEqual(lines)
+})
+
+test('a note that cannot be shown whole is not shown at all — never cut off mid-clause', () => {
+  const lines = backupDetailLines(config(), Date.now(), s, 0, CONFIGURED)
+  const wanted = expandDetailText(lines, 40)
+  const noteRows = wanted.filter(l => l.kind === 'text').length
+  expect(noteRows).toBeGreaterThan(1)
+
+  // One row short of the whole note: the sentence goes, the facts above it stay.
+  const tight = expandDetailText(lines, 40, wanted.length - 1)
+  expect(tight.some(l => l.kind === 'text')).toBe(false)
+  expect(tight.filter(l => l.kind === 'row')).toEqual(lines.filter(l => l.kind === 'row'))
+
+  // Given exactly the rows it wants, the whole sentence survives.
+  expect(expandDetailText(lines, 40, wanted.length)).toEqual(wanted)
 })

@@ -82,6 +82,7 @@ import {
   performBackup, readBackupPrefs, measuredLayerSizes,
   writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
 } from './cli-backup'
+import { readGithubSection } from './backup-routes'
 import { omittedSecrets } from './backup/backup-plan'
 import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
 import { lastBackup, lastPerHarness, loadBackupHistory } from './backup/backup-store'
@@ -2508,10 +2509,14 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
     async backupStatus(): Promise<ControlBackupStatus> {
       const p = await readPreferences()
       const prefs = readBackupPrefs(p)
-      const [measured, consolidated, entries] = await Promise.all([
+      const [measured, consolidated, entries, github] = await Promise.all([
         measuredLayerSizes().catch(() => null),
         loadConsolidated().catch(() => new Map()),
         loadBackupHistory().catch(() => []),
+        // Undefined on a read failure, never `{configured:false}`: "we could not look" and "it is
+        // off" are different facts, and `githubRows` says the same honest sentence for both without
+        // this one having to pretend it knows which.
+        readGithubSection().catch(() => undefined),
       ])
 
       const sessionCounts: Partial<Record<HarnessId, number>> = {}
@@ -2584,6 +2589,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
           skipped: e.skipped,
           presence: e.presence,
         })),
+        github,
       }
     },
 

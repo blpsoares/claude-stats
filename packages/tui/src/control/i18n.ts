@@ -692,6 +692,41 @@ export interface ControlStrings {
   backupLastSkipped: (n: number) => string
 
   /**
+   * GitHub VERSIONING — the repository that holds this machine's backups as Releases. Not
+   * `backupGithubFits`, which is only the 2 GB-per-file indicator beside the format picker.
+   *
+   * Every string here is read-only on the cockpit: there is no verb this tab can honestly offer
+   * (setup needs a token; the label and retention are changed from Settings -> Backup), so the
+   * words carry the instruction instead of a control that would refuse.
+   */
+  backupGithubLabel: string
+  /** The config pane's summary when versioning is off, and the block's own row label for it. */
+  backupGithubOff: string
+  backupGithubVersioningLabel: string
+  /** The unconfigured block's ONE row — it names the command that turns versioning on, because a
+   *  section that renders nothing reads as broken. */
+  backupGithubOffValue: string
+  /** `owner/repo` — the repository holding the releases. */
+  backupGithubRepoLabel: string
+  /** What THIS machine is called in its release tags. */
+  backupGithubMachineLabel: string
+  /** The one fact the name cannot carry on its own: several machines can share one repository, and
+   *  this is what tells their backups apart. Also names where it is changed, since the cockpit
+   *  cannot change it. */
+  backupGithubMachineNote: string
+  /** How many of this machine's releases are kept. `0` is "all of them", never a bare zero — a
+   *  confident `0` there reads as "none are kept", the exact opposite of what it means. */
+  backupGithubKeepLabel: string
+  backupGithubKeepValue: (n: number) => string
+  /** Whether the local archive survives a CONFIRMED upload — both directions said in words. */
+  backupGithubLocalLabel: string
+  backupGithubLocalDeleted: string
+  backupGithubLocalKept: string
+  /** The config pane's one-line summary: the repository and this machine's name. Composed here
+   *  rather than concatenated at the call site, same as `backupKeepValue`. */
+  backupGithubSummary: (repo: string, label: string) => string
+
+  /**
    * The history viewer — every recorded backup, paginated, newest first. Opened from the config
    * pane's `history` row; see `control/backup.ts`'s `historyRows`/`paginateHistory`.
    */
@@ -1254,6 +1289,23 @@ const EN: ControlStrings = {
   backupLastUnknown: '(unknown whether anything was skipped)',
   backupLastSkipped: n => `${n} skipped`,
 
+  backupGithubLabel: 'github',
+  backupGithubOff: 'off',
+  backupGithubVersioningLabel: 'versioning',
+  backupGithubOffValue: 'off \u2014 `agentop backup github setup <url>` turns it on',
+  backupGithubRepoLabel: 'repository',
+  backupGithubMachineLabel: 'this machine',
+  backupGithubMachineNote: 'Several machines can back up to one repository \u2014 this name is what '
+    + 'tells their backups apart. Change it in Settings \u2192 Backup on this machine\u2019s dashboard.',
+  backupGithubKeepLabel: 'releases kept',
+  backupGithubKeepValue: n => (n === 0
+    ? 'every release of this machine'
+    : `${n} release${n === 1 ? '' : 's'} of this machine`),
+  backupGithubLocalLabel: 'local archive',
+  backupGithubLocalDeleted: 'deleted once the upload is confirmed',
+  backupGithubLocalKept: 'kept after the upload',
+  backupGithubSummary: (repo, label) => `${repo} \u00b7 ${label}`,
+
   paneHistory: 'history',
   backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
   actBackupViewHistory: 'View history',
@@ -1789,6 +1841,24 @@ const PT: ControlStrings = {
   backupLastOk: 'ok',
   backupLastUnknown: '(desconhecido se algo foi pulado)',
   backupLastSkipped: n => `${n} pulado${n === 1 ? '' : 's'}`,
+
+  backupGithubLabel: 'github',
+  backupGithubOff: 'desligado',
+  backupGithubVersioningLabel: 'versionamento',
+  backupGithubOffValue: 'desligado \u2014 `agentop backup github setup <url>` liga',
+  backupGithubRepoLabel: 'reposit\u00f3rio',
+  backupGithubMachineLabel: 'esta m\u00e1quina',
+  backupGithubMachineNote: 'V\u00e1rias m\u00e1quinas podem fazer backup no mesmo reposit\u00f3rio \u2014 '
+    + 'este nome \u00e9 o que distingue os backups de cada uma. Mude em Configura\u00e7\u00f5es \u2192 Backup '
+    + 'no dashboard desta m\u00e1quina.',
+  backupGithubKeepLabel: 'releases mantidas',
+  backupGithubKeepValue: n => (n === 0
+    ? 'todas as releases desta m\u00e1quina'
+    : `${n} release${n === 1 ? '' : 's'} desta m\u00e1quina`),
+  backupGithubLocalLabel: 'arquivo local',
+  backupGithubLocalDeleted: 'apagado assim que o envio \u00e9 confirmado',
+  backupGithubLocalKept: 'mantido depois do envio',
+  backupGithubSummary: (repo, label) => `${repo} \u00b7 ${label}`,
 
   paneHistory: 'histórico',
   backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
