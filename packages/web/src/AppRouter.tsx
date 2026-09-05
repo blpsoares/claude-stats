@@ -11,6 +11,7 @@ const RepoDetailPage = lazy(() => import('./pages/RepoDetailPage'))
 const ActionsPage = lazy(() => import('./pages/ActionsPage'))
 const MembersPage = lazy(() => import('./pages/MembersPage'))
 const TagsPage = lazy(() => import('./pages/TagsPage'))
+const TasksPage = lazy(() => import('./pages/TasksPage'))
 const TagDetailPage = lazy(() => import('./pages/TagDetailPage'))
 const ToolsPage = lazy(() => import('./pages/ToolsPage'))
 const CustomPage = lazy(() => import('./pages/CustomPage'))
@@ -69,6 +70,8 @@ export default function AppRouter() {
           <Route path="repositories/actions" element={<Suspense fallback={<PageFallback />}><ActionsPage /></Suspense>} />
           <Route path="repo/:id" element={<Suspense fallback={<PageFallback />}><RepoDetailPage /></Suspense>} />
           <Route path="members" element={<Suspense fallback={<PageFallback />}><MembersPage /></Suspense>} />
+          <Route path="tasks" element={<Suspense fallback={<PageFallback />}><TasksPage /></Suspense>} />
+          <Route path="tasks/:id" element={<Suspense fallback={<PageFallback />}><TasksPage /></Suspense>} />
           <Route path="tags" element={<Suspense fallback={<PageFallback />}><TagsPage /></Suspense>} />
           <Route path="tags/:id" element={<Suspense fallback={<PageFallback />}><TagDetailPage /></Suspense>} />
           <Route path="tools" element={<Suspense fallback={<PageFallback />}><ToolsPage /></Suspense>} />

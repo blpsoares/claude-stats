@@ -21,7 +21,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from './file-lock'
-import type { Attempt, AttemptStatus, Task, TaskBook, TaskStatus } from './task-model'
+import type {
+  Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskComment, TaskFile, TaskStatus,
+} from './task-model'
 
 export interface TaskPatch {
   title?: string
@@ -39,6 +41,9 @@ export interface AttemptPatch {
   updatedAt?: string
 }
 
+const EMPTY_BOOK = (): TaskBook =>
+  ({ tasks: [], attempts: [], comments: [], subtasks: [], files: [] })
+
 export interface TaskStore {
   read(): Promise<TaskBook>
   upsertTask(task: Task): Promise<void>
@@ -46,6 +51,18 @@ export interface TaskStore {
   /** False when no record carries that id — never a silent success. */
   patchTask(id: string, patch: TaskPatch): Promise<boolean>
   patchAttempt(id: string, patch: AttemptPatch): Promise<boolean>
+  addComment(c: TaskComment): Promise<void>
+  upsertSubtask(t: Subtask): Promise<void>
+  addFile(f: TaskFile): Promise<void>
+  /** Removes the RECORD. The bytes on disk are the caller's to unlink — see `task-files.ts`. */
+  removeFile(id: string): Promise<boolean>
+  /**
+   * Delete a task and everything hanging off it.
+   *
+   * Sessions are NOT touched: a row's `taskId` becomes a dangling reference, which reads as
+   * "no attempt named" rather than vanishing. Deleting a board entry must never delete work.
+   */
+  removeTask(id: string): Promise<boolean>
 }
 
 /** Keep only records shaped enough to be used safely downstream. */
@@ -99,6 +116,52 @@ function sanitizeAttempt(raw: unknown): Attempt | null {
   }
 }
 
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' && v ? v : undefined
+}
+
+/** A comment with no body says nothing; one with no task belongs to nothing. Both are dropped. */
+function sanitizeComment(raw: unknown): TaskComment | null {
+  if (!raw || typeof raw !== 'object') return null
+  const c = raw as Record<string, unknown>
+  const id = str(c.id); const taskId = str(c.taskId); const body = str(c.body)
+  if (!id || !taskId || !body) return null
+  return {
+    id, taskId, body,
+    author: str(c.author) ?? 'unknown',
+    createdAt: str(c.createdAt) ?? new Date(0).toISOString(),
+  }
+}
+
+function sanitizeSubtask(raw: unknown): Subtask | null {
+  if (!raw || typeof raw !== 'object') return null
+  const t = raw as Record<string, unknown>
+  const id = str(t.id); const taskId = str(t.taskId); const title = str(t.title)
+  if (!id || !taskId || !title) return null
+  return {
+    id, taskId, title,
+    done: t.done === true,
+    createdAt: str(t.createdAt) ?? new Date(0).toISOString(),
+    updatedAt: str(t.updatedAt) ?? new Date(0).toISOString(),
+  }
+}
+
+function sanitizeFile(raw: unknown): TaskFile | null {
+  if (!raw || typeof raw !== 'object') return null
+  const f = raw as Record<string, unknown>
+  const id = str(f.id); const taskId = str(f.taskId); const name = str(f.name)
+  if (!id || !taskId || !name) return null
+  return {
+    id, taskId, name,
+    // A size that is not a finite number would render as NaN beside a real one; 0 is honest here
+    // because the bytes are on disk either way and the listing is an index, not the measurement.
+    size: typeof f.size === 'number' && Number.isFinite(f.size) ? f.size : 0,
+    ...(str(f.kind) ? { kind: str(f.kind)! } : {}),
+    ...(str(f.author) ? { author: str(f.author)! } : {}),
+    createdAt: str(f.createdAt) ?? new Date(0).toISOString(),
+  }
+}
+
 export function createTaskStore(file: string): TaskStore {
   // One in-process writer. Each mutation appends to this chain, so read-modify-write sequences run
   // strictly one after another even when several land at once.
@@ -114,20 +177,24 @@ export function createTaskStore(file: string): TaskStore {
       text = await readFile(file, 'utf8')
     } catch {
       corrupt = false
-      return { tasks: [], attempts: [] }
+      return EMPTY_BOOK()
     }
     try {
       const raw = JSON.parse(text) as Record<string, unknown>
       corrupt = false
-      const tasks = Array.isArray(raw.tasks) ? raw.tasks : []
-      const attempts = Array.isArray(raw.attempts) ? raw.attempts : []
+      const arr = (v: unknown) => (Array.isArray(v) ? v : [])
       return {
-        tasks: tasks.map(sanitizeTask).filter((t): t is Task => t !== null),
-        attempts: attempts.map(sanitizeAttempt).filter((a): a is Attempt => a !== null),
+        tasks: arr(raw.tasks).map(sanitizeTask).filter((t): t is Task => t !== null),
+        attempts: arr(raw.attempts).map(sanitizeAttempt).filter((a): a is Attempt => a !== null),
+        // Absent on a book written before these existed, which is why every read goes through
+        // `arr` rather than trusting the field to be there.
+        comments: arr(raw.comments).map(sanitizeComment).filter((c): c is TaskComment => c !== null),
+        subtasks: arr(raw.subtasks).map(sanitizeSubtask).filter((t): t is Subtask => t !== null),
+        files: arr(raw.files).map(sanitizeFile).filter((f): f is TaskFile => f !== null),
       }
     } catch {
       corrupt = true
-      return { tasks: [], attempts: [] }
+      return EMPTY_BOOK()
     }
   }
 
@@ -184,6 +251,46 @@ export function createTaskStore(file: string): TaskStore {
         if (!target) return false
         const next = { ...target, ...patch }
         await write({ ...book, tasks: book.tasks.map(t => (t.id === id ? next : t)) })
+        return true
+      })
+    },
+    addComment(c) {
+      return enqueue(async () => {
+        const book = await read()
+        await write({ ...book, comments: [...book.comments, c] })
+      })
+    },
+    upsertSubtask(t) {
+      return enqueue(async () => {
+        const book = await read()
+        await write({ ...book, subtasks: [...book.subtasks.filter(x => x.id !== t.id), t] })
+      })
+    },
+    addFile(f) {
+      return enqueue(async () => {
+        const book = await read()
+        await write({ ...book, files: [...book.files, f] })
+      })
+    },
+    removeFile(id) {
+      return enqueue(async () => {
+        const book = await read()
+        if (!book.files.some(f => f.id === id)) return false
+        await write({ ...book, files: book.files.filter(f => f.id !== id) })
+        return true
+      })
+    },
+    removeTask(id) {
+      return enqueue(async () => {
+        const book = await read()
+        if (!book.tasks.some(t => t.id === id)) return false
+        await write({
+          tasks: book.tasks.filter(t => t.id !== id),
+          attempts: book.attempts.filter(a => a.taskId !== id),
+          comments: book.comments.filter(c => c.taskId !== id),
+          subtasks: book.subtasks.filter(t => t.taskId !== id),
+          files: book.files.filter(f => f.taskId !== id),
+        })
         return true
       })
     },

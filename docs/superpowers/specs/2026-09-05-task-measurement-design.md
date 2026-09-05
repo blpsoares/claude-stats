@@ -335,12 +335,123 @@ arrays, EN/PT strings, and verification at 390px. The cockpit half budgets its r
   answer for itself.
 - **`cost-state` adoption.** Small, independent, non-blocking; own PR. Subject to §5 rule 2.
 
-## 10. Deliberately not in scope
+## 10. The board — comments, subtasks, files, and who is working on what
 
-Kanban columns, assignees, comment threads, notifications, sprints, permissions. None of the three
-metrics depends on any of them; each is a permanent maintenance surface across cockpit, web, VS Code,
-EN/PT and mobile; and the cheap answer if the need appears is to **link** a task to an existing
-issue, not to reimplement an issue tracker. Revisit only with evidence from real use of §3.
+An earlier draft of this section argued the board out of scope: build the measurement, link a task
+to an existing issue tracker, and never reimplement one. **That was overruled, and the reason it was
+wrong is worth writing down rather than merely reversing.** The argument rested on "you already have
+a board" — true of THIS repository and false of the product, which exists for someone working across
+many repositories, harnesses and machines. A GitHub Project is per organisation; it cannot hold a
+task that spans two repos, cannot know which sessions are touching it, and cannot answer what the
+work cost. And the coordination problem is not a person's — it is the ASSISTANTS': several of them
+run at once, and each needs to know what the others are doing and where the shared documents are.
+An issue tracker they cannot see is not a board.
+
+So the task carries:
+
+- **Title and description.** The description is optional. A task nobody described is still a task.
+- **Comments** — the channel a person and an assistant share. `author` is free text (a name, a
+  session handle, an agent label): a closed enum would mean an assistant could not say who it was
+  without a schema change, and the entire point is that anything working on the task leaves a trace.
+- **Subtasks** — a checkbox, deliberately NOT a second Task. A subtask has no attempts, no sessions
+  and no cost; making it a Task would mean two things called a task with different arithmetic.
+- **Files** — the specs, plans and notes assistants write. The BYTES live under the data dir; the
+  book holds only an index, so it stays small enough to read on every poll and a failed write leaves
+  no row claiming a file exists.
+- **Its sessions, visible** — which conversations are attached to this task right now, so any
+  assistant reading the board knows what the others are on.
+
+**Deleting a task never deletes work.** Its comments, subtasks and files go with it; the SESSIONS do
+not. A row's `taskId` becomes a dangling reference and reads as unattributed — a board entry is a
+label on work, and removing the label may not remove the work.
+
+## 10a. Starting a session names its task
+
+The task list is a searchable dropdown at the moment a session is created, with **create a new one**
+inside it. That is the only moment attribution is free: asked for later it is a chore, and inferred
+later it is a guess (§4). The wizard and `session batch` resolve the same book, so a task created
+from either is the same task.
+
+## 10b. What the detail screen answers
+
+Beyond §5's cost / rounds / sessions, all of it from what the sessions actually reported and `N/A`
+wherever they reported nothing:
+
+- **models** used, ranked, with the tokens each carried;
+- **harnesses** used, likewise;
+- **agents** — subagent invocations across the task's sessions (claude only records these);
+- **tokens**, as the four counters;
+- **files touched, lines added/removed, commits, tool errors**;
+- **delivery time** in hours and days — `deliveredAt − createdAt`, and **null while the task is
+  open**. A duration "so far" placed beside a delivered task's duration reads as the same
+  measurement and is not.
+
+## 10c. Where the board is STORED, and why not the SQLite that is already here
+
+**Not `cache.db`.** The SQLite this application already carries is `PARSE_CACHE_FILE`, and its own
+header states the rule: *"DERIVED STATE ONLY — every row is recomputable from the file it names, so
+deleting this file may only ever cost one slow build. Never store anything here that is not also on
+disk somewhere else."* A task board is the opposite of derived: a comment an assistant wrote is
+recomputable from nothing. Putting it there would make `rm cache.db` — a documented, safe act —
+destroy a person's board.
+
+**So: JSON, `<data dir>/tasks.json`**, the shape `tags-local-store.ts` and `preferences.ts` already
+established for local source-of-truth state, with the same durability rules (temp-file-then-rename,
+corrupt bytes quarantined, cross-process `withFileLock`) and ISO strings for timestamps, which is
+what CLAUDE.md's date rule prescribes for the local stores.
+
+**When that stops being right, and what replaces it.** The book is rewritten whole on every
+mutation. That is correct for hundreds of tasks and comments and wrong for tens of thousands; the
+first collection to get there will be comments, then files. The migration when it comes is **a
+SQLite of its own** (`tasks.db`, via `bun:sqlite`, which the antigravity adapter already uses), NOT
+a table inside the parse cache — the derived/durable line is the whole point. Nothing in the reader
+API (`task-store.ts`) exposes the file format, so the swap is one module.
+
+**File bytes never go in either.** They live at `<data dir>/task-files/<taskId>/<fileId>` and the
+book holds only an index — a small book stays cheap to read on every poll, and a failed write leaves
+no row claiming a file exists. The path is built from MINTED ids only; the user's filename is kept
+in the record and never on disk, because a name from a browser upload is attacker-controlled and
+`../../.ssh/authorized_keys` is a path.
+
+## 10d. The central — the machine decides which tasks travel
+
+The central aggregates many machines; a board is per machine until its owner says otherwise. The
+model follows `team-uploader.ts` exactly, and adds ONE new decision.
+
+- **Per-task opt-in.** `Task.shared?: boolean`, absent reading as NOT shared. This is deliberately
+  NOT the `shareMode` migration rule (absence there reads as denylist, i.e. share): a board carries
+  descriptions, comments and file names a person wrote for themselves, and defaulting those to
+  travel would publish text nobody offered. Same reasoning as `chat-gate.ts`, where absent reads OFF.
+- **The repository rules still bind.** A shared task whose sessions sit in a repository this
+  connection withholds ships its own record and NONE of those sessions — `sessionShared` decides
+  that half, unchanged. The task then reports a smaller session count to the central than it shows
+  locally, and **says so**, exactly as `withheld` already does for the fleet.
+- **Text is redacted at BOTH boundaries.** Title, description and comment bodies go through
+  `redactSecrets` on the member (so a pasted credential never crosses the wire) and again on the
+  central (a mixed-version fleet's old machine is exactly the one that leaks) — the rule
+  `first_prompt` already follows.
+- **File bytes do not travel in this phase.** The central sees that N files exist and their names;
+  fetching one is an on-demand pull over the reverse channel, the way raw chat already works, and is
+  its own piece of work.
+- **`tasks` is a collection keyed by machine, so it goes in `rotate-identity.ts`.** That module's
+  header records this as "the same bug three times already": a collection keyed by `memberId` and
+  not enumerated there is silently stranded when a token rotates. Its timestamps go in
+  `DATE_FIELDS` with a `DATE_MIGRATION_VERSION` bump, or they stay strings in Mongo forever while
+  the writing code looks correct.
+
+**On the central's board**, tasks are grouped BY MACHINE (and therefore by the person it belongs to)
+with a switch to see them all at once — the same shape the members panel already uses. A machine
+that shares nothing is present in the list and empty, which is a different fact from having no
+tasks, and reads as such.
+
+## 10e. Repositories → Tasks
+
+The Repositories page gains a **Tasks** tab beside Overview / Members / Actions / Sessions /
+Dynamic Workflows, listing the tasks that touched this repository — the ones in flight and the ones
+already delivered — with every metric §10b defines. A task belongs to a repository through its
+SESSIONS' `git_remote`, never through a field somebody typed: that is the same rule the repository
+dimension already follows (`normalizeGitRemote` is the only key), and it is what makes a task that
+spans two repositories appear correctly under both.
 
 ## 11. Testing
 
@@ -365,3 +476,57 @@ Pure modules, tested without spawning anything, following the repo's existing sh
 3. **Harness formats are undocumented and move.** Gemini began recording tokens in August 2026;
    `cost-state` is in 77% of transcripts, not 100%. Every reader degrades to `N/A`, never to a
    fabricated zero.
+
+---
+
+## 13. Delivery checklist
+
+Every line is a thing that must be true of the shipped feature, in the order it was asked for.
+
+**The measurement spine**
+- [ ] Task → Attempt → Session(s), with the attempt carrying the configuration asked for at spawn
+- [ ] Attribution stamped at spawn and inherited by resume / attach / takeover / reopen
+- [ ] First-sighting claim for the harnesses with no `assignId`, refusing on any ambiguity
+- [ ] Rollup: cost, rounds, sessions used, sessions linked, tokens, active time
+- [ ] Provenance stated: how many sessions a cost covers, measured vs estimated
+- [ ] Copilot credits kept out of the money, `mixedCurrency` refusing a single total
+- [ ] `N/A` everywhere a harness reported nothing — never a `0`
+- [ ] Delivery marker: manual, with git evidence attached; `abandoned` first-class and evidence-free
+
+**The board**
+- [ ] Task has title + optional description
+- [ ] Comments, with a free-text author
+- [ ] Subtasks, as checkboxes
+- [ ] Files: upload, list, download, delete — bytes on disk, index in the book
+- [ ] The task's sessions listed on its screen
+- [ ] Deleting a task removes its board and leaves its sessions alone
+
+**The metrics**
+- [ ] Models ranked, with tokens
+- [ ] Harnesses ranked, with tokens
+- [ ] Agent runs
+- [ ] Tokens as the four counters
+- [ ] Files / lines / commits / tool errors
+- [ ] Delivery time in hours and days, null while open
+
+**The surfaces**
+- [ ] `agentop task` — ls / show / deliver / abandon
+- [ ] `GET`/`POST` `/api/tasks`, guarded in `capability-guard.ts`
+- [ ] Web: task list, task detail with comments / subtasks / files / sessions, attempt comparison
+- [ ] Web mobile: nav entry in BOTH arrays, 44px touch targets, no horizontal scroll at 390px
+- [ ] Session creation: task dropdown with search + create-new
+- [ ] MCP: tools for the board AND for session management
+
+**Storage and the central**
+- [ ] Board in `tasks.json`, never in the parse cache (`cache.db` is derived state only)
+- [ ] File bytes under `task-files/<taskId>/<fileId>`, paths built from minted ids only
+- [ ] `Task.shared`, absent reading as NOT shared
+- [ ] Repository sharing rules still bind a shared task's sessions; the shortfall is stated
+- [ ] Title / description / comments redacted at both boundaries
+- [ ] `tasks` added to `rotate-identity.ts` and its dates to `DATE_FIELDS`
+- [ ] Central board grouped by machine, with a see-all switch
+- [ ] Repositories → Tasks tab, keyed by the sessions' `git_remote`
+
+**The rules that must still hold**
+- [ ] One resolution shared by CLI, HTTP, web and MCP — no surface computes its own rollup
+- [ ] `bun test` green, `tsc --noEmit` clean, `build:binary` compiles

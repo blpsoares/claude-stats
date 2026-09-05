@@ -61,9 +61,56 @@ export interface Attempt {
   deliveredAt?: string
 }
 
+/**
+ * A comment on a task — the channel a person and an assistant share.
+ *
+ * `author` is free text on purpose: it is a person's name, or a session handle, or an agent's
+ * label. A closed enum here would mean an assistant could not say who it was without a schema
+ * change, and the whole point is that anything working on the task can leave a trace.
+ */
+export interface TaskComment {
+  id: string
+  taskId: string
+  author: string
+  body: string
+  createdAt: string
+}
+
+/** A subtask: a checkbox, not a second Task. It has no attempts, no sessions and no cost. */
+export interface Subtask {
+  id: string
+  taskId: string
+  title: string
+  done: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * A file belonging to the task — a spec, a plan, a screenshot an assistant produced.
+ *
+ * The BYTES live on disk under the data dir; this record is the index. Kept apart so the book
+ * stays a small JSON that is cheap to read on every poll, and so a file that fails to write leaves
+ * no phantom row claiming it exists.
+ */
+export interface TaskFile {
+  id: string
+  taskId: string
+  name: string
+  /** Bytes on disk. Recorded so a listing need not stat every file. */
+  size: number
+  /** Free text: "spec", "plan", "screenshot", "log". Not an enum — see `TaskComment.author`. */
+  kind?: string
+  author?: string
+  createdAt: string
+}
+
 export interface TaskBook {
   tasks: Task[]
   attempts: Attempt[]
+  comments: TaskComment[]
+  subtasks: Subtask[]
+  files: TaskFile[]
 }
 
 function shortHex(input: string): string {
@@ -80,6 +127,18 @@ export function newTaskId(): string {
 
 export function newAttemptId(): string {
   return mint('a')
+}
+
+export function newCommentId(): string {
+  return mint('c')
+}
+
+export function newSubtaskId(): string {
+  return mint('s')
+}
+
+export function newFileId(): string {
+  return mint('f')
 }
 
 /**

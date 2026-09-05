@@ -1078,6 +1078,29 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // The task board. `capability-guard.ts` has already refused these on an exposed profile; the
+    // handlers hold no arithmetic of their own (see `task-web.ts`).
+    if (url.pathname === '/api/tasks' && req.method === 'GET') {
+      const { listTasks } = await import('./sessions/task-web')
+      return json(await listTasks())
+    }
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
+      const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      const { showTask } = await import('./sessions/task-web')
+      const found = await showTask(ref)
+      if (!found) return json({ error: 'no_such_task' }, 404)
+      return json(found)
+    }
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'POST') {
+      const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      const body = await req.json().catch(() => ({})) as { status?: string }
+      const to = body.status === 'delivered' || body.status === 'abandoned' ? body.status : null
+      if (!to) return json({ error: 'bad_status' }, 400)
+      const { markTask } = await import('./sessions/task-web')
+      const out = await markTask(ref, to)
+      return json(out, out.ok ? 200 : 404)
+    }
+
     if (url.pathname === '/api/fleet' && req.method === 'GET') {
       const { readFleet, fleetLang } = await import('./sessions/fleet-web')
       // The ARRANGEMENT is opt-in: a caller that sends `view=1` gets the fleet grouped, ordered and

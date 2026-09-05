@@ -12,7 +12,7 @@ import {
   PanelLeft, RefreshCw, Server, Settings, Shield, ShieldCheck,
   SlidersHorizontal, Sparkles, Sun, Tag as TagIcon, Target, TerminalSquare,
   TrendingUp, Trophy, Users, Wrench, X, Zap,
-  ZoomIn,
+  ZoomIn, ClipboardList,
 } from 'lucide-react'
 import { useData, useDerivedStats, LIVE_INTERVAL_OPTIONS, LIVE_INTERVAL_OPTIONS_RISKY } from './hooks/useData'
 import { usePlanBasis } from './hooks/usePlanBasis'
@@ -736,6 +736,7 @@ function MobileBottomNav({
       ? [{ key: 'members', label: pt ? 'Membros' : 'Members', icon: Users, onClick: () => { closeSheet(); navigate('/members') }, active: location.pathname.startsWith('/members') } as Tile]
       : []),
     { key: 'top', label: pt ? 'Top' : 'Top', icon: Trophy, onClick: () => { closeSheet(); navigate('/top') }, active: location.pathname.startsWith('/top') },
+    { key: 'tasks', label: 'Entregas', icon: ClipboardList, onClick: () => { closeSheet(); navigate('/tasks') }, active: location.pathname.startsWith('/tasks') },
     { key: 'tags', label: 'Tags', icon: TagIcon, onClick: () => { closeSheet(); navigate('/tags') }, active: location.pathname.startsWith('/tags') },
     { key: 'custom', label: pt ? 'Personalizado' : 'Custom', icon: Layers, onClick: () => { closeSheet(); navigate('/custom') }, active: location.pathname.startsWith('/custom') },
     { key: 'export', label: pt ? 'Exportar' : 'Export', icon: FileDown, onClick: () => { closeSheet(); navigate('/export') }, active: location.pathname.startsWith('/export') },
@@ -1103,6 +1104,7 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, o
     { to: '/repositories', labelPt: 'Repositórios', labelEn: 'Repositories', icon: <GitBranch size={17} /> },
     // Members/machines only exist on a central — a solo machine has exactly one of each.
     ...(isCentral ? [{ to: '/members', labelPt: 'Membros', labelEn: 'Members', icon: <Users size={17} /> }] : []),
+    { to: '/tasks',     labelPt: 'Entregas',     labelEn: 'Deliveries',   icon: <ClipboardList size={17} /> },
     { to: '/tags',      labelPt: 'Tags',         labelEn: 'Tags',         icon: <TagIcon size={17} /> },
     { to: '/tools',     labelPt: 'Ferramentas',  labelEn: 'Tools',        icon: <Wrench size={17} /> },
     { to: '/custom',    labelPt: 'Personalizado',labelEn: 'Custom',       icon: <Layers size={17} /> },
