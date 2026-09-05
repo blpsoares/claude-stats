@@ -137,3 +137,48 @@ export function buildReleaseBody(input: ReleaseBodyInput): string {
       + 'body is what a restore verifies against.',
   ].join('\n')
 }
+
+/** The fields wave G3's restore reads back out of a release body — the reverse of
+ *  `buildReleaseBody`, over the SAME lines, so the two can never drift apart silently: a field
+ *  added to one and not the other fails `backup-github.test.ts`'s round-trip check rather than
+ *  shipping a restore that cannot find what the upload wrote. */
+export type ReleaseSummary = ReleaseBodyInput
+
+function matchLine(body: string, label: string): string | null {
+  const m = body.match(new RegExp(`^- ${label}: (.+)$`, 'm'))
+  return m ? m[1]!.trim() : null
+}
+
+/**
+ * Parse a release body `buildReleaseBody` produced. Returns `null` when the body is not shaped
+ * like one this module wrote — a hand-made release, or one from an incompatible future version —
+ * so the caller can refuse rather than restore from a summary it invented by guessing.
+ */
+export function parseReleaseBody(body: string): ReleaseSummary | null {
+  const createdAt = matchLine(body, 'created')
+  const hostname = matchLine(body, 'host')
+  const layersRaw = matchLine(body, 'layers')
+  const harnessesRaw = matchLine(body, 'harnesses')
+  const sessionsRaw = matchLine(body, 'sessions')
+  const sizeRaw = matchLine(body, 'size')
+  const sha256Raw = matchLine(body, 'sha256')
+  if (!createdAt || !hostname || !layersRaw || !harnessesRaw || !sessionsRaw || !sizeRaw || !sha256Raw) {
+    return null
+  }
+
+  const sizeMatch = sizeRaw.match(/\((\d+) bytes\)/)
+  const sha256Match = sha256Raw.match(/`([0-9a-f]+)`/i)
+  const sessionCount = Number(sessionsRaw)
+  const archiveBytes = sizeMatch ? Number(sizeMatch[1]) : NaN
+  if (!sizeMatch || !sha256Match || !Number.isFinite(sessionCount) || !Number.isFinite(archiveBytes)) return null
+
+  return {
+    createdAt,
+    hostname,
+    layers: layersRaw.split(',').map(s => s.trim()).filter(Boolean) as BackupLayer[],
+    harnesses: harnessesRaw.split(',').map(s => s.trim()).filter(Boolean) as HarnessId[],
+    sessionCount,
+    archiveBytes,
+    sha256: sha256Match[1]!,
+  }
+}

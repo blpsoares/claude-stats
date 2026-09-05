@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test'
 import {
   GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict,
-  isBackupTag, releaseTag, tooLargeUploadMessage, uploadVerdict,
+  isBackupTag, parseReleaseBody, releaseTag, tooLargeUploadMessage, uploadVerdict,
 } from './backup-github'
 import type { BackupLayer } from './backup-plan'
 
@@ -97,4 +97,35 @@ test('the body carries layers, harnesses, session count, byte size and the sha25
   expect(body).toContain('2026-09-05T04:07:03Z')
   expect(body).toContain('my-laptop')
   expect(body).toContain('agentop restore')
+})
+
+// --- parseReleaseBody — wave G3 reads back exactly what buildReleaseBody wrote ---
+
+test('parseReleaseBody round-trips every field buildReleaseBody wrote', () => {
+  const input = {
+    layers: ['metrics', 'raw'] as BackupLayer[],
+    harnesses: ['claude', 'codex'] as const,
+    sessionCount: 42,
+    archiveBytes: 123_456,
+    sha256: 'a'.repeat(64),
+    createdAt: '2026-09-05T04:07:03Z',
+    hostname: 'my-laptop',
+  }
+  const body = buildReleaseBody({ ...input, harnesses: [...input.harnesses] })
+  const parsed = parseReleaseBody(body)
+  expect(parsed).toEqual({ ...input, harnesses: [...input.harnesses] })
+})
+
+test('parseReleaseBody refuses a body with no recognisable summary', () => {
+  expect(parseReleaseBody('# Just a release\n\nSome notes I typed by hand.')).toBeNull()
+  expect(parseReleaseBody('')).toBeNull()
+})
+
+test('parseReleaseBody refuses a body missing one required field', () => {
+  const body = buildReleaseBody({
+    layers: ['metrics'], harnesses: ['claude'], sessionCount: 1, archiveBytes: 10,
+    sha256: 'b'.repeat(64), createdAt: '2026-01-01T00:00:00Z', hostname: 'x',
+  })
+  const withoutSha = body.split('\n').filter(l => !l.startsWith('- sha256:')).join('\n')
+  expect(parseReleaseBody(withoutSha)).toBeNull()
 })

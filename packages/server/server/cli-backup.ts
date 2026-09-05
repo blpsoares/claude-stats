@@ -17,7 +17,7 @@ import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, writePreferences, type Preferences } from './preferences'
 import { CURRENT_VERSION } from './version'
-import { cliStrings, resolveLang } from './cli-i18n'
+import { cliStrings, resolveLang, type CliStrings } from './cli-i18n'
 import { BACKUP_LAYERS, planSources, withMetrics, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backup/backup-size'
 import { lastBackup, lastPerHarness, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
@@ -28,10 +28,14 @@ import { planRepos } from './backup/restore-plan'
 import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState, restoreStateFile } from './backup/restore'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
-import { maskedInput } from './cli-ui'
+import { confirm, maskedInput } from './cli-ui'
+import { parseRepoUrl, repoUrlHost } from './backup/github-api'
 import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
 import { syncBackupToGithub } from './backup/github-upload'
+import { downloadBackupRelease, listBackupReleases } from './backup/github-restore'
+import type { ReleaseSummary } from './backup/backup-github'
+import type { GithubBackupConfig } from './backup/github-store'
 
 const DEFAULT_LAYERS: BackupLayer[] = ['metrics', 'repos']
 const DEFAULT_KEEP = 7
@@ -267,7 +271,8 @@ const USAGE = `Usage:
   agentop backup status
   agentop backup github setup <url>
   agentop backup github status
-  agentop restore <archive> [--repos] [--only <repo>]
+  agentop restore <archive|repository-url> [--repos] [--only <repo>] [--release <tag>]
+  agentop restore github --list <repository-url>
 
 Carry this machine's whole agentistics history to another one.
 
@@ -285,7 +290,13 @@ Carry this machine's whole agentistics history to another one.
 
   \`github setup <url>\` connects a PRIVATE GitHub repository to hold versioned backups (asks for a
   token, never echoed). The repository must already be private and the token must be able to push
-  to it — both are checked before anything is written. \`github status\` prints what is configured.`
+  to it — both are checked before anything is written. \`github status\` prints what is configured.
+
+  \`agentop restore <repository-url>\` is the path back on a machine that has nothing but the URL:
+  it asks for a token if none is stored, lists releases, shows what would be downloaded and asks,
+  verifies the sha256 against the release body before touching anything, and only then hands off to
+  the ordinary restore above. \`--release <tag>\` restores a specific release instead of the newest.
+  \`agentop restore github --list <url>\` shows what is there without downloading anything.`
 
 /**
  * Build the repository manifest: probe every directory the store knows, bundle, patch.
@@ -574,16 +585,16 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   return 0
 }
 
-export async function runRestoreCli(argv: string[]): Promise<number> {
-  const log = (l: string) => console.log(l)
-  const s = cliStrings(await resolveLang())
-  const archive = argv[0]
-  if (!archive || archive === '--help') { console.log(USAGE); return archive ? 0 : 1 }
+/**
+ * Everything that happens once a verified archive is sitting on disk — unchanged whether that
+ * archive was typed directly on the command line or just downloaded and hash-verified from a
+ * GitHub release. This is the "existing restore takes over unchanged" the plan asks for: there is
+ * exactly one implementation, so a fix here can never apply to one entry path and not the other.
+ */
+async function runRestorePhases(
+  archive: string, opts: { reposPhase: boolean; only?: string }, log: (l: string) => void, s: CliStrings,
+): Promise<number> {
   if (!existsSync(archive)) { console.error(`no such archive: ${archive}`); return 1 }
-
-  const reposPhase = argv.includes('--repos')
-  const oi = argv.indexOf('--only')
-  const only = oi !== -1 ? argv[oi + 1] : undefined
 
   const decoded = await readManifestOf(archive)
   if (!decoded.ok) {
@@ -594,7 +605,7 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
   }
   const manifest = decoded.manifest
 
-  if (!reposPhase) {
+  if (!opts.reposPhase) {
     const r = await restoreMetrics({ archive, homeDir: HOME_DIR, onLine: log })
     if (!r.ok) { console.error(`restore failed: ${r.reason}`); return 1 }
     log(`metrics: ${r.written} written, ${r.skipped} skipped (a newer local copy always wins)`)
@@ -613,11 +624,11 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
     log(`Repository plan: ${pending.length} to clone, ${steps.length - pending.length} skipped.`)
     for (const step of steps.filter(x => x.state === 'skipped')) log(`  skip ${step.key} — ${step.reason}`)
     log('')
-    log('Run `agentop restore <archive> --repos` to execute it. It is resumable.')
+    log(`Run \`agentop restore ${archive} --repos\` to execute it. It is resumable.`)
     return 0
   }
 
-  const r = await restoreRepos({ manifest, homeDir: HOME_DIR, archive, only, onLine: log })
+  const r = await restoreRepos({ manifest, homeDir: HOME_DIR, archive, only: opts.only, onLine: log })
   log('')
   log(`${r.succeeded}/${r.attempted} repositories restored.`)
   for (const f of r.failures) log(`  FAILED ${f.key} — ${f.reason}`)
@@ -633,4 +644,138 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
     log('  Inspect them, then remove the directory and re-run to restore each from scratch.')
   }
   return r.failures.length || r.halfRestored.length ? 1 : 0
+}
+
+/** The one-line summary shown before "download this?" — everything the plan asks for is already in
+ *  the release body, so this never touches the network again. */
+function describeReleaseForConfirm(summary: ReleaseSummary): string[] {
+  return [
+    `  created:   ${summary.createdAt}`,
+    `  host:      ${summary.hostname}`,
+    `  size:      ${formatBytes(summary.archiveBytes)}`,
+    `  layers:    ${summary.layers.join(', ')}`,
+    `  harnesses: ${summary.harnesses.join(', ')}`,
+    `  sessions:  ${summary.sessionCount}`,
+  ]
+}
+
+/**
+ * `agentop restore github --list <url>` — what exists on the repository, without downloading a
+ * single byte. A fresh machine may only want to know before spending any bandwidth at all.
+ */
+async function runRestoreGithubList(url: string, log: (l: string) => void): Promise<number> {
+  const parsed = parseRepoUrl(url)
+  if (!parsed) {
+    const host = repoUrlHost(url)
+    console.error(host
+      ? `"${host}" is not github.com — this only works with a repository on github.com.`
+      : `could not read "${url}" as a GitHub repository URL.`)
+    return 1
+  }
+
+  const stored = await readGithubConfig()
+  const token = stored && stored.owner === parsed.owner && stored.repo === parsed.repo
+    ? stored.token
+    : await maskedInput('GitHub personal access token (never echoed)')
+  if (!token) { console.error('a token is required.'); return 1 }
+
+  const result = await listBackupReleases(parsed.owner, parsed.repo, token)
+  if (!result.ok) { console.error(result.message); return 1 }
+  if (!result.releases.length) {
+    log(`no \`backup-\` releases found on ${parsed.owner}/${parsed.repo}.`)
+    return 0
+  }
+  log(`${result.releases.length} backup release(s) on ${parsed.owner}/${parsed.repo}, newest first:`)
+  for (const r of result.releases) {
+    log('')
+    log(`  ${r.tagName}`)
+    if (r.summary) for (const line of describeReleaseForConfirm(r.summary)) log(`  ${line}`)
+    else log('    (its body could not be decoded — created by an incompatible or hand-made release)')
+  }
+  return 0
+}
+
+/**
+ * Resolve a `token` for restoring FROM `parsed`, asking only when nothing usable is already
+ * stored. A stored config for a DIFFERENT repository is not reused silently — a token scoped to
+ * one repository is not evidence it can read another, and using it anyway would be indistinguishable
+ * from a mistake in the URL. Offers to save the token via the same `setupGithubBackup` every other
+ * path writes through, but a decline (or a save that fails its own checks) never stops the restore
+ * that is already in progress — the token already proved it can read this repository's releases.
+ */
+async function resolveRestoreToken(
+  parsed: { owner: string; repo: string }, url: string, config: GithubBackupConfig | null, log: (l: string) => void,
+): Promise<string | null> {
+  if (config && config.owner === parsed.owner && config.repo === parsed.repo) return config.token
+
+  log('no GitHub token is stored on this machine yet.')
+  const token = await maskedInput('GitHub personal access token (never echoed)')
+  if (!token) return null
+
+  const save = await confirm('Save this token for future backups and restores?', false)
+  if (save) {
+    const result = await setupGithubBackup({ url, token })
+    if (result.ok) log(`saved: ${result.config.owner}/${result.config.repo}`)
+    else log(`not saved (${result.message}) — continuing with this restore anyway.`)
+  }
+  return token
+}
+
+export async function runRestoreCli(argv: string[]): Promise<number> {
+  const log = (l: string) => console.log(l)
+  const s = cliStrings(await resolveLang())
+  const first = argv[0]
+  if (!first || first === '--help') { console.log(USAGE); return first ? 0 : 1 }
+
+  if (first === 'github') {
+    const rest = argv.slice(1)
+    if (rest[0] !== '--list' || !rest[1]) { console.error('usage: agentop restore github --list <url>'); return 1 }
+    return runRestoreGithubList(rest[1], log)
+  }
+
+  const reposPhase = argv.includes('--repos')
+  const oi = argv.indexOf('--only')
+  const only = oi !== -1 ? argv[oi + 1] : undefined
+  const ri = argv.indexOf('--release')
+  const releaseTagArg = ri !== -1 ? argv[ri + 1] : undefined
+  if (ri !== -1 && !releaseTagArg) { console.error('--release requires a tag'); return 1 }
+
+  let archive: string
+  if (existsSync(first)) {
+    archive = first
+  } else {
+    // Not a file on this disk — try it as a repository URL. `parseRepoUrl` runs before any
+    // network request, exactly as it does in `github-setup.ts`: sending a token to a host the
+    // user mistyped is the one outcome this code must never produce.
+    const parsed = parseRepoUrl(first)
+    if (!parsed) {
+      const host = repoUrlHost(first)
+      console.error(host
+        ? `"${first}" is not an existing file, and "${host}" is not github.com — this restores `
+          + 'from an existing archive or a github.com repository URL.'
+        : `"${first}" is neither an existing archive file nor a GitHub repository URL agentop `
+          + 'recognises (expected https://github.com/owner/repo, owner/repo, or '
+          + 'git@github.com:owner/repo.git).')
+      return 1
+    }
+
+    const config = await readGithubConfig()
+    const token = await resolveRestoreToken(parsed, first, config, log)
+    if (!token) { console.error('a token is required.'); return 1 }
+
+    const outcome = await downloadBackupRelease(parsed.owner, parsed.repo, token, releaseTagArg, {
+      onLine: log,
+      confirmDownload: async summary => {
+        log(`about to download:`)
+        for (const line of describeReleaseForConfirm(summary)) log(line)
+        return confirm('Download and restore from this backup?', true)
+      },
+    })
+
+    if (outcome.status === 'cancelled') { log('cancelled — nothing was downloaded.'); return 0 }
+    if (outcome.status === 'error') { console.error(outcome.reason); return 1 }
+    archive = outcome.archivePath
+  }
+
+  return runRestorePhases(archive, { reposPhase, only }, log, s)
 }
