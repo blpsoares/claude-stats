@@ -321,3 +321,46 @@ export async function updateGithubSection(
   }, file)
   return { ok: true, section: await readGithubSection(file) }
 }
+
+export interface ConnectGithubInput {
+  url: string
+  /** A GitHub PAT. Written to the 0600 config and NEVER echoed back — see the return type. */
+  token: string
+  /** Test-only injection points, mirroring `setupGithubBackup`'s own. */
+  file?: string
+  fetchImpl?: import('./backup/github-api').FetchLike
+}
+
+/**
+ * Connect a private GitHub repository from the INTERFACE — the form behind Settings → Backup and
+ * the same five checks `agentop backup github setup` performs, because it is the same function.
+ *
+ * This lives on a route rather than only in the CLI because the interface is where the user asked
+ * for it, and the objection that kept it out — a token box on a page someone else could reach —
+ * is already answered by the guard that was there all along: `/api/backup` requires `localShell`,
+ * which is FALSE on the `public` profile and opt-in on `lan`. On a dashboard anyone else can open,
+ * this route does not exist. Restating that gate here would be a second copy of a rule that is
+ * already enforced in one place.
+ *
+ * The reply is the ordinary `GithubSection` — no token, not even the one just accepted — so a page
+ * rendering the result has nothing extra to hold or leak.
+ */
+export async function connectGithub(
+  input: ConnectGithubInput,
+): Promise<{ ok: true; section: GithubSection } | { ok: false; reason: string }> {
+  // Neither half is worth a request. An empty token in particular: `setupGithubBackup` would ask
+  // GitHub about a repository with no credential and get a 404 for a private one, which reads as
+  // "not found" and sends the user to check a URL that was right.
+  if (!input.url.trim()) return { ok: false, reason: 'a repository URL is required.' }
+  if (!input.token.trim()) return { ok: false, reason: 'a GitHub personal access token is required.' }
+
+  const { setupGithubBackup } = await import('./backup/github-setup')
+  const result = await setupGithubBackup({
+    url: input.url.trim(),
+    token: input.token.trim(),
+    file: input.file,
+    fetchImpl: input.fetchImpl,
+  })
+  if (!result.ok) return { ok: false, reason: result.message }
+  return { ok: true, section: await readGithubSection(input.file) }
+}

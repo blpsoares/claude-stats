@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { readGithubConfig, writeGithubConfig } from './backup/github-store'
-import { readGithubSection, updateGithubSection } from './backup-routes'
+import { connectGithub, readGithubSection, updateGithubSection } from './backup-routes'
 
 
 describe('the GitHub versioning section — the token never leaves the machine', () => {
@@ -88,4 +88,64 @@ test('the cockpit contract carries the GitHub section, and it is the SAME shape 
     .toEqual(['configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo', 'url'])
   expect(JSON.stringify(section)).not.toContain('ghp_')
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('connecting a repository FROM the interface', () => {
+  const ok = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  test('a private repository the token can push to is connected, and the token is stored not returned', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghconnect-'))
+    const file = join(dir, 'github.json')
+    const res = await connectGithub({
+      url: 'https://github.com/me/backups', token: 'ghp_written_only_to_disk',
+      file, fetchImpl: async () => ok({ private: true, permissions: { push: true } }),
+    })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    // The reply is the same shape the GET returns, so the page has nothing extra to trust.
+    expect(res.section.configured).toBe(true)
+    expect(JSON.stringify(res)).not.toContain('ghp_')
+    // ...and the token IS on disk, or the next upload would have nothing to authenticate with.
+    expect((await readGithubConfig(file))?.token).toBe('ghp_written_only_to_disk')
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a PUBLIC repository is refused, and nothing is written', async () => {
+    // The refusal that matters most: a backup carries this machine's metrics, its first prompts and
+    // a map of its directories. Saying it is private in a form does not count — only the API
+    // answering `private: true` does.
+    const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghconnect-'))
+    const file = join(dir, 'github.json')
+    const res = await connectGithub({
+      url: 'https://github.com/me/public-repo', token: 'ghp_x',
+      file, fetchImpl: async () => ok({ private: false, permissions: { push: true } }),
+    })
+    expect(res.ok).toBe(false)
+    expect(existsSync(file)).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a host that is not github.com is refused BEFORE any request is made', async () => {
+    // Sending a token to a host the user mistyped is the one mistake that cannot be undone, so no
+    // request may leave until the URL has been read.
+    let called = false
+    const res = await connectGithub({
+      url: 'https://gitlab.com/me/backups', token: 'ghp_x',
+      file: join(mkdtempSync(join(tmpdir(), 'agentistics-ghconnect-')), 'g.json'),
+      fetchImpl: async () => { called = true; return ok({}) },
+    })
+    expect(res.ok).toBe(false)
+    expect(called).toBe(false)
+  })
+
+  test('an empty url or token is refused without a request', async () => {
+    let called = false
+    const f = async (): Promise<Response> => { called = true; return ok({}) }
+    const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghconnect-'))
+    expect((await connectGithub({ url: '', token: 'ghp_x', file: join(dir, 'a.json'), fetchImpl: f })).ok).toBe(false)
+    expect((await connectGithub({ url: 'https://github.com/a/b', token: '  ', file: join(dir, 'b.json'), fetchImpl: f })).ok).toBe(false)
+    expect(called).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

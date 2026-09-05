@@ -924,6 +924,43 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // Connecting a repository, from the form in Settings → Backup. It takes a token, which is the
+    // whole reason it exists as its own route: `POST /api/backup/github` above deliberately changes
+    // only what can be changed WITHOUT one. There is no extra profile gate here — `/api/backup`
+    // already requires `localShell`, which is false on `public` and opt-in on `lan`, so on a
+    // dashboard someone else can open this route does not exist at all.
+    if (url.pathname === '/api/backup/github/setup' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { connectGithub } = await import('./backup-routes')
+        const body = await readJsonLimited<{ url?: unknown; token?: unknown }>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const { url: repoUrl, token } = body.value
+        if (typeof repoUrl !== 'string' || typeof token !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await connectGithub({ url: repoUrl, token })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // The token is in this request's body, so the usual `verbose` echo of an error is not safe
+        // here: `safeError` is given the non-verbose shape regardless of profile.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/backup/github' && req.method === 'POST') {
       if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
       try {

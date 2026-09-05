@@ -397,6 +397,48 @@ export default function BackupSettings() {
   const [labelDraft, setLabelDraft] = useState('')
   const [keepDraft, setKeepDraft] = useState('')
   const [githubSaving, setGithubSaving] = useState<GithubField | null>(null)
+  // The connect form. Held here, not inside the form, so a refusal keeps what was typed — retyping
+  // a PAT because the URL had a typo is the kind of friction that sends people back to the CLI.
+  const [connectUrl, setConnectUrl] = useState('')
+  const [connectToken, setConnectToken] = useState('')
+  const [connecting, setConnecting] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+
+  /**
+   * Connect the repository. The five checks live on the server (`connectGithub` calls the same
+   * `setupGithubBackup` the CLI does), so this only carries the answer.
+   *
+   * The token is CLEARED on success and kept on failure: it is of no further use to this page once
+   * accepted — it lives in the 0600 config from then on — and holding it in React state after that
+   * is a copy with nothing to do.
+   */
+  const connectGithubRepo = useCallback(async () => {
+    setConnecting(true)
+    setConnectError(null)
+    try {
+      const r = await fetch('/api/backup/github/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: connectUrl, token: connectToken }),
+      })
+      const data = (await r.json()) as { ok: boolean; reason?: string; section?: GithubSectionJson }
+      if (data.ok && data.section) {
+        setGithub(data.section)
+        if (data.section.configured) {
+          setLabelDraft(data.section.label)
+          setKeepDraft(String(data.section.keepRemote))
+        }
+        setConnectToken('')
+        setConnectUrl('')
+      } else {
+        setConnectError(data.reason ?? (pt ? 'não foi possível conectar' : 'could not connect'))
+      }
+    } catch {
+      setConnectError(pt ? 'a requisição falhou' : 'the request failed')
+    } finally {
+      setConnecting(false)
+    }
+  }, [connectUrl, connectToken, pt])
   const [githubResult, setGithubResult] = useState<{ field: GithubField; ok: boolean; text: string } | null>(null)
 
   const loadGithub = useCallback(async () => {
@@ -663,6 +705,13 @@ export default function BackupSettings() {
                 saving={githubSaving}
                 result={githubResult}
                 pt={pt}
+                connectUrl={connectUrl}
+                connectToken={connectToken}
+                connecting={connecting}
+                connectError={connectError}
+                onConnectUrl={setConnectUrl}
+                onConnectToken={setConnectToken}
+                onConnect={() => { void connectGithubRepo() }}
                 onLabelDraft={setLabelDraft}
                 onKeepDraft={setKeepDraft}
                 onSaveLabel={saveLabelName}
@@ -1069,10 +1118,20 @@ function SchedulePicker({ value, active, pt, disabled, onChange }: {
 function GithubVersioning({
   section, labelDraft, keepDraft, saving, result, pt,
   onLabelDraft, onKeepDraft, onSaveLabel, onSaveKeep, onToggleDeleteLocal,
+  connectUrl, connectToken, connecting, connectError, onConnectUrl, onConnectToken, onConnect,
 }: {
   section: GithubSectionJson
   labelDraft: string
   keepDraft: string
+  /** The connect form's two fields, held by the page so a failed attempt keeps what was typed. */
+  connectUrl: string
+  connectToken: string
+  connecting: boolean
+  /** The SERVER's own refusal, passed through untouched — see `GithubConnectForm`. */
+  connectError: string | null
+  onConnectUrl: (v: string) => void
+  onConnectToken: (v: string) => void
+  onConnect: () => void
   /** Which control is writing right now, if any — every control is disabled while one is. */
   saving: GithubField | null
   result: { field: GithubField; ok: boolean; text: string } | null
@@ -1090,28 +1149,16 @@ function GithubVersioning({
       <SectionHeader label={pt ? 'Versionamento no GitHub' : 'GitHub versioning'} />
 
       {!section.configured ? (
-        <>
-          <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
-            {pt
-              ? 'Cada backup vira um Release num repositório privado do GitHub que é seu — o histórico desta máquina passa a viver fora dela, e o arquivo local pode ser apagado depois que o upload é conferido. Conectar o repositório pede um token do GitHub, que é verificado contra a API, então esse passo mora na CLI:'
-              : 'Each backup becomes a Release on a private GitHub repository you own — this machine’s history then lives off the machine, and the local archive can be deleted once the upload is confirmed. Connecting the repository asks for a GitHub token, which is verified against the API, so that step lives in the CLI:'}
-          </p>
-          <div style={{
-            overflowX: 'auto', maxWidth: '100%', padding: '10px 12px', borderRadius: 8,
-            background: 'var(--bg-elevated)', border: '1px solid var(--border)', marginBottom: 10,
-          }}>
-            <code style={{
-              fontFamily: 'monospace', fontSize: 12, color: 'var(--text-primary)', whiteSpace: 'pre',
-            }}>
-              {GITHUB_SETUP_COMMAND}
-            </code>
-          </div>
-          <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: 0 }}>
-            {pt
-              ? 'O repositório precisa ser privado — a configuração recusa um público. O token fica guardado só nesta máquina e nunca entra num backup.'
-              : 'The repository must be private — the setup refuses a public one. The token is stored only on this machine and never goes into a backup.'}
-          </p>
-        </>
+        <GithubConnectForm
+          pt={pt}
+          urlDraft={connectUrl}
+          tokenDraft={connectToken}
+          busy={connecting}
+          error={connectError}
+          onUrl={onConnectUrl}
+          onToken={onConnectToken}
+          onSubmit={onConnect}
+        />
       ) : (
         <>
           <ConfigRow
@@ -1286,5 +1333,132 @@ function GithubFeedback({ feedback }: { feedback: { ok: boolean; text: string } 
         : <AlertTriangle size={12} style={{ flexShrink: 0 }} />}
       <span>{feedback.text}</span>
     </p>
+  )
+}
+
+/**
+ * The form that connects a private GitHub repository — the instructions and the two fields, in the
+ * place the person is already looking.
+ *
+ * It takes a TOKEN, which is why it is worth saying what protects it: `/api/backup` requires the
+ * `localShell` capability, which is false on the `public` exposure profile and opt-in on `lan`, so
+ * on a dashboard anyone else can open this whole section does not exist. The field is
+ * `type="password"` and its value is never put back by the server — the reply is the ordinary
+ * `GithubSection`, which has no token in it — so a reload shows an empty box, not a recovered
+ * secret.
+ *
+ * Every refusal shown here is the SERVER's own sentence, passed through untouched: the five checks
+ * (github.com, the repository exists, it is PRIVATE, the token can push) are the ones
+ * `agentop backup github setup` performs, because it is the same function. Composing a friendlier
+ * message here would be a second explanation of a rule enforced somewhere else.
+ */
+function GithubConnectForm({
+  pt, urlDraft, tokenDraft, busy, error, onUrl, onToken, onSubmit,
+}: {
+  pt: boolean
+  urlDraft: string
+  tokenDraft: string
+  busy: boolean
+  error: string | null
+  onUrl: (v: string) => void
+  onToken: (v: string) => void
+  onSubmit: () => void
+}) {
+  const isMobile = useIsMobile()
+  const canSubmit = urlDraft.trim().length > 0 && tokenDraft.trim().length > 0 && !busy
+
+  const field = (
+    label: string, hint: string, value: string, set: (v: string) => void, password: boolean,
+    placeholder: string,
+  ): React.ReactNode => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>{label}</div>
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>{hint}</p>
+      <input
+        // No inline fontSize: iOS Safari zooms the viewport on any field under 16px and that breaks
+        // the sticky header. `index.css` carries the global guard.
+        type={password ? 'password' : 'text'}
+        value={value}
+        placeholder={placeholder}
+        disabled={busy}
+        autoComplete={password ? 'off' : 'off'}
+        spellCheck={false}
+        onChange={e => set(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && canSubmit) { e.preventDefault(); onSubmit() } }}
+        style={{
+          width: '100%', minWidth: 0, boxSizing: 'border-box',
+          padding: '7px 10px', minHeight: isMobile ? 44 : undefined,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+          fontFamily: password ? 'monospace' : 'inherit', color: 'var(--text-primary)', outline: 'none',
+          transition: 'border-color 0.15s',
+          ...(busy ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+        }}
+        onFocus={e => { if (!busy) e.currentTarget.style.borderColor = 'var(--anthropic-orange)' }}
+        onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+      />
+    </div>
+  )
+
+  return (
+    <div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
+        {pt
+          ? 'Cada backup vira um Release num repositório privado do GitHub que é seu — o histórico desta máquina passa a viver fora dela, e o arquivo local pode ser apagado assim que o envio é conferido byte a byte.'
+          : 'Each backup becomes a Release on a private GitHub repository you own — this machine’s history then lives off the machine, and the local archive can be deleted once the upload is confirmed byte for byte.'}
+      </p>
+      <ol style={{
+        fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.6, margin: '0 0 14px',
+        paddingLeft: 18,
+      }}>
+        <li>{pt
+          ? 'Crie um repositório no GitHub e marque PRIVADO. Um público é recusado aqui — o backup carrega suas métricas, os primeiros prompts e um mapa dos seus diretórios.'
+          : 'Create a repository on GitHub and mark it PRIVATE. A public one is refused here — a backup carries your metrics, your first prompts and a map of your directories.'}</li>
+        <li>{pt
+          ? 'Gere um token: fine-grained com acesso só a esse repositório e "Contents: Read and write", ou um clássico com o escopo repo.'
+          : 'Generate a token: fine-grained with access to that repository only and "Contents: Read and write", or a classic one with the repo scope.'}</li>
+        <li>{pt ? 'Cole os dois abaixo.' : 'Paste both below.'}</li>
+      </ol>
+
+      {field(
+        pt ? 'URL do repositório' : 'Repository URL',
+        pt ? 'Precisa ser github.com — a checagem acontece antes de qualquer requisição, para o token nunca sair para um host digitado errado.'
+          : 'Must be github.com — checked before any request is made, so the token never leaves for a host you mistyped.',
+        urlDraft, onUrl, false, 'https://github.com/owner/repo',
+      )}
+      {field(
+        pt ? 'Token do GitHub' : 'GitHub token',
+        pt ? 'Guardado só nesta máquina, com permissão 0600. Nunca é devolvido por uma rota e está na lista de exclusão do próprio backup.'
+          : 'Stored only on this machine, mode 0600. Never returned by a route, and on the backup’s own exclusion list.',
+        tokenDraft, onToken, true, pt ? 'ghp_… (não é exibido)' : 'ghp_… (never shown back)',
+      )}
+
+      <button
+        type="button"
+        onClick={onSubmit}
+        disabled={!canSubmit}
+        style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+          padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+          width: isMobile ? '100%' : undefined,
+          borderRadius: 7, border: `1px solid ${canSubmit ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+          background: canSubmit ? 'var(--anthropic-orange-dim)' : 'transparent',
+          color: canSubmit ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+          fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+          cursor: canSubmit ? 'pointer' : 'not-allowed', opacity: canSubmit ? 1 : 0.6,
+        }}
+      >
+        {busy
+          ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> {pt ? 'Conectando…' : 'Connecting…'}</>
+          : (pt ? 'Conectar repositório' : 'Connect repository')}
+      </button>
+
+      <GithubFeedback feedback={error === null ? null : { ok: false, text: error }} />
+
+      <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '10px 0 0' }}>
+        {pt
+          ? `Pela linha de comando o mesmo passo é: ${GITHUB_SETUP_COMMAND}`
+          : `From the command line the same step is: ${GITHUB_SETUP_COMMAND}`}
+      </p>
+    </div>
   )
 }
