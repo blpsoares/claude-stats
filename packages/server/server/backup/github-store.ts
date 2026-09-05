@@ -82,6 +82,13 @@ export async function readGithubConfig(file = GITHUB_BACKUP_CONFIG_FILE): Promis
     keepRemote: typeof (parsed as Partial<GithubBackupConfig>).keepRemote === 'number'
       ? (parsed as GithubBackupConfig).keepRemote : 0,
     deleteLocalAfterUpload: (parsed as Partial<GithubBackupConfig>).deleteLocalAfterUpload === true,
+    // Read explicitly, like every field above: this is an ALLOWLIST, never a spread. A config file
+    // is hand-editable, and spreading it would carry whatever else somebody put there into a shape
+    // the rest of the product trusts. An absent or non-string label reads as absent, and the
+    // callers fall back to the hostname — which is what the machine's existing releases already
+    // record in their bodies, so it attributes its own history correctly.
+    label: typeof (parsed as Partial<GithubBackupConfig>).label === 'string'
+      ? (parsed as GithubBackupConfig).label : undefined,
   }
 }
 

@@ -9,6 +9,7 @@
  * goes through the same three writers `agentop backup config` calls, so the three front doors can
  * never disagree about what a backup covers or how it is configured.
  */
+import { hostname } from 'os'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
@@ -240,4 +241,83 @@ export async function updateBackupConfig(
     await writeBackupSchedule(patch.schedule)
   }
   return { ok: true, status: await readBackupStatus() }
+}
+
+/* ── GitHub versioning, as Settings → Backup and the cockpit see it ──────────────────────────── */
+
+/**
+ * What a ROUTE may say about the GitHub configuration.
+ *
+ * There is no `token` field and there must never be one. `toStatus` in `github-store.ts` makes the
+ * same promise for its own shape; this one adds the fields the settings screen needs to render its
+ * controls, and `backup-routes.test.ts` asserts the absence over the whole serialized value rather
+ * than field by field — a field added later that happened to carry the token would pass a
+ * key-by-key check.
+ */
+export type GithubSection =
+  | { configured: false }
+  | {
+    configured: true
+    url: string
+    /** `owner/repo`, for display. */
+    repo: string
+    /** What this machine is called in its release tags — see `releaseTag`. */
+    label: string
+    /** How many of THIS machine's releases to keep. 0 = keep them all. */
+    keepRemote: number
+    deleteLocalAfterUpload: boolean
+  }
+
+export async function readGithubSection(file?: string): Promise<GithubSection> {
+  const { readGithubConfig } = await import('./backup/github-store')
+  const config = await readGithubConfig(file)
+  if (!config) return { configured: false }
+  return {
+    configured: true,
+    url: config.url,
+    repo: `${config.owner}/${config.repo}`,
+    label: config.label ?? hostname(),
+    keepRemote: config.keepRemote,
+    deleteLocalAfterUpload: config.deleteLocalAfterUpload,
+  }
+}
+
+export interface GithubSectionUpdate {
+  label?: string
+  keepRemote?: number
+  deleteLocalAfterUpload?: boolean
+}
+
+/**
+ * Change the settings a person can change WITHOUT re-entering the token.
+ *
+ * Renaming a machine or changing retention must not ask for a PAT again: a flow that demands a
+ * credential to perform something unrelated to it is a flow that teaches people to paste
+ * credentials. Setting the repository up (which genuinely needs a token, and verifies it) stays
+ * with `setupGithubBackup`.
+ *
+ * An unconfigured machine is REFUSED rather than having a config invented for it — a config with a
+ * label and no repository or token is one every later step would fail on, further from the cause.
+ */
+export async function updateGithubSection(
+  update: GithubSectionUpdate, file?: string,
+): Promise<{ ok: true; section: GithubSection } | { ok: false; reason: string }> {
+  const { readGithubConfig, writeGithubConfig } = await import('./backup/github-store')
+  const config = await readGithubConfig(file)
+  if (!config) return { ok: false, reason: 'not_configured' }
+
+  if (update.keepRemote !== undefined
+    && (!Number.isInteger(update.keepRemote) || update.keepRemote < 0)) {
+    return { ok: false, reason: 'bad_keep_remote' }
+  }
+  const label = update.label?.trim()
+  if (update.label !== undefined && !label) return { ok: false, reason: 'bad_label' }
+
+  await writeGithubConfig({
+    ...config,
+    label: label ?? config.label,
+    keepRemote: update.keepRemote ?? config.keepRemote,
+    deleteLocalAfterUpload: update.deleteLocalAfterUpload ?? config.deleteLocalAfterUpload,
+  }, file)
+  return { ok: true, section: await readGithubSection(file) }
 }

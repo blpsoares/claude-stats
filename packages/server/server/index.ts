@@ -904,6 +904,50 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // GitHub versioning. The GET never carries the token (`GithubSection` has no field for one),
+    // and the POST changes only what can be changed WITHOUT one — the label and retention. Setting
+    // the repository up genuinely needs a token and stays with `agentop backup github setup`,
+    // which verifies it against the API and refuses a public repository.
+    if (url.pathname === '/api/backup/github' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readGithubSection } = await import('./backup-routes')
+        return new Response(JSON.stringify(await readGithubSection()), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/github' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateGithubSection } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateGithubSection>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateGithubSection(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     // The format/recurrence pickers — see `BackupSettings.tsx`. Same decisions as
     // `agentop backup config` and the cockpit's layer editor, through the same three writers.
     if (url.pathname === '/api/backup/config' && req.method === 'POST') {
