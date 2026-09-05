@@ -7,6 +7,7 @@
  * lets the whole surface be rewritten without changing a single behaviour.
  */
 
+import type { HarnessId } from '@agentistics/core'
 import type { CliLang } from './lang'
 import type { SearchFields, SearchScope } from './search-scope'
 // The default ARRANGEMENT is derived from the dimension vocabulary rather than written out beside
@@ -19,6 +20,9 @@ import {
 export type TabId =
   | 'services'
   | 'sessions'
+  /** Configure, run, and watch a backup — see `control/backup.ts`. Between sessions and the
+   *  dashboard: an operation over the data, and operations come before the numbers. */
+  | 'backup'
   /** The metrics dashboard — the whole of what `agentop tui` shows, as a screen of this app. */
   | 'dashboard'
   | 'hardware'
@@ -40,6 +44,7 @@ export type TabId =
 export const TAB_ORDER: readonly TabId[] = [
   'services',
   'sessions',
+  'backup',
   'dashboard',
   'hardware',
   'logs',
@@ -408,6 +413,95 @@ export interface ControlService {
  * silently claims it will not restart is the fact a user acts on by installing a second copy of it.
  */
 export type BootState = 'on' | 'off'
+
+// ---------------------------------------------------------------------------
+// the backup tab
+// ---------------------------------------------------------------------------
+
+/**
+ * Redeclared from `server/backup/backup-plan.ts`'s `BackupLayer` — `packages/tui` may not import
+ * from `packages/server` (server -> tui is the only allowed direction). `backup-plan.test.ts`
+ * cross-checks this union against `BACKUP_LAYERS`, member for member, the same guard
+ * `central-runtime.test.ts` runs for `CentralRuntimeId`.
+ */
+export type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
+
+/** Redeclared from `server/backup/schedule.ts`'s `ScheduleId` — same cross-check discipline,
+ *  asserted in `schedule.test.ts`. */
+export type BackupScheduleId = 'off' | 'daily' | 'weekly'
+
+/**
+ * One harness's own coverage — see the backup tab's rule: last-backup is PER HARNESS, never a
+ * single date at the top, or an unticked harness would read as covered.
+ */
+export interface ControlBackupHarness {
+  id: HarnessId
+  /** Whether this harness rides the NEXT backup — `space` toggles it. */
+  enabled: boolean
+  sessions: number
+  /** Already-formatted, e.g. "3.4 MB" — see `backup-size.ts`'s `formatBytes`. */
+  sizeLabel: string
+  /**
+   * ISO of the newest backup that both covered this harness AND whose file is still on disk.
+   *
+   * An INSTANT rather than a formatted age, exactly like `ServiceRuntimeState.startedAt`: the age
+   * is recomputed every repaint against `now` so it does not freeze between polls.
+   *
+   * Absent when there is no such backup — see `lastBackupGone` for the other kind of absence.
+   */
+  lastBackupAt?: string
+  /**
+   * A backup once covered this harness, and that file is gone.
+   *
+   * Rendered as "none (no recorded backup whose file is still on disk)" rather than a reassuring
+   * date — see `backup-store.ts`'s `markPresence`. Absent together with `lastBackupAt` means this
+   * harness has never been backed up at all, which is a different sentence (`never`).
+   */
+  lastBackupGone?: boolean
+}
+
+/** The newest backup on disk, for the config and detail panes — absent when there is none. */
+export interface ControlBackupLast {
+  /** ISO — see `ControlBackupHarness.lastBackupAt` for why this is an instant, not a formatted age. */
+  at: string
+  /** Already-formatted, e.g. "4.1 MB" — the archive's real, measured size. */
+  bytesLabel: string
+  /**
+   * How many paths the walk skipped, `undefined` on a record written before the field existed.
+   *
+   * `undefined` is NOT zero: it reads as "whether anything was skipped is not known", never as a
+   * clean run — the same rule `BackupRecord.skipped` documents.
+   */
+  skipped?: number
+}
+
+export interface ControlBackupConfig {
+  /** The layers the NEXT manual run writes. Deliberately untranslated — `metrics`/`repos`/
+   *  `archive`/`raw` are the CLI's own vocabulary, the same convention as `native`/`docker`. */
+  layers: BackupLayer[]
+  destDir: string
+  schedule: BackupScheduleId
+  /**
+   * Whether the schedule can actually fire RIGHT NOW — false while the server is stopped, per
+   * `schedule.ts`'s `inactive-no-server`. The row must say so rather than a "next at…" that will
+   * not arrive — the same N/A-versus-a-confident-answer rule the dashboard applies everywhere else.
+   */
+  scheduleActive: boolean
+  keep: number
+  /** Already-formatted, e.g. "35 MB" — what EVERY retained backup occupies together, visible at
+   *  the moment `keep` or a heavier layer is raised, not after. */
+  retainedLabel: string
+  /** How many secret paths are excluded from every backup. Always > 0 — see `omittedSecrets()`. */
+  secretsCount: number
+  /** The newest backup on disk, or absent when there has never been one. */
+  last?: ControlBackupLast
+}
+
+export interface ControlBackupStatus {
+  /** One row per `HARNESS_ORDER` member the host actually reported — never a literal list. */
+  harnesses: ControlBackupHarness[]
+  config: ControlBackupConfig
+}
 
 // ---------------------------------------------------------------------------
 // the session fleet
@@ -1206,6 +1300,35 @@ export interface ControlHost {
    * a value from an older or hand-edited preferences file can never be handed back as-is.
    */
   setSessionPollMs(ms: number): Promise<void>
+
+  /**
+   * The backup tab's own snapshot — per-harness coverage and the current configuration.
+   *
+   * A SEPARATE read from `refresh()`, exactly like `sessions()`: computing it walks the metrics
+   * layer and the consolidate store, which every OTHER tab needs `refresh()` to stay cheap for.
+   * OPTIONAL, and its absence means the tab renders nothing beyond a sentence saying the host
+   * cannot say — the same treatment `sessions?()` gets.
+   */
+  backupStatus?(): Promise<ControlBackupStatus>
+
+  /**
+   * Toggle whether one harness rides the NEXT backup — `space` on the focused row.
+   *
+   * Best-effort, like `setMouse`: a machine that cannot write its preferences still gets the
+   * toggle for this run.
+   */
+  setBackupHarness?(harness: HarnessId, on: boolean): Promise<void>
+
+  /** Cycle the schedule to the next id and persist it — `s`, from either pane. */
+  setBackupSchedule?(schedule: BackupScheduleId): Promise<ActionResult>
+
+  /**
+   * Run a backup now, with the configured layers and harnesses — `b`.
+   *
+   * Streams into `ControlHost.onOutput` exactly like a rebuild: the same channel, the same
+   * detail-region contract, so nothing here needs a wrapper of its own.
+   */
+  runBackup?(): Promise<ActionResult>
 
   /**
    * Hand a URL to the desktop's browser.

@@ -9,7 +9,7 @@
 
 import type { CliLang } from './lang'
 import { dimensionWordBook, type DimensionWordBook, type SessionDimensionId, type SessionGroupingId } from './session-dimensions'
-import type { TabId, TeamMode } from './types'
+import type { BackupScheduleId, TabId, TeamMode } from './types'
 
 export interface ControlStrings {
   tagline: string
@@ -597,6 +597,53 @@ export interface ControlStrings {
   copyHint: string
   /** The same reminder while the mouse reports, when a plain drag no longer selects. */
   copyHintShift: string
+
+  /** The `backup` tab. See `control/backup.ts` — this file holds only the words, never the
+   *  arithmetic or which harness rides the next backup. */
+  paneHarnesses: string
+  /** This build's host cannot read backup status at all — `ControlHost.backupStatus` is optional,
+   *  same treatment `sessions?()` gets. */
+  backupHostMissing: string
+  keyBackupToggle: string
+  keyBackupRun: string
+  keyBackupSchedule: string
+  /** The verb the streaming output pane wears while a backup is running. */
+  actBackupRun: string
+  /** The verb the schedule row's action wears, and the outcome the config action's status line
+   *  shows — the schedule change itself is host-localized (`cli-i18n.ts`'s `backupScheduleSet`). */
+  actBackupSchedule: string
+  backupLayersLabel: string
+  backupDestLabel: string
+  backupScheduleLabel: string
+  backupKeepLabel: string
+  backupKeepValue: (keep: number, retainedLabel: string) => string
+  backupSecretsLabel: string
+  backupSecretsValue: (n: number) => string
+  backupLastLabel: string
+  /** The harness detail pane's own two rows — absent from the list, which shows only `last`. */
+  backupSessionsLabel: string
+  backupSizeLabel: string
+  /** `off` / `daily` / `weekly`, said in words — the closed enum `s` cycles through. */
+  backupScheduleWord: Record<BackupScheduleId, string>
+  /** Appended to the schedule word when `ControlBackupConfig.scheduleActive` is false — never a
+   *  "next at…" that will not arrive; see `schedule.ts`'s `inactive-no-server`. */
+  backupScheduleInactive: string
+  /** A harness that has never been backed up at all. */
+  backupNever: string
+  /** A harness (or the machine) that WAS covered by a backup whose file is now gone — never a
+   *  reassuring date. See `backup-store.ts`'s `markPresence`. */
+  backupLastGone: string
+  /** The SAME fact, short — the harnesses list's own column. See `harnessLastShort`. */
+  backupLastGoneShort: string
+  /** There has never been a backup on this machine at all — the config/detail `last` row. */
+  backupNoneOnDisk: string
+  /** `${elapsed} ago` in EN, `há ${elapsed}` in PT — composed rather than concatenated because the
+   *  word order differs between the two languages. */
+  backupAgo: (elapsed: string) => string
+  /** The last backup's outcome word — mirrors `agentop backup status`'s own three sentences. */
+  backupLastOk: string
+  backupLastUnknown: string
+  backupLastSkipped: (n: number) => string
 }
 
 const EN: ControlStrings = {
@@ -605,6 +652,7 @@ const EN: ControlStrings = {
   tabs: {
     services: 'Services',
     sessions: 'Sessions',
+    backup: 'Backup',
     dashboard: 'Dashboard',
     hardware: 'Hardware',
     logs: 'Logs',
@@ -616,6 +664,7 @@ const EN: ControlStrings = {
   tabsShort: {
     services: 'services',
     sessions: 'sessions',
+    backup: 'backup',
     dashboard: 'dashboard',
     hardware: 'hardware',
     logs: 'logs',
@@ -1082,6 +1131,34 @@ const EN: ControlStrings = {
   dashUnknown: 'The agentistics server\u2019s state could not be read, so there are no metrics to show. The services screen says why.',
   copyHint: 'select with the mouse to copy',
   copyHintShift: 'hold shift and drag to select and copy',
+
+  paneHarnesses: 'harnesses',
+  backupHostMissing: 'this build cannot read backup status.',
+  keyBackupToggle: 'space toggle',
+  keyBackupRun: 'b run backup',
+  keyBackupSchedule: 's schedule',
+  actBackupRun: 'Run backup',
+  actBackupSchedule: 'Change schedule',
+  backupLayersLabel: 'layers',
+  backupDestLabel: 'destination',
+  backupScheduleLabel: 'schedule',
+  backupKeepLabel: 'keep',
+  backupKeepValue: (keep, retainedLabel) => `${keep} backup${keep === 1 ? '' : 's'} (${retainedLabel})`,
+  backupSecretsLabel: 'secrets',
+  backupSecretsValue: n => `excluded (${n} item${n === 1 ? '' : 's'})`,
+  backupLastLabel: 'last',
+  backupSessionsLabel: 'sessions',
+  backupSizeLabel: 'size',
+  backupScheduleWord: { off: 'off', daily: 'daily', weekly: 'weekly' },
+  backupScheduleInactive: '\u2014 inactive (server not running)',
+  backupNever: 'never',
+  backupLastGone: 'none (no recorded backup whose file is still on disk)',
+  backupLastGoneShort: 'gone',
+  backupNoneOnDisk: 'no backup on disk yet',
+  backupAgo: elapsed => `${elapsed} ago`,
+  backupLastOk: 'ok',
+  backupLastUnknown: '(unknown whether anything was skipped)',
+  backupLastSkipped: n => `${n} skipped`,
 }
 
 const PT: ControlStrings = {
@@ -1090,6 +1167,7 @@ const PT: ControlStrings = {
   tabs: {
     services: 'Serviços',
     sessions: 'Sessões',
+    backup: 'Backup',
     dashboard: 'Dashboard',
     hardware: 'Hardware',
     logs: 'Logs',
@@ -1101,6 +1179,7 @@ const PT: ControlStrings = {
   tabsShort: {
     services: 'serviços',
     sessions: 'sessões',
+    backup: 'backup',
     dashboard: 'dashboard',
     hardware: 'hardware',
     logs: 'logs',
@@ -1549,6 +1628,34 @@ const PT: ControlStrings = {
   dashUnknown: 'Não foi possível ler o estado do servidor agentistics, então não há métricas para mostrar. A tela de serviços diz por quê.',
   copyHint: 'selecione com o mouse para copiar',
   copyHintShift: 'segure shift e arraste para selecionar e copiar',
+
+  paneHarnesses: 'harnesses',
+  backupHostMissing: 'esta build não consegue ler o estado do backup.',
+  keyBackupToggle: 'espaço alternar',
+  keyBackupRun: 'b rodar backup',
+  keyBackupSchedule: 's agenda',
+  actBackupRun: 'Rodar backup',
+  actBackupSchedule: 'Mudar agenda',
+  backupLayersLabel: 'camadas',
+  backupDestLabel: 'destino',
+  backupScheduleLabel: 'agenda',
+  backupKeepLabel: 'manter',
+  backupKeepValue: (keep, retainedLabel) => `${keep} backup${keep === 1 ? '' : 's'} (${retainedLabel})`,
+  backupSecretsLabel: 'segredos',
+  backupSecretsValue: n => `excluídos (${n} ${n === 1 ? 'item' : 'itens'})`,
+  backupLastLabel: 'último',
+  backupSessionsLabel: 'sessões',
+  backupSizeLabel: 'tamanho',
+  backupScheduleWord: { off: 'desligada', daily: 'diária', weekly: 'semanal' },
+  backupScheduleInactive: '— inativa (servidor parado)',
+  backupNever: 'nunca',
+  backupLastGone: 'nenhum (nenhum backup gravado cujo arquivo ainda esteja no disco)',
+  backupLastGoneShort: 'sumiu',
+  backupNoneOnDisk: 'ainda não há backup no disco',
+  backupAgo: elapsed => `há ${elapsed}`,
+  backupLastOk: 'ok',
+  backupLastUnknown: '(desconhecido se algo foi pulado)',
+  backupLastSkipped: n => `${n} pulado${n === 1 ? '' : 's'}`,
 }
 
 const TABLE: Record<CliLang, ControlStrings> = { en: EN, pt: PT }

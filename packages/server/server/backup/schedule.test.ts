@@ -1,5 +1,7 @@
 import { test, expect } from 'bun:test'
-import { isDue, scheduleStatus } from './schedule'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { isDue, scheduleStatus, SCHEDULE_IDS } from './schedule'
 
 const DAY = 86_400_000
 const now = Date.parse('2026-09-04T12:00:00.000Z')
@@ -59,4 +61,16 @@ test('with the server running the status names the next time', () => {
 
 test('an off schedule reports off, not a missing next time', () => {
   expect(scheduleStatus({ schedule: 'off', lastAt: null, nowMs: now, serverRunning: true }).kind).toBe('off')
+})
+
+// `packages/tui` may not import from `packages/server` (server -> tui is the only allowed
+// direction), so `BackupScheduleId` is redeclared there. This is what stops the two drifting: a
+// value added here and not there would compile fine and simply never be offered by the cockpit —
+// the same guard `central-runtime.test.ts` runs for `CentralRuntimeId`.
+test('the control center\'s BackupScheduleId union matches SCHEDULE_IDS, member for member', () => {
+  const source = readFileSync(join(import.meta.dir, '..', '..', '..', 'tui', 'src', 'control', 'types.ts'), 'utf8')
+  const decl = source.match(/export type BackupScheduleId = ([^\n]+)/)?.[1]
+  expect(decl).toBeDefined()
+  const members = [...decl!.matchAll(/'([a-z-]+)'/g)].map(m => m[1]!)
+  expect(members.sort()).toEqual([...SCHEDULE_IDS].sort())
 })

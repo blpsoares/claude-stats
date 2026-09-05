@@ -231,6 +231,46 @@ export async function pruneOldBackups(keep: number, log: (l: string) => void): P
   }
 }
 
+/**
+ * Run one backup end to end — the repository manifest, the archive, the pruning — and report it.
+ *
+ * The ONE implementation `agentop backup` and the cockpit's `b` key both call. It used to live
+ * inline inside `runBackupCli`, which meant the cockpit would have had to grow a second copy of
+ * the same try/finally over `mkdtemp` to run a backup from the `backup` tab — the exact
+ * "one gesture implemented twice" shape `task-reopen.ts` exists to have fixed once. Neither
+ * caller decides anything here: `layers`/`harnesses`/`destDir` are handed in already resolved
+ * (explicit flags vs. configured layers is `runBackupCli`'s call to make, not this function's).
+ */
+export async function performBackup(
+  prefs: BackupPrefs,
+  run: { layers: BackupLayer[]; harnesses: HarnessId[]; destDir: string },
+  log: (l: string) => void,
+): Promise<import('./backup/backup').BackupResult> {
+  const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
+  try {
+    const repos = run.layers.includes('repos') ? await buildRepoManifest(prefs, stageRoot, log) : []
+    const result = await runBackup({
+      homeDir: HOME_DIR, destDir: run.destDir, layers: run.layers, harnesses: run.harnesses,
+      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
+    })
+    if (!result.ok) return result
+
+    log(`before compression: ${formatBytes(plannedTotal(result.sizes, run.layers))}`)
+    log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
+    log(`sha256:             ${result.record.sha256}`)
+
+    // Pruning deletes the FILES and leaves the records. The store is append-only (see BACKUPS_FILE)
+    // and already holds the rule that makes rewriting unnecessary: a record whose file is gone is
+    // reported absent by `markPresence` from then on, which is the truth and is what the history is
+    // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
+    // append-only shape exists to remove.
+    await pruneOldBackups(prefs.keep, log)
+    return result
+  } finally {
+    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 export async function runBackupCli(argv: string[]): Promise<number> {
   const parsed = parseBackupArgs(argv)
   const log = (l: string) => console.log(l)
@@ -296,47 +336,27 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     log('      Files that change are archived as read and reported on restore; nothing is lost.')
   }
 
-  // ONE try/finally, from the mkdtemp to the end.
-  //
-  // `buildRepoManifest` used to sit outside it, and it is not exception-free: the `mkdir` for the
-  // staging subtree and the `writeFile` for each patch are raw fs calls that throw on a permission
-  // error or a full disk, unlike the probe helpers, which report `unavailable` instead. A throw
-  // there left the temp root behind holding however many git bundles had already been written.
-  const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
-  try {
-    const repos = layers.includes('repos')
-      ? await buildRepoManifest(effective, stageRoot, log)
-      : []
-
-    if (parsed.planOnly) {
+  if (parsed.planOnly) {
+    // Its own stage root, separate from `performBackup`'s: a plan is not a run, and building the
+    // repository manifest is the one thing the two share, so it is the one thing duplicated here
+    // rather than pulled into a function neither caller would recognise as "run a backup".
+    const stageRoot = await mkdtemp(join(tmpdir(), 'agentistics-backup-'))
+    try {
+      const repos = layers.includes('repos') ? await buildRepoManifest(effective, stageRoot, log) : []
       log(`layers:    ${layers.join(', ')}`)
       log(`harnesses: ${parsed.harnesses.join(', ')}`)
       log(`repos:     ${repos.filter(r => !r.note).length} cloneable, ${repos.filter(r => r.note).length} noted`)
       log(`dest:      ${destDir}`)
       log('(nothing was written — drop --plan to run it)')
       return 0
+    } finally {
+      await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
     }
-
-    const result = await runBackup({
-      homeDir: HOME_DIR, destDir, layers, harnesses: parsed.harnesses,
-      repos, assetRoot: stageRoot, agentopVersion: CURRENT_VERSION, hostname: hostname(), onLine: log,
-    })
-    if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
-
-    log(`before compression: ${formatBytes(plannedTotal(result.sizes, layers))}`)
-    log(`archive:            ${formatBytes(result.record.archiveBytes)}`)
-    log(`sha256:             ${result.record.sha256}`)
-
-    // Pruning deletes the FILES and leaves the records. The store is append-only (see BACKUPS_FILE)
-    // and already holds the rule that makes rewriting unnecessary: a record whose file is gone is
-    // reported absent by `markPresence` from then on, which is the truth and is what the history is
-    // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
-    // append-only shape exists to remove.
-    await pruneOldBackups(prefs.keep, log)
-    return 0
-  } finally {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => {})
   }
+
+  const result = await performBackup(effective, { layers, harnesses: parsed.harnesses, destDir }, log)
+  if (!result.ok) { console.error(`backup failed: ${result.reason}`); return 1 }
+  return 0
 }
 
 export async function runRestoreCli(argv: string[]): Promise<number> {

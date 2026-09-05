@@ -35,6 +35,7 @@ import { render } from 'ink-testing-library'
 import { ControlCenter } from '../src/control/ControlCenter'
 import {
   TAB_ORDER,
+  type ControlBackupStatus,
   type ControlHost,
   type ControlSession,
   type ControlSessions,
@@ -462,7 +463,39 @@ function fakeHost(opts: Options, apiUrl?: string): ControlHost {
     promptSession: done,
     answerSession: done,
     reopenFell: done,
+    backupStatus: async () => FAKE_BACKUP,
+    setBackupHarness: async () => {},
+    setBackupSchedule: async () => ({ ok: true, message: 'preview — nothing was performed' }),
+    runBackup: act,
   }
+}
+
+/**
+ * A backup worth looking at: the numbers from the design's own measured table — a harness with
+ * everything present, one riding the next backup with no size worth naming yet, one UNTICKED (so
+ * it must read as unprotected, not merely dimmer), and one whose last record points at a file
+ * that is gone.
+ */
+const FAKE_BACKUP: ControlBackupStatus = {
+  harnesses: [
+    { id: 'claude', enabled: true, sessions: 552, sizeLabel: '3.4 MB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    { id: 'codex', enabled: true, sessions: 14, sizeLabel: '60 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    { id: 'gemini', enabled: true, sessions: 15, sizeLabel: '64 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    // Unticked, and NEVER backed up — the row this whole tab exists to make unmissable.
+    { id: 'copilot', enabled: false, sessions: 11, sizeLabel: '48 KB' },
+    { id: 'antigravity', enabled: true, sessions: 34, sizeLabel: '140 KB', lastBackupGone: true },
+    { id: 'kimi', enabled: true, sessions: 12, sizeLabel: '52 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+  ],
+  config: {
+    layers: ['metrics', 'repos'],
+    destDir: '/home/dev/backups',
+    schedule: 'daily',
+    scheduleActive: true,
+    keep: 7,
+    retainedLabel: '35 MB',
+    secretsCount: 5,
+    last: { at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(), bytesLabel: '4.1 MB', skipped: 0 },
+  },
 }
 
 /**

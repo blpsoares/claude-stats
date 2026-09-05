@@ -30,18 +30,21 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeSync } from 'node:fs'
+import { existsSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, platform } from 'node:os'
 import {
-  DEFAULT_TEAM, repoShortName,
+  DEFAULT_TEAM, HARNESS_ORDER, repoShortName,
   type HarnessId, type TeamConnection,
 } from '@agentistics/core'
 import type {
   ActionResult,
   ActionTarget,
   AttachTicket,
+  BackupScheduleId,
   BootState,
+  ControlBackupHarness,
+  ControlBackupStatus,
   ControlHost,
   ControlService,
   ControlSessions,
@@ -68,11 +71,18 @@ import type {
   RestoreCandidate,
 } from '@agentistics/tui/control'
 import { DEFAULT_SESSION_VIEW } from '@agentistics/tui/control'
-import { PORT, WEB_PORT } from './config'
+import { AGENTISTICS_DATA_DIR, HOME_DIR, PORT, WEB_PORT } from './config'
 import {
   readPreferences, writePreferences, resolveArchiveMode, type ArchiveMode,
   clampSessionPollMs, sessionPollMsOrDefault, SESSION_POLL_DEFAULT_MS,
 } from './preferences'
+import { performBackup, readBackupPrefs } from './cli-backup'
+import { omittedSecrets, planSources } from './backup/backup-plan'
+import { walkSources } from './backup/backup'
+import { formatBytes, retainedTotal } from './backup/backup-size'
+import { lastBackup, lastPerHarness, markPresence, readBackups } from './backup/backup-store'
+import { scheduleStatus } from './backup/schedule'
+import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
 import { flagFor, type CentralRuntimeId, type CentralRuntimeOption } from './central-runtime'
 import { onOutputLine, publishLines, streamCommand } from './cli-stream'
@@ -2480,6 +2490,114 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       const clamped = clampSessionPollMs(ms)
       if (lastStatus) remember({ ...lastStatus, sessionPollMs: clamped })
       try { await writePreferences({ sessionPollMs: clamped }) } catch { /* best-effort */ }
+    },
+
+    /**
+     * The `backup` tab's own snapshot — see `ControlHost.backupStatus`.
+     *
+     * A SEPARATE read from `refresh()`, never folded into it: `refresh()` runs on every action and
+     * on every `r` press, and this walks the metrics layer (a few MB) plus the whole consolidate
+     * store to count sessions per harness, which every OTHER tab needs `refresh()` to stay cheap
+     * for. The RAW layer (gigabytes) is never walked here — the harness list's `size` column is the
+     * metrics-only weight, the same figure `agentop backup --plan` would report for that layer.
+     */
+    async backupStatus(): Promise<ControlBackupStatus> {
+      const prefs = readBackupPrefs(await readPreferences())
+      const [sizes, consolidated, entries] = await Promise.all([
+        walkSources(HOME_DIR, planSources({ layers: ['metrics'], harnesses: HARNESS_ORDER }))
+          .then(r => r.sizes)
+          .catch(() => null),
+        loadConsolidated().catch(() => new Map()),
+        readBackups().then(rs => markPresence(rs, p => existsSync(p))).catch(() => []),
+      ])
+
+      const sessionCounts: Partial<Record<HarnessId, number>> = {}
+      for (const sess of consolidated.values()) {
+        const h = (sess.harness ?? 'claude') as HarnessId
+        sessionCounts[h] = (sessionCounts[h] ?? 0) + 1
+      }
+      const byHarness = sizes?.metrics.byHarness ?? {}
+      const perHarnessLast = lastPerHarness(entries)
+
+      const harnesses: ControlBackupHarness[] = HARNESS_ORDER.map(id => {
+        const at = perHarnessLast[id]
+        // A recorded backup once covered this harness, and its file is gone — see
+        // `backup-store.ts`'s `markPresence`. Checked only when there is no PRESENT one, so a
+        // harness with several records never has to look past the newest that still exists.
+        const gone = !at && entries.some(e => e.harnesses.includes(id))
+        return {
+          id,
+          enabled: prefs.harnesses.includes(id),
+          sessions: sessionCounts[id] ?? 0,
+          sizeLabel: formatBytes(byHarness[id] ?? 0),
+          ...(at ? { lastBackupAt: at } : {}),
+          ...(gone ? { lastBackupGone: true } : {}),
+        }
+      })
+
+      const last = lastBackup(entries)
+      const st = scheduleStatus({
+        schedule: prefs.schedule, lastAt: last?.at ?? null, nowMs: Date.now(),
+        serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
+      })
+
+      return {
+        harnesses,
+        config: {
+          layers: prefs.layers,
+          destDir: prefs.destDir,
+          schedule: prefs.schedule,
+          scheduleActive: st.kind === 'next',
+          keep: prefs.keep,
+          retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
+          secretsCount: omittedSecrets().length,
+          ...(last
+            ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
+            : {}),
+        },
+      }
+    },
+
+    // Best-effort, exactly like `setMouse`: a machine that cannot write its preferences still gets
+    // the toggle for this run.
+    async setBackupHarness(harness: HarnessId, on: boolean): Promise<void> {
+      try {
+        const p = await readPreferences()
+        const prefs = readBackupPrefs(p)
+        const set = new Set(prefs.harnesses)
+        if (on) set.add(harness); else set.delete(harness)
+        await writePreferences({
+          ...p,
+          // HARNESS_ORDER, never the Set's own iteration order — the same discipline `readBackupPrefs`
+          // itself follows, so a preference written here reads back in the order every other surface
+          // already expects.
+          backup: { ...(p.backup ?? {}), harnesses: HARNESS_ORDER.filter(h => set.has(h)) },
+        })
+      } catch { /* best-effort — see above */ }
+    },
+
+    async setBackupSchedule(schedule: BackupScheduleId): Promise<ActionResult> {
+      const p = await readPreferences()
+      await writePreferences({ ...p, backup: { ...(p.backup ?? {}), schedule } })
+      return { ok: true, message: S().backupScheduleSet(schedule) }
+    },
+
+    /**
+     * Run a backup now, streaming into `onOutput` — the same channel a rebuild uses.
+     *
+     * Calls `performBackup`, the ONE implementation `agentop backup` itself calls (`cli-backup.ts`):
+     * the cockpit decides nothing about what a backup carries, it only presses the button.
+     */
+    async runBackup(): Promise<ActionResult> {
+      const prefs = readBackupPrefs(await readPreferences())
+      const result = await performBackup(
+        prefs,
+        { layers: prefs.layers, harnesses: prefs.harnesses, destDir: prefs.destDir },
+        line => publishLines([line]),
+      )
+      return result.ok
+        ? { ok: true, message: S().backupRunOk(formatBytes(result.record.archiveBytes)) }
+        : { ok: false, message: result.reason }
     },
 
     /**

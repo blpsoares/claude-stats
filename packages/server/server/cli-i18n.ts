@@ -424,6 +424,10 @@ export interface CliStrings {
   backupScheduleNoServer: string
   backupSecretsOmitted: string
   backupNoneOnDisk: string
+  /** The cockpit's `s` key and the CLI's `schedule` subcommand share this outcome sentence. */
+  backupScheduleSet: (schedule: string) => string
+  /** The cockpit's `b` key — same shape as the CLI's own report, in one sentence. */
+  backupRunOk: (archiveBytesLabel: string) => string
 }
 
 const EN: CliStrings = {
@@ -718,6 +722,8 @@ const EN: CliStrings = {
   backupScheduleNoServer: 'schedule: inactive — the server is not running, so nothing will fire',
   backupSecretsOmitted: 'These were NOT in the backup. Re-establish each:',
   backupNoneOnDisk: 'last backup: none (no recorded backup whose file is still on disk)',
+  backupScheduleSet: schedule => `schedule: ${schedule}`,
+  backupRunOk: bytes => `backup written — ${bytes}`,
 }
 
 const PT: CliStrings = {
@@ -1006,6 +1012,8 @@ const PT: CliStrings = {
   backupScheduleNoServer: 'agenda: inativa — o servidor não está rodando, então nada vai disparar',
   backupSecretsOmitted: 'Estes NÃO estavam no backup. Restabeleça cada um:',
   backupNoneOnDisk: 'último backup: nenhum (nenhum registro cujo arquivo ainda esteja no disco)',
+  backupScheduleSet: schedule => `agenda: ${schedule}`,
+  backupRunOk: bytes => `backup gravado — ${bytes}`,
 }
 
 const TABLE: Record<CliLang, CliStrings> = { en: EN, pt: PT }
