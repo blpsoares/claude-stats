@@ -249,3 +249,51 @@ describe('retireFallenSessions', () => {
     expect(current.find(s => s.id === 's3')?.endedAt).toBeUndefined()
   })
 })
+
+describe('task attribution on the record', () => {
+  it('round-trips taskId, attemptId and conversationLink', async () => {
+    const r = createSessionRegistry(file)
+    await r.add({
+      ...session('a1'),
+      taskId: 't-1',
+      attemptId: 'a-1',
+      conversationId: 'c-1',
+      conversationLink: 'assigned',
+    })
+    const [row] = await r.read()
+    expect(row!.taskId).toBe('t-1')
+    expect(row!.attemptId).toBe('a-1')
+    expect(row!.conversationLink).toBe('assigned')
+  })
+
+  it('drops a non-string attribution rather than carrying it into the grouping', async () => {
+    // The file is hand-editable. A number reaching the fleet's task grouping would key a band on
+    // something that is not an id, and the row would file itself under a task nobody can name.
+    await writeFile(file, JSON.stringify([{
+      ...session('a1'), taskId: 7, attemptId: null,
+    }]), 'utf-8')
+    const [row] = await createSessionRegistry(file).read()
+    expect(row!.id).toBe('a1')
+    expect(row!.taskId).toBeUndefined()
+    expect(row!.attemptId).toBeUndefined()
+  })
+
+  it('drops a conversationLink that is not one of the two words', async () => {
+    // A rollup reads this to say whether a cost came from an assigned id or a claimed one. An
+    // unknown word would flow into that sentence as though it meant something.
+    await writeFile(file, JSON.stringify([{
+      ...session('a1'), conversationId: 'c-1', conversationLink: 'guessed',
+    }]), 'utf-8')
+    const [row] = await createSessionRegistry(file).read()
+    expect(row!.conversationId).toBe('c-1')
+    expect(row!.conversationLink).toBeUndefined()
+  })
+
+  it('patches the attribution onto an existing row', async () => {
+    const r = createSessionRegistry(file)
+    await r.add(session('a1'))
+    expect(await r.patch('a1', { taskId: 't-9', attemptId: 'a-9' })).toBe(true)
+    const [row] = await r.read()
+    expect([row!.taskId, row!.attemptId]).toEqual(['t-9', 'a-9'])
+  })
+})
