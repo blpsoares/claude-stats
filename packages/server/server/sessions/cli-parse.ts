@@ -26,6 +26,9 @@ export type SessionCommand =
       cwd?: string
       label?: string
       task?: string
+      /** See `ManagedSession.taskId`. Resolved from the task book before the spawn. */
+      taskId?: string
+      attemptId?: string
     }
   | { kind: 'list'; json?: boolean }
   /**
@@ -58,6 +61,8 @@ export type SessionCommand =
   | {
       kind: 'batch'
       task: string
+      /** The task book's id for `task`, resolved before the spawn. */
+      taskId?: string
       /** One entry per session to start. */
       specs: BatchSpec[]
       json?: boolean
@@ -73,6 +78,8 @@ export type SessionCommand =
 /** One session inside a batch, as `--session` spells it. */
 export interface BatchSpec {
   harness: HarnessId
+  /** The attempt (configuration) this session runs under — see `task-model.ts`. */
+  attemptId?: string
   prompt?: string
   cwd?: string
   model?: string

@@ -230,7 +230,13 @@ async function start(
     ...(cmd.effort ? { effort: cmd.effort } : {}),
     ...(cmd.label ? { label: cmd.label } : {}),
     ...(cmd.task ? { task: cmd.task } : {}),
-    ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+    // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+    ...(cmd.taskId ? { taskId: cmd.taskId } : {}),
+    ...(cmd.attemptId ? { attemptId: cmd.attemptId } : {}),
+    // The link is EXACT here: the CLI was handed this id (`SpawnSpec.assignId`).
+    ...(planned.plan.conversationId
+      ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+      : {}),
     ...(await recordedRepo(cwd)),
   })
 
@@ -334,10 +340,15 @@ async function batch(
       cwd,
       createdAt: new Date().toISOString(),
       task: cmd.task,
+      // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+      ...(cmd.taskId ? { taskId: cmd.taskId } : {}),
+      ...(spec.attemptId ? { attemptId: spec.attemptId } : {}),
       ...(spec.model ? { model: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.name ? { label: spec.name } : {}),
-      ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+      ...(planned.plan.conversationId
+        ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+        : {}),
       ...(await recordedRepo(cwd)),
     })
     const liveBackend = await backend.list().catch(() => [])
@@ -428,11 +439,17 @@ async function openTask(task: string, json: boolean, backend: SessionBackend): P
       id, harness: m.harness, cwd: m.cwd, createdAt: new Date().toISOString(), task,
       label: row.label,
       ...(m.note ? { note: m.note } : {}),
+      // INHERITED from the row being replaced, never taken from the request: a reopened session is
+      // the same piece of work, and the attribution is what says so. See `ManagedSession.taskId`.
+      ...(m.taskId ? { taskId: m.taskId } : {}),
+      ...(m.attemptId ? { attemptId: m.attemptId } : {}),
       // The conversation is known EXACTLY here — we just handed its id to the CLI. The cockpit's
       // reopen verb has recorded it since it was written; this path had not, so the same gesture
       // left a row that knew which conversation it drove or one that did not, depending on where it
       // was pressed. `planTaskReopen` exists to stop precisely that kind of drift.
-      ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+      ...(planned.plan.conversationId
+        ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+        : {}),
       // The REPLACEMENT re-measures rather than copying `m.repo`: a reopen is the moment to notice
       // that the worktree came back, and copying a recorded value would carry one stale answer
       // through every session ever reopened from it.
