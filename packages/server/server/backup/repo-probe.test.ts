@@ -219,3 +219,32 @@ test('candidate paths are deduped and prefer current_cwd over project_path', () 
 test('a session with no usable path contributes nothing', () => {
   expect(candidatePaths([{ project_path: '' }, {}])).toEqual([])
 })
+
+test('an already-pushed repo reports "empty", not "failed", under a LONG path', () => {
+  // `git bundle create` refuses an empty ref set with `fatal: Refusing to create empty bundle.`,
+  // and that is the HAPPY case — every local commit is already on the remote. The marker is
+  // classified out of the child's error message, which begins `Command failed: git -C <dir> bundle
+  // create <out> --all --not --remotes`, so how far into the string the marker sits depends
+  // ENTIRELY on how long those two paths are. Truncating to 200 chars before the test measured the
+  // marker at position 191 and 208 on a real machine: 6 repositories were reported as
+  // "git bundle failed — this repository restores WITHOUT its unpushed commits" while they had
+  // nothing unpushed to lose. A budget for DISPLAY may never decide a classification.
+  const deep = join(root, 'a-directory-named-at-some-length', 'and-another-one-under-it', 'plus-a-third')
+  mkdirSync(deep, { recursive: true })
+  const origin = join(deep, 'origin.git')
+  execFileSync('git', ['init', '--bare', '-q', origin], { env: gitEnv() })
+  const clone = join(deep, 'a-clone-whose-path-is-also-not-short')
+  execFileSync('git', ['clone', '-q', origin, clone], { env: gitEnv() })
+  const g = (...a: string[]): void => { execFileSync('git', ['-C', clone, ...a], { env: gitEnv() }) }
+  g('config', 'user.email', 'a@b.c')
+  g('config', 'user.name', 'a')
+  writeFileSync(join(clone, 'f.txt'), 'x')
+  g('add', 'f.txt')
+  g('commit', '-qm', 'c')
+  g('push', '-q', 'origin', 'HEAD')
+
+  const out = join(deep, 'an-output-file-name-that-is-itself-quite-long-indeed.bundle')
+  return createBundle(clone, out, { full: false, maxBytes: 1024 * 1024 }).then(res => {
+    expect(res).toBe('empty')
+  })
+})

@@ -229,3 +229,31 @@ test('an archiver is resolved, and it names the extension it will actually produ
   expect(['zstd', 'gzip', 'none']).toContain(a.kind)
   if (a.kind !== 'none') expect(a.extension.startsWith('.tar.')).toBe(true)
 })
+
+test('the repos layer COUNTS its bundles and patches', () => {
+  // The assets are produced during the backup and live nowhere in $HOME, so the walk cannot see
+  // them — they enter the tar through `assetRoot`. They were also never MEASURED, and on a real
+  // machine that read `before compression: 2.4 MB` beside `archive: 80.7 MB`: 80 MB of bundles
+  // uncounted. Every size surface is fed from `sizes` — the CLI's line, the manifest, the TUI's
+  // per-layer figures and the "will this fit in a GitHub release" verdict — so an unmeasured layer
+  // makes all of them wrong in the same direction, and the last one decides whether a backup is
+  // uploaded or the user is told to carry it on a pendrive.
+  const assetRoot = mkdtempSync(join(tmpdir(), 'agentistics-assets-'))
+  mkdirSync(join(assetRoot, 'repos'), { recursive: true })
+  writeFileSync(join(assetRoot, 'repos/a.bundle'), 'x'.repeat(5000))
+  writeFileSync(join(assetRoot, 'repos/b__main.patch'), 'y'.repeat(300))
+  const records = join(mkdtempSync(join(tmpdir(), 'agentistics-rec-')), 'backups.jsonl')
+
+  return runBackup({
+    homeDir: home, destDir: dest, layers: ['metrics', 'repos'], harnesses: [],
+    repos: [], assetRoot, agentopVersion: 'test', hostname: 'box', recordFile: records,
+  }).then(async res => {
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    const m = decodeManifest(await Bun.file(join(dest, MANIFEST_NAME)).text().catch(() => ''))
+    const sizes = res.sizes ?? (m.ok ? m.manifest.sizes : null)
+    expect(sizes).not.toBe(null)
+    expect(sizes!.repos.bytes).toBe(5300)
+    expect(sizes!.repos.files).toBe(2)
+  })
+})

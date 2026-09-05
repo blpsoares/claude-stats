@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test'
 import {
-  PLACEHOLDER_BRANCH, expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands,
+  PLACEHOLDER_BRANCH, assetRel, expandHome, groupRepos, homeRelative, restoreArgv, restoreCommands,
   type DirFacts,
 } from './repo-manifest'
 
@@ -307,4 +307,63 @@ test('home paths round-trip, and a path outside home is left absolute', () => {
   expect(homeRelative('/tmp/x', HOME)).toBe('/tmp/x')
   expect(expandHome('~/proj', '/home/new')).toBe('/home/new/proj')
   expect(expandHome('/tmp/x', '/home/new')).toBe('/tmp/x')
+})
+
+test('two checkouts of ONE remote get DIFFERENT asset paths', () => {
+  // Measured on a real machine: `~/agentistics` (20 branches of unpushed work, a 508 KB bundle)
+  // and `~/aipe-blpsoares/agentistics` (everything pushed, 4 KB) are two entries sharing one
+  // `key`. Naming the bundle after the key alone had the second `git bundle create` overwrite the
+  // first — and `createBundle` DELETES an empty/oversized one, so the second checkout could also
+  // erase the first's file while its manifest entry still pointed at it. The backup then carried
+  // 4 KB where 508 KB of unpushed branches should have been, and said nothing.
+  const a = assetRel('github.com/org/repo', '~/proj', '.bundle')
+  const b = assetRel('github.com/org/repo', '~/nested/proj', '.bundle')
+  expect(a).not.toBe(b)
+  expect(a.startsWith('repos/')).toBe(true)
+  expect(a.endsWith('.bundle')).toBe(true)
+  // No separator may survive into the file name, or the asset lands in a directory tar never made.
+  expect(a.slice('repos/'.length)).not.toInclude('/')
+})
+
+test('an asset path is stable for the same checkout and safe for any key', () => {
+  expect(assetRel('github.com/org/repo', '~/proj', '.bundle'))
+    .toBe(assetRel('github.com/org/repo', '~/proj', '.bundle'))
+  expect(assetRel('/var/weird path/../x', '~/a b/c', '.patch'))
+    .toMatch(/^repos\/[A-Za-z0-9._-]+\.patch$/)
+})
+
+test('the main checkout is never ALSO listed as one of its own worktrees', () => {
+  // Two sessions in one checkout — say `~/proj` and `~/proj/packages/web` — probe to the SAME
+  // `topLevel`, so `members` holds two objects for one tree. The split filtered by object identity
+  // (`m !== main`), which drops exactly one of them and leaves the other standing as a worktree of
+  // itself. Measured on a real machine: 6 repositories, and the restore then emits
+  // `git worktree add ~/proj` for the tree git has just checked out (git refuses: already exists)
+  // and applies that tree's patch twice (the second `git apply` cannot apply an applied patch).
+  // Both are hard failures reported over data that was captured perfectly.
+  const a = facts({
+    path: `${HOME}/proj`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'main', head: 'aaaaaaa',
+  })
+  const b = facts({
+    path: `${HOME}/proj/packages/web`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'main', head: 'aaaaaaa',
+  })
+  const [e] = groupRepos([a, b], HOME)
+  expect(e!.mainPath).toBe('~/proj')
+  expect(e!.mainBranch).toBe('main')
+  expect(e!.worktrees.map(w => w.path)).not.toContain('~/proj')
+  expect(restoreArgv(e!, HOME).some(s => s.argv.includes('worktree'))).toBe(false)
+})
+
+test('a REAL worktree beside the main checkout is still kept', () => {
+  const main = mainRepo(`${HOME}/proj`)
+  const wt = facts({
+    path: `${HOME}/proj/wt`, commonDir: `${HOME}/proj/.git`, topLevel: `${HOME}/proj/wt`,
+    cloneUrl: 'git@github.com:org/repo.git', remote: 'github.com/org/repo',
+    branch: 'feat', head: 'deadbee',
+  })
+  const [e] = groupRepos([main, wt], HOME)
+  expect(e!.worktrees.map(w => w.path)).toEqual(['~/proj/wt'])
 })

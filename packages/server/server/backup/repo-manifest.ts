@@ -191,7 +191,19 @@ export function groupRepos(facts: DirFacts[], homeDir: string): RepoEntry[] {
     // branch checked out in two trees. An empty `mainBranch` makes `restoreArgv` omit the checkout
     // step, and each worktree still adds its own branch.
     const main = members.find(m => m.topLevel === mainDir) ?? null
-    const worktrees = main ? members.filter(m => m !== main) : members
+    // By TREE, not by object identity. Several sessions can run inside one checkout (`~/proj` and
+    // `~/proj/packages/web`), and each is its own `DirFacts` resolving to the SAME `topLevel` — so
+    // `m !== main` removed exactly one of them and left the rest standing as worktrees of the very
+    // tree they are. The restore then tries `git worktree add` on the main checkout and applies its
+    // patch a second time, both of which fail, over data that was captured correctly.
+    // Worktrees are deduped by tree for the same reason.
+    const seen = new Set<string>(main ? [mainDir] : [])
+    const worktrees = members.filter(m => {
+      const tree = m.topLevel ?? m.path
+      if (seen.has(tree)) return false
+      seen.add(tree)
+      return true
+    })
 
     // `outside-home` is decided BEFORE `no-remote`: it is the stronger statement — this repository
     // will not be put back here whatever else is true of it — and deciding it first is what stops
@@ -342,4 +354,25 @@ export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): R
  */
 export function restoreCommands(entry: RepoEntry, homeDir: string, assetDir = ''): string[] {
   return restoreArgv(entry, homeDir, assetDir).map(s => s.argv.join(' '))
+}
+
+/**
+ * Where one repository's asset (a bundle, a patch) lives INSIDE the archive.
+ *
+ * Keyed on the checkout as well as the remote, and that pairing is the whole point. One remote can
+ * be cloned to several directories, which `groupRepos` correctly reports as several entries — so a
+ * name derived from the remote alone is the SAME name for all of them. Measured on a real machine:
+ * `~/agentistics` (20 branches of unpushed work, 508 KB) and `~/aipe-blpsoares/agentistics`
+ * (everything already pushed, 4 KB) collided, the second `git bundle create` overwrote the first,
+ * and the backup carried 4 KB in place of every unpushed branch while reporting success. Worse is
+ * available: `createBundle` DELETES a bundle that comes out empty or oversized, so the second
+ * checkout can remove the first's file outright, leaving a manifest entry pointing at nothing.
+ *
+ * Both components are folded to `[A-Za-z0-9._-]` so the result is one path segment under `repos/`
+ * — a separator surviving into the name would put the asset in a directory the archive never
+ * creates.
+ */
+export function assetRel(key: string, path: string, extension: string): string {
+  const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, '_')
+  return `repos/${safe(key)}__${safe(path)}${extension}`
 }

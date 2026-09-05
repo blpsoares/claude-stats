@@ -233,6 +233,25 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest('hex')
 }
 
+/**
+ * The size of every asset under `<assetRoot>/repos`, one entry per file.
+ *
+ * Total: unreadable entries are SKIPPED rather than counted as zero — a zero here would be a
+ * confident understatement of the archive, which is exactly the failure this measurement fixes.
+ */
+async function measureAssets(assetRoot: string | undefined): Promise<number[]> {
+  if (!assetRoot) return []
+  const dir = join(assetRoot, 'repos')
+  const names = await readdir(dir).catch(() => null)
+  if (!names) return []
+  const out: number[] = []
+  for (const n of names) {
+    const st = await stat(join(dir, n)).catch(() => null)
+    if (st?.isFile()) out.push(st.size)
+  }
+  return out
+}
+
 export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
   const log = opts.onLine ?? (() => {})
   const started = Date.now()
@@ -243,6 +262,17 @@ export async function runBackup(opts: BackupOptions): Promise<BackupResult> {
   const sources = planSources({ layers: opts.layers, harnesses: opts.harnesses })
   log(`planning ${sources.length} sources`)
   const { files, sizes, skipped } = await walkSources(opts.homeDir, sources)
+
+  // The repos layer's assets are produced BY this backup and live nowhere in $HOME, so the walk
+  // cannot see them — they enter the tar from `assetRoot`. Counting them here is what makes every
+  // size surface agree: the line below, the manifest, the TUI's per-layer figures, and the verdict
+  // on whether the archive fits a GitHub release. Left out, a real machine reported
+  // `before compression: 2.4 MB` beside an `archive: 80.7 MB`, and the fit verdict — the one that
+  // decides between uploading and telling the user to carry the file on a pendrive — was reading
+  // the 2.4 MB.
+  const assetBytes = await measureAssets(opts.assetRoot)
+  for (const a of assetBytes) addBytes(sizes, 'repos', null, a)
+
   log(`${files.length} files, ${plannedTotal(sizes, opts.layers)} bytes before compression`)
 
   // Named, never counted-and-forgotten: a backup that quietly left things out is a backup whose

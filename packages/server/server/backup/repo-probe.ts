@@ -76,6 +76,14 @@ export function gitEnv(): NodeJS.ProcessEnv {
   return env
 }
 
+/** A cap for memory, far above any marker's position — never a classification boundary. */
+const MAX_REASON = 4000
+
+/** One line's worth of a git failure, for a manifest field or a log line a person reads. */
+export function shortReason(reason: string): string {
+  return reason.length <= 200 ? reason : `${reason.slice(0, 197)}...`
+}
+
 export type GitResult =
   | { ok: true; stdout: string }
   | { ok: false; reason: string }
@@ -94,7 +102,13 @@ async function gitRun(cwd: string, args: string[], timeout = 10_000): Promise<Gi
     return { ok: true, stdout: stdout.trim() }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return { ok: false, reason: msg.split('\n').slice(0, 2).join(' ').slice(0, 200) }
+    // NOT truncated here. The child's message opens with `Command failed: git -C <dir> ... <out>`,
+    // so a marker further in sits at a position decided entirely by how long those paths are —
+    // measured at 191 and 208 chars on a real machine, either side of a 200-char cut. Callers
+    // CLASSIFY on this string (`createBundle` looks for `empty bundle`, the happy case) and a
+    // display budget that silently changes a classification is the bug this comment exists for.
+    // Shortening is the storing caller's job: `shortReason`.
+    return { ok: false, reason: msg.split('\n').slice(0, 2).join(' ').slice(0, MAX_REASON) }
   }
 }
 
@@ -204,11 +218,11 @@ export type PatchResult =
  */
 export async function capturePatch(dir: string): Promise<PatchResult> {
   const status = await gitRun(dir, ['status', '--porcelain'], 15_000)
-  if (!status.ok) return { kind: 'unavailable', reason: `git status failed: ${status.reason}` }
+  if (!status.ok) return { kind: 'unavailable', reason: `git status failed: ${shortReason(status.reason)}` }
   if (!status.stdout) return { kind: 'clean' }
 
   const diff = await gitRun(dir, ['diff', 'HEAD', '--binary'], 30_000)
-  if (!diff.ok) return { kind: 'unavailable', reason: `git diff failed: ${diff.reason}` }
+  if (!diff.ok) return { kind: 'unavailable', reason: `git diff failed: ${shortReason(diff.reason)}` }
   // Dirty per status but an empty diff means the changes are all untracked files, which travel as
   // a LIST rather than as content — `listUntracked` reports them and there is no patch to write.
   return diff.stdout ? { kind: 'patch', text: diff.stdout + '\n' } : { kind: 'clean' }
@@ -228,7 +242,7 @@ export type UntrackedResult =
  */
 export async function listUntracked(dir: string): Promise<UntrackedResult> {
   const res = await gitRun(dir, ['ls-files', '--others', '--exclude-standard'])
-  if (!res.ok) return { kind: 'unavailable', reason: `git ls-files failed: ${res.reason}` }
+  if (!res.ok) return { kind: 'unavailable', reason: `git ls-files failed: ${shortReason(res.reason)}` }
   return { kind: 'files', files: res.stdout ? res.stdout.split('\n').filter(Boolean) : [] }
 }
 

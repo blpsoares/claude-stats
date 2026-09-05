@@ -23,7 +23,7 @@ import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backu
 import { lastBackup, lastPerHarness, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
 import { runBackup, walkSources } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
-import { groupRepos, expandHome, type RepoEntry } from './backup/repo-manifest'
+import { groupRepos, expandHome, assetRel, type RepoEntry } from './backup/repo-manifest'
 import { planRepos } from './backup/restore-plan'
 import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState, restoreStateFile } from './backup/restore'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
@@ -327,10 +327,11 @@ async function buildRepoManifest(
   for (const e of entries) {
     if (e.note === 'gone' || e.note === 'not-a-repo' || e.note === 'outside-home') continue
     const main = expandHome(e.mainPath, HOME_DIR)
-    const safe = e.key.replace(/[^A-Za-z0-9._-]/g, '_')
 
     // A repo with no remote has no other home, so it needs its whole history.
-    const rel = `repos/${safe}.bundle`
+    // The name carries the CHECKOUT as well as the remote: one remote cloned twice is two entries,
+    // and a name from the remote alone had the second overwrite the first's bundle. See `assetRel`.
+    const rel = assetRel(e.key, e.mainPath, '.bundle')
     const res = await createBundle(main, join(stageRoot, rel), {
       full: e.note === 'no-remote', maxBytes: prefs.maxBundleBytes,
     })
@@ -368,8 +369,7 @@ async function buildRepoManifest(
         // One patch per WORKING TREE, not per repo: a checkout and each of its worktrees are
         // different trees with different uncommitted work, and one file per repo would have them
         // overwrite each other.
-        const dirSlug = dir.replace(/[^A-Za-z0-9._-]/g, '_')
-        patchRel = `repos/${safe}__${dirSlug}.patch`
+        patchRel = assetRel(e.key, dir, '.patch')
         await writeFile(join(stageRoot, patchRel), patch.text)
       }
       // `untracked` is a LIST of names and never the contents — see RepoDirty in repo-manifest.ts.
