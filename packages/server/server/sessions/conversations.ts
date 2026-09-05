@@ -26,6 +26,15 @@ export interface Conversation {
   title: string
   lastActivityMs: number
   /**
+   * Epoch ms the conversation BEGAN.
+   *
+   * Distinct from `lastActivityMs`, which moves every turn: the first-sighting claim
+   * (`task-attribution.ts`) is anchored on when a conversation started, relative to a spawn.
+   * `0` when the session recorded no usable start time — which no claim can ever match, since it
+   * must be strictly LATER than the spawn.
+   */
+  startedMs: number
+  /**
    * Whether this harness can reopen a conversation by id AT ALL.
    *
    * False for gemini, whose `--resume` takes "latest" or an index rather than an id. A row that
@@ -77,6 +86,7 @@ export function toConversation(s: SessionMeta): Conversation {
   return {
     sessionId: s.session_id,
     harness,
+    startedMs: Date.parse(s.start_time) || 0,
     // Where the session IS: a worktree session records it as `current_cwd` while `project_path`
     // stays at the root, and reopening it should land where the work was happening.
     cwd: s.current_cwd || s.project_path || '',

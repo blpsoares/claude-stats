@@ -21,6 +21,8 @@ import { markFleetPhase } from './fleet-profile'
 import { parseDialogOptions, type DialogOption } from './dialog-choice'
 // Taking a running session back when its registry record is gone. See `session-adopt.ts`.
 import { planAdoptions } from './session-adopt'
+// The claim for harnesses that cannot be handed a conversation id. See `task-attribution.ts`.
+import { planFirstSightingClaims } from './task-attribution'
 import { loadConversations, type Conversation } from './conversations'
 import { HEARTBEAT_MS, planCrashGroup, type CrashGroup } from './crash-group'
 import { emptyHarnessSessionIndex, type HarnessSessionIndex } from './harness-sessions'
@@ -123,7 +125,16 @@ export function createSessionsPoller(o: {
    * sessions of one repository apart — the guess that once reopened three rows onto one
    * conversation.
    */
-  recordConversation?: (id: string, conversationId: string) => Promise<unknown>
+  recordConversation?: (
+    id: string,
+    conversationId: string,
+    /**
+     * HOW the link was established — see `ManagedSession.conversationLink`. `assigned` for the
+     * harness's own exact record; `observed` for a first-sighting claim. One writer, told which
+     * kind: a second path to this field is a second place for the two to disagree.
+     */
+    link: 'assigned' | 'observed',
+  ) => Promise<unknown>
   /**
    * Persist the name a managed row was given INSIDE the harness (`/rename`), so the title survives
    * the process.
@@ -317,10 +328,43 @@ export function createSessionsPoller(o: {
           const exact = harnessSessions.byManagedId.get(m.id)?.sessionId
           if (!exact || m.conversationId === exact) continue
           recordConvWrites++
-          await o.recordConversation(m.id, exact).catch(() => undefined)
+          await o.recordConversation(m.id, exact, 'assigned').catch(() => undefined)
         }
       }
       markFleetPhase(`poll: recordConversation x${recordConvWrites}`, recordConvStart)
+
+      // The conversation link for the harnesses no `assignId` can be given (codex, kimi,
+      // antigravity, gemini): claimed ONCE, at first sighting, and refused on any ambiguity. Written
+      // through the same `recordConversation` as the exact link above, because a second path to one
+      // field is a second place for the two to disagree. See `task-attribution.ts` — rows already
+      // carrying a link are skipped there, so this too writes once per session, not once per poll.
+      const claimStart = performance.now()
+      let claimWrites = 0
+      if (o.recordConversation) {
+        const plan = planFirstSightingClaims({
+          rows: registry.map(m => ({
+            id: m.id,
+            harness: m.harness,
+            cwd: m.cwd,
+            spawnedMs: Date.parse(m.createdAt) || 0,
+            ...(m.conversationId ? { conversationId: m.conversationId } : {}),
+          })),
+          candidates: conversations.map(c => ({
+            sessionId: c.sessionId,
+            harness: c.harness,
+            cwd: c.cwd,
+            startedMs: c.startedMs,
+          })),
+          claimed: new Set(
+            registry.map(m => m.conversationId).filter((v): v is string => Boolean(v)),
+          ),
+        })
+        for (const claim of plan.claims) {
+          claimWrites++
+          await o.recordConversation(claim.rowId, claim.sessionId, 'observed').catch(() => undefined)
+        }
+      }
+      markFleetPhase(`poll: firstSightingClaims x${claimWrites}`, claimStart)
 
       // The `/rename` name, captured WHILE there is still a harness file to read it from, so the
       // title outlives the process. Only a name a PERSON typed (`chosenName` drops the harness's own

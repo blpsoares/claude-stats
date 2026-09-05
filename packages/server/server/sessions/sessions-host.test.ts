@@ -397,3 +397,69 @@ describe('persisting the harness /rename name', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('first-sighting claims', () => {
+  const conv = (sessionId: string, over: Record<string, unknown> = {}) => ({
+    sessionId, harness: 'codex' as const, cwd: '/repo/a', title: sessionId,
+    lastActivityMs: NOW, startedMs: NOW - 60_000, resumable: true, firstPrompt: '',
+    ...over,
+  })
+
+  it('records the claim once, through recordConversation, marked observed', async () => {
+    const calls: Array<[string, string, string]> = []
+    const p = createSessionsPoller({
+      backend: fakeBackend({ sessions: [backendSession('m1')], frames: { m1: ['x'] } }),
+      // Spawned BEFORE the conversation began, which is what makes it claimable.
+      readRegistry: async () => [managed('m1', {
+        harness: 'codex', cwd: '/repo/a', createdAt: new Date(NOW - 120_000).toISOString(),
+      })],
+      scanProcesses: async () => ({ procs: [] }),
+      now: () => NOW,
+      loadConversations: async () => [conv('c1')] as never,
+      recordConversation: async (id, cid, link) => { calls.push([id, cid, link]) },
+    })
+    await p.poll()
+    expect(calls).toEqual([['m1', 'c1', 'observed']])
+  })
+
+  it('writes nothing when the claim is refused', async () => {
+    // Two unclaimed rows of one harness in one directory — what `session batch` produces. Coming
+    // out empty is correct; coming out swapped is the bug this cannot survive.
+    const calls: Array<[string, string, string]> = []
+    const p = createSessionsPoller({
+      backend: fakeBackend({
+        sessions: [backendSession('m1'), backendSession('m2')],
+        frames: { m1: ['x'], m2: ['x'] },
+      }),
+      readRegistry: async () => [
+        managed('m1', { harness: 'codex', cwd: '/repo/a', createdAt: new Date(NOW - 120_000).toISOString() }),
+        managed('m2', { harness: 'codex', cwd: '/repo/a', createdAt: new Date(NOW - 120_000).toISOString() }),
+      ],
+      scanProcesses: async () => ({ procs: [] }),
+      now: () => NOW,
+      loadConversations: async () => [conv('c1')] as never,
+      recordConversation: async (id, cid, link) => { calls.push([id, cid, link]) },
+    })
+    await p.poll()
+    expect(calls).toEqual([])
+  })
+
+  it('does not re-write a row that already carries a link', async () => {
+    // A claim is never revised. Re-deriving it later is how a row silently changes what it measured.
+    const calls: Array<[string, string, string]> = []
+    const p = createSessionsPoller({
+      backend: fakeBackend({ sessions: [backendSession('m1')], frames: { m1: ['x'] } }),
+      readRegistry: async () => [managed('m1', {
+        harness: 'codex', cwd: '/repo/a',
+        createdAt: new Date(NOW - 120_000).toISOString(),
+        conversationId: 'already',
+      })],
+      scanProcesses: async () => ({ procs: [] }),
+      now: () => NOW,
+      loadConversations: async () => [conv('c1')] as never,
+      recordConversation: async (id, cid, link) => { calls.push([id, cid, link]) },
+    })
+    await p.poll()
+    expect(calls).toEqual([])
+  })
+})

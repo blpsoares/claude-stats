@@ -1426,7 +1426,11 @@ async function ensureSessionsPoller(): Promise<SessionsPoller> {
     loadHarnessSessions,
     // Written once per session, not once per poll — the poller only calls this when the harness's
     // own record disagrees with the registry.
-    recordConversation: (id, conversationId) => patchSession(id, { conversationId }),
+    // The link kind travels WITH the id. Dropping it here would persist a first-sighting claim as
+    // though the CLI had been handed that conversation, which is the one thing the field exists to
+    // keep apart — see `ManagedSession.conversationLink`.
+    recordConversation: (id, conversationId, conversationLink) =>
+      patchSession(id, { conversationId, conversationLink }),
     // The `/rename` name, persisted so the title survives the process — same once-per-change
     // discipline. See `ManagedSession.harnessName` and `pickTitle`.
     recordHarnessName: (id, name, since) =>
