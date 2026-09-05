@@ -36,6 +36,9 @@ import { loadHarnessSessions } from './harness-sessions'
 import { createSessionsPoller, type SessionSnapshot } from './sessions-host'
 import { needsAttention, type SessionView } from './session-view'
 import { planTaskReopen, taskReopenSucceeded } from './task-reopen'
+import { TASKS_FILE } from '../config'
+import { createTaskStore } from './task-store'
+import { newAttemptId, newTaskId, type Attempt } from './task-model'
 import { liveConversationHolders } from './live-claims'
 import { POLL_MS, SETTLE_MS, spawnOutcome } from './spawn-outcome'
 import { parseHarnessAgents } from './harness-agents'
@@ -287,6 +290,55 @@ function stateWord(v: SessionView): string {
 }
 
 /**
+ * The Task and the Attempts a batch is filed under, created on first sight.
+ *
+ * A task is matched by TITLE and an attempt by LABEL within that task, so running the same batch
+ * twice adds sessions to the work that exists rather than forking a second copy of it — which is
+ * exactly what "the same task under four configs, measured" needs.
+ *
+ * The attempt's `config` records what was ASKED FOR at spawn, never what is inferred later: that is
+ * the whole point of the middle level, and a configuration reconstructed after the fact from the
+ * sessions would just be a description of what happened.
+ */
+async function resolveTaskAndAttempts(
+  cmd: Extract<SessionCommand, { kind: 'batch' }>,
+): Promise<{ taskId: string; attempts: Map<string, string> }> {
+  const store = createTaskStore(TASKS_FILE)
+  const book = await store.read()
+  const now = new Date().toISOString()
+
+  let task = book.tasks.find(t => t.title === cmd.task)
+  if (!task) {
+    task = { id: newTaskId(), title: cmd.task, status: 'open', createdAt: now, updatedAt: now }
+    await store.upsertTask(task)
+  }
+
+  const attempts = new Map<string, string>()
+  for (const spec of cmd.specs) {
+    const label = spec.attempt
+    if (!label || attempts.has(label)) continue
+    const existing = book.attempts.find(a => a.taskId === task!.id && a.label === label)
+    if (existing) { attempts.set(label, existing.id); continue }
+    const attempt: Attempt = {
+      id: newAttemptId(),
+      taskId: task.id,
+      label,
+      config: {
+        harness: spec.harness,
+        ...(spec.model ? { model: spec.model } : {}),
+        ...(spec.effort ? { effort: spec.effort } : {}),
+      },
+      status: 'running',
+      startedAt: now,
+      updatedAt: now,
+    }
+    await store.upsertAttempt(attempt)
+    attempts.set(label, attempt.id)
+  }
+  return { taskId: task.id, attempts }
+}
+
+/**
  * `agentop session batch` — start several sessions at once, all filed under one task.
  *
  * The command an ASSISTANT drives. Every session is started detached, because a batch by definition
@@ -302,6 +354,12 @@ async function batch(
 ): Promise<number> {
   const started: Array<{ id: string; harness: string; cwd: string }> = []
   const failed: Array<{ harness: string; reason: string }> = []
+
+  // The task book, resolved BEFORE the first spawn: the ids are stamped on the rows, and a row
+  // started before its task existed would carry a name and no id — the unattributed case
+  // `task-rollup.ts` has to report as a hole. Best effort: a book that cannot be written costs the
+  // ids, never the sessions.
+  const resolved = await resolveTaskAndAttempts(cmd).catch(() => null)
 
   for (const spec of cmd.specs) {
     const cwd = spec.cwd ? resolve(spec.cwd) : process.cwd()
@@ -341,8 +399,10 @@ async function batch(
       createdAt: new Date().toISOString(),
       task: cmd.task,
       // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
-      ...(cmd.taskId ? { taskId: cmd.taskId } : {}),
-      ...(spec.attemptId ? { attemptId: spec.attemptId } : {}),
+      ...(resolved?.taskId ? { taskId: resolved.taskId } : {}),
+      ...(spec.attempt && resolved?.attempts.get(spec.attempt)
+        ? { attemptId: resolved.attempts.get(spec.attempt)! }
+        : {}),
       ...(spec.model ? { model: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.name ? { label: spec.name } : {}),

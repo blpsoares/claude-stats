@@ -33,6 +33,46 @@ function gitCmd(projectPath: string): string {
   return 'git'
 }
 
+/**
+ * The commits of a directory inside a window, with their subjects — the EVIDENCE half of a task
+ * delivery (`task-evidence.ts` reads the PR references out of these messages).
+ *
+ * Separate from `getGitFileStats` / `getProjectGitStats`, which answer with COUNTS: a count cannot
+ * carry a subject, and the subject is where a PR reference lives.
+ *
+ * `--pretty=tformat:` and never `format:`. The latter omits the terminal newline on the LAST record,
+ * so a line-wise reader silently drops the OLDEST commit of every range — the same defect the
+ * release workflow's lint exists to prevent, in a different reader. NUL separates the fields
+ * because a commit subject may contain anything else.
+ */
+export async function getCommitsInWindow(
+  projectPath: string,
+  afterIso: string,
+  beforeIso: string,
+): Promise<Array<{ sha: string; message: string; atMs: number }>> {
+  if (!projectPath || !afterIso || !beforeIso) return []
+  try {
+    const { stdout } = await execAsync(
+      `${gitCmd(projectPath)} -C "${projectPath}" log --after="${afterIso}" --before="${beforeIso}"`
+      + ' --pretty=tformat:%H%x00%cI%x00%s',
+      { timeout: 5000 },
+    )
+    const out: Array<{ sha: string; message: string; atMs: number }> = []
+    for (const line of stdout.split('\n')) {
+      if (!line.trim()) continue
+      const [sha, iso, ...rest] = line.split('\u0000')
+      const atMs = Date.parse(iso ?? '')
+      if (!sha || !Number.isFinite(atMs)) continue
+      out.push({ sha, message: rest.join('\u0000'), atMs })
+    }
+    return out
+  } catch {
+    // Not a repository, no git, or a directory that is gone. Evidence is best effort: a delivery
+    // is not refused because its commits could not be read.
+    return []
+  }
+}
+
 export async function getGitFileStats(
   projectPath: string,
   afterIso: string,

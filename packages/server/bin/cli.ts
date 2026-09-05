@@ -436,6 +436,14 @@ if (command === 'session') {
   process.exit(code)
 }
 
+// A TOP-LEVEL command, not `session task`: a task outlives every row filed under it, and
+// `agentop session task <ref> "<name>"` already means something else — it files ONE row.
+if (command === 'task') {
+  const { runTask } = await import('../server/sessions/cli-task.ts')
+  const code = await runTask(args)
+  process.exit(code)
+}
+
 if (command === 'hooks') {
   const { runHooks } = await import('../server/cli-hooks.ts')
   const code = await runHooks(args)
