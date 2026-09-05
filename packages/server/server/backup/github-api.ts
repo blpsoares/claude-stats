@@ -140,12 +140,20 @@ function apiMessageFrom(bodyText: string): string | null {
  *
  * `init.headers` is merged AFTER the defaults so a caller can override `Accept` (a binary asset
  * download needs `application/octet-stream`, not the JSON media type every metadata call uses).
+ *
+ * `responseType` picks how a 2xx BODY is read, because not every call this module makes gets JSON
+ * back: uploading or downloading a release asset moves raw bytes, and a `DELETE` returns nothing at
+ * all. This stays the ONE request helper rather than growing a sibling per shape — `arrayBuffer`
+ * hands back the raw bytes (the caller hashes them, in `github-upload.ts`) and `none` skips body
+ * parsing entirely (`res.json()` on an empty 204 body throws, which would misreport a successful
+ * delete as a failure).
  */
 export async function gh<T = unknown>(
   path: string,
   token: string,
   init: RequestInit = {},
   fetchImpl: FetchLike = fetch,
+  responseType: 'json' | 'arrayBuffer' | 'none' = 'json',
 ): Promise<GhResult<T>> {
   const url = path.startsWith('http') ? path : `https://api.github.com${path}`
 
@@ -178,8 +186,10 @@ export async function gh<T = unknown>(
     return { ok: false, status: res.status, message: redact(message, token) }
   }
 
+  if (responseType === 'none') return { ok: true, data: undefined as T, status: res.status }
+
   try {
-    const data = (await res.json()) as T
+    const data = (responseType === 'arrayBuffer' ? await res.arrayBuffer() : await res.json()) as T
     return { ok: true, data, status: res.status }
   } catch (err) {
     return {

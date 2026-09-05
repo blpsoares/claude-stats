@@ -31,6 +31,7 @@ import { loadConsolidated } from './consolidate'
 import { maskedInput } from './cli-ui'
 import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
+import { syncBackupToGithub } from './backup/github-upload'
 
 const DEFAULT_LAYERS: BackupLayer[] = ['metrics', 'repos']
 const DEFAULT_KEEP = 7
@@ -411,6 +412,11 @@ export async function performBackup(
     // for. Rewriting the file to drop them would reintroduce exactly the read-modify-write race the
     // append-only shape exists to remove.
     await pruneOldBackups(prefs.keep, log)
+
+    // Not configured is a silent no-op — most machines never set this up. Configured, this walks
+    // the whole confirmation ladder (`github-upload.ts`) and only deletes the local file once the
+    // upload is confirmed byte-for-byte; a failed confirmation logs why and leaves it in place.
+    await syncBackupToGithub(result.record, { log })
     return result
   } finally {
     await rm(stageRoot, { recursive: true, force: true }).catch(() => {})

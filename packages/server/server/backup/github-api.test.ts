@@ -188,4 +188,17 @@ describe('gh() — never throws, never leaks the token', () => {
     await gh('/repos/o/r', TOKEN, {}, fetchImpl)
     expect(seenUrl).toBe('https://api.github.com/repos/o/r')
   })
+
+  test('responseType "arrayBuffer" returns the raw bytes, never attempting JSON', async () => {
+    const fetchImpl = fakeFetch(() => new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 }))
+    const res = await gh<ArrayBuffer>('/repos/o/r/releases/assets/1', TOKEN, {}, fetchImpl, 'arrayBuffer')
+    expect(res.ok).toBe(true)
+    if (res.ok) expect(new Uint8Array(res.data)).toEqual(new Uint8Array([1, 2, 3, 4]))
+  })
+
+  test('responseType "none" never parses the body — a 204 with no content is still ok:true', async () => {
+    const fetchImpl = fakeFetch(() => new Response(null, { status: 204 }))
+    const res = await gh('/repos/o/r/releases/1', TOKEN, { method: 'DELETE' }, fetchImpl, 'none')
+    expect(res.ok).toBe(true)
+  })
 })

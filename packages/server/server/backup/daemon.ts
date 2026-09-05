@@ -16,6 +16,7 @@ import { pruneOldBackups, readBackupPrefs } from '../cli-backup'
 import { lastBackup, loadBackupHistory } from './backup-store'
 import { isDue } from './schedule'
 import { runBackup } from './backup'
+import { syncBackupToGithub } from './github-upload'
 
 const CHECK_MS = 15 * 60_000
 
@@ -58,7 +59,13 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
         onLine: l => log(`[backup] ${l}`),
       })
       log(r.ok ? `[backup] wrote ${r.record.path}` : `[backup] failed: ${r.reason}`)
-      if (r.ok) await pruneOldBackups(prefs.keep, l => log(`[backup] ${l}`))
+      if (r.ok) {
+        await pruneOldBackups(prefs.keep, l => log(`[backup] ${l}`))
+        // Walks the same confirmation ladder a manual `agentop backup` does (see
+        // `github-upload.ts`): a failed confirmation keeps the local file and logs why — never
+        // deletes on a schedule what a human running the same steps by hand would not delete.
+        await syncBackupToGithub(r.record, { log: l => log(`[backup] ${l}`) })
+      }
     } catch (e) {
       log(`[backup] not run: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

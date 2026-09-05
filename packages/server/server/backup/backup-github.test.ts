@@ -1,5 +1,8 @@
 import { test, expect } from 'bun:test'
-import { GITHUB_RELEASE_LIMIT_BYTES, githubFitVerdict } from './backup-github'
+import {
+  GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict,
+  isBackupTag, releaseTag, tooLargeUploadMessage, uploadVerdict,
+} from './backup-github'
 import type { BackupLayer } from './backup-plan'
 
 const bytes = (over: Partial<Record<BackupLayer, number | null>> = {}): Record<BackupLayer, number | null> => ({
@@ -25,4 +28,73 @@ test('an unmeasurable layer (repos, before a run) contributes nothing to the sum
 
 test('an empty layer selection trivially fits', () => {
   expect(githubFitVerdict([], bytes())).toBe('fits')
+})
+
+// --- uploadVerdict — the same reasoning, over a MEASURED archive, with a real refusal at the top ---
+
+test('well under 1.7 GB is ok', () => {
+  expect(uploadVerdict(1_000_000)).toBe('ok')
+  expect(uploadVerdict(GITHUB_NEAR_LIMIT_BYTES - 1)).toBe('ok')
+})
+
+test('between 1.7 GB and 2 GB is near-limit — it still uploads', () => {
+  expect(uploadVerdict(GITHUB_NEAR_LIMIT_BYTES)).toBe('near-limit')
+  expect(uploadVerdict(GITHUB_RELEASE_LIMIT_BYTES - 1)).toBe('near-limit')
+})
+
+test('at or over 2 GB is too-large — it never uploads', () => {
+  expect(uploadVerdict(GITHUB_RELEASE_LIMIT_BYTES)).toBe('too-large')
+  expect(uploadVerdict(GITHUB_RELEASE_LIMIT_BYTES * 2)).toBe('too-large')
+})
+
+// --- tooLargeUploadMessage — everything the user asked this refusal to say ---
+
+test('names the file, that it is self-sufficient, the media that works, the restore command and the alternatives', () => {
+  const msg = tooLargeUploadMessage('/home/x/.agentistics/backups/agentistics-backup-host-2026.tar.zst', GITHUB_RELEASE_LIMIT_BYTES)
+  expect(msg).toContain('/home/x/.agentistics/backups/agentistics-backup-host-2026.tar.zst')
+  expect(msg).toContain('agentop restore /home/x/.agentistics/backups/agentistics-backup-host-2026.tar.zst')
+  expect(msg.toLowerCase()).toContain('pendrive')
+  expect(msg.toLowerCase()).toContain('self-sufficient')
+  expect(msg).toContain('--harness')
+  expect(msg).toContain('agentop backup')
+})
+
+// --- releaseTag / isBackupTag ---
+
+test('releaseTag sanitizes the ISO stamp the same way the archive filename does', () => {
+  expect(releaseTag('2026-09-05T04:07:03.123Z')).toBe('backup-2026-09-05T04-07-03-123Z')
+  expect(releaseTag('2026-09-05T04:07:03Z')).toBe('backup-2026-09-05T04-07-03Z')
+})
+
+test('isBackupTag recognises exactly what releaseTag mints, and nothing a person would type', () => {
+  expect(isBackupTag(releaseTag('2026-09-05T04:07:03.123Z'))).toBe(true)
+  expect(isBackupTag(releaseTag('2026-09-05T04:07:03Z'))).toBe(true)
+  expect(isBackupTag('v1.0.0')).toBe(false)
+  expect(isBackupTag('backup-notes')).toBe(false)
+  expect(isBackupTag('backup')).toBe(false)
+  expect(isBackupTag('my-backup-2026-09-05T04-07-03Z')).toBe(false)
+})
+
+// --- buildReleaseBody — the manifest summary that has to travel with the upload ---
+
+test('the body carries layers, harnesses, session count, byte size and the sha256', () => {
+  const body = buildReleaseBody({
+    layers: ['metrics', 'raw'],
+    harnesses: ['claude', 'codex'],
+    sessionCount: 42,
+    archiveBytes: 123_456,
+    sha256: 'a'.repeat(64),
+    createdAt: '2026-09-05T04:07:03Z',
+    hostname: 'my-laptop',
+  })
+  expect(body).toContain('metrics')
+  expect(body).toContain('raw')
+  expect(body).toContain('claude')
+  expect(body).toContain('codex')
+  expect(body).toContain('42')
+  expect(body).toContain('123456')
+  expect(body).toContain('a'.repeat(64))
+  expect(body).toContain('2026-09-05T04:07:03Z')
+  expect(body).toContain('my-laptop')
+  expect(body).toContain('agentop restore')
 })
