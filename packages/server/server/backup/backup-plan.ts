@@ -157,6 +157,13 @@ const CROSS_HARNESS_SECRETS: ExcludeRule[] = [
     restoreWith: 'agentop member connect <url> <token>',
     why: 'The central tokens inside preferences.json. The file itself travels, redacted — see backup-plan.ts ALWAYS.',
   },
+  {
+    pattern: '.agentistics/github-backup.json', match: 'prefix', reason: 'secret',
+    restoreWith: 'agentop backup github setup <url>',
+    why: 'The GitHub PAT used to upload versioned backups (github-store.ts, 0600). A backup-'
+      + 'configuration file holding a key and living where the backups live is exactly what this '
+      + 'table exists to keep out of an archive.',
+  },
   // `.claude/sessions/<pid>.<hash>.key` (141 files on the reference machine) and
   // `.claude/daemon/control.key` are local control-socket tokens for the session manager and the
   // daemon dispatch socket. Both the `secret` and `runtime` reasons apply — they are credential-
