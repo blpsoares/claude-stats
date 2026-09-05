@@ -118,6 +118,15 @@ export interface ReleaseBodyInput {
  * sha256 has nowhere else to live before the archive is downloaded and hashed. Everything here is
  * plain text on purpose — GitHub renders it as Markdown, but a `curl`/`gh api` read of the release
  * must be able to grep it too.
+ *
+ * **This is ONE format, written HERE, and read in TWO other places.** `parseReleaseBody` just below
+ * is the TypeScript reader (`github-restore.ts`'s wave G3 restore). The THIRD reader is
+ * `github-workflow.ts`'s `buildBackupDocWorkflow()` — a GitHub Actions workflow that runs on the
+ * runner's own shell, never Bun, so it CANNOT import this module and re-parses the same
+ * `- label: value` lines by hand (`grep`/`sed`). **A field added here must be added to
+ * `parseReleaseBody` below AND to that workflow's parsing step, or the three drift** — the
+ * TypeScript pair is caught by this file's own round-trip test, but the YAML has no compiler to
+ * catch it, which is exactly why this paragraph exists on both ends.
  */
 export function buildReleaseBody(input: ReleaseBodyInput): string {
   return [

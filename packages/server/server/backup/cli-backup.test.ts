@@ -1,6 +1,17 @@
 import { test, expect } from 'bun:test'
 import { parseBackupArgs, readBackupPrefs } from '../cli-backup'
 
+test('`github install-workflow` parses with no arguments — it uses the stored config', () => {
+  expect(parseBackupArgs(['github', 'install-workflow'])).toEqual({ kind: 'github-install-workflow' })
+})
+
+test('`github` with an unknown subcommand names every valid one', () => {
+  const a = parseBackupArgs(['github', 'bogus'])
+  expect(a.kind).toBe('error')
+  if (a.kind !== 'error') return
+  expect(a.message).toContain('install-workflow')
+})
+
 test('bare `agentop backup` runs with the default layers and every harness', () => {
   const a = parseBackupArgs([])
   expect(a.kind).toBe('run')

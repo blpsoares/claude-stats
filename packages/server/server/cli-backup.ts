@@ -34,6 +34,7 @@ import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
 import { syncBackupToGithub } from './backup/github-upload'
 import { downloadBackupRelease, listBackupReleases } from './backup/github-restore'
+import { BACKUP_DOC_WORKFLOW_PATH, installGithubBackupWorkflow } from './backup/github-workflow'
 import type { ReleaseSummary } from './backup/backup-github'
 import type { GithubBackupConfig } from './backup/github-store'
 
@@ -153,6 +154,7 @@ export type BackupArgs =
   | { kind: 'status' }
   | { kind: 'github-status' }
   | { kind: 'github-setup'; url: string }
+  | { kind: 'github-install-workflow' }
   | { kind: 'help' }
   | { kind: 'error'; message: string }
 
@@ -184,7 +186,8 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
       }
       return { kind: 'github-setup', url }
     }
-    return { kind: 'error', message: 'github takes one of: setup <url>, status' }
+    if (sub === 'install-workflow') return { kind: 'github-install-workflow' }
+    return { kind: 'error', message: 'github takes one of: setup <url>, status, install-workflow' }
   }
   if (first === 'schedule') {
     const id = rest[0]
@@ -271,6 +274,7 @@ const USAGE = `Usage:
   agentop backup status
   agentop backup github setup <url>
   agentop backup github status
+  agentop backup github install-workflow
   agentop restore <archive|repository-url> [--repos] [--only <repo>] [--release <tag>]
   agentop restore github --list <repository-url>
 
@@ -291,6 +295,9 @@ Carry this machine's whole agentistics history to another one.
   \`github setup <url>\` connects a PRIVATE GitHub repository to hold versioned backups (asks for a
   token, never echoed). The repository must already be private and the token must be able to push
   to it — both are checked before anything is written. \`github status\` prints what is configured.
+  Setup also installs \`${BACKUP_DOC_WORKFLOW_PATH}\`, which keeps a \`BACKUPS.md\` in that repository
+  up to date on every release; \`github install-workflow\` installs it on its own (idempotent — it
+  never overwrites one that is already there).
 
   \`agentop restore <repository-url>\` is the path back on a machine that has nothing but the URL:
   it asks for a token if none is stored, lists releases, shows what would be downloaded and asks,
@@ -480,6 +487,34 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     log(`github backup configured: ${result.config.owner}/${result.config.repo}`)
     log(`The token is stored at ${join(AGENTISTICS_DATA_DIR, 'github-backup.json')} (mode 0600) `
       + 'and is never included in a backup.')
+
+    // Best-effort: setup already succeeded, so a workflow problem is reported, not fatal — the
+    // user can retry it on its own with `github install-workflow`.
+    const workflow = await installGithubBackupWorkflow(result.config.owner, result.config.repo, result.config.token)
+    if (!workflow.ok) {
+      log(`note: could not install the backup-doc workflow (${workflow.message}) — run `
+        + '`agentop backup github install-workflow` to try again.')
+    } else if (workflow.status === 'already-exists') {
+      log(`${BACKUP_DOC_WORKFLOW_PATH} already exists on this repository — left untouched.`)
+    } else {
+      log(`installed ${BACKUP_DOC_WORKFLOW_PATH}, which keeps BACKUPS.md up to date on every backup.`)
+    }
+    return 0
+  }
+
+  if (parsed.kind === 'github-install-workflow') {
+    const config = await readGithubConfig()
+    if (!config) {
+      console.error('github backup is not configured yet. Run `agentop backup github setup <url>` first.')
+      return 1
+    }
+    const result = await installGithubBackupWorkflow(config.owner, config.repo, config.token)
+    if (!result.ok) { console.error(result.message); return 1 }
+    if (result.status === 'already-exists') {
+      log(`${BACKUP_DOC_WORKFLOW_PATH} already exists on ${config.owner}/${config.repo} — left untouched.`)
+    } else {
+      log(`installed ${BACKUP_DOC_WORKFLOW_PATH} on ${config.owner}/${config.repo}.`)
+    }
     return 0
   }
 

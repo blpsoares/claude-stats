@@ -20,9 +20,17 @@
  * `confirmDownload` — showing what would be downloaded and asking is a CLI concern, but the
  * decision of whether to proceed has to happen INSIDE this function, before the download, so a
  * test can assert a decline never reaches the network.
+ *
+ * **Phase two must not re-download.** `agentop restore <url>` (phase one) already leaves the
+ * archive sitting in `destDir`; `agentop restore <url> --repos` (phase two) is a SEPARATE CLI
+ * invocation with no memory of that, and re-fetching a 600 MB asset it already has on disk is pure
+ * waste. `findReusableArchive` checks for exactly that file — same name, same `destDir` — and
+ * hashes it against the release body's own sha256 before trusting it: a file that is THERE but
+ * does not match is never reused, only ignored and overwritten by the real download. This is the
+ * cheap fix, not a cache — it reuses only what a previous run of this same function already wrote.
  */
 import { createHash } from 'crypto'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { gh, type FetchLike } from './github-api'
@@ -183,6 +191,38 @@ export async function downloadBackupAsset(
   return { ok: true, path, sha256 }
 }
 
+/**
+ * Wave G4's fix for phase two: before downloading anything, look for a file already sitting at
+ * `destDir/<fileName>` — the exact path `downloadBackupAsset` would write to — and hash it. Used
+ * only when it matches `expectedSha256` exactly; a file that is there but does NOT match is never
+ * trusted, is never reused, and is left in place to be overwritten by the real download below.
+ * Any error reading it (missing, unreadable, a directory) is treated the same as "nothing to
+ * reuse" — this function never throws and never blocks the download path.
+ */
+async function findReusableArchive(
+  destDir: string, fileName: string, expectedSha256: string, onLine?: (line: string) => void,
+): Promise<string | null> {
+  const log = onLine ?? (() => {})
+  const path = join(destDir, fileName)
+
+  let bytes: Buffer
+  try {
+    bytes = await readFile(path)
+  } catch {
+    return null
+  }
+
+  const sha256 = createHash('sha256').update(bytes).digest('hex')
+  if (sha256 !== expectedSha256) {
+    log(`a local file already exists at ${path} but its sha256 does not match this release — `
+      + 'ignoring it and downloading again')
+    return null
+  }
+  log(`found an already-downloaded file matching this release's sha256 at ${path} — reusing it `
+    + 'instead of downloading it again')
+  return path
+}
+
 export interface GithubRestoreDeps {
   fetchImpl?: FetchLike
   onLine?: (line: string) => void
@@ -190,10 +230,12 @@ export interface GithubRestoreDeps {
    *  local `agentop backup` writes into. */
   destDir?: string
   /**
-   * Called once the release is picked and its body is decoded, BEFORE any bytes are downloaded —
-   * this is the "downloading gigabytes is a decision" gate. Returning `false` cancels with nothing
-   * ever fetched. Defaults to always-yes so a non-interactive caller (a test, a script driving
-   * `--yes`-shaped automation) never hangs; the CLI passes a real confirmation prompt.
+   * Called once the release is picked, its body is decoded, and no already-downloaded local file
+   * was found to reuse — BEFORE any bytes are downloaded, this is the "downloading gigabytes is a
+   * decision" gate. Returning `false` cancels with nothing ever fetched. Defaults to always-yes so
+   * a non-interactive caller (a test, a script driving `--yes`-shaped automation) never hangs; the
+   * CLI passes a real confirmation prompt. Never called when a local file is reused instead — there
+   * is nothing to confirm when nothing is about to be downloaded.
    */
   confirmDownload?: (summary: ReleaseSummary, release: GithubReleaseInfo) => boolean | Promise<boolean>
 }
@@ -232,13 +274,20 @@ export async function downloadBackupRelease(
     }
   }
 
+  const assetPicked = pickBackupAsset(release, summary)
+  if (!assetPicked.ok) return { status: 'error', reason: assetPicked.reason }
+
+  // Phase two (`agentop restore <url> --repos`) is a separate invocation from phase one and has no
+  // memory of the archive phase one already downloaded — without this check it would fetch the
+  // whole thing again. A file that is there but does not match the release's own sha256 is never
+  // trusted here; it falls straight through to the ordinary download below, which overwrites it.
+  const reused = await findReusableArchive(destDir, assetPicked.asset.name, summary.sha256, log)
+  if (reused) return { status: 'downloaded', archivePath: reused, release, summary }
+
   if (deps.confirmDownload) {
     const proceed = await deps.confirmDownload(summary, release)
     if (!proceed) return { status: 'cancelled' }
   }
-
-  const assetPicked = pickBackupAsset(release, summary)
-  if (!assetPicked.ok) return { status: 'error', reason: assetPicked.reason }
 
   const downloaded = await downloadBackupAsset(
     owner, repo, token, assetPicked.asset, summary.sha256, destDir, deps.fetchImpl, log,

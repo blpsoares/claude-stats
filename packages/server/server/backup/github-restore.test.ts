@@ -8,7 +8,7 @@
  */
 import { describe, test, expect } from 'bun:test'
 import { createHash } from 'crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { buildReleaseBody } from './backup-github'
@@ -311,6 +311,75 @@ describe('downloadBackupRelease — refusals', () => {
       })
       expect(outcome.status).toBe('cancelled')
       expect(downloadAttempted).toBe(false)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// downloadBackupRelease — wave G4's fix: phase two must not re-download what phase one already
+// fetched. Each test injects a `fetchImpl` that throws if the asset-download endpoint is ever
+// called, so the assertion is not just "the right archive comes back" but "the network was never
+// asked" — the whole point of this fix is the bytes NOT moving twice.
+// ---------------------------------------------------------------------------------------------
+
+describe('downloadBackupRelease — phase-two reuse of an already-downloaded file', () => {
+  test('a local file already matching the release sha256 is reused, never re-downloaded', async () => {
+    await withDestDir(async destDir => {
+      const body = summaryBody()
+      // Simulates what phase one already left on disk under the exact name the asset carries.
+      mkdirSync(destDir, { recursive: true })
+      writeFileSync(join(destDir, ASSET_NAME), ARCHIVE_BYTES)
+
+      let downloadAttempted = false
+      let confirmAsked = false
+      const fetchImpl: FetchLike = async (url, init) => {
+        if (String(url).includes('/releases/assets/')) {
+          downloadAttempted = true
+          throw new Error('should never be called: a matching local file must be reused')
+        }
+        return fakeGithub({
+          releases: [{ tag_name: 'backup-2026-09-05T04-07-03Z', created_at: '2026-09-05T04:07:03Z', body }],
+        })(url, init)
+      }
+
+      const outcome = await downloadBackupRelease(OWNER, REPO, TOKEN, undefined, {
+        destDir, fetchImpl,
+        confirmDownload: () => { confirmAsked = true; return true },
+      })
+
+      expect(outcome.status).toBe('downloaded')
+      if (outcome.status === 'downloaded') {
+        expect(outcome.archivePath).toBe(join(destDir, ASSET_NAME))
+        expect(readFileSync(outcome.archivePath)).toEqual(ARCHIVE_BYTES)
+      }
+      expect(downloadAttempted).toBe(false)
+      // Nothing is being downloaded, so there is nothing to confirm.
+      expect(confirmAsked).toBe(false)
+    })
+  })
+
+  test('a local file that does NOT match the release sha256 is ignored and re-downloaded', async () => {
+    await withDestDir(async destDir => {
+      const body = summaryBody()
+      mkdirSync(destDir, { recursive: true })
+      writeFileSync(join(destDir, ASSET_NAME), Buffer.from('stale bytes from an old, unrelated download'))
+
+      let downloadAttempted = false
+      const fetchImpl: FetchLike = async (url, init) => {
+        if (String(url).includes('/releases/assets/')) downloadAttempted = true
+        return fakeGithub({
+          releases: [{ tag_name: 'backup-2026-09-05T04-07-03Z', created_at: '2026-09-05T04:07:03Z', body }],
+        })(url, init)
+      }
+
+      const outcome = await downloadBackupRelease(OWNER, REPO, TOKEN, undefined, { destDir, fetchImpl })
+
+      expect(downloadAttempted).toBe(true)
+      expect(outcome.status).toBe('downloaded')
+      if (outcome.status === 'downloaded') {
+        // The mismatched bytes were never trusted — the real download overwrote them.
+        expect(readFileSync(outcome.archivePath)).toEqual(ARCHIVE_BYTES)
+      }
     })
   })
 })
