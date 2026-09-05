@@ -78,7 +78,14 @@ export type SessionCommand =
 /** One session inside a batch, as `--session` spells it. */
 export interface BatchSpec {
   harness: HarnessId
-  /** The attempt (configuration) this session runs under — see `task-model.ts`. */
+  /**
+   * The attempt (configuration) this session runs under, by LABEL — see `task-model.ts`.
+   *
+   * A label rather than an id because this is what the user typed; the handler resolves it against
+   * the task book (creating it on first sight) and stamps the resolved `attemptId` on the row.
+   */
+  attempt?: string
+  /** Resolved from `attempt` before the spawn. Never typed by a user. */
   attemptId?: string
   prompt?: string
   cwd?: string
@@ -88,7 +95,7 @@ export interface BatchSpec {
 }
 
 const VALUE_FLAGS = new Set([
-  '-p', '--prompt', '--model', '--effort', '--cwd', '--name', '--task', '--session',
+  '-p', '--prompt', '--model', '--effort', '--cwd', '--name', '--task', '--session', '--attempt',
 ])
 
 function isHarness(v: string): v is HarnessId {
@@ -248,7 +255,7 @@ function parseLs(argv: string[], json: boolean): SessionCommand {
 function parseBatch(argv: string[], json: boolean): SessionCommand {
   let task = ''
   const specs: BatchSpec[] = []
-  const shared: { cwd?: string; model?: string; effort?: string } = {}
+  const shared: { cwd?: string; model?: string; effort?: string; attempt?: string } = {}
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
@@ -266,6 +273,10 @@ function parseBatch(argv: string[], json: boolean): SessionCommand {
     if (arg === '--cwd') { shared.cwd = value; continue }
     if (arg === '--model') { shared.model = value; continue }
     if (arg === '--effort') { shared.effort = value; continue }
+    // `--attempt` is a positional default like the three above: it applies to every `--session`
+    // that FOLLOWS it, until the next one. That is what lets one attempt hold several sessions,
+    // which is the case the middle level of the model exists for.
+    if (arg === '--attempt') { shared.attempt = value; continue }
     if (arg === '--session') {
       const spec = parseBatchSpec(value, shared)
       if ('error' in spec) return { kind: 'error', message: spec.error }
@@ -283,7 +294,7 @@ function parseBatch(argv: string[], json: boolean): SessionCommand {
 /** `<harness>[@<cwd>]: <prompt>` — the one string that describes a session in a batch. */
 export function parseBatchSpec(
   value: string,
-  shared: { cwd?: string; model?: string; effort?: string } = {},
+  shared: { cwd?: string; model?: string; effort?: string; attempt?: string } = {},
 ): { spec: BatchSpec } | { error: string } {
   const colon = value.indexOf(':')
   const head = (colon === -1 ? value : value.slice(0, colon)).trim()
@@ -303,6 +314,7 @@ export function parseBatchSpec(
       ...(cwd ? { cwd } : shared.cwd ? { cwd: shared.cwd } : {}),
       ...(shared.model ? { model: shared.model } : {}),
       ...(shared.effort ? { effort: shared.effort } : {}),
+      ...(shared.attempt ? { attempt: shared.attempt } : {}),
     },
   }
 }
