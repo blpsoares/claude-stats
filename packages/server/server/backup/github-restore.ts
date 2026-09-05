@@ -34,7 +34,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { gh, type FetchLike } from './github-api'
-import { isBackupTag, parseReleaseBody, type ReleaseSummary } from './backup-github'
+import { isBackupTag, labelSlug, parseReleaseBody, tagLabel, type ReleaseSummary } from './backup-github'
 
 export interface GithubReleaseAsset {
   id: number
@@ -315,4 +315,63 @@ export async function listBackupReleases(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map(r => ({ tagName: r.tagName, createdAt: r.createdAt, summary: parseReleaseBody(r.body) }))
   return { ok: true, releases }
+}
+
+/** Backup releases of ONE machine, newest first. `machine` is `null` only when nothing —
+ *  neither the tag nor the body — says which machine made them. */
+export interface MachineReleases {
+  machine: string | null
+  releases: ListedBackupRelease[]
+}
+
+/**
+ * Which machine a release belongs to. The TAG is authoritative because it is what retention and
+ * the GitHub releases page read; the body's `- host:` covers a tag minted before labels existed,
+ * so those releases join their own machine rather than a bucket named "unknown".
+ */
+function machineOf(r: ListedBackupRelease): string | null {
+  return tagLabel(r.tagName) ?? labelSlug(r.summary?.hostname) ?? null
+}
+
+/**
+ * Group a repository's backup releases by machine, machines ordered by their most recent backup
+ * and each machine's releases newest first.
+ *
+ * Several machines backing up to one repository is the case this exists for: a flat chronological
+ * list interleaves them, and telling one from another means opening each release. The
+ * unattributable group is LAST and kept — a release nobody can place is still a release somebody
+ * may need.
+ */
+export function groupReleasesByMachine(releases: ListedBackupRelease[]): MachineReleases[] {
+  const byMachine = new Map<string | null, ListedBackupRelease[]>()
+  for (const r of releases) {
+    const m = machineOf(r)
+    const list = byMachine.get(m)
+    if (list) list.push(r)
+    else byMachine.set(m, [r])
+  }
+  const groups = [...byMachine.entries()].map(([machine, list]) => ({
+    machine,
+    releases: [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+  }))
+  return groups.sort((a, b) => {
+    // The unattributable group is last whatever its dates: it is the one a person cannot act on
+    // with confidence.
+    if ((a.machine === null) !== (b.machine === null)) return a.machine === null ? 1 : -1
+    return (b.releases[0]?.createdAt ?? '').localeCompare(a.releases[0]?.createdAt ?? '')
+  })
+}
+
+/**
+ * The newest release of ONE named machine, or `null`.
+ *
+ * Null and never a fallback to some other machine's newest: restoring the wrong computer onto this
+ * one, without saying so, is the failure this whole feature exists to prevent.
+ */
+export function newestForMachine(
+  releases: ListedBackupRelease[], machine: string,
+): ListedBackupRelease | null {
+  const want = labelSlug(machine)
+  const group = groupReleasesByMachine(releases).find(g => g.machine === want)
+  return group?.releases[0] ?? null
 }

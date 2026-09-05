@@ -25,8 +25,18 @@ export interface GithubBackupConfig {
   repo: string
   /** A GitHub PAT. NEVER logged, NEVER returned by a route, NEVER included in a backup. */
   token: string
-  /** How many `backup-` releases to keep on GitHub. 0 means keep them all. */
+  /** How many of THIS MACHINE's releases to keep on GitHub. 0 means keep them all. Never counted
+   *  across machines — see `selectForPruning`. */
   keepRemote: number
+  /**
+   * What this machine is called in the release tag, so several machines can share one repository
+   * and still be told apart — on the releases page, in `agentop restore github --list`, and by
+   * retention, which may only ever delete this machine's own history.
+   *
+   * Defaults to the hostname at setup, and is editable because a hostname is often unreadable
+   * (`BRAIAODE2`) and is not guaranteed unique across two machines a person owns.
+   */
+  label?: string
   /** Delete the local archive once the upload is confirmed byte-for-byte. */
   deleteLocalAfterUpload: boolean
 }

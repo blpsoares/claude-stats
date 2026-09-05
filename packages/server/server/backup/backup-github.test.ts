@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test'
 import {
   GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict,
-  isBackupTag, parseReleaseBody, releaseTag, tooLargeUploadMessage, uploadVerdict,
+  isBackupTag, parseReleaseBody, releaseTag, tagLabel, tooLargeUploadMessage, uploadVerdict,
 } from './backup-github'
 import type { BackupLayer } from './backup-plan'
 
@@ -128,4 +128,30 @@ test('parseReleaseBody refuses a body missing one required field', () => {
   })
   const withoutSha = body.split('\n').filter(l => !l.startsWith('- sha256:')).join('\n')
   expect(parseReleaseBody(withoutSha)).toBeNull()
+})
+
+test('a machine LABEL rides in the tag, so releases of different machines are distinguishable', () => {
+  // Two machines pointing at ONE repository is the case this exists for. The label had lived only
+  // in the release BODY and in the asset's filename, and neither is read by the two things that
+  // matter: the retention pass and the listing. See the retention test below for what that cost.
+  const tag = releaseTag('2026-09-05T20-16-20-298Z', 'notebook')
+  expect(tag.startsWith('backup-notebook-')).toBe(true)
+  expect(isBackupTag(tag)).toBe(true)
+  expect(tagLabel(tag)).toBe('notebook')
+})
+
+test('a tag from before labels existed is still ours, and reports no label', () => {
+  // Refusing to recognise it would be worse than cosmetic: retention only ever touches tags it
+  // recognises, so every release already in a user's repository would become permanently
+  // un-prunable and accumulate until the repository filled up.
+  const old = 'backup-2026-09-05T20-16-20-298Z'
+  expect(isBackupTag(old)).toBe(true)
+  expect(tagLabel(old)).toBe(null)
+})
+
+test('a label is folded to what a git ref may hold, and never collides with the timestamp', () => {
+  expect(isBackupTag(releaseTag('2026-09-05T20-16-20-298Z', 'my laptop (work)'))).toBe(true)
+  expect(tagLabel(releaseTag('2026-09-05T20-16-20-298Z', 'my laptop (work)'))).toBe('my-laptop-work')
+  // A label that folds to nothing must not produce a tag that reads as an unlabelled one.
+  expect(tagLabel(releaseTag('2026-09-05T20-16-20-298Z', '???'))).toBe(null)
 })

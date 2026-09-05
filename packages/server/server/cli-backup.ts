@@ -33,7 +33,9 @@ import { parseRepoUrl, repoUrlHost } from './backup/github-api'
 import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
 import { syncBackupToGithub } from './backup/github-upload'
-import { downloadBackupRelease, listBackupReleases } from './backup/github-restore'
+import {
+  downloadBackupRelease, groupReleasesByMachine, listBackupReleases, newestForMachine,
+} from './backup/github-restore'
 import { BACKUP_DOC_WORKFLOW_PATH, installGithubBackupWorkflow } from './backup/github-workflow'
 import type { ReleaseSummary } from './backup/backup-github'
 import type { GithubBackupConfig } from './backup/github-store'
@@ -275,7 +277,7 @@ const USAGE = `Usage:
   agentop backup github setup <url>
   agentop backup github status
   agentop backup github install-workflow
-  agentop restore <archive|repository-url> [--repos] [--only <repo>] [--release <tag>]
+  agentop restore <archive|repository-url> [--repos] [--only <repo>] [--release <tag>] [--from <machine>]
   agentop restore github --list <repository-url>
 
 Carry this machine's whole agentistics history to another one.
@@ -302,7 +304,9 @@ Carry this machine's whole agentistics history to another one.
   \`agentop restore <repository-url>\` is the path back on a machine that has nothing but the URL:
   it asks for a token if none is stored, lists releases, shows what would be downloaded and asks,
   verifies the sha256 against the release body before touching anything, and only then hands off to
-  the ordinary restore above. \`--release <tag>\` restores a specific release instead of the newest.
+  the ordinary restore above. \`--release <tag>\` restores a specific release instead of the newest,
+  and \`--from <machine>\` takes the newest backup of ONE machine — needed whenever several machines
+  version to the same repository, where "the newest" would otherwise be whichever ran last.
   \`agentop restore github --list <url>\` shows what is there without downloading anything.`
 
 /**
@@ -720,12 +724,21 @@ async function runRestoreGithubList(url: string, log: (l: string) => void): Prom
     log(`no \`backup-\` releases found on ${parsed.owner}/${parsed.repo}.`)
     return 0
   }
-  log(`${result.releases.length} backup release(s) on ${parsed.owner}/${parsed.repo}, newest first:`)
-  for (const r of result.releases) {
+  const groups = groupReleasesByMachine(result.releases)
+  log(`${result.releases.length} backup release(s) on ${parsed.owner}/${parsed.repo}, `
+    + `${groups.length} machine(s), newest first:`)
+  for (const g of groups) {
     log('')
-    log(`  ${r.tagName}`)
-    if (r.summary) for (const line of describeReleaseForConfirm(r.summary)) log(`  ${line}`)
-    else log('    (its body could not be decoded — created by an incompatible or hand-made release)')
+    log(g.machine === null
+      // Never folded into a machine, and never presented as one: these are releases nothing places.
+      ? '  (no machine recorded — from a version before machines were named)'
+      : `  machine: ${g.machine}   —   restore with \`agentop restore <url> --from ${g.machine}\``)
+    for (const r of g.releases) {
+      log('')
+      log(`    ${r.tagName}`)
+      if (r.summary) for (const line of describeReleaseForConfirm(r.summary)) log(`    ${line}`)
+      else log('      (its body could not be decoded — an incompatible or hand-made release)')
+    }
   }
   return 0
 }
@@ -772,8 +785,11 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
   const oi = argv.indexOf('--only')
   const only = oi !== -1 ? argv[oi + 1] : undefined
   const ri = argv.indexOf('--release')
-  const releaseTagArg = ri !== -1 ? argv[ri + 1] : undefined
+  let releaseTagArg = ri !== -1 ? argv[ri + 1] : undefined
   if (ri !== -1 && !releaseTagArg) { console.error('--release requires a tag'); return 1 }
+  const fi = argv.indexOf('--from')
+  const fromMachine = fi !== -1 ? argv[fi + 1] : undefined
+  if (fi !== -1 && !fromMachine) { console.error('--from requires a machine name'); return 1 }
 
   let archive: string
   if (existsSync(first)) {
@@ -797,6 +813,36 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
     const config = await readGithubConfig()
     const token = await resolveRestoreToken(parsed, first, config, log)
     if (!token) { console.error('a token is required.'); return 1 }
+
+    // Which MACHINE. One repository can hold several machines' backups, and "the newest release"
+    // is then whichever machine ran last — restoring the wrong computer onto this one, silently.
+    // So a repository holding more than one machine REFUSES to guess and names the flag; a
+    // repository holding one keeps working exactly as before.
+    if (!releaseTagArg) {
+      const listed = await listBackupReleases(parsed.owner, parsed.repo, token)
+      if (!listed.ok) { console.error(listed.message); return 1 }
+      const groups = groupReleasesByMachine(listed.releases)
+      if (fromMachine) {
+        const pick = newestForMachine(listed.releases, fromMachine)
+        if (!pick) {
+          console.error(`no backup of "${fromMachine}" on ${parsed.owner}/${parsed.repo}. `
+            + `Machines here: ${groups.map(g => g.machine ?? '(unnamed)').join(', ') || 'none'}.`)
+          return 1
+        }
+        releaseTagArg = pick.tagName
+        log(`restoring the newest backup of ${fromMachine}: ${pick.tagName}`)
+      } else if (groups.length > 1) {
+        console.error(`${parsed.owner}/${parsed.repo} holds backups from ${groups.length} machines, `
+          + 'so "the newest" would pick whichever ran last. Name one:')
+        for (const g of groups) {
+          const newest = g.releases[0]
+          console.error(g.machine === null
+            ? `  (unnamed machine) — use --release ${newest?.tagName ?? ''}`
+            : `  --from ${g.machine}   (${g.releases.length} backup(s), newest ${newest?.createdAt ?? '?'})`)
+        }
+        return 1
+      }
+    }
 
     const outcome = await downloadBackupRelease(parsed.owner, parsed.repo, token, releaseTagArg, {
       onLine: log,

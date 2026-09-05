@@ -9,6 +9,7 @@ import { describe, test, expect } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { isBackupTag, tagLabel } from './backup-github'
 import { runBackup } from './backup'
 import type { BackupRecord } from './backup-store'
 import { readPrunedPaths } from './backup-store'
@@ -132,7 +133,11 @@ describe('uploadBackupToGithub — the happy path', () => {
       const parsed = JSON.parse(capturedBody) as { body: string; tag_name: string; draft: boolean; prerelease: boolean }
       expect(parsed.draft).toBe(false)
       expect(parsed.prerelease).toBe(false)
-      expect(parsed.tag_name).toMatch(/^backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(-\d+)?Z$/)
+      // The tag carries the MACHINE, which is what lets several machines share one repository
+      // without retention deleting each other's history. Asserted through the module's own reader
+      // rather than a literal shape, so the two can never drift.
+      expect(isBackupTag(parsed.tag_name)).toBe(true)
+      expect(tagLabel(parsed.tag_name)).toBe('test-host')
       expect(parsed.body).toContain('metrics')
       expect(parsed.body).toContain('claude')
       expect(parsed.body).toContain('1') // one session file was staged

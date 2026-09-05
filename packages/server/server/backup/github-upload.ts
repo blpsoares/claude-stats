@@ -22,6 +22,7 @@
  * whether to try again on its own next run.
  */
 import { createHash } from 'crypto'
+import { hostname } from 'os'
 import { readFile, unlink } from 'fs/promises'
 import { basename } from 'path'
 import { gh, type FetchLike } from './github-api'
@@ -103,7 +104,7 @@ export async function uploadBackupToGithub(
     .filter(f => f.rel.startsWith('.agentistics/sessions/'))
     .length
 
-  const tag = releaseTag(record.at)
+  const tag = releaseTag(record.at, config.label ?? manifest.hostname)
   const body = buildReleaseBody({
     layers: manifest.layers,
     harnesses: manifest.harnesses,
@@ -213,6 +214,12 @@ export async function syncBackupToGithub(
   if (!outcome.ok) return
 
   if (config.keepRemote > 0) {
-    await pruneRemoteReleases(config.owner, config.repo, config.token, config.keepRemote, opts.fetchImpl, log)
+    await pruneRemoteReleases(
+      config.owner, config.repo, config.token, config.keepRemote, opts.fetchImpl, log,
+      // Same fallback the upload uses. On a config written before labels existed this is exactly
+      // what those releases' bodies already record (`- host:` is `os.hostname()`), so the machine
+      // still attributes — and therefore may still prune — its own history.
+      config.label ?? hostname(),
+    )
   }
 }

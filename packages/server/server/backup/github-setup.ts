@@ -17,6 +17,7 @@
  * Every refusal returned from here is a full sentence naming what to do next, never a bare status
  * code — `runBackupCli` prints `result.message` as-is.
  */
+import { hostname } from 'os'
 import type { FetchLike } from './github-api'
 import { gh, parseRepoUrl, repoUrlHost } from './github-api'
 import type { GithubBackupConfig } from './github-store'
@@ -29,6 +30,9 @@ export interface GithubSetupInput {
    *  config's own "keep everything, keep the local copy" defaults until G2 wires the flags. */
   keepRemote?: number
   deleteLocalAfterUpload?: boolean
+  /** What this machine is called in its release tags. Defaults to the hostname — editable because
+   *  a hostname is often unreadable and is not guaranteed unique across a person's machines. */
+  label?: string
   /** Test-only injection points, mirroring `gh()`'s own `fetchImpl` and `backup-store.ts`'s
    *  `file` parameter — a test never has to touch the network or the real `~/.agentistics`. */
   fetchImpl?: FetchLike
@@ -110,6 +114,7 @@ export async function setupGithubBackup(input: GithubSetupInput): Promise<Github
     token: input.token,
     keepRemote: input.keepRemote ?? 0,
     deleteLocalAfterUpload: input.deleteLocalAfterUpload ?? false,
+    label: input.label ?? hostname(),
   }
   await writeGithubConfig(config, input.file)
   return { ok: true, config }

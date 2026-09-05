@@ -83,8 +83,38 @@ export function tooLargeUploadMessage(path: string, archiveBytes: number): strin
  * the same timestamp at a glance, which is what `agentop restore <url> --release <tag>` (wave G3)
  * is typed against.
  */
-export function releaseTag(atIso: string): string {
-  return `backup-${atIso.replace(/[:.]/g, '-')}`
+export function releaseTag(atIso: string, label?: string): string {
+  const stamp = atIso.replace(/[:.]/g, '-')
+  const slug = labelSlug(label)
+  return slug ? `backup-${slug}-${stamp}` : `backup-${stamp}`
+}
+
+/**
+ * A machine label folded to what a git ref may hold, or `null` when nothing usable is left.
+ *
+ * Null rather than a placeholder on purpose: a label of `???` folds to nothing, and minting
+ * `backup--<stamp>` for it would produce a tag that reads as an unlabelled one while being a third
+ * shape neither reader expects.
+ */
+export function labelSlug(label: string | undefined): string | null {
+  if (!label) return null
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return slug.length ? slug : null
+}
+
+/**
+ * The machine a backup tag belongs to, or `null` for a tag minted before labels existed.
+ *
+ * TWO machines pointing at ONE repository is the case labels exist for, and the label had to go in
+ * the TAG rather than only in the release body and the asset filename — those two are read by
+ * nobody. Retention reads tags, the listing reads tags, and the GitHub releases page shows tags. A
+ * label kept out of the tag meant `pruneRemote` weighed every machine's releases against one
+ * `keepRemote`: a laptop backing up daily filled the window and DELETED the desktop's only backup,
+ * silently, which is the opposite of what a second machine was added for.
+ */
+export function tagLabel(tag: string): string | null {
+  const m = LABELLED_TAG_RE.exec(tag)
+  return m?.[1] ?? null
 }
 
 /**
@@ -93,10 +123,19 @@ export function releaseTag(atIso: string): string {
  * ours, so this is deliberately the exact shape `releaseTag` produces, not a loose `backup-` prefix
  * a hand-made release could accidentally share.
  */
-const BACKUP_TAG_RE = /^backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z$/
+const STAMP = String.raw`\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z`
+const BACKUP_TAG_RE = new RegExp(`^backup-${STAMP}$`)
+/** The label is `[a-z0-9-]` and the stamp begins with four digits and a `-`, so the greedy label
+ *  group can never swallow part of the timestamp: the anchored stamp only matches at its own start. */
+const LABELLED_TAG_RE = new RegExp(`^backup-([a-z0-9][a-z0-9-]*?)-(?:${STAMP})$`)
 
+/**
+ * Both shapes are ours. An UNLABELLED tag is one minted before labels existed, and refusing to
+ * recognise it would leave every release already in a user's repository permanently un-prunable —
+ * retention only ever touches a tag it recognises — accumulating until the repository filled up.
+ */
 export function isBackupTag(tag: string): boolean {
-  return BACKUP_TAG_RE.test(tag)
+  return BACKUP_TAG_RE.test(tag) || LABELLED_TAG_RE.test(tag)
 }
 
 export interface ReleaseBodyInput {

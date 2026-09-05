@@ -14,7 +14,8 @@ import { join } from 'path'
 import { buildReleaseBody } from './backup-github'
 import type { FetchLike } from './github-api'
 import {
-  downloadBackupAsset, downloadBackupRelease, listBackupReleases, pickBackupAsset,
+  downloadBackupAsset, downloadBackupRelease, groupReleasesByMachine, listBackupReleases,
+  newestForMachine, pickBackupAsset,
   pickBackupRelease, type GithubReleaseInfo,
 } from './github-restore'
 
@@ -412,4 +413,40 @@ describe('listBackupReleases', () => {
     }
     expect(downloadAttempted).toBe(false)
   })
+})
+
+test('releases are grouped by MACHINE, and a machineless one is its own group', () => {
+  // With two machines backing up to one repository the flat chronological list interleaves them,
+  // and telling them apart means opening each release. The machine comes from the TAG where there
+  // is one and from the body's `- host:` otherwise, so a release predating labels still lands
+  // under its own machine instead of a bucket named "unknown".
+  const r = (tagName: string, createdAt: string, host: string | null) =>
+    ({ tagName, createdAt, summary: host === null ? null : ({ hostname: host } as never) })
+  const groups = groupReleasesByMachine([
+    r('backup-laptop-2026-09-05T10-00-00Z', '2026-09-05T10:00:00Z', 'laptop'),
+    r('backup-desktop-2026-09-04T10-00-00Z', '2026-09-04T10:00:00Z', 'desktop'),
+    r('backup-laptop-2026-09-03T10-00-00Z', '2026-09-03T10:00:00Z', 'laptop'),
+    r('backup-2026-01-01T10-00-00Z', '2026-01-01T10:00:00Z', 'desktop'),
+    r('backup-2025-01-01T10-00-00Z', '2025-01-01T10:00:00Z', null),
+  ])
+  // Machines ordered by their most recent backup: the one you are most likely to want is first.
+  expect(groups.map(g => g.machine)).toEqual(['laptop', 'desktop', null])
+  expect(groups[0]!.releases.map(x => x.tagName))
+    .toEqual(['backup-laptop-2026-09-05T10-00-00Z', 'backup-laptop-2026-09-03T10-00-00Z'])
+  // The legacy tag joins its machine by body, not a separate bucket.
+  expect(groups[1]!.releases.length).toBe(2)
+  expect(groups[2]!.machine).toBe(null)
+})
+
+test('the newest release OF A GIVEN MACHINE is selectable', () => {
+  const r = (tagName: string, createdAt: string, host: string) =>
+    ({ tagName, createdAt, summary: { hostname: host } as never })
+  const list = [
+    r('backup-laptop-2026-09-05T10-00-00Z', '2026-09-05T10:00:00Z', 'laptop'),
+    r('backup-desktop-2026-09-04T10-00-00Z', '2026-09-04T10:00:00Z', 'desktop'),
+  ]
+  expect(newestForMachine(list, 'desktop')?.tagName).toBe('backup-desktop-2026-09-04T10-00-00Z')
+  // Asking for a machine that has nothing here answers NOTHING — never the newest of some other
+  // machine, which would restore the wrong computer onto this one without saying so.
+  expect(newestForMachine(list, 'tablet')).toBe(null)
 })
