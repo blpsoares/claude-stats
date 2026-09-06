@@ -143,6 +143,19 @@ export async function addComment(ref: string, o: { author: string; body: string 
   return true
 }
 
+/** An empty body is a DELETE by another name, so it is refused rather than silently blanking a row. */
+export async function editComment(commentId: string, body: string): Promise<boolean> {
+  const text = body.trim()
+  if (!text) return false
+  const w = await loadTaskWorld()
+  return await w.store.editComment(commentId, text)
+}
+
+export async function removeComment(commentId: string): Promise<boolean> {
+  const w = await loadTaskWorld()
+  return await w.store.removeComment(commentId)
+}
+
 export async function addSubtask(ref: string, title: string): Promise<boolean> {
   const t = title.trim()
   if (!t) return false

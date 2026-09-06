@@ -291,3 +291,9 @@ export const attachSession = (ref: string, sessionId: string) =>
 
 export const detachSession = (ref: string, detach: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/sessions`, { detach })
+
+export const editComment = (ref: string, id: string, body: string) =>
+  post(`/api/tasks/${encodeURIComponent(ref)}/comments`, { id, body })
+
+export const removeComment = (ref: string, id: string) =>
+  post(`/api/tasks/${encodeURIComponent(ref)}/comments`, { id, remove: true })

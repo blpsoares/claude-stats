@@ -18,7 +18,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, BarChart3, CheckCircle2, ClipboardList, Download, ExternalLink, FileText, Link2,
-  LayoutGrid, MessageSquare, Paperclip, Plus, Rows3, Search, Trash2, XCircle,
+  LayoutGrid, MessageSquare, Paperclip, Pencil, Plus, Rows3, Search, Trash2, XCircle,
 } from 'lucide-react'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useFleet } from '../lib/fleet'
@@ -32,8 +32,8 @@ import {
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from '../components/tasks/board'
 import {
-  addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, fileUrl, fmtDuration,
-  markTask, removeLink,
+  addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, editComment, fileUrl,
+  fmtDuration, markTask, removeComment, removeLink,
   setBlockedBy, setSubtaskDone, uploadFile, useTaskDetail, useTaskList,
   type AttemptRollup, type AttemptView, type TaskDetail, type TaskListRow, type TasksError,
 } from '../lib/tasks'
@@ -446,6 +446,106 @@ function SessionsTab({ detail }: { detail: TaskDetail }) {
   )
 }
 
+/**
+ * The comment thread.
+ *
+ * A comment can be corrected and it can be withdrawn — a board where a wrong note is permanent is
+ * one people stop writing on. The EDIT changes the body only: `author` and `createdAt` are the
+ * record of who said it and when, and rewriting either would turn a correction into a forgery.
+ */
+function CommentsTab({ id, detail, onChanged }: {
+  id: string
+  detail: TaskDetail
+  onChanged: () => Promise<void> | void
+}) {
+  const isMobile = useIsMobile()
+  const [draft, setDraft] = useState('')
+  const [editing, setEditing] = useState<{ id: string; body: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true); await fn(); await onChanged(); setBusy(false)
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {detail.comments.length === 0 && (
+        <div style={{ ...surface, padding: 14, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Nothing said yet. Assistants can write here too, over the API.
+        </div>
+      )}
+      {detail.comments.map(c => {
+        const mine = editing?.id === c.id
+        return (
+          <div key={c.id} style={{ ...surface, padding: 13 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+              <span style={pill('var(--accent-blue)')}>{c.author}</span>
+              <span style={{ ...microLabel, textTransform: 'none', letterSpacing: 0 }}>
+                {new Date(c.createdAt).toLocaleString()}
+              </span>
+              <span style={{ flex: 1 }} />
+              {!mine && (
+                <>
+                  <button
+                    onClick={() => setEditing({ id: c.id, body: c.body })} disabled={busy}
+                    title="Edit"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
+                  ><Pencil size={13} /></button>
+                  <button
+                    onClick={() => { if (confirm('Delete this comment?')) void run(() => removeComment(id, c.id)) }}
+                    disabled={busy} title="Delete"
+                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
+                  ><Trash2 size={13} /></button>
+                </>
+              )}
+            </div>
+            {mine
+              ? (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <textarea
+                    autoFocus
+                    style={{ ...field(isMobile), minHeight: 72, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
+                    value={editing.body}
+                    onChange={e => setEditing({ id: c.id, body: e.target.value })}
+                  />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      style={button(isMobile, 'primary')} disabled={busy || !editing.body.trim()}
+                      onClick={() => void run(async () => {
+                        await editComment(id, c.id, editing.body)
+                        setEditing(null)
+                      })}
+                    >Save</button>
+                    <button style={button(isMobile)} onClick={() => setEditing(null)}>Cancel</button>
+                  </div>
+                </div>
+              )
+              : (
+                <div style={{ fontSize: 12.5, whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                  {c.body}
+                </div>
+              )}
+          </div>
+        )
+      })}
+
+      <div style={{ ...surface, padding: 13, display: 'grid', gap: 9 }}>
+        <textarea
+          style={{ ...field(isMobile), minHeight: 76, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
+          value={draft} placeholder="Write a comment — an assistant can too, over the API"
+          onChange={e => setDraft(e.target.value)}
+        />
+        <button
+          style={{ ...button(isMobile, 'primary'), justifySelf: 'start' }} disabled={busy || !draft.trim()}
+          onClick={() => void run(async () => { await addComment(id, 'you', draft); setDraft('') })}
+        >
+          <MessageSquare size={14} /> Comment
+        </button>
+      </div>
+    </div>
+  )
+}
+
 type Tab = 'overview' | 'sessions' | 'comments' | 'subtasks' | 'files'
 
 function TaskDetailView({ id }: { id: string }) {
@@ -547,34 +647,7 @@ function TaskDetailView({ id }: { id: string }) {
 
           {tab === 'sessions' && <SessionsTab detail={detail} />}
 
-          {tab === 'comments' && (
-            <div style={{ display: 'grid', gap: 10 }}>
-              {detail.comments.map(c => (
-                <div key={c.id} style={{ ...surface, padding: 13 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                    <span style={pill('var(--accent-blue)')}>{c.author}</span>
-                    <span style={{ ...microLabel, textTransform: 'none', letterSpacing: 0 }}>
-                      {new Date(c.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12.5, whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--text-secondary)' }}>{c.body}</div>
-                </div>
-              ))}
-              <div style={{ ...surface, padding: 13, display: 'grid', gap: 9 }}>
-                <textarea
-                  style={{ ...field(isMobile), minHeight: 76, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
-                  value={draft} placeholder="Write a comment — an assistant can too, over the API"
-                  onChange={e => setDraft(e.target.value)}
-                />
-                <button
-                  style={{ ...button(isMobile, 'primary'), justifySelf: 'start' }} disabled={busy || !draft.trim()}
-                  onClick={() => void run(async () => { await addComment(id, 'you', draft); setDraft('') })}
-                >
-                  <MessageSquare size={14} /> Comment
-                </button>
-              </div>
-            </div>
-          )}
+          {tab === 'comments' && <CommentsTab id={id} detail={detail} onChanged={reload} />}
 
           {tab === 'subtasks' && (
             <div style={{ ...surface, padding: 13, display: 'grid', gap: 8 }}>

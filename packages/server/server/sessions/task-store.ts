@@ -55,6 +55,14 @@ export interface TaskStore {
   patchTask(id: string, patch: TaskPatch): Promise<boolean>
   patchAttempt(id: string, patch: AttemptPatch): Promise<boolean>
   addComment(c: TaskComment): Promise<void>
+  /**
+   * Change a comment's body. False when no comment carries that id.
+   *
+   * The body only: `author` and `createdAt` are the RECORD of who said it and when, and an edit
+   * that rewrote either would turn a correction into a forgery.
+   */
+  editComment(id: string, body: string): Promise<boolean>
+  removeComment(id: string): Promise<boolean>
   upsertSubtask(t: Subtask): Promise<void>
   addFile(f: TaskFile): Promise<void>
   /** Removes the RECORD. The bytes on disk are the caller's to unlink — see `task-files.ts`. */
@@ -291,6 +299,24 @@ export function createTaskStore(file: string): TaskStore {
       return enqueue(async () => {
         const book = await read()
         await write({ ...book, comments: [...book.comments, c] })
+      })
+    },
+    editComment(id, body) {
+      return enqueue(async () => {
+        const book = await read()
+        const target = book.comments.find(c => c.id === id)
+        if (!target) return false
+        const next = { ...target, body }
+        await write({ ...book, comments: book.comments.map(c => (c.id === id ? next : c)) })
+        return true
+      })
+    },
+    removeComment(id) {
+      return enqueue(async () => {
+        const book = await read()
+        if (!book.comments.some(c => c.id === id)) return false
+        await write({ ...book, comments: book.comments.filter(c => c.id !== id) })
+        return true
       })
     },
     upsertSubtask(t) {

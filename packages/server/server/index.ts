@@ -1152,6 +1152,13 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
 
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
       if (verb === 'comments') {
+        // `id` present means an EDIT or a DELETE of that comment; absent means a new one.
+        if (typeof body.id === 'string') {
+          const ok = body.remove === true
+            ? await mod.removeComment(body.id)
+            : await mod.editComment(body.id, String(body.body ?? ''))
+          return json({ ok }, ok ? 200 : 400)
+        }
         const ok = await mod.addComment(ref, {
           author: String(body.author ?? 'unknown'),
           body: String(body.body ?? ''),
