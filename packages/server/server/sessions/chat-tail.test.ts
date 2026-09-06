@@ -406,3 +406,47 @@ describe('readChatWindow — the cap is a fact about the READ, and it says so', 
     expect((await readChatWindow(path, 2)).older).toBe(false)
   })
 })
+
+describe('the tool call carries the id its step is opened with', () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-tail-ref-'))
+    forgetChatTailContent()
+  })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  const withId = (id: string) => line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'bun test' } }] },
+  })
+
+  /**
+   * THIS TEST EXISTS BECAUSE THE FIELD WAS DROPPED ONCE, SILENTLY.
+   *
+   * `ref` shipped with the expanding Live feed in #368. A later merge took the restructured
+   * `chat-tail.ts` wholesale, which removed it — while `/api/fleet/step`, the pure `step-detail.ts`
+   * and the whole UI all survived. So the feature was in production, complete, and unreachable:
+   * every row drew no chevron, because a row with no `ref` deliberately does not open. Nothing
+   * failed, nothing was logged, and it was found by somebody asking why clicking did nothing.
+   * Measured on the live session that reported it: 257 tool calls, zero with a ref.
+   */
+  test('a tool_use id reaches the turn as `ref`', async () => {
+    const file = join(root, 'conv.jsonl')
+    await writeFile(file, `${withId('toolu_01ABC')}\n`)
+    const { turns } = await readChatWindow(file)
+    const call = turns.flatMap(t => t.tools ?? [])[0]
+    expect(call?.ref).toBe('toolu_01ABC')
+  })
+
+  test('a transcript that carries no id yields no ref, rather than an empty one', async () => {
+    // A row with no `ref` draws no chevron — the honest half of the same rule. An empty string
+    // would pass every truthiness check downstream and open onto nothing.
+    const file = join(root, 'conv.jsonl')
+    await writeFile(file, `${toolUseTurn('Bash')}\n`)
+    const { turns } = await readChatWindow(file)
+    const call = turns.flatMap(t => t.tools ?? [])[0]
+    expect(call?.name).toBe('Bash')
+    expect(call?.ref).toBeUndefined()
+  })
+})
