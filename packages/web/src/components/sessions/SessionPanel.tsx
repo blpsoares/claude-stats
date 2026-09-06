@@ -23,6 +23,8 @@
 
 import { useState } from 'react'
 import { MessagesSquare, TerminalSquare } from 'lucide-react'
+import { getCentralMachine } from '../../lib/centralMachinePick'
+import { RelayedScreen } from './RelayedScreen'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
 import { TerminalRegion } from '../RecentSessions'
@@ -51,6 +53,20 @@ export interface SessionPanelProps {
 }
 
 export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, view: viewProp, onViewChange, onArtifacts }: SessionPanelProps) {
+  /**
+   * Is this a session of ANOTHER machine, reached through the relay?
+   *
+   * Asked of the picker rather than of the row, because it is a fact about THIS page: a central
+   * shows one machine's relayed fleet at a time, and every route this panel would otherwise call
+   * (`/api/fleet/stream`, the chat read) is the machine's own and refused here. The row cannot
+   * answer it — a relayed row is deliberately shaped like a local one so the list needs no branch.
+   *
+   * The CONVERSATION is unavailable too, and not by omission: on-demand chat retrieval was removed
+   * from the reverse channel and `GET /api/team/session-chat` answers 410. So the toggle is not
+   * offered, exactly as it is not offered for a harness that can never name its conversation — a
+   * segmented control with one working segment is a label pretending to be a control.
+   */
+  const relayed = getCentralMachine() !== null
   const pt = lang === 'pt'
 
   /**
@@ -60,7 +76,7 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
    * conversation it is writing. Reused rather than re-derived: the row, the chat view and this
    * toggle must give one answer, and this is the one place that could quietly disagree.
    */
-  const chattable = session.conversationBlind === undefined
+  const chattable = session.conversationBlind === undefined && !relayed
 
   // Uncontrolled (mobile, self-contained) unless the caller hands in `onViewChange` — see the
   // module header. The local state is still declared unconditionally (hooks can't be), it is just
@@ -152,6 +168,12 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
             session={session} {...(row ? { row } : {})} lang={lang} act={act}
             {...(onArtifacts ? { onArtifacts } : {})}
           />
+        ) : relayed ? (
+          /* ANOTHER MACHINE's session. The live stream is the machine's own SSE route, refused on a
+             central and not relayed — so `TerminalRegion` would connect to nothing and say so,
+             which is honest and useless. What the machine sends is its last captured frame, and
+             `RelayedScreen` draws that while saying it is a snapshot. */
+          <RelayedScreen {...(session.lastLines ? { lines: session.lastLines } : {})} lang={lang} />
         ) : (
           <div style={{ flex: 1, minHeight: 0, padding: 16, display: 'flex', flexDirection: 'column' }}>
             {/* The very component the sessions list uses. Assembling a second one from the stream

@@ -39,6 +39,17 @@ export interface RelayedRow {
   model?: string
   conversationId?: string
   named?: boolean
+  /**
+   * The session's terminal, present only when the machine granted the SCREEN consent.
+   *
+   * Passed straight through: the list and the panel already know how to draw a `ControlSession`
+   * that has one, and a row without it renders exactly like a local row that has none. Its
+   * ABSENCE is "the machine did not send it", never "the session drew nothing" — the panel says
+   * which, because an empty black pane reads as a session that has stopped.
+   */
+  lastLines?: string[]
+  approvalLines?: string[]
+  dialogOptions?: Array<{ number: number; label: string; selected: boolean }>
   verbs?: Array<{ action: string; label: string; enabled: boolean; reason?: string }>
 }
 

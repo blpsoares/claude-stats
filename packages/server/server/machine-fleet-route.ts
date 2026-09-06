@@ -96,8 +96,8 @@ export interface MachineActionAnswer {
 export async function resolveMachineAction(
   principal: { accountId: string; role: string },
   machineId: string,
-  action: { action: string; id: string; text?: string },
-  deps: MachineFleetRouteDeps & { act: (machineId: string, a: { action: string; id: string; text?: string }) => Promise<MachineActionReply | null> },
+  action: { action: string; id: string; text?: string; choice?: number },
+  deps: MachineFleetRouteDeps & { act: (machineId: string, a: { action: string; id: string; text?: string; choice?: number }) => Promise<MachineActionReply | null> },
 ): Promise<MachineActionAnswer> {
   const { machineSessionsAllowed } = await import('@agentistics/core')
   const machine = (await deps.listMachines()).find(m => m.id === machineId)

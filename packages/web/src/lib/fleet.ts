@@ -21,6 +21,7 @@ import { getCentralMachine } from './centralMachinePick'
 import { relayedToSessions, type RelayedRow } from './relayedSessions'
 import { notifyFleetTransitions, type SessionActivity } from './sessionNotifications'
 import { parseActResult } from './fleetAct'
+import { parseRelayActResult } from './relayAct'
 
 /** Mirrors `SessionAction` in `@agentistics/tui/control/sessions`, minus the verbs a page cannot do. */
 export type FleetActionId =
@@ -358,11 +359,30 @@ export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {
       const ctl = new AbortController()
       const timer = setTimeout(() => ctl.abort(), ACT_TIMEOUT_MS)
       let res: Response
+      /*
+       * A CENTRAL ACTS THROUGH THE RELAY, and for one release it did not.
+       *
+       * The fleet a central shows is the RELAYED one (`pollCentralOnce`), but every verb was posted
+       * to `/api/fleet/act` — the machine's own route, which a central refuses outright in
+       * `index.ts`'s `TEAM_CENTRAL` block and again under `localShell` in `capability-guard.ts`.
+       * Both refusals are correct and stay. The consequence was that the workspace on a central
+       * could READ a fleet and act on none of it: every button reached a 403 for a session that was
+       * right there on screen.
+       *
+       * So the verb goes where the rows came from, addressed to the same machine the picker chose.
+       * The machine re-checks its own consent, its verb allowlist and its sharing rules on arrival;
+       * nothing decided in this browser is trusted there.
+       */
+      const machineId = getCentralMachine()
+      const url = machineId
+        ? `/api/team/machine-fleet/act?lang=${lang}`
+        : `/api/fleet/act?lang=${lang}`
+      const body = machineId ? { ...req, machineId } : req
       try {
-        res = await fetch(`/api/fleet/act?lang=${lang}`, {
+        res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(req),
+          body: JSON.stringify(body),
           signal: ctl.signal,
         })
       } finally {
@@ -372,7 +392,11 @@ export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {
       // on" is written down and tested. This was an object literal building `{ ok, message }` while
       // the declared return type promised `id?: string` — so a reopen spawned its session and the
       // UI stood still on the dead row, because the id it needed to follow had been dropped.
-      const out = parseActResult(await res.json().catch(() => null), lang)
+      // The two routes answer DIFFERENT SHAPES, and reading one as the other is how a silence
+      // becomes a success. A relayed answer is `{reply}` when the machine spoke and `{reason}` when
+      // it did not — the second is a statement about the CHANNEL, not about the verb.
+      const raw = await res.json().catch(() => null)
+      const out = machineId ? parseRelayActResult(raw, lang) : parseActResult(raw, lang)
       // Re-read immediately: the verb changed the machine, and waiting up to five seconds to show
       // it is how a control that worked looks like one that did nothing.
       await pollOnce()

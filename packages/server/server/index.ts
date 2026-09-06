@@ -2548,7 +2548,12 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         import('./machine-fleet-relay'),
       ])
       const answer = await resolveMachineAction(principal, machineId, {
-        action, id: sessionId, ...(typeof b.text === 'string' ? { text: b.text } : {}),
+        action, id: sessionId,
+        ...(typeof b.text === 'string' ? { text: b.text } : {}),
+        // The dialog option the person picked. Validated as a finite number here and re-resolved
+        // against the LIVE screen by the machine, which refuses when the options changed — a poll
+        // is five seconds old, and five seconds is enough for one dialog to become another.
+        ...(typeof b.choice === 'number' && Number.isFinite(b.choice) ? { choice: b.choice } : {}),
       }, {
         listMachines,
         isOnline: id => agent.hasAgentSocket(id),
