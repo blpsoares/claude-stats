@@ -160,6 +160,25 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          (`approvalTail`, deliberately not `frameTail`: that one cuts at the last
   │                          rule and so cuts the dialog away). A prompt is refused on a session with
   │                          a dialog OPEN, in words, for the same reason.
+  │                          **WHICH MODE a session is in** is the pure `mode-spec.ts`, read from the
+  │                          FOOTER only (`MODE_FOOTER_LINES`) for the same reason the attention
+  │                          markers are — this product is developed with this product, so a
+  │                          transcript quoting `plan mode on` is a certainty. MEASURED by driving a
+  │                          live claude 2.1.263: `BTab` cycles `manual -> accept edits -> plan ->
+  │                          auto`, and each mode is matched on its OWN NAME because `manual`'s
+  │                          footer is the one that does NOT advertise the cycle key — matching the
+  │                          hint would find three of four. **It CYCLES, it does not PICK**: no
+  │                          keystroke jumps to a named mode, so a menu of four would reach three by
+  │                          luck; the verb is "next mode" and the row says which one it is now.
+  │                          Every other harness is `null` — a FINDING, not a gap: nobody has driven
+  │                          one, and a guessed key is a keystroke nobody asked for. The web chip
+  │                          colours it through `web/src/lib/modeStyle.ts` on an AUTONOMY gradient,
+  │                          and never with the fault colour.
+  │                          **AN OPTION CAN BE FREE TEXT.** `isFreeTextOption` names claude's "Type
+  │                          something", and answering it is the digit, then a WAIT FOR THE PANE TO
+  │                          MOVE, then the literal text (`sendChoiceText`). Sent as one burst the
+  │                          answer landed as `3jabuticaba` — and the API said `ok`, because a
+  │                          keystroke that lands is not a keystroke that was understood.
   │                          **WHICH SESSIONS FELL TOGETHER** is the pure `crash-group.ts`. The hard
   │                          part is not grouping, it is not admitting garbage: a `lost` row from
   │                          three days ago never fell, and a group holding everything that ever ran
@@ -468,6 +487,35 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          a budget that is felt is a budget that is wrong). The command matcher is
   │                          NARROWED by event, or removing one hook would delete a `Stop` entry
   │                          somebody had moved under `SessionStart`. See docs/claude-integration.md
+  ├── backup/              → **`agentop backup` / `agentop restore`** — carrying a machine's whole
+  │                          history to another one. Four LAYERS (`metrics` always, `repos`,
+  │                          `archive`, `raw`), each recorded in the manifest so a restore knows what
+  │                          it holds instead of inferring it. `backup-plan.ts` is **pure** and holds
+  │                          the exclusion table with a REASON per row — `secret` (a live credential,
+  │                          excluded by DECISION and NAMED on restore with the command that
+  │                          re-establishes it), `regenerable`, `runtime` (`managed-sessions.json`
+  │                          names tmux sessions that will not exist there). `backup-plan.test.ts`
+  │                          greps this module's own source and re-probes every credential path, so a
+  │                          rule deleted in a refactor fails the build rather than shipping a leak,
+  │                          and `backup-coverage.lint.test.ts` makes an UNDECIDED path impossible.
+  │                          Sizes are MEASURED per layer and per harness; `repos` reports `null`
+  │                          ("known after a backup runs") because its content does not exist until
+  │                          `buildRepoManifest` shells out to git — a surface renders that as a
+  │                          sentence, never as `0`. A SCHEDULE never carries `repos` (that is a thing
+  │                          a person asks for, not something a timer does behind them), rides the
+  │                          daemon `agentop server` already runs (`backup/daemon.ts`), and **absent
+  │                          reads as OFF** — a machine must not start writing gigabytes because it
+  │                          was upgraded. The restore is TWO-PHASE and RESUMABLE, and runs
+  │                          **structured argv, never a joined string** (a path with a space cannot be
+  │                          recovered from a joined line, and joining to re-split is how a wrong argv
+  │                          gets built); `restoreCommands` is the same plan for a person to read.
+  │                          `github-*.ts` versions backups as releases on a PRIVATE repository the
+  │                          user owns — private-ness and push access are verified BEFORE anything is
+  │                          written, the sha256 is checked against the release body before a download
+  │                          is touched, and `--from <machine>` exists because "the newest" is
+  │                          meaningless once several machines version into one repository. Three
+  │                          doors (CLI, cockpit tab, Settings → Backup) over one engine. See
+  │                          docs/backup.md
   ├── events/              → **the EVENT CHANNEL** behind `agentop events`: a state TRANSITION
   │                          reaching a person and the assistant orchestrating the fleet.
   │                          **The producer MUST be long-lived, and that decides its home.**
@@ -2007,6 +2055,24 @@ harness must not break.
     the page body.
   - New pages need their nav entry in **both** the desktop `SideNav` `items` array **and** the
     `MobileBottomNav` `navTiles` array in `App.tsx` — adding only the first hides the page on a phone.
+- **A DATE FILTER IS ANSWERED BY `SessionMeta.daily`, AND AN UNBOUNDED RANGE IS ANSWERED FROM THE
+  OTHER SIDE.** A session is a SPAN whose four counters are LIFETIME totals, so filing it on the day
+  it STARTED empties "today" for anyone whose session has been open since Tuesday, and filing it on
+  every day it TOUCHES measured **86x** too high on a real machine (4.446.955.424 tokens against a
+  true 51.465.608) — that version shipped and was reverted. `daily` is the third answer and it is a
+  MEASUREMENT: the parser already walks every turn and every turn carries a timestamp.
+  `web/src/lib/sessionDaySlice.ts` spends it — `sliceSession` cuts the session once and every total
+  downstream inherits the cut. **A session with no `daily` keeps the start-day rule** (`null`, never
+  a zero: one that cannot be split is not one that did nothing), **an unbounded range slices
+  nothing**, and **a range too long to enumerate must not be expressed as a day set at all**:
+  `daysBetween` STOPS at `MAX_RANGE_DAYS` (400) and `all` starts at the EPOCH, so its set was
+  `1970-01-01 … 1971-02-04` and every session carrying `daily` was tested for membership in a window
+  it could not fall in — **397 of 662 sessions dropped out of the default view**, silently, because
+  the survivors were exactly the older records with no `daily`. Past the cap use `activeInWindow`
+  (the SESSION's own days), and treat a set sitting exactly AT the cap as unusable rather than
+  complete. `Today` is its own preset ("only today, in progress") and is not the calendar's "today"
+  ("up to today"); both end at the END of the day, so a session a few seconds ahead of the browser's
+  clock is not excluded.
 - **A tag may be pinned to a PERIOD** (`TagDoc.window`, inclusive `yyyy-MM-dd`, each end independently
   optional) — that is what makes a tag answer "I ran harness X on this project from the 4th to the
   18th; what did it cost?" instead of only "these sources, all time". It is an AND on top of the
@@ -2130,6 +2196,25 @@ harness must not break.
   - **`FiltersBar` `compact` prop** (used on mobile): hides the vestigial vertical dividers and tightens padding. On mobile the controls also stretch to fill each row (date presets `flex:1`, custom range full-width, the ＋ Filtro button full-width).
   - **`FiltersBar` "＋ Filtro" model**: the top bar shows only the date presets + custom range + a single dashed **＋ Filtro** button (with an active-dimension count badge). It opens a menu of the *available* dimensions (Members/Harnesses/Presence shown only on central-with-data; Repos only when a repo dimension exists; Projects/Models when present); picking one opens that dimension's inline value picker (Projects opens the full `ProjectsModal`). The selected values are NOT shown in the top bar — they render in the animated per-category chip rows below (`AnimatedRow`/`ChipRow`/`FilterChip`, one row per dimension incl. Presence). Do not re-add always-visible dimension dropdowns to the top bar.
   - **Full-screen modals on mobile**: ProjectsModal, SessionDrilldownModal, PreferencesModal, the transcript viewer, etc. render full-screen (overlay padding 0, width/height 100%, `borderRadius: 0`) — iOS Safari pushes centered fixed-width modals off-screen when the page overflows horizontally.
+  - **THE SESSIONS WORKSPACE LOCKS THE DOCUMENT ON A PHONE, AND NOTHING ELSE DOES.** It is a
+    fixed-height column whose conversation, list and aside each scroll inside themselves, so every
+    pixel of document scroll there is spurious — a rubber-band chained off an inner scroller, or a
+    keyboard scroll iOS never undid (which is why the composer and the nav came back higher than
+    they went). `html.ag-viewport-locked` (a fixed body) + `overscroll-behavior: contain` on every
+    scroller. The keyboard is then MEASURED (`lib/mobileViewport.ts`, `hooks/useVisualViewport.ts`)
+    and **spent as PADDING on a `100dvh` shell — never as a shorter box**: a box sized to the
+    visible band ends above the bottom of the screen, and since `#root` clips, every
+    `position: fixed` descendant anchors to THAT edge — the bar and the composer came up already
+    floating, before any keyboard. The visible band is also not reliably the screen at rest
+    (collapsing toolbars, a non-zero `offsetTop`). Every other page keeps the window as its
+    scroller: they are columns of cards that grow past the fold.
+  - **`Enter` breaks the line on a phone and sends on a hardware keyboard.** `shift+enter` needs a
+    shift key a software keyboard does not have. `TtyChat` already split this way; gate on
+    `isMobile`, never on the harness or the field.
+  - **The magnifier's floating fallback appears only where no chrome hosts its button.**
+    `headerHostsMagnifier` names the slots that exist (the phone's header, the desktop strip's
+    trailing region, the Sessions workspace's own bar); a new screen with its own chrome must be
+    added there or the button lands on top of its content.
   - **iOS sticky fix**: mobile `html, body, #root` use `overflow-x: clip` (NOT `hidden`) in `index.css` — `hidden` forces `overflow-y` to compute to `auto`, creating a scroll container that breaks `position: sticky`. `clip` clips without that side effect.
   - **iOS install/PWA**: iOS has no `beforeinstallprompt`; InstallModal/Install tab detect iOS and show Add-to-Home-Screen steps instead of an install button. The data cache in `useData.ts` (`agentistics-data-cache-v1` in localStorage) gives instant reopen over plain HTTP (service worker needs HTTPS/localhost).
 - **`files_modified` counting** (`packages/server/server/jsonl.ts`): tracks unique file paths from Edit/Write/MultiEdit tool calls (`claudeFilesModified` Set), then takes `Math.max(gitFileStats.filesModified, claudeFilesModified.size)` — whichever is higher. This captures files Claude edited in non-git directories.

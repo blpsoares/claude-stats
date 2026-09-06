@@ -495,3 +495,48 @@ registry. `searchScopes` is a set — name, folder, harness, note, task, prompt,
 "all" control is simply every scope present; when it has never been chosen the search covers every
 field a row carries on its own, and `transcript` (a text scan of the conversation on disk) is an
 explicit opt-in rather than a cost paid on every keystroke.
+
+## One poller, many readers
+
+The cockpit, the web workspace, `agentop session ls` and `agentop hooks context` all describe the
+same fleet, and they used to each run their own poll. That is not merely wasteful — they disagreed:
+four sessions in the browser against three in the terminal, at the same moment, on the same machine.
+A frame digest, a heartbeat and an attention state are all *per poller*, so two pollers are two
+answers.
+
+`GET /api/fleet/snapshot` serves the **raw `SessionSnapshot`** (`shared-snapshot.ts`), and every
+one-shot reader takes it whenever a server is up, falling back to its own read when none is. Two
+rules keep it honest:
+
+- **The route serves the RAW snapshot, not the mapped `ControlSession` rows.** It briefly served the
+  mapped ones under the snapshot's type, and `session ls --json` answered `activity: null` on every
+  row — caught by reading the output, not by reading the types.
+- **A one-shot command never stamps `lastSeenMs`.** The heartbeat is what makes crash-grouping exact;
+  a `session ls` that touched it would make every row look alive at the moment somebody listed them.
+
+## Rows that are not what they look like
+
+Four fixes that all come from the same place — a row must say what it IS, and never guess:
+
+- **A CLI command is not a live session.** `NOT_A_SESSION` filters the process scan, so
+  `agentop session ls` typed in a terminal stopped appearing in its own output as an assistant.
+- **One external row per SESSION, not per process.** A harness installed as a `node` shim spawns
+  more than one process for one conversation; each was becoming a row.
+- **An unregistered row says what it is instead of `?`.** A running session whose registry record is
+  gone is now adopted where the harness's own record names our tmux session
+  (`session-adopt.ts`), and where it cannot be, the row says `unregistered` rather than showing a
+  question mark for a name.
+- **A stale row and a lost conversation stop sharing one sentence.** They are different facts and
+  they send the reader to different places.
+
+## Two failures the fleet used to report as "empty"
+
+- **A tmux that cannot be reached.** `list()` now throws unless `tmuxListIsEmptyState(code, out, err)`
+  says the failure really is the no-server case — and that rule reads **stderr**, where tmux actually
+  writes `error connecting to …`. Judging stdout alone would have made a machine with no tmux server
+  (the ordinary first-run state) throw on every poll.
+- **Two processes holding the registry lock.** `registry.ts` serialises writes within ONE process,
+  and agentop runs as several. The lock's ENOENT branch used to `rm` the file it had just failed to
+  find, which is how two holders happen; a vanished lock now retries and an abandoned one is taken
+  over by an atomic `rename`. Measured before and after over 600 concurrent writes: 31 losses in 150,
+  then 0 in 600.
