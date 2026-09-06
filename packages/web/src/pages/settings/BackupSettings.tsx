@@ -166,6 +166,8 @@ interface RestoreCandidate {
  *  words, never printed as a name. */
 interface RestoreMachine {
   machine: string | null
+  /** Is this the machine the user is sitting at? Marked, and sorted first, by the server. */
+  thisMachine: boolean
   releases: RestoreCandidate[]
 }
 
@@ -2642,14 +2644,39 @@ function RestoreSection({
           {machines.map((m, mi) => (
             <div key={m.machine ?? `unnamed-${mi}`} style={{ marginBottom: 18 }}>
               <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
                 fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 8,
                 wordBreak: 'break-word',
               }}>
                 {/* A machine with no recorded name is SAID, never printed as if `null` were a
                     name — the release body simply never carried one. */}
-                {m.machine ?? (pt
+                <span>{m.machine ?? (pt
                   ? 'Backups sem nome de máquina registrado no release'
-                  : 'Backups with no machine name recorded in the release')}
+                  : 'Backups with no machine name recorded in the release')}</span>
+                {/* WHICH of these is the machine you are sitting at. Every machine in the
+                    repository is offered on purpose — a reformatted machine has a new name and
+                    needs the OLD one's backups — so the list has to say which is which, and the
+                    server has already sorted this one first. */}
+                {m.thisMachine
+                  ? (
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+                      padding: '1px 6px', borderRadius: 4,
+                      color: 'var(--anthropic-orange)',
+                      border: '1px solid var(--anthropic-orange)',
+                    }}>
+                      {pt ? 'esta máquina' : 'this machine'}
+                    </span>
+                  )
+                  : (
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
+                      padding: '1px 6px', borderRadius: 4,
+                      color: 'var(--text-tertiary)', border: '1px solid var(--border)',
+                    }}>
+                      {pt ? 'outra máquina' : 'another machine'}
+                    </span>
+                  )}
               </div>
               {m.releases.map(r => (
                 <RestoreRelease

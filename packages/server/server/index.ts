@@ -946,7 +946,14 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
             status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           })
         }
-        const result = await restoreListing({ url: body.value.url, token: cred.token })
+        // This machine's own label, so the reply can mark which group is ours. Read from the
+        // stored config rather than taken from the body: what this machine is CALLED is not
+        // something a request gets to assert.
+        const { readGithubConfig } = await import('./backup/github-store')
+        const stored = await readGithubConfig().catch(() => null)
+        const result = await restoreListing({
+          url: body.value.url, token: cred.token, label: stored?.label,
+        })
         return new Response(JSON.stringify(result), {
           status: result.ok ? 200 : 400,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },

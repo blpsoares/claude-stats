@@ -165,3 +165,63 @@ describe('restoreJob — a restore the interface can watch without holding a req
     expect(newRestoreJob({ tag: 't', withRepos: true }).withRepos).toBe(true)
   })
 })
+
+describe('which of these machines is the one I am sitting at', () => {
+  const rel = (tag: string, at: string, host: string) => ({
+    tag_name: tag, created_at: at,
+    body: `# Agentistics backup\n\n- created: ${at}\n- host: ${host}\n- layers: metrics\n`
+      + `- harnesses: claude\n- sessions: 1\n- size: 1 MB (1000000 bytes)\n- sha256: \`x\`\n`,
+  })
+
+  test('this machine is marked and comes FIRST, whatever the dates say', async () => {
+    // Asked after seeing it: "pq ta aparecendo pra eu restaurar backup de outras machines?".
+    // Offering them is right — a reformatted machine has a new hostname and needs the OLD one's
+    // backups, so filtering to "this machine" would empty the screen exactly when it matters. What
+    // was missing is saying WHICH is which, and putting the likely one at the top.
+    const r = await restoreListing(
+      { url: 'https://github.com/me/backups', token: 'tok', label: 'alienware' },
+      {
+        fetchImpl: async () => new Response(JSON.stringify([
+          rel('backup-braiaode2-2026-09-06T16-00-00Z', '2026-09-06T16:00:00Z', 'braiaode2'),
+          rel('backup-alienware-2026-09-06T10-00-00Z', '2026-09-06T10:00:00Z', 'alienware'),
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      },
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    // `braiaode2` is NEWER and still comes second: this machine leads.
+    expect(r.machines.map(m => m.machine)).toEqual(['alienware', 'braiaode2'])
+    expect(r.machines[0]!.thisMachine).toBe(true)
+    expect(r.machines[1]!.thisMachine).toBe(false)
+  })
+
+  test('with no label given, nothing is marked — never a guess', async () => {
+    // A machine that has not connected a repository has no label, and marking the wrong group as
+    // "yours" is worse than marking none: it is the group somebody would restore without reading.
+    const r = await restoreListing(
+      { url: 'https://github.com/me/backups', token: 'tok' },
+      {
+        fetchImpl: async () => new Response(JSON.stringify([
+          rel('backup-alienware-2026-09-06T10-00-00Z', '2026-09-06T10:00:00Z', 'alienware'),
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      },
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.machines[0]!.thisMachine).toBe(false)
+  })
+
+  test('the match folds case and spacing, like every other label comparison', async () => {
+    const r = await restoreListing(
+      { url: 'https://github.com/me/backups', token: 'tok', label: ' Alienware ' },
+      {
+        fetchImpl: async () => new Response(JSON.stringify([
+          rel('backup-alienware-2026-09-06T10-00-00Z', '2026-09-06T10:00:00Z', 'alienware'),
+        ]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      },
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.machines[0]!.thisMachine).toBe(true)
+  })
+})

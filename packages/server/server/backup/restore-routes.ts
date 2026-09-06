@@ -10,7 +10,7 @@
  * staging and verification rules live and where they are tested against real archives.
  */
 import { formatBytes } from './backup-size'
-import { isBackupTag, parseReleaseBody } from './backup-github'
+import { isBackupTag, labelSlug, parseReleaseBody } from './backup-github'
 import { ghToken, type GhTokenResult } from './github-cli'
 import { parseRepoUrl, gh, type FetchLike } from './github-api'
 import { groupReleasesByMachine, type ListedBackupRelease } from './github-restore'
@@ -53,6 +53,18 @@ export interface RestoreCandidate {
 
 export interface RestoreMachine {
   machine: string | null
+  /**
+   * Is this the machine the user is sitting at?
+   *
+   * The list offers EVERY machine on purpose — a reformatted machine has a new hostname and needs
+   * the OLD one's backups, so filtering to "this machine" would empty the screen exactly when it
+   * matters most. What was missing is saying which is which, and putting the likely one first.
+   *
+   * False when this machine has no label to compare — a machine that has not connected a repository
+   * yet. Marking the wrong group as "yours" is worse than marking none: it is the group somebody
+   * would restore without reading.
+   */
+  thisMachine: boolean
   releases: RestoreCandidate[]
 }
 
@@ -71,7 +83,7 @@ interface RawRelease {
  * one is the failure this whole surface has to make impossible to do by accident.
  */
 export async function restoreListing(
-  input: { url: string; token: string },
+  input: { url: string; token: string; label?: string },
   opts: { fetchImpl?: FetchLike } = {},
 ): Promise<{ ok: true; machines: RestoreMachine[] } | { ok: false; reason: string }> {
   // Before any request, exactly as `github-setup.ts` does: sending a token to a host the user
@@ -96,9 +108,11 @@ export async function restoreListing(
     summary: parseReleaseBody(r.body ?? ''),
   }))
 
+  const mine = labelSlug(input.label)
   const machines = groupReleasesByMachine(listed.filter(r => isBackupTag(r.tagName)))
     .map(g => ({
       machine: g.machine,
+      thisMachine: mine !== null && g.machine === mine,
       releases: g.releases.map<RestoreCandidate>(r => ({
         tagName: r.tagName,
         createdAt: r.createdAt,
@@ -112,6 +126,10 @@ export async function restoreListing(
       })),
     }))
 
+  // This machine FIRST, whatever the dates say — it is the one somebody is most likely to want,
+  // and burying it under a machine that happened to run later is how the wrong one gets picked.
+  // The rest keep the order `groupReleasesByMachine` gave them (most recent backup first).
+  machines.sort((a, b) => Number(b.thisMachine) - Number(a.thisMachine))
   return { ok: true, machines }
 }
 
