@@ -30,6 +30,7 @@ import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { splitSlashLine } from '../../lib/slashLine'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { echoStatus } from '../../lib/echoStatus'
+import { messageTime } from '../../lib/messageTime'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { AttachmentLightbox } from './AttachmentLightbox'
 import { HarnessMark } from './HarnessMark'
@@ -58,6 +59,14 @@ export interface ChatTurn {
   tools?: Array<{ name: string; detail?: string }>
   /** Carried by the transcript; deliberately not rendered here. See the header. */
   thinking?: string
+  /**
+   * When this turn was written, ISO, as the transcript recorded it.
+   *
+   * The server has always sent it — 400 of 400 turns on a measured session — and nothing drew it.
+   * Rendered under the message, the way a chat client does. Absent on a turn whose transcript
+   * carried no time; the stamp is then simply not drawn, never replaced by "now".
+   */
+  at?: string
 }
 
 export interface ChatBubbleProps {
@@ -167,6 +176,15 @@ const SYSTEM_NOTE_PT: Record<string, string> = {
 export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId }: ChatBubbleProps) {
   const pt = lang === 'pt'
   const mine = turn.role === 'user'
+  /**
+   * The stamp under this message. `null` when the transcript carried no time for the turn — the
+   * bubble then simply has none, which is the honest answer.
+   *
+   * Computed on every render on purpose: it is one `Date` and a `toLocaleTimeString`, and memoising
+   * it against `Date.now()` would freeze "today" for a page left open across midnight — the one
+   * case the relative wording exists to get right.
+   */
+  const stamp = messageTime(turn.at, pt ? 'pt' : 'en')
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   /**
    * The RIGHT-CLICK menu, positioned where the click landed inside this bubble.
@@ -511,6 +529,27 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
               )
             })()}
           </div>
+        )}
+
+        {/* WHEN IT WAS SAID, under the message, the way a chat client does it. Asked for directly.
+            
+            Inside the bubble and aligned to its own side, so it reads as a fact about THIS message
+            rather than as a line between two of them. It is not drawn while the message is still
+            awaiting delivery: the status line below already occupies that spot and says something
+            more urgent, and a message that has not landed has no send time to state. The `title`
+            carries the whole instant — the stamp is abbreviated by design. */}
+        {!awaiting && stamp && (
+          <time
+            dateTime={turn.at}
+            title={stamp.full}
+            style={{
+              fontSize: 9.5, lineHeight: 1.2, color: 'var(--text-tertiary)',
+              alignSelf: mine ? 'flex-end' : 'flex-start',
+              // Never wraps and never widens the bubble: it is four to twelve characters, and a
+              // stamp that pushed a narrow bubble wider would make every short message look long.
+              whiteSpace: 'nowrap', flexShrink: 0, opacity: 0.75,
+            }}
+          >{stamp.label}</time>
         )}
 
         {/* The label sits INSIDE the bubble, under the text: it is a fact about this message, and
