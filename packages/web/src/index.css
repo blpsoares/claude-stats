@@ -515,6 +515,21 @@ html, body {
 @keyframes ag-working-spin { to { transform: rotate(360deg); } }
 .ag-working-spin { animation: ag-working-spin 900ms linear infinite; }
 
+/* The microphone, while it is listening. A ring that breathes rather than a level meter: the Web
+   Speech API gives no audio level, and opening a SECOND `getUserMedia` stream just to draw one
+   would compete with the recogniser for the device. This says "it is on", which is the fact that
+   was missing; the interim words beside the field say what it is hearing. */
+@keyframes ag-mic-pulse {
+  0%   { transform: scale(0.94); opacity: 0.85; }
+  70%  { transform: scale(1.12); opacity: 0; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+.ag-mic-pulse { animation: ag-mic-pulse 1.3s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  /* Still visible, no longer moving — the state must survive the preference. */
+  .ag-mic-pulse { animation: none; opacity: 0.8; }
+}
+
 /* The live marker's dot. It reports something happening NOW, and a static dot beside a static
    line is a label. Opacity only — a scaling dot moves the text beside it. */
 @keyframes ag-hint-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }

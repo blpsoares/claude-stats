@@ -209,6 +209,23 @@ export interface SessionScratch {
   writeReply(id: string, target: ReplyTarget | null): void
   readChat(id: string): CachedChat | null
   writeChat(id: string, chat: CachedChat): void
+  /**
+   * Carry one session's scratch to a NEW key, because the key changed under it.
+   *
+   * `scratchKey` answers `row:<id>` while a row has no `conversationId` and `conv:<id>` once it
+   * learns one — and a live session learns it MID-USE, the moment the poller can prove the link.
+   * The key then flips while somebody is typing: every read moves to a slot that holds nothing, so
+   * the draft comes back empty and the cached conversation comes back `null`, which puts the
+   * "loading" paragraph where the composer was and takes the focused field out of the DOM with it.
+   * Reported as "eu to digitando e do nada o foco sai do campo de input".
+   *
+   * Migrating rather than re-reading is what makes the change invisible, which is what it should
+   * always have been: the same person, the same session, the same half-typed message.
+   *
+   * It never OVERWRITES: a destination that already has something is the case where the two keys
+   * are genuinely different conversations, and the newer slot is the truthful one.
+   */
+  migrate(from: string, to: string): void
 }
 
 /** Build a scratch over any storage. `null` storage yields drafts that work only in memory. */
@@ -323,6 +340,25 @@ export function createSessionScratch(store: ScratchStore | null): SessionScratch
     },
     writeChat(id, chat) {
       chats = capChats(chats, id, chat)
+    },
+    migrate(from, to) {
+      if (from === to) return
+      // Every piece moves through this object's OWN accessors, so the migration inherits whatever
+      // each of them already handles — the storage that may throw, the cap on cached chats, the
+      // JSON that may not parse. A hand-rolled key copy would be a second implementation of all of
+      // that, and the first one to drift would lose a draft silently.
+      const draft = this.readDraft(from)
+      if (draft !== '' && this.readDraft(to) === '') this.writeDraft(to, draft)
+      const reply = this.readReply(from)
+      if (reply && this.readReply(to) === null) this.writeReply(to, reply)
+      const echoes = this.readEchoes(from)
+      if (echoes.length > 0 && this.readEchoes(to).length === 0) this.writeEchoes(to, echoes)
+      const files = this.readAttachments(from)
+      if (files.length > 0 && this.readAttachments(to).length === 0) this.writeAttachments(to, files)
+      const chat = this.readChat(from)
+      if (chat && this.readChat(to) === null) this.writeChat(to, chat)
+      // The old slot is left as it was. It is keyed by a row id that nothing will ask for again,
+      // and clearing it is one more thing that can go wrong for no benefit.
     },
   }
 }

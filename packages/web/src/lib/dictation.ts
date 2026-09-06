@@ -144,12 +144,41 @@ export function dictatedText(e: {
   resultIndex?: number
   results: ArrayLike<ArrayLike<{ transcript: string }> | undefined>
 }): string {
+  return splitDictation(e).final
+}
+
+/**
+ * PURE: what this event contributed, split into what is SETTLED and what is still being heard.
+ *
+ * `interimResults` was off, which is why dictation felt dead: nothing at all reaches the screen
+ * until the recogniser decides a phrase is over, so a person speaking sees an unchanged field and
+ * concludes the microphone is broken. Reported that way, together with the wish to see the capture
+ * happening.
+ *
+ * ONLY THE FINAL HALF MAY TOUCH THE DRAFT. An interim result is a GUESS that the recogniser
+ * replaces as it hears more, so appending one would write words nobody said and then leave them
+ * there. The interim half is for showing, never for keeping.
+ *
+ * An implementation that reports no `isFinal` is treated as final — that is what this function did
+ * before interim results existed at all, and the draft is the safer place for its text than a
+ * preview that is dropped.
+ */
+export function splitDictation(e: {
+  resultIndex?: number
+  results: ArrayLike<(ArrayLike<{ transcript: string }> & { isFinal?: boolean }) | undefined>
+}): { final: string; interim: string } {
   // An absent `resultIndex` reads as 0 — an implementation that does not provide it has no growing
   // list to skip either, so reading from the start is the correct behaviour there.
   const from = typeof e.resultIndex === 'number' ? e.resultIndex : 0
-  let text = ''
-  for (let i = from; i < e.results.length; i++) text += e.results[i]?.[0]?.transcript ?? ''
-  return text
+  let final = ''
+  let interim = ''
+  for (let i = from; i < e.results.length; i++) {
+    const r = e.results[i]
+    const text = r?.[0]?.transcript ?? ''
+    if (r?.isFinal === false) interim += text
+    else final += text
+  }
+  return { final, interim }
 }
 
 /**
