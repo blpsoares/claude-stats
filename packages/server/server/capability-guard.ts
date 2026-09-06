@@ -52,6 +52,12 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   // next fleet route someone adds must be guarded by having been added AT ALL, never by having
   // remembered a second table.
   ['/api/fleet', 'localShell'],
+  // The web dashboard's read of the backup engine and its "run now" button. `status` walks the
+  // metrics layer and the backup history; `run` spawns `git bundle`/`git diff` across every known
+  // repository and, depending on the configured layers, copies the raw harness directories
+  // (`~/.claude`, `~/.codex`, …) into an archive on disk — the same shell-and-filesystem power
+  // `/api/exec` carries, so it rides the same capability rather than a softer one.
+  ['/api/backup', 'localShell'],
   // Reading and WRITING this machine's MCP server configuration. `/api/mcp/servers` reports what is
   // configured and what is running; `/api/mcp/install` and `/api/mcp/remove` run `claude mcp` to
   // change it. A PREFIX for the same reason `/api/fleet` is one: the next route here is guarded by

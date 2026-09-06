@@ -52,6 +52,39 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
     pt: { title: 'Conectado à central', message: 'Os envios para {central} voltaram a funcionar.' },
     en: { title: 'Connected to the central', message: 'Pushes to {central} are working again.' },
   },
+  // The backup's own toasts. A backup can take minutes and, on a schedule, nobody pressed
+  // anything to start it — so a machine that is busy backing up would otherwise look exactly like
+  // one that is idle, and a FAILED backup exactly like one that never ran. That last pair is the
+  // dangerous one: it is the case where the person believes they are covered.
+  'backup.started': {
+    pt: { title: 'Backup em andamento', message: 'Salvando {layers}. Você pode continuar usando a máquina.' },
+    en: { title: 'Backup running', message: 'Saving {layers}. You can keep using the machine.' },
+  },
+  'backup.done': {
+    pt: { title: 'Backup concluído', message: '{layers} · {size}.' },
+    en: { title: 'Backup complete', message: '{layers} · {size}.' },
+  },
+  // A clean run and a partial one are different facts, so they are different codes — one sentence
+  // covering both would let a backup quietly stop carrying something.
+  'backup.done.skipped': {
+    pt: { title: 'Backup concluído, com ressalvas', message: '{layers} · {size}. {skipped} caminho(s) não puderam ser lidos e ficaram de fora — veja o log.' },
+    en: { title: 'Backup complete, with caveats', message: '{layers} · {size}. {skipped} path(s) could not be read and were left out — see the log.' },
+  },
+  'backup.failed': {
+    pt: { title: 'Backup FALHOU', message: 'Nada foi gravado. Motivo: {reason}' },
+    en: { title: 'Backup FAILED', message: 'Nothing was written. Reason: {reason}' },
+  },
+  'backup.uploaded': {
+    pt: { title: 'Backup versionado no GitHub', message: 'Release {tag} — conferido byte a byte.' },
+    en: { title: 'Backup versioned on GitHub', message: 'Release {tag} — confirmed byte for byte.' },
+  },
+  // A WARNING, deliberately, not an error: the archive was written and is on disk and restores.
+  // Calling this a failed backup would tell someone they have nothing when they have everything
+  // except the copy on GitHub.
+  'backup.upload_failed': {
+    pt: { title: 'Backup salvo, envio falhou', message: 'O arquivo está no disco desta máquina e restaura normalmente — só a cópia no GitHub não foi feita. Motivo: {reason}' },
+    en: { title: 'Backup saved, upload failed', message: 'The archive is on this machine and restores normally — only the GitHub copy was not made. Reason: {reason}' },
+  },
   'member.removed': {
     pt: { title: 'Removido da central', message: 'O acesso desta máquina a {central} foi revogado. A conexão foi removida — gere um novo token nessa central para reconectar.' },
     en: { title: 'Removed from the central', message: 'Access to {central} was revoked for this machine. The connection was removed — mint a new token there to reconnect.' },
@@ -164,6 +197,25 @@ export function resolveNotification(n: AppNotification, lang: 'pt' | 'en'): Loca
   // Append the HTTP status to the auth-rejected message when the central provided one.
   if (n.code === 'member.auth_rejected' && n.meta?.status && message) {
     message = `${message} (HTTP ${n.meta.status})`
+  }
+
+  // EVERY remaining {placeholder}, from `meta` under the same name.
+  //
+  // The cases above are the ones that TRANSFORM their value — a `v` prefix, a fallback noun when
+  // the fact is missing, a whole different sentence for the peer codes — and they run first so
+  // this never overrides them. What was missing was the ordinary case, and its absence was a bug
+  // factory: interpolation was a hand-written list, so every new code with a new placeholder
+  // shipped showing its own braces. Seen on screen as "Salvando {layers}." and "Motivo: {reason}".
+  //
+  // A placeholder with NO value in `meta` is LEFT ALONE rather than replaced: printing the word
+  // `undefined` inside a sentence a person reads is worse than a visible brace, because it looks
+  // like the value.
+  if (message && n.meta) {
+    const meta = n.meta
+    message = message.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (whole, key: string) => {
+      const v = meta[key]
+      return v === undefined || v === null ? whole : String(v)
+    })
   }
   return { title, message }
 }

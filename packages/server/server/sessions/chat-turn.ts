@@ -71,6 +71,20 @@ export interface ChatTurn {
      * fed a program on stdin. The panel says so rather than claiming nothing was written.
      */
     opaqueWrite?: boolean
+    /**
+     * The harness's own `tool_use` id for this call — the EXACT key `/api/fleet/step` opens it with.
+     *
+     * The Live feed's rows expand into the command that ran and what it printed, and the pairing is
+     * this id against the `tool_result` that names it — never a position, which is the mistake
+     * `workflow-match.ts` exists to have fixed once. A row with no `ref` draws no chevron and does
+     * not open, which is the honest half of the same rule.
+     *
+     * It has been lost once already, and silently: it shipped in #368, and a merge that took the
+     * restructured `chat-tail.ts` wholesale dropped it while the route and the UI both survived —
+     * so the feature was in production, complete, and unreachable, because nothing on any row could
+     * be clicked. Measured on a live session afterwards: 257 tool calls, zero with a ref.
+     */
+    ref?: string
   }>
   /**
    * The assistant's extended thinking, when the transcript carries it.

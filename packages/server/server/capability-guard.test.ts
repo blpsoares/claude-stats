@@ -57,6 +57,17 @@ describe('routeCapability', () => {
     expect(routeCapability('/api/fleetwide')).toBeNull()
   })
 
+  it('maps the backup routes, and any sub-path added later', () => {
+    // The status read walks the metrics layer and the run spawns `git` across every known
+    // repository and, depending on layers, copies raw harness directories to disk — the same
+    // shell-and-filesystem power /api/exec carries.
+    expect(routeCapability('/api/backup/status')).toBe('localShell')
+    expect(routeCapability('/api/backup/run')).toBe('localShell')
+    // A PREFIX, so a future backup route is guarded by having been added at all.
+    expect(routeCapability('/api/backup/anything-added-later')).toBe('localShell')
+    expect(routeCapability('/api/backupwide')).toBeNull()
+  })
+
   it('maps the local chat routes', () => {
     expect(routeCapability('/api/chat-tty')).toBe('localChat')
     expect(routeCapability('/api/chat-harnesses')).toBe('localChat')

@@ -1,0 +1,218 @@
+/**
+ * github-api.ts — PURE where a decision can be made without a network, IO where it cannot.
+ *
+ * This module sends a live credential (the PAT in `github-store.ts`) to whatever host it is told
+ * to. `parseRepoUrl` is the gate: it runs BEFORE any request, and it accepts only `github.com` —
+ * an unrecognized host is refused rather than guessed at, because sending the token to a host the
+ * user mistyped is the one outcome this code must never produce.
+ *
+ * `gh()` is the one place a request actually leaves the machine. It never throws (a network
+ * failure, a bad status and a malformed body are all just another `{ ok: false }`), and it never
+ * lets the token reach an error message — `redact()` runs over every string this function
+ * produces, not just the ones that look like they might contain it, because the one occurrence
+ * that was not sanitized on purpose is the one that ships.
+ */
+
+export interface ParsedRepo {
+  owner: string
+  repo: string
+}
+
+// GitHub usernames/orgs: alphanumeric or single hyphens, no leading/trailing/doubled hyphen, no
+// dots. Repo names: alphanumeric plus `.`, `_`, `-`. Neither may be empty.
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+const REPO_RE = /^[A-Za-z0-9._-]+$/
+
+function isValidOwner(s: string): boolean {
+  return OWNER_RE.test(s)
+}
+
+function isValidRepoName(s: string): boolean {
+  return REPO_RE.test(s) && s !== '.' && s !== '..'
+}
+
+function stripGitSuffix(path: string): string {
+  return path.endsWith('.git') ? path.slice(0, -4) : path
+}
+
+function toOwnerRepo(path: string): ParsedRepo | null {
+  const trimmed = stripGitSuffix(path.replace(/\/+$/, ''))
+  const parts = trimmed.split('/')
+  if (parts.length !== 2) return null
+  const [owner, repo] = parts as [string, string]
+  if (!isValidOwner(owner) || !isValidRepoName(repo)) return null
+  return { owner, repo }
+}
+
+/**
+ * `https://github.com/o/r`, `github.com/o/r`, `git@github.com:o/r.git`, `o/r` -> `{owner, repo}`.
+ * Any other host, or anything that does not resolve to exactly two path segments, is `null` — the
+ * caller names the host with `repoUrlHost()` for the refusal sentence, since this function's own
+ * contract is the narrow one the plan asks for: a parse, not a message.
+ */
+export function parseRepoUrl(input: string): ParsedRepo | null {
+  const trimmed = input.trim()
+  if (!trimmed) return null
+
+  const ssh = trimmed.match(/^git@([^:]+):(.+)$/)
+  if (ssh) {
+    const host = ssh[1]!
+    if (host !== 'github.com') return null
+    return toOwnerRepo(ssh[2]!)
+  }
+
+  const withProtocol = trimmed.match(/^https?:\/\/([^/]+)\/(.+)$/)
+  if (withProtocol) {
+    const host = withProtocol[1]!.replace(/^www\./, '')
+    if (host !== 'github.com') return null
+    return toOwnerRepo(withProtocol[2]!)
+  }
+
+  const firstSlash = trimmed.indexOf('/')
+  if (firstSlash === -1) return null
+  const maybeHost = trimmed.slice(0, firstSlash)
+  if (maybeHost.includes('.')) {
+    // Looks like a bare host (has a dot) — e.g. `github.com/o/r` or `gitlab.com/o/r`.
+    if (maybeHost !== 'github.com') return null
+    return toOwnerRepo(trimmed.slice(firstSlash + 1))
+  }
+  if (maybeHost.includes('@') || maybeHost.includes(':')) return null
+
+  // Shorthand `owner/repo`.
+  return toOwnerRepo(trimmed)
+}
+
+/**
+ * Best-effort extraction of what host `input` NAMED, for the refusal sentence when
+ * `parseRepoUrl` returns null. Returns `null` when there is no host to report (a malformed
+ * shorthand, an empty string) — the caller falls back to a generic "could not parse" sentence.
+ */
+export function repoUrlHost(input: string): string | null {
+  const trimmed = input.trim()
+  const ssh = trimmed.match(/^git@([^:]+):/)
+  if (ssh) return ssh[1] ?? null
+  const withProtocol = trimmed.match(/^https?:\/\/([^/]+)/)
+  if (withProtocol) return (withProtocol[1] ?? '').replace(/^www\./, '') || null
+  const firstSlash = trimmed.indexOf('/')
+  if (firstSlash !== -1) {
+    const maybeHost = trimmed.slice(0, firstSlash)
+    if (maybeHost.includes('.')) return maybeHost
+  }
+  return null
+}
+
+export type GhResult<T = unknown> =
+  | { ok: true; data: T; status: number }
+  | { ok: false; status: number; message: string }
+
+/** The subset of `fetch` this module needs — lets tests inject a fake with no network. */
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+
+/** Replace every occurrence of `token` in `message` — defense in depth: nothing here is expected
+ *  to echo the token, but a message built from an underlying error or an unexpected response body
+ *  is not under this module's control, so every string this function returns is swept regardless. */
+function redact(message: string, token: string): string {
+  if (!token) return message
+  return message.split(token).join('[redacted]')
+}
+
+function apiMessageFrom(bodyText: string): string | null {
+  try {
+    const parsed = JSON.parse(bodyText) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    const top = (parsed as { message?: unknown }).message
+    if (typeof top !== 'string') return null
+
+    // GitHub's 422 puts the ACTUAL reason inside `errors[]` and leaves the top level as the
+    // useless "Validation Failed". Measured 2026-09-06: creating a release on a repository with no
+    // commits answers exactly that, with `errors[0].message === 'Repository is empty.'` — and the
+    // upload's own recovery reads this string to decide whether to give the repository a first
+    // commit, so dropping the nested half made a working fix unreachable and left the user with
+    // "upload failed" and nothing to act on.
+    //
+    // Entries with no `message` of their own contribute nothing rather than an empty fragment: a
+    // sentence ending in a dangling colon reads as truncated output.
+    const errors = (parsed as { errors?: unknown }).errors
+    const details = Array.isArray(errors)
+      ? errors
+        .map(e => (e && typeof e === 'object' ? (e as { message?: unknown }).message : null))
+        .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      : []
+
+    return details.length ? `${top}: ${details.join('; ')}` : top
+  } catch {
+    // Not JSON, or not shaped like GitHub's error body — fall through to the generic message.
+  }
+  return null
+}
+
+/**
+ * One authenticated GitHub REST call. Never throws — a thrown network error, a non-2xx status and
+ * an unparsable body are all reported as `{ ok: false }`, never propagated, so a caller never has
+ * to wrap this in try/catch to stay honest about what happened.
+ *
+ * `init.headers` is merged AFTER the defaults so a caller can override `Accept` (a binary asset
+ * download needs `application/octet-stream`, not the JSON media type every metadata call uses).
+ *
+ * `responseType` picks how a 2xx BODY is read, because not every call this module makes gets JSON
+ * back: uploading or downloading a release asset moves raw bytes, and a `DELETE` returns nothing at
+ * all. This stays the ONE request helper rather than growing a sibling per shape — `arrayBuffer`
+ * hands back the raw bytes (the caller hashes them, in `github-upload.ts`) and `none` skips body
+ * parsing entirely (`res.json()` on an empty 204 body throws, which would misreport a successful
+ * delete as a failure).
+ */
+export async function gh<T = unknown>(
+  path: string,
+  token: string,
+  init: RequestInit = {},
+  fetchImpl: FetchLike = fetch,
+  responseType: 'json' | 'arrayBuffer' | 'none' = 'json',
+): Promise<GhResult<T>> {
+  const url = path.startsWith('http') ? path : `https://api.github.com${path}`
+
+  let res: Response
+  try {
+    res = await fetchImpl(url, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(init.headers as Record<string, string> | undefined),
+      },
+    })
+  } catch (err) {
+    return { ok: false, status: 0, message: redact(`network error: ${describeError(err)}`, token) }
+  }
+
+  if (!res.ok) {
+    let bodyText = ''
+    try {
+      bodyText = await res.text()
+    } catch {
+      // Body unreadable — report the status alone.
+    }
+    const apiMessage = apiMessageFrom(bodyText)
+    const message = apiMessage
+      ? `GitHub returned ${res.status}: ${apiMessage}`
+      : `GitHub returned ${res.status} with no further detail`
+    return { ok: false, status: res.status, message: redact(message, token) }
+  }
+
+  if (responseType === 'none') return { ok: true, data: undefined as T, status: res.status }
+
+  try {
+    const data = (responseType === 'arrayBuffer' ? await res.arrayBuffer() : await res.json()) as T
+    return { ok: true, data, status: res.status }
+  } catch (err) {
+    return {
+      ok: false, status: res.status,
+      message: redact(`could not parse GitHub's response: ${describeError(err)}`, token),
+    }
+  }
+}
