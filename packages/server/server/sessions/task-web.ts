@@ -14,9 +14,13 @@ import { scopeMetas, type TaskFilter } from './task-filter'
 import { getCommitsInWindow } from '../git'
 import { readPreferences, writePreferences } from '../preferences'
 import {
-  legacyTaskId, newCommentId, newFileId, newLinkId, newSubtaskId, newTaskId, subtaskDone,
-  type Task, type TaskStatus,
+  legacyTaskId, migratePriority, newCommentId, newEventId, newFileId, newLinkId, newSubtaskId,
+  newTaskId, subtaskDone,
+  type Task, type TaskEvent, type TaskStatus,
 } from './task-model'
+import { boardProgress, DEFAULT_LEASE_MS, planNext } from './task-next'
+import { planMove } from './task-rank'
+import { compareBy } from './task-sort'
 import { deleteTaskFile, deleteTaskFiles, readTaskFile, writeTaskFile } from './task-files'
 import type { TaskDetail, TaskListRow } from './task-report'
 
@@ -112,18 +116,189 @@ export async function createTask(o: { title: string; detail?: string }): Promise
 
 export async function editTask(
   ref: string,
-  patch: { title?: string; detail?: string },
+  patch: {
+    title?: string
+    detail?: string
+    priority?: string
+    assignee?: string
+    dueDate?: string
+    startDate?: string
+    labels?: string[]
+    actor?: string
+  },
 ): Promise<boolean> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
   if (!task) return false
-  return await w.store.patchTask(task.id, {
+  const now = new Date().toISOString()
+  // An UNKNOWN priority word is refused rather than coerced: `migratePriority` would read it as
+  // `none`, which is a real answer ("nobody has said") and would silently overwrite a real one.
+  const priority = patch.priority !== undefined ? migratePriority(patch.priority) : undefined
+  const ok = await w.store.patchTask(task.id, {
     ...(patch.title?.trim() ? { title: patch.title.trim() } : {}),
     // An EMPTY description is a deliberate clearing, which is why it is not filtered out the way an
-    // empty title is: a title is an identity, a description is a note.
+    // empty title is: a title is an identity, a description is a note. Same for every field below:
+    // an empty string CLEARS, an absent key leaves the value alone.
     ...(patch.detail !== undefined ? { detail: patch.detail.trim() } : {}),
-    updatedAt: new Date().toISOString(),
+    ...(priority !== undefined ? { priority } : {}),
+    ...(patch.assignee !== undefined ? { assignee: patch.assignee.trim() } : {}),
+    ...(patch.dueDate !== undefined ? { dueDate: patch.dueDate.trim() } : {}),
+    ...(patch.startDate !== undefined ? { startDate: patch.startDate.trim() } : {}),
+    ...(patch.labels !== undefined
+      ? { labels: patch.labels.map(l => l.trim()).filter(Boolean) }
+      : {}),
+    updatedAt: now,
   })
+  if (!ok) return false
+  const changes: TaskEvent[] = []
+  const actor = patch.actor?.trim() || 'you'
+  if (priority !== undefined && priority !== (task.priority ?? 'none')) {
+    changes.push(event(task.id, actor, 'priority', { from: task.priority ?? 'none', to: priority }))
+  }
+  if (patch.assignee !== undefined && patch.assignee.trim() !== (task.assignee ?? '')) {
+    changes.push(event(task.id, actor, 'assign', {
+      from: task.assignee ?? '', to: patch.assignee.trim() || 'nobody',
+    }))
+  }
+  await w.store.logEvents(changes)
+  return true
+}
+
+/** One log line. The store caps the log; this only ever writes what happened. */
+function event(
+  taskId: string,
+  actor: string,
+  kind: string,
+  o: { from?: string; to?: string; detail?: string } = {},
+): TaskEvent {
+  return {
+    id: newEventId(), taskId, actor, kind, at: new Date().toISOString(),
+    ...(o.from !== undefined ? { from: o.from } : {}),
+    ...(o.to !== undefined ? { to: o.to } : {}),
+    ...(o.detail !== undefined ? { detail: o.detail } : {}),
+  }
+}
+
+/**
+ * TAKE a task — the multi-agent primitive.
+ *
+ * The decision is the store's, under the lock (see `TaskStore.claimTask`); this layer only resolves
+ * the reference, defaults the lease, and records what happened. A refusal NAMES the holder and when
+ * their lease runs out, because "somebody has it" without saying who leaves the caller with nothing
+ * to do but retry blindly.
+ */
+export async function claimTask(o: {
+  ref: string
+  by: string
+  leaseMs?: number
+  sessionId?: string
+  note?: string
+  takeover?: boolean
+}): Promise<{ ok: boolean; task?: Task; reason?: string; heldBy?: string; until?: string }> {
+  const w = await loadTaskWorld()
+  const task = findTask(o.ref, w.book.tasks)
+  if (!task) return { ok: false, reason: 'no_such_task' }
+  const by = o.by.trim()
+  if (!by) return { ok: false, reason: 'no_actor' }
+  const res = await w.store.claimTask({
+    id: task.id, by, nowMs: Date.now(),
+    leaseMs: o.leaseMs && o.leaseMs > 0 ? o.leaseMs : DEFAULT_LEASE_MS,
+    ...(o.sessionId ? { sessionId: o.sessionId } : {}),
+    ...(o.note ? { note: o.note } : {}),
+    ...(o.takeover ? { takeover: true } : {}),
+  })
+  if (!res.ok) {
+    return {
+      ok: false,
+      reason: res.reason,
+      ...(res.task?.claim ? { heldBy: res.task.claim.by, until: res.task.claim.expiresAt } : {}),
+    }
+  }
+  await w.store.logEvents([event(task.id, by, 'claim', {
+    to: res.task.claim?.expiresAt ?? '',
+    ...(o.takeover ? { detail: 'takeover' } : {}),
+  })])
+  return { ok: true, task: res.task }
+}
+
+export async function releaseTask(o: { ref: string; by: string; force?: boolean }):
+Promise<{ ok: boolean; reason?: string; heldBy?: string }> {
+  const w = await loadTaskWorld()
+  const task = findTask(o.ref, w.book.tasks)
+  if (!task) return { ok: false, reason: 'no_such_task' }
+  const res = await w.store.releaseTask({
+    id: task.id, by: o.by.trim(), ...(o.force ? { force: true } : {}),
+  })
+  if (!res.ok) {
+    return { ok: false, reason: res.reason, ...(res.task?.claim ? { heldBy: res.task.claim.by } : {}) }
+  }
+  await w.store.logEvents([event(task.id, o.by.trim() || 'you', 'release')])
+  return { ok: true }
+}
+
+/**
+ * What an agent can pick up right now, and why the rest is withheld.
+ *
+ * The FILTER applies to the sessions a task's numbers are read from, not to which tasks exist, so
+ * this deliberately takes none: "what can I work on" is not a question about a date range.
+ */
+export async function nextTasks(o: { actor?: string; limit?: number } = {}): Promise<{
+  ready: Array<{ task: Task; position: number }>
+  withheld: Array<{ id: string; title: string; why: string; detail?: string }>
+  progress: ReturnType<typeof boardProgress>
+}> {
+  const w = await loadTaskWorld()
+  const nowMs = Date.now()
+  const plan = planNext({
+    tasks: w.book.tasks, nowMs,
+    ...(o.actor ? { actor: o.actor } : {}),
+    ...(o.limit !== undefined ? { limit: o.limit } : {}),
+  })
+  return {
+    ready: plan.ready,
+    withheld: plan.withheld.map(x => ({
+      id: x.task.id,
+      title: x.task.title,
+      why: x.why.reason,
+      ...(x.why.reason === 'blocked' ? { detail: x.why.by.join(', ') } : {}),
+      ...(x.why.reason === 'claimed' ? { detail: `${x.why.by} until ${x.why.until}` } : {}),
+      ...(x.why.reason === 'status' ? { detail: x.why.status } : {}),
+    })),
+    progress: boardProgress(w.book.tasks, nowMs),
+  }
+}
+
+/** The activity log, newest FIRST here — a reader starts at what just happened. */
+export async function taskActivity(o: { ref?: string; limit?: number } = {}): Promise<TaskEvent[]> {
+  const w = await loadTaskWorld()
+  const task = o.ref ? findTask(o.ref, w.book.tasks) : null
+  if (o.ref && !task) return []
+  const all = task ? w.book.events.filter(e => e.taskId === task.id) : w.book.events
+  const newestFirst = [...all].reverse()
+  return o.limit !== undefined ? newestFirst.slice(0, Math.max(0, o.limit)) : newestFirst
+}
+
+/**
+ * Move a card by hand, within the column it is being dropped into.
+ *
+ * `index` is the position among the cards of that STATUS after the move, which is what a drag
+ * actually knows. Moving between columns is a status change and is `markTask`'s job — done here it
+ * would be two facts written by one call, and a failure halfway would leave the card in a column
+ * its status does not name.
+ */
+export async function moveTask(o: { ref: string; index: number; actor?: string }):
+Promise<{ ok: boolean; reason?: string }> {
+  const w = await loadTaskWorld()
+  const task = findTask(o.ref, w.book.tasks)
+  if (!task) return { ok: false, reason: 'no_such_task' }
+  const column = w.book.tasks
+    .filter(t => t.status === task.status)
+    .sort((a, b) => compareBy({ key: 'manual', dir: 'asc' }, { task: a }, { task: b }))
+  await w.store.setRanks(planMove(column, task.id, o.index))
+  await w.store.logEvents([event(task.id, o.actor?.trim() || 'you', 'move', {
+    detail: `${task.status}#${o.index + 1}`,
+  })])
+  return { ok: true }
 }
 
 export async function deleteTask(ref: string): Promise<boolean> {
@@ -379,6 +554,9 @@ export async function attachSession(ref: string, sessionId: string): Promise<boo
     const repo = facts?.repo
     if (repo) await w.store.patchTask(task.id, { repo, updatedAt: new Date().toISOString() })
   }
+  await w.store.logEvents([event(task.id, row.label || sessionId, 'session', {
+    to: sessionId, detail: row.harness,
+  })])
   return true
 }
 
@@ -397,6 +575,7 @@ export async function detachSession(sessionId: string): Promise<boolean> {
 export async function markTask(
   ref: string,
   to: TaskStatus,
+  actor?: string,
 ): Promise<{ ok: boolean; evidence?: DeliveryEvidence; message?: string }> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
@@ -421,6 +600,12 @@ export async function markTask(
       })
     }
   }
+
+  // The status change is the log's most important line: on a board several agents drive, "who
+  // moved this to blocked, and when" is not rhetorical.
+  await w.store.logEvents([event(task.id, actor?.trim() || 'you', 'status', {
+    from: task.status, to,
+  })])
 
   const prefs = await readPreferences().catch(() => null)
   const current = prefs?.finishedTasks ?? []

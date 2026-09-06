@@ -1103,6 +1103,26 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       const { listTasks } = await import('./sessions/task-web')
       return json(await listTasks(taskFilterOf(url)))
     }
+    // The two ORCHESTRATION reads, matched before the generic `<ref>` GET below — otherwise
+    // `next` and `activity` resolve as task references and answer 404 for a board that has them.
+    if (url.pathname === '/api/tasks/next' && req.method === 'GET') {
+      const { nextTasks } = await import('./sessions/task-web')
+      const limit = Number(url.searchParams.get('limit'))
+      return json(await nextTasks({
+        ...(url.searchParams.get('actor') ? { actor: url.searchParams.get('actor')! } : {}),
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+      }))
+    }
+    if (url.pathname === '/api/tasks/activity' && req.method === 'GET') {
+      const { taskActivity } = await import('./sessions/task-web')
+      const limit = Number(url.searchParams.get('limit'))
+      return json({
+        events: await taskActivity({
+          ...(url.searchParams.get('task') ? { ref: url.searchParams.get('task')! } : {}),
+          ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        }),
+      })
+    }
     if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
       const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
       const { showTask } = await import('./sessions/task-web')
@@ -1152,7 +1172,7 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       const slash = rest.lastIndexOf('/')
       const verb = slash === -1 ? '' : rest.slice(slash + 1)
       const known = verb === 'comments' || verb === 'subtasks' || verb === 'files'
-        || verb === 'links' || verb === 'sessions'
+        || verb === 'links' || verb === 'sessions' || verb === 'claim' || verb === 'move'
       const ref = known ? rest.slice(0, slash) : rest
       const mod = await import('./sessions/task-web')
 
@@ -1223,10 +1243,44 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         const ok = await mod.addSubtask(ref, String(body.title ?? ''))
         return json({ ok }, ok ? 200 : 400)
       }
-      if (typeof body.title === 'string' || typeof body.detail === 'string') {
+      if (verb === 'claim') {
+        // `release: true` gives it back; anything else takes it. One verb, because a caller holding
+        // a task reference thinks in terms of "mine / not mine", not two endpoints.
+        if (body.release === true) {
+          const out = await mod.releaseTask({
+            ref, by: String(body.by ?? ''), ...(body.force === true ? { force: true } : {}),
+          })
+          return json(out, out.ok ? 200 : 409)
+        }
+        const out = await mod.claimTask({
+          ref,
+          by: String(body.by ?? ''),
+          ...(typeof body.leaseMs === 'number' ? { leaseMs: body.leaseMs } : {}),
+          ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
+          ...(typeof body.note === 'string' ? { note: body.note } : {}),
+          ...(body.takeover === true ? { takeover: true } : {}),
+        })
+        // 409, not 400: the request was well formed and somebody else has it — the one status a
+        // caller can act on by waiting.
+        return json(out, out.ok ? 200 : out.reason === 'no_such_task' ? 404 : 409)
+      }
+      if (verb === 'move') {
+        const index = Number(body.index)
+        if (!Number.isFinite(index)) return json({ error: 'bad_index' }, 400)
+        const out = await mod.moveTask({
+          ref, index,
+          ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+        })
+        return json(out, out.ok ? 200 : 404)
+      }
+      const FIELDS = ['title', 'detail', 'priority', 'assignee', 'dueDate', 'startDate'] as const
+      if (FIELDS.some(f => typeof body[f] === 'string') || Array.isArray(body.labels)) {
         const ok = await mod.editTask(ref, {
-          ...(typeof body.title === 'string' ? { title: body.title } : {}),
-          ...(typeof body.detail === 'string' ? { detail: body.detail } : {}),
+          ...Object.fromEntries(FIELDS.filter(f => typeof body[f] === 'string').map(f => [f, body[f] as string])),
+          ...(Array.isArray(body.labels)
+            ? { labels: body.labels.filter((v): v is string => typeof v === 'string') }
+            : {}),
+          ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
         })
         return json({ ok }, ok ? 200 : 404)
       }
@@ -1240,7 +1294,7 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         ? body.status as import('./sessions/task-model').TaskStatus
         : null
       if (!to) return json({ error: 'bad_status' }, 400)
-      const out = await mod.markTask(ref, to)
+      const out = await mod.markTask(ref, to, typeof body.actor === 'string' ? body.actor : undefined)
       return json(out, out.ok ? 200 : 404)
     }
 

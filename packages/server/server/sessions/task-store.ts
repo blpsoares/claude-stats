@@ -21,9 +21,11 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from './file-lock'
-import { migrateStatus, subtaskDone } from './task-model'
+import { migratePriority, migrateStatus, subtaskDone } from './task-model'
+import { heldByOther } from './task-next'
 import type {
-  Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskComment, TaskFile, TaskLink, TaskStatus,
+  Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskClaim, TaskComment, TaskEvent, TaskFile,
+  TaskLink, TaskPriority, TaskStatus,
 } from './task-model'
 
 export interface TaskPatch {
@@ -35,6 +37,12 @@ export interface TaskPatch {
   updatedAt?: string
   blockedBy?: string[]
   links?: TaskLink[]
+  priority?: TaskPriority
+  assignee?: string
+  dueDate?: string
+  startDate?: string
+  labels?: string[]
+  rank?: string
 }
 
 export interface AttemptPatch {
@@ -45,7 +53,16 @@ export interface AttemptPatch {
 }
 
 const EMPTY_BOOK = (): TaskBook =>
-  ({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
+  ({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [], events: [] })
+
+/**
+ * How much history the log keeps, across the whole board.
+ *
+ * A cap, because this file is read on every poll and an unbounded log turns a cheap read into a
+ * growing one. Oldest go first — the question the log answers ("what has been happening") is about
+ * the recent end, and the delivery numbers, which are the durable record, live on the tasks.
+ */
+export const MAX_EVENTS = 2000
 
 export interface TaskStore {
   read(): Promise<TaskBook>
@@ -77,6 +94,29 @@ export interface TaskStore {
   removeTask(id: string): Promise<boolean>
   /** Forget a tombstone, so a name the user deleted can be created again. */
   clearTombstone(id: string): Promise<void>
+  /**
+   * TAKE a task, atomically, or report who already has it.
+   *
+   * The whole point is that this decides under the lock: two agents asking at the same moment
+   * cannot both be told yes. `takeover` is for a person overriding a live claim on purpose — an
+   * agent must never pass it, or the lease means nothing.
+   */
+  claimTask(o: {
+    id: string
+    by: string
+    nowMs: number
+    leaseMs: number
+    sessionId?: string
+    note?: string
+    takeover?: boolean
+  }): Promise<{ ok: true; task: Task } | { ok: false; reason: 'missing' | 'held'; task?: Task }>
+  /** Give it back. Only the holder may, unless `force` — same reason `takeover` exists. */
+  releaseTask(o: { id: string; by: string; force?: boolean }):
+    Promise<{ ok: true; task: Task } | { ok: false; reason: 'missing' | 'other'; task?: Task }>
+  /** Write several ranks at once — a drag is one write, a rebalance is one pass. */
+  setRanks(ranks: ReadonlyArray<{ id: string; rank: string }>): Promise<void>
+  /** Append to the activity log. Never throws on a task that has since gone. */
+  logEvents(events: readonly TaskEvent[]): Promise<void>
 }
 
 /**
@@ -122,6 +162,53 @@ function sanitizeTask(raw: unknown): Task | null {
     ...(Array.isArray(t.blockedBy)
       ? { blockedBy: t.blockedBy.filter((v): v is string => typeof v === 'string' && v !== t.id) }
       : {}),
+    // Absent priority is `none`, never `medium`: see `TaskPriority`. Written explicitly so every
+    // reader sees the same word rather than each deciding what absence means.
+    priority: migratePriority(t.priority),
+    ...(typeof t.assignee === 'string' && t.assignee ? { assignee: t.assignee } : {}),
+    ...(typeof t.dueDate === 'string' && t.dueDate ? { dueDate: t.dueDate } : {}),
+    ...(typeof t.startDate === 'string' && t.startDate ? { startDate: t.startDate } : {}),
+    ...(Array.isArray(t.labels)
+      ? { labels: t.labels.filter((v): v is string => typeof v === 'string' && v !== '') }
+      : {}),
+    ...(typeof t.rank === 'string' && t.rank ? { rank: t.rank } : {}),
+    ...(sanitizeClaim(t.claim) ? { claim: sanitizeClaim(t.claim)! } : {}),
+  }
+}
+
+/**
+ * A claim with no holder or no expiry is dropped.
+ *
+ * Deliberately strict on `expiresAt`: a claim that cannot expire is a permanent lock, and the
+ * lease exists precisely so a dead agent cannot create one.
+ */
+function sanitizeClaim(raw: unknown): TaskClaim | null {
+  if (!raw || typeof raw !== 'object') return null
+  const c = raw as Record<string, unknown>
+  if (typeof c.by !== 'string' || !c.by) return null
+  if (typeof c.expiresAt !== 'string' || !c.expiresAt) return null
+  return {
+    by: c.by,
+    at: typeof c.at === 'string' ? c.at : c.expiresAt,
+    expiresAt: c.expiresAt,
+    ...(typeof c.sessionId === 'string' && c.sessionId ? { sessionId: c.sessionId } : {}),
+    ...(typeof c.note === 'string' && c.note ? { note: c.note } : {}),
+  }
+}
+
+function sanitizeEvent(raw: unknown): TaskEvent | null {
+  if (!raw || typeof raw !== 'object') return null
+  const e = raw as Record<string, unknown>
+  if (typeof e.id !== 'string' || !e.id) return null
+  if (typeof e.taskId !== 'string' || !e.taskId) return null
+  if (typeof e.kind !== 'string' || !e.kind) return null
+  return {
+    id: e.id, taskId: e.taskId, kind: e.kind,
+    at: typeof e.at === 'string' ? e.at : new Date(0).toISOString(),
+    actor: typeof e.actor === 'string' ? e.actor : 'unknown',
+    ...(typeof e.detail === 'string' ? { detail: e.detail } : {}),
+    ...(typeof e.from === 'string' ? { from: e.from } : {}),
+    ...(typeof e.to === 'string' ? { to: e.to } : {}),
   }
 }
 
@@ -244,6 +331,7 @@ export function createTaskStore(file: string): TaskStore {
         subtasks: arr(raw.subtasks).map(sanitizeSubtask).filter((t): t is Subtask => t !== null),
         files: arr(raw.files).map(sanitizeFile).filter((f): f is TaskFile => f !== null),
         tombstones: arr(raw.tombstones).filter((v): v is string => typeof v === 'string'),
+        events: arr(raw.events).map(sanitizeEvent).filter((e): e is TaskEvent => e !== null),
       }
     } catch {
       corrupt = true
@@ -369,6 +457,7 @@ export function createTaskStore(file: string): TaskStore {
           comments: book.comments.filter(c => c.taskId !== id),
           subtasks: book.subtasks.filter(t => t.taskId !== id),
           files: book.files.filter(f => f.taskId !== id),
+          events: book.events.filter(e => e.taskId !== id),
           // Remembered as DELETED, or the legacy migration mints it again on the next read.
           tombstones: [...new Set([...book.tombstones, id])],
         })
@@ -390,6 +479,64 @@ export function createTaskStore(file: string): TaskStore {
         const next = { ...target, ...patch }
         await write({ ...book, attempts: book.attempts.map(a => (a.id === id ? next : a)) })
         return true
+      })
+    },
+    claimTask(o) {
+      return enqueue(async () => {
+        const book = await read()
+        const target = book.tasks.find(t => t.id === o.id)
+        if (!target) return { ok: false as const, reason: 'missing' as const }
+        // The decision happens HERE, inside the lock: two agents asking in the same millisecond
+        // cannot both be told yes, which is the entire reason this is a store method and not a
+        // read-then-patch in the caller.
+        if (heldByOther(target, o.by, o.nowMs) && !o.takeover) {
+          return { ok: false as const, reason: 'held' as const, task: target }
+        }
+        const claim: TaskClaim = {
+          by: o.by,
+          at: new Date(o.nowMs).toISOString(),
+          expiresAt: new Date(o.nowMs + o.leaseMs).toISOString(),
+          ...(o.sessionId ? { sessionId: o.sessionId } : {}),
+          ...(o.note ? { note: o.note } : {}),
+        }
+        const next: Task = { ...target, claim, updatedAt: new Date(o.nowMs).toISOString() }
+        await write({ ...book, tasks: book.tasks.map(t => (t.id === o.id ? next : t)) })
+        return { ok: true as const, task: next }
+      })
+    },
+    releaseTask(o) {
+      return enqueue(async () => {
+        const book = await read()
+        const target = book.tasks.find(t => t.id === o.id)
+        if (!target) return { ok: false as const, reason: 'missing' as const }
+        if (target.claim && target.claim.by !== o.by && !o.force) {
+          return { ok: false as const, reason: 'other' as const, task: target }
+        }
+        const next: Task = { ...target }
+        delete next.claim
+        await write({ ...book, tasks: book.tasks.map(t => (t.id === o.id ? next : t)) })
+        return { ok: true as const, task: next }
+      })
+    },
+    setRanks(ranks) {
+      return enqueue(async () => {
+        if (ranks.length === 0) return
+        const book = await read()
+        const by = new Map(ranks.map(r => [r.id, r.rank]))
+        await write({
+          ...book,
+          tasks: book.tasks.map(t => (by.has(t.id) ? { ...t, rank: by.get(t.id)! } : t)),
+        })
+      })
+    },
+    logEvents(events) {
+      return enqueue(async () => {
+        if (events.length === 0) return
+        const book = await read()
+        const all = [...book.events, ...events]
+        // Oldest go first once the cap is reached — the question the log answers is about the
+        // recent end, and the durable record lives on the tasks themselves.
+        await write({ ...book, events: all.slice(Math.max(0, all.length - MAX_EVENTS)) })
       })
     },
   }

@@ -77,6 +77,68 @@ export interface AttemptConfig {
   method?: string
 }
 
+/**
+ * How urgent, in the four words every board of this kind uses plus the honest fifth.
+ *
+ * `none` is not a synonym for "low" — it is "nobody has said", and it is what an absent field reads
+ * as. Defaulting an unset priority to `medium` would fill a board with a judgement nobody made, and
+ * "what has not been triaged" is a question a coordinator actually asks.
+ */
+export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low' | 'none'
+
+/** Most urgent first. The one place the order is stated; every sort and every picker reads it. */
+export const PRIORITY_ORDER: readonly TaskPriority[] =
+  ['urgent', 'high', 'medium', 'low', 'none'] as const
+
+export function migratePriority(raw: unknown): TaskPriority {
+  return typeof raw === 'string' && (PRIORITY_ORDER as readonly string[]).includes(raw)
+    ? raw as TaskPriority
+    : 'none'
+}
+
+/**
+ * A LEASE on a task, not a lock.
+ *
+ * Two agents pulling the same task off a board and doing it twice is the failure this exists to
+ * prevent, and the naive fix — a boolean "taken" — has a worse one behind it: an agent that dies
+ * holding it takes the task out of circulation forever, with nothing on the board saying why.
+ *
+ * So a claim EXPIRES. `expiresAt` is set at claim time and is refreshed by whoever holds it; once
+ * it passes, the task is available again and says it was. Nothing here deletes anything on its
+ * own — expiry is read at the moment the question is asked, so a clock that jumps cannot silently
+ * hand one task to two agents between polls.
+ */
+export interface TaskClaim {
+  /** Free text — a session handle, an agent's label, a person. Same rule as `TaskComment.author`. */
+  by: string
+  at: string
+  expiresAt: string
+  /** The managed session holding it, when there is one — an exact link where the name is a guess. */
+  sessionId?: string
+  note?: string
+}
+
+/**
+ * One thing that HAPPENED to a task, in the order it happened.
+ *
+ * A board driven by several agents is a board where "who moved this to blocked, and when" is not
+ * rhetorical. The kinds are open (free text) for the same reason `TaskComment.author` is: an
+ * assistant must be able to record something nobody anticipated without a schema change.
+ */
+export interface TaskEvent {
+  id: string
+  taskId: string
+  at: string
+  /** Who did it. Free text. */
+  actor: string
+  /** `status` | `claim` | `release` | `assign` | `priority` | `session` | `comment` | … */
+  kind: string
+  /** What it became, in one short phrase. Rendered verbatim; never a sentence built downstream. */
+  detail?: string
+  from?: string
+  to?: string
+}
+
 export interface Task {
   id: string
   title: string
@@ -85,6 +147,26 @@ export interface Task {
   createdAt: string
   updatedAt: string
   deliveredAt?: string
+  /** Absent reads as `none` — see `TaskPriority`. */
+  priority?: TaskPriority
+  /** Free text: a person, an agent's label, a session handle. */
+  assignee?: string
+  /** `yyyy-MM-dd`, like `Subtask`. A date, not a timestamp — nobody schedules to the second. */
+  dueDate?: string
+  startDate?: string
+  /** Free-text labels. Filtering and grouping only; they carry no rule. */
+  labels?: string[]
+  /**
+   * Where the card sits when the board is ordered BY HAND (`task-rank.ts`).
+   *
+   * A string and not a number, so inserting between two neighbours is one write instead of
+   * renumbering everything below — the LexoRank/fractional-indexing trick. Absent means "never
+   * dragged": those sort after the ranked ones, by creation, so a board nobody has arranged still
+   * reads in a sensible order.
+   */
+  rank?: string
+  /** Who is on it RIGHT NOW, and until when. See `TaskClaim`. */
+  claim?: TaskClaim
   /** `normalizeGitRemote` key, when the work belongs to one repository. */
   repo?: string
   /**
@@ -201,6 +283,14 @@ export interface TaskBook {
   subtasks: Subtask[]
   files: TaskFile[]
   /**
+   * The activity log, newest LAST, for every task at once.
+   *
+   * One list rather than an array per task, because the question a coordinator asks is "what has
+   * been happening", across the board — and because a per-task array makes the cap per task, so a
+   * hundred tasks could hold a hundred caps' worth of history in a file read on every poll.
+   */
+  events: TaskEvent[]
+  /**
    * Task ids the user DELETED, so the legacy migration does not mint them again.
    *
    * Without this a deleted task comes straight back: `ensureLegacyTasks` runs on every read and
@@ -242,6 +332,10 @@ export function newFileId(): string {
 
 export function newLinkId(): string {
   return mint('l')
+}
+
+export function newEventId(): string {
+  return mint('e')
 }
 
 /**

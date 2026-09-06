@@ -23,7 +23,7 @@ async function store() {
 describe('createTaskStore', () => {
   it('reads an empty book when the file does not exist', async () => {
     const { s } = await store()
-    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
+    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [], events: [] })
   })
 
   it('round-trips a task', async () => {
@@ -58,7 +58,7 @@ describe('createTaskStore', () => {
   it('reads an empty book from corrupt bytes instead of throwing', async () => {
     const { file, s } = await store()
     await writeFile(file, '{ this is not json', 'utf8')
-    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
+    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [], events: [] })
   })
 
   it('moves corrupt bytes aside rather than overwriting them', async () => {
@@ -263,5 +263,115 @@ describe('a subtask is a row, not a checkbox', () => {
     expect(await s.removeSubtask('nope')).toBe(false)
     expect(await s.removeSubtask('s-1')).toBe(true)
     expect((await s.read()).subtasks).toEqual([])
+  })
+})
+
+describe('claimTask / releaseTask — the lease', () => {
+  const NOW = Date.parse('2026-09-06T12:00:00.000Z')
+  const LEASE = 60_000
+
+  it('gives the task to the FIRST asker and refuses the second, naming the holder', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    const first = await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE })
+    expect(first.ok).toBe(true)
+    const second = await s.claimTask({ id: 't-1', by: 'agent-b', nowMs: NOW, leaseMs: LEASE })
+    expect(second).toMatchObject({ ok: false, reason: 'held' })
+    expect(second.task?.claim?.by).toBe('agent-a')
+  })
+
+  it('decides under the lock: two simultaneous claims cannot both succeed', async () => {
+    // The reason this lives in the store rather than as a read-then-patch in the caller.
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    const [a, b] = await Promise.all([
+      s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE }),
+      s.claimTask({ id: 't-1', by: 'agent-b', nowMs: NOW, leaseMs: LEASE }),
+    ])
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1)
+  })
+
+  it('hands an EXPIRED claim to the next asker — a dead agent does not hold a task forever', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE })
+    const later = await s.claimTask({ id: 't-1', by: 'agent-b', nowMs: NOW + LEASE + 1, leaseMs: LEASE })
+    expect(later.ok).toBe(true)
+    expect((await s.read()).tasks[0]!.claim?.by).toBe('agent-b')
+  })
+
+  it('lets the HOLDER re-claim, which is how a lease is refreshed', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE })
+    const again = await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW + 1000, leaseMs: LEASE })
+    expect(again.ok).toBe(true)
+    expect(Date.parse(again.task!.claim!.expiresAt)).toBe(NOW + 1000 + LEASE)
+  })
+
+  it('takes over only when asked to explicitly', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE })
+    const forced = await s.claimTask({
+      id: 't-1', by: 'a-person', nowMs: NOW, leaseMs: LEASE, takeover: true,
+    })
+    expect(forced.ok).toBe(true)
+  })
+
+  it('refuses a release by someone who is not the holder', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.claimTask({ id: 't-1', by: 'agent-a', nowMs: NOW, leaseMs: LEASE })
+    expect(await s.releaseTask({ id: 't-1', by: 'agent-b' })).toMatchObject({ ok: false, reason: 'other' })
+    expect(await s.releaseTask({ id: 't-1', by: 'agent-b', force: true })).toMatchObject({ ok: true })
+    expect((await s.read()).tasks[0]!.claim).toBeUndefined()
+  })
+
+  it('reports a missing task rather than pretending', async () => {
+    const { s } = await store()
+    expect(await s.claimTask({ id: 'ghost', by: 'a', nowMs: NOW, leaseMs: LEASE }))
+      .toMatchObject({ ok: false, reason: 'missing' })
+    expect(await s.releaseTask({ id: 'ghost', by: 'a' })).toMatchObject({ ok: false, reason: 'missing' })
+  })
+
+  it('drops a claim with no expiry on read — a permanent lock is what the lease prevents', async () => {
+    const { file, s } = await store()
+    await writeFile(file, JSON.stringify({
+      tasks: [{ ...task('t-1'), claim: { by: 'ghost', at: 'x' } }],
+    }), 'utf8')
+    expect((await s.read()).tasks[0]!.claim).toBeUndefined()
+  })
+})
+
+describe('setRanks and the activity log', () => {
+  it('writes several ranks in one pass and leaves the rest alone', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.upsertTask(task('t-2'))
+    await s.setRanks([{ id: 't-1', rank: 'b' }])
+    const book = await s.read()
+    expect(book.tasks.find(t => t.id === 't-1')!.rank).toBe('b')
+    expect(book.tasks.find(t => t.id === 't-2')!.rank).toBeUndefined()
+  })
+
+  it('keeps the log newest-last and CAPS it', async () => {
+    const { s } = await store()
+    const many = Array.from({ length: 2100 }, (_, i) => ({
+      id: `e-${i}`, taskId: 't-1', at: '2026-09-06T00:00:00.000Z', actor: 'me', kind: 'status',
+    }))
+    await s.logEvents(many)
+    const events = (await s.read()).events
+    expect(events).toHaveLength(2000)
+    // The oldest went, not the newest: the question the log answers is about the recent end.
+    expect(events.at(-1)!.id).toBe('e-2099')
+  })
+
+  it('takes the log down with the task it belongs to', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.logEvents([{ id: 'e-1', taskId: 't-1', at: 'now', actor: 'me', kind: 'status' }])
+    await s.removeTask('t-1')
+    expect((await s.read()).events).toEqual([])
   })
 })
