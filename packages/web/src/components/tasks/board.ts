@@ -33,6 +33,38 @@ export const STATUS: Record<BoardStatus, { label: string; color: string; dim: st
   abandoned: { label: 'Abandoned', color: 'var(--text-tertiary)', dim: 'var(--border)' },
 }
 
+/**
+ * Priority reads as a COLOUR and a word, and `none` is deliberately grey and last.
+ *
+ * `none` means "nobody has said", which is not the same as `low` — a board full of `medium` because
+ * something had to be the default is a board where priority means nothing. Only `urgent` gets the
+ * alarm colour, and it is the same red `blocked` uses: both mean somebody has to act.
+ */
+export const PRIORITY: Record<string, { label: string; short: string; color: string; dim: string }> = {
+  urgent: { label: 'Urgent', short: 'U', color: 'var(--accent-red)', dim: 'var(--accent-red-dim)' },
+  high: { label: 'High', short: 'H', color: 'var(--anthropic-orange)', dim: 'var(--anthropic-orange-dim)' },
+  medium: { label: 'Medium', short: 'M', color: 'var(--accent-blue)', dim: 'var(--accent-blue-dim)' },
+  low: { label: 'Low', short: 'L', color: 'var(--text-tertiary)', dim: 'var(--border)' },
+  none: { label: 'Unset', short: '—', color: 'var(--text-tertiary)', dim: 'transparent' },
+}
+
+/**
+ * How long a claim has left, in words — or that it has run out.
+ *
+ * An EXPIRED lease is said out loud rather than hidden: the task is available again, and a card
+ * that simply stopped showing a holder would read as one nobody ever took.
+ */
+export function claimLeft(expiresAt: string, nowMs: number): { text: string; expired: boolean } {
+  const ms = Date.parse(expiresAt) - nowMs
+  // An unparseable expiry reads as expired, matching `claimState` on the server: a claim nobody can
+  // date is a claim nobody can revoke.
+  if (!Number.isFinite(ms)) return { text: 'lease unknown', expired: true }
+  if (ms <= 0) return { text: 'lease expired', expired: true }
+  const mins = Math.round(ms / 60000)
+  if (mins < 60) return { text: `${Math.max(1, mins)}m left`, expired: false }
+  return { text: `${Math.round(mins / 60)}h left`, expired: false }
+}
+
 /** Left to right, the way work moves. */
 export const COLUMN_ORDER: BoardStatus[] =
   ['backlog', 'todo', 'in_progress', 'blocked', 'in_review', 'done', 'abandoned']

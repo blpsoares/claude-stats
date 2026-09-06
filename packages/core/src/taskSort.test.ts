@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { compareBy, DEFAULT_SORT, nextSort, sortRows, type SortableRow } from './task-sort'
+import { compareBy, DEFAULT_SORT, nextSort, sortRows, type SortableRow } from './taskSort'
 
 const row = (over: Partial<SortableRow['task']> & { id: string }, rest: Partial<SortableRow> = {}): SortableRow => ({
   task: {

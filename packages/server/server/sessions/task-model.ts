@@ -11,6 +11,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { PRIORITY_ORDER, type TaskPriorityId } from '@agentistics/core'
 import type { HarnessId } from '@agentistics/core'
 
 /**
@@ -84,11 +85,13 @@ export interface AttemptConfig {
  * as. Defaulting an unset priority to `medium` would fill a board with a judgement nobody made, and
  * "what has not been triaged" is a question a coordinator actually asks.
  */
-export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low' | 'none'
+export type TaskPriority = TaskPriorityId
 
-/** Most urgent first. The one place the order is stated; every sort and every picker reads it. */
-export const PRIORITY_ORDER: readonly TaskPriority[] =
-  ['urgent', 'high', 'medium', 'low', 'none'] as const
+/**
+ * Most urgent first — re-exported from `@agentistics/core`, where the browser can read it too.
+ * Two lists would be two orders, and the one on screen would be whichever surface drew last.
+ */
+export { PRIORITY_ORDER }
 
 export function migratePriority(raw: unknown): TaskPriority {
   return typeof raw === 'string' && (PRIORITY_ORDER as readonly string[]).includes(raw)

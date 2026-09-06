@@ -17,14 +17,20 @@
  */
 
 import { COLUMN_ORDER, type BoardStatus } from './board'
+import { DEFAULT_SORT, type SortSpec } from '@agentistics/core'
 import type { ColumnId } from './TaskTable'
 
 const KEY = 'agentistics-task-board-v1'
 
-export type BoardView = 'overview' | 'board' | 'table'
+export type BoardView = 'overview' | 'board' | 'table' | 'agents'
 
 export interface BoardPrefs {
   view: BoardView
+  /** How the rows are ordered — the table's headers and the kanban's picker write the same field. */
+  sort: SortSpec
+  /** The kanban's own arrangement: what the swimlanes are, and the per-column WIP limit. */
+  lanes: LaneKey
+  wip: Record<string, number>
   /** Which columns the table shows, in the order they were picked. */
   columns: ColumnId[] | null
   /** Which status groups the table renders at all. `null` = every one of them. */
@@ -35,11 +41,27 @@ export interface BoardPrefs {
 
 /** The metrics view is the default, because "what did it cost" is the question the board answers. */
 export const DEFAULT_PREFS: BoardPrefs = {
-  view: 'overview', columns: null, groups: null, collapsed: [],
+  view: 'overview', sort: DEFAULT_SORT, lanes: 'none', wip: {},
+  columns: null, groups: null, collapsed: [],
+}
+
+/** What the kanban's rows are grouped by. `none` is one lane holding everything. */
+export type LaneKey = 'none' | 'repo' | 'assignee' | 'harness' | 'priority'
+
+export const LANE_KEYS: readonly LaneKey[] = ['none', 'repo', 'assignee', 'harness', 'priority']
+
+const isLane = (v: unknown): v is LaneKey => LANE_KEYS.includes(v as LaneKey)
+
+/** A stored sort naming a key this build no longer has falls back rather than throwing. */
+function readSort(v: unknown): SortSpec {
+  if (!v || typeof v !== 'object') return DEFAULT_SORT
+  const s = v as Record<string, unknown>
+  const dir = s.dir === 'desc' ? 'desc' : 'asc'
+  return typeof s.key === 'string' ? { key: s.key as SortSpec['key'], dir } : DEFAULT_SORT
 }
 
 const isView = (v: unknown): v is BoardView =>
-  v === 'overview' || v === 'board' || v === 'table'
+  v === 'overview' || v === 'board' || v === 'table' || v === 'agents'
 
 const statuses = (v: unknown): BoardStatus[] | null =>
   Array.isArray(v) ? v.filter((x): x is BoardStatus => COLUMN_ORDER.includes(x as BoardStatus)) : null
@@ -51,6 +73,14 @@ export function readBoardPrefs(): BoardPrefs {
     const p = JSON.parse(raw) as Record<string, unknown>
     return {
       view: isView(p.view) ? p.view : DEFAULT_PREFS.view,
+      sort: readSort(p.sort),
+      lanes: isLane(p.lanes) ? p.lanes : 'none',
+      // A WIP limit is a number per column; anything else in the stored object is dropped rather
+      // than rendered as a limit nobody set.
+      wip: p.wip && typeof p.wip === 'object'
+        ? Object.fromEntries(Object.entries(p.wip as Record<string, unknown>)
+          .filter(([, n]) => typeof n === 'number' && Number.isFinite(n) && n > 0)) as Record<string, number>
+        : {},
       // A stored column id no longer in the table is dropped rather than rendering a blank cell;
       // an EMPTY stored list is a real choice ("show me only the names") and is kept.
       columns: Array.isArray(p.columns) ? (p.columns as ColumnId[]) : null,

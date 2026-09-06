@@ -22,24 +22,38 @@
  * It computes NOTHING. Every figure arrives already decided from `/api/tasks`.
  */
 
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import {
-  ChevronDown, ChevronRight, Columns3, MessageSquare, Paperclip, Plus, Rows3, Terminal, Trash2, X,
+  ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, Columns3, MessageSquare, Paperclip, Plus,
+  Rows3, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
-  COLUMN_ORDER, NA, STATUS, button, field, fmtInt, fmtTokens, fmtUSD, harnessColor, microLabel,
-  numeric, pill, surface, type BoardStatus,
+  COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens, fmtUSD,
+  harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from './board'
+import {
+  DEFAULT_SORT, nextSort, PRIORITY_ORDER, sortRows,
+  type SortKey, type SortSpec, type TaskPriorityId,
+} from '@agentistics/core'
 import { readBoardPrefs, writeBoardPrefs } from './boardPrefs'
 import { SessionPicker } from './SessionPicker'
-import type { Subtask, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
+import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
+
+/** The words the "sorted by" note uses. Kept beside `COLUMNS`, whose labels they mirror. */
+const SORT_LABEL: Record<string, string> = {
+  manual: 'the board order', priority: 'priority', title: 'title', status: 'status',
+  created: 'created', updated: 'updated', due: 'due date', assignee: 'owner', cost: 'cost',
+  tokens: 'tokens', rounds: 'rounds', sessions: 'sessions', attempts: 'attempts',
+  comments: 'comments', subtasks: 'subtasks', harnesses: 'harnesses',
+}
 
 // ---------------------------------------------------------------------------- columns
 
 export type ColumnId =
-  | 'status' | 'attempts' | 'sessions' | 'rounds' | 'tokens' | 'cost'
-  | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links' | 'blockedBy' | 'created'
+  | 'status' | 'priority' | 'assignee' | 'due' | 'claim' | 'attempts' | 'sessions' | 'rounds'
+  | 'tokens' | 'cost' | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links' | 'blockedBy'
+  | 'created' | 'updated'
 
 export interface ColumnDef {
   id: ColumnId
@@ -47,6 +61,11 @@ export interface ColumnDef {
   /** Right-aligned, tabular. Every measured number is one; a chip column is not. */
   numeric?: boolean
   width: number
+  /**
+   * Which `SortKey` this column sorts by — absent means the column is not sortable, and its header
+   * then carries no affordance at all rather than a control that does nothing.
+   */
+  sort?: SortKey
 }
 
 /**
@@ -54,23 +73,28 @@ export interface ColumnDef {
  * anything. The rest are one click away in the `+` menu.
  */
 export const COLUMNS: ColumnDef[] = [
-  { id: 'status', label: 'Status', width: 116 },
-  { id: 'sessions', label: 'Sessions', numeric: true, width: 84 },
-  { id: 'rounds', label: 'Rounds', numeric: true, width: 76 },
-  { id: 'cost', label: 'Cost', numeric: true, width: 88 },
-  { id: 'tokens', label: 'Tokens', numeric: true, width: 84 },
-  { id: 'harnesses', label: 'Harnesses', width: 150 },
-  { id: 'subtasks', label: 'Subtasks', numeric: true, width: 84 },
-  { id: 'attempts', label: 'Attempts', numeric: true, width: 84 },
-  { id: 'comments', label: 'Comments', numeric: true, width: 92 },
+  { id: 'status', label: 'Status', width: 116, sort: 'status' },
+  { id: 'priority', label: 'Priority', width: 96, sort: 'priority' },
+  { id: 'assignee', label: 'Owner', width: 110, sort: 'assignee' },
+  { id: 'claim', label: 'Working on it', width: 132 },
+  { id: 'due', label: 'Due', width: 96, sort: 'due' },
+  { id: 'sessions', label: 'Sessions', numeric: true, width: 84, sort: 'sessions' },
+  { id: 'rounds', label: 'Rounds', numeric: true, width: 76, sort: 'rounds' },
+  { id: 'cost', label: 'Cost', numeric: true, width: 88, sort: 'cost' },
+  { id: 'tokens', label: 'Tokens', numeric: true, width: 84, sort: 'tokens' },
+  { id: 'harnesses', label: 'Harnesses', width: 150, sort: 'harnesses' },
+  { id: 'subtasks', label: 'Subtasks', numeric: true, width: 84, sort: 'subtasks' },
+  { id: 'attempts', label: 'Attempts', numeric: true, width: 84, sort: 'attempts' },
+  { id: 'comments', label: 'Comments', numeric: true, width: 92, sort: 'comments' },
   { id: 'files', label: 'Files', numeric: true, width: 68 },
   { id: 'links', label: 'Links', numeric: true, width: 68 },
   { id: 'blockedBy', label: 'Blocked by', numeric: true, width: 92 },
-  { id: 'created', label: 'Created', width: 104 },
+  { id: 'created', label: 'Created', width: 104, sort: 'created' },
+  { id: 'updated', label: 'Updated', width: 104, sort: 'updated' },
 ]
 
 export const DEFAULT_COLUMNS: ColumnId[] =
-  ['status', 'sessions', 'rounds', 'cost', 'tokens', 'harnesses', 'subtasks', 'comments']
+  ['status', 'priority', 'claim', 'sessions', 'rounds', 'cost', 'tokens', 'harnesses', 'subtasks']
 
 // ------------------------------------------------------------------------------- cells
 
@@ -148,10 +172,112 @@ function Num({ v, accent }: { v: number | null | undefined; accent?: boolean }) 
   )
 }
 
-function cellFor(col: ColumnId, row: TaskListRow, onStatus: (s: TaskStatus) => void): React.ReactNode {
+function PriorityCell({ value, onPick }: { value: string; onPick: (p: TaskPriorityId) => void }) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const p = PRIORITY[value] ?? PRIORITY.none!
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
+        style={{
+          border: `1px solid ${value === 'none' ? 'var(--border)' : p.color}`,
+          background: p.dim, color: p.color, cursor: 'pointer',
+          padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 600,
+          minHeight: isMobile ? 44 : undefined, width: '100%',
+        }}
+      >{p.label}</button>
+      {open && (
+        <>
+          <div onClick={e => { e.stopPropagation(); setOpen(false) }}
+               style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, zIndex: 31, marginTop: 4, minWidth: 120,
+            ...surface, background: 'var(--bg-elevated)', padding: 4, display: 'grid', gap: 2,
+            boxShadow: 'var(--shadow-elevated)',
+          }}>
+            {PRIORITY_ORDER.map(id => {
+              const c = PRIORITY[id]!
+              return (
+                <button
+                  key={id}
+                  onClick={e => { e.stopPropagation(); setOpen(false); onPick(id) }}
+                  style={{
+                    border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
+                    borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5,
+                    fontWeight: 600, minHeight: isMobile ? 44 : undefined,
+                  }}
+                >{c.label}</button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A due date, and whether it has passed.
+ *
+ * A CLOSED task never reads as late: the work is finished, and colouring a delivered row red says
+ * something false about a thing nobody can act on any more.
+ */
+function DueCell({ date, closed, nowMs }: { date: string; closed: boolean; nowMs: number }) {
+  const due = Date.parse(`${date}T23:59:59`)
+  const late = !closed && Number.isFinite(due) && due < nowMs
+  return (
+    <span style={{
+      fontSize: 11.5, fontWeight: late ? 600 : 400,
+      color: late ? 'var(--accent-red)' : 'var(--text-secondary)',
+    }}>{date}</span>
+  )
+}
+
+/**
+ * Who has the task RIGHT NOW.
+ *
+ * An expired lease is said out loud ("lease expired") rather than blanked: the task is available
+ * again, and a cell that simply stopped naming a holder would read as one nobody ever took.
+ */
+function ClaimCell({ claim, nowMs }: { claim?: TaskClaim; nowMs: number }) {
+  if (!claim) return <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
+  const left = claimLeft(claim.expiresAt, nowMs)
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+      <span style={pill(left.expired ? 'var(--text-tertiary)' : 'var(--accent-green)')}>
+        <Bot size={10} /> {claim.by}
+      </span>
+      <span style={{ fontSize: 10, color: left.expired ? 'var(--text-tertiary)' : 'var(--text-secondary)' }}>
+        {left.text}
+      </span>
+    </span>
+  )
+}
+
+function cellFor(
+  col: ColumnId,
+  row: TaskListRow,
+  onStatus: (s: TaskStatus) => void,
+  onPriority: (p: TaskPriorityId) => void,
+  nowMs: number,
+): React.ReactNode {
   const r = row.rollup
   switch (col) {
     case 'status': return <StatusCell value={row.task.status} onPick={onStatus} />
+    case 'priority': return <PriorityCell value={row.task.priority ?? 'none'} onPick={onPriority} />
+    case 'assignee': return row.task.assignee
+      ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.task.assignee}</span>
+      : <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
+    case 'due': return row.task.dueDate
+      ? <DueCell date={row.task.dueDate} closed={row.task.status === 'done' || row.task.status === 'abandoned'} nowMs={nowMs} />
+      : <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
+    case 'claim': return <ClaimCell claim={row.task.claim} nowMs={nowMs} />
+    case 'updated': return (
+      <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        {new Date(row.task.updatedAt).toLocaleDateString()}
+      </span>
+    )
     case 'sessions': return (
       <span>
         <Num v={r.sessionsUsed} />
@@ -323,6 +449,7 @@ export interface TaskTableProps {
   details: Map<string, TaskDetail>
   onOpen: (id: string) => void
   onStatus: (ref: string, status: TaskStatus) => void
+  onPriority?: (ref: string, priority: TaskPriorityId) => void
   onCreate: (title: string, status: TaskStatus) => void
   onExpand: (id: string) => void
   onAddSubtask: (ref: string, title: string) => void
@@ -338,6 +465,14 @@ export function TaskTable(p: TaskTableProps) {
   const stored = useMemo(readBoardPrefs, [])
 
   const [shown, setShown] = useState<ColumnId[]>(stored.columns ?? DEFAULT_COLUMNS)
+  const [sort, setSortState] = useState<SortSpec>(stored.sort ?? DEFAULT_SORT)
+  // One clock for every lease cell on the screen, ticking a minute at a time. A card that says
+  // "3m left" forever is worse than one that says nothing, and a timer per cell would be N timers.
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
   const [groupsShown, setGroupsShown] = useState<BoardStatus[]>(stored.groups ?? [...COLUMN_ORDER])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(stored.collapsed))
   const [menu, setMenu] = useState<'columns' | 'groups' | null>(null)
@@ -356,12 +491,15 @@ export function TaskTable(p: TaskTableProps) {
   )
 
   // Every group is BUILT, even a hidden one: the chooser needs its count to say what it is hiding.
+  // Sorted INSIDE the group, never across: the grouping is the first ordering and a sort that
+  // reordered the bands would silently undo the arrangement chosen a control away.
   const groups = useMemo(() => COLUMN_ORDER.map(status => ({
     status,
-    rows: p.rows.filter(r => (r.task.status as BoardStatus) === status),
-  })), [p.rows])
+    rows: sortRows(p.rows.filter(r => (r.task.status as BoardStatus) === status), sort),
+  })), [p.rows, sort])
 
   const setColumns = (next: ColumnId[]) => { setShown(next); writeBoardPrefs({ columns: next }) }
+  const setSort = (next: SortSpec) => { setSortState(next); writeBoardPrefs({ sort: next }) }
   const setGroups = (next: BoardStatus[]) => { setGroupsShown(next); writeBoardPrefs({ groups: next }) }
   const foldGroup = (status: BoardStatus) => {
     const next = new Set(collapsed)
@@ -401,6 +539,19 @@ export function TaskTable(p: TaskTableProps) {
         <span style={{ ...microLabel, fontSize: 10.5 }}>
           {visible.length} of {groups.length} groups
         </span>
+        {sort.key !== DEFAULT_SORT.key && (
+          // Said in words, with the way out beside it: a sort is invisible once you have scrolled
+          // past the header, and "why is this board in this order" should never need investigating.
+          <button
+            onClick={() => setSort(DEFAULT_SORT)}
+            style={{
+              ...button(isMobile), height: isMobile ? 44 : 26, fontSize: 11,
+              color: 'var(--anthropic-orange)',
+            }}
+          >
+            sorted by {SORT_LABEL[sort.key] ?? sort.key} {sort.dir === 'asc' ? '↑' : '↓'} · reset
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         <div style={{ position: 'relative' }}>
           <button
@@ -501,10 +652,43 @@ export function TaskTable(p: TaskTableProps) {
                     <thead>
                       <tr>
                         <th style={{ ...th, width: 34 }} />
-                        <th style={{ ...th, minWidth: 240 }}>Task</th>
+                        <th style={{ ...th, minWidth: 240 }}>
+                          <button
+                            onClick={() => setSort(nextSort(sort, 'title'))} title="Sort by title"
+                            style={{
+                              ...microLabel, fontWeight: 600, background: 'none', border: 'none',
+                              cursor: 'pointer', padding: 0, display: 'inline-flex',
+                              alignItems: 'center', gap: 3, minHeight: isMobile ? 44 : undefined,
+                              color: sort.key === 'title' ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                            }}
+                          >
+                            Task
+                            {sort.key === 'title' && (
+                              sort.dir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />
+                            )}
+                          </button>
+                        </th>
                         {cols.map(c => (
                           <th key={c.id} style={{ ...th, width: c.width, textAlign: c.numeric ? 'right' : 'left' }}>
-                            {c.label}
+                            {/* A column with no `sort` carries NO affordance — a header that looks
+                                clickable and does nothing is worse than a plain one. */}
+                            {c.sort ? (
+                              <button
+                                onClick={() => setSort(nextSort(sort, c.sort!))}
+                                title={`Sort by ${c.label}`}
+                                style={{
+                                  ...microLabel, fontWeight: 600, background: 'none', border: 'none',
+                                  cursor: 'pointer', padding: 0, display: 'inline-flex',
+                                  alignItems: 'center', gap: 3, minHeight: isMobile ? 44 : undefined,
+                                  color: sort.key === c.sort ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                                }}
+                              >
+                                {c.label}
+                                {sort.key === c.sort && (
+                                  sort.dir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />
+                                )}
+                              </button>
+                            ) : c.label}
                           </th>
                         ))}
                         <th style={{ ...th, width: 40 }} />
@@ -559,7 +743,12 @@ export function TaskTable(p: TaskTableProps) {
                                 style={{ padding: cellPad, textAlign: c.numeric ? 'right' : 'left' }}
                                 onClick={c.id === 'status' ? e => e.stopPropagation() : undefined}
                               >
-                                {cellFor(c.id, row, st => p.onStatus(row.task.id, st))}
+                                {cellFor(
+                                  c.id, row,
+                                  st => p.onStatus(row.task.id, st),
+                                  pr => p.onPriority?.(row.task.id, pr),
+                                  nowMs,
+                                )}
                               </td>
                             ))}
                             <td style={{ padding: cellPad, textAlign: 'right' }} onClick={e => e.stopPropagation()}>

@@ -18,8 +18,18 @@
  *    tasks nobody has dragged have no rank and follow the ranked ones, oldest first.
  */
 
-import { PRIORITY_ORDER, type Task, type TaskPriority } from './task-model'
-import type { AttemptRollup } from './task-rollup'
+/**
+ * It lives in `@agentistics/core` and not beside the store because the BROWSER sorts too: the
+ * table's headers and the kanban's picker are the two front doors onto it, and a second
+ * implementation in `packages/web` is a second set of rules for the same question — which is how a
+ * grid and a set of columns end up ranking the same cards differently.
+ */
+
+/** Most urgent first. The one place the order is stated; every sort and every picker reads it. */
+export type TaskPriorityId = 'urgent' | 'high' | 'medium' | 'low' | 'none'
+
+export const PRIORITY_ORDER: readonly TaskPriorityId[] =
+  ['urgent', 'high', 'medium', 'low', 'none'] as const
 
 export type SortKey =
   | 'manual' | 'priority' | 'title' | 'status' | 'created' | 'updated' | 'due'
@@ -36,18 +46,36 @@ export interface SortSpec {
 /** What a row must carry to be sorted. Deliberately narrower than `TaskListRow`, so the browser's
  *  own row type satisfies it without importing the server's. */
 export interface SortableRow {
-  task: Pick<Task,
-    'id' | 'title' | 'status' | 'createdAt' | 'updatedAt' | 'priority' | 'assignee' | 'dueDate' | 'rank'>
+  task: {
+    id: string
+    title: string
+    status: string
+    createdAt: string
+    updatedAt: string
+    priority?: TaskPriorityId | string
+    assignee?: string
+    dueDate?: string
+    rank?: string
+  }
   attempts?: number
-  rollup?: Pick<AttemptRollup, 'costUSD' | 'tokens' | 'rounds' | 'sessionsUsed'>
+  rollup?: {
+    costUSD: number | null
+    tokens: number | null
+    rounds: number | null
+    sessionsUsed: number
+  }
   counts?: { comments: number; subtasks: number; subtasksDone: number; files: number }
   harnesses?: string[]
 }
 
 export const DEFAULT_SORT: SortSpec = { key: 'manual', dir: 'asc' }
 
-const priorityIndex = (p: TaskPriority | undefined): number =>
-  PRIORITY_ORDER.indexOf(p ?? 'none')
+const priorityIndex = (p: string | undefined): number => {
+  const i = PRIORITY_ORDER.indexOf((p ?? 'none') as TaskPriorityId)
+  // An unknown word ranks with "nobody has said" rather than at the top: a typo in a stored
+  // priority must not promote a task above every triaged one.
+  return i === -1 ? PRIORITY_ORDER.length - 1 : i
+}
 
 /**
  * The comparable value of a row on one key: a number, a string, or `null` for "no answer".

@@ -1,0 +1,201 @@
+/**
+ * BoardArrange — the kanban's own controls: what the cards are ordered BY, what the rows are, and
+ * how many cards a column should hold.
+ *
+ * They sit above the board rather than inside a settings dialog because all three change what is on
+ * screen right now, and a control whose effect you cannot see while you press it is one people
+ * press twice.
+ *
+ * The SORT is the table's sort — one field, written by both. A board that ranks its cards one way
+ * in the grid and another in the columns is two boards.
+ */
+
+import { useState } from 'react'
+import { ArrowDownUp, LayoutList, Rows3, X } from 'lucide-react'
+import { PRIORITY_ORDER, type SortKey, type SortSpec } from '@agentistics/core'
+import { useIsMobile } from '../../hooks/useIsMobile'
+import { COLUMN_ORDER, STATUS, button, field, microLabel, pill, surface } from './board'
+import { LANE_KEYS, type LaneKey } from './boardPrefs'
+
+/**
+ * The orders a KANBAN offers, which are deliberately fewer than the table's.
+ *
+ * A column of cards is read top to bottom; a key nobody can see on the card (attempts, comments)
+ * would order it by something invisible, and the reader would conclude the board was shuffled.
+ */
+const BOARD_SORTS: Array<{ key: SortKey; label: string }> = [
+  { key: 'manual', label: 'Hand order' },
+  { key: 'priority', label: 'Priority' },
+  { key: 'due', label: 'Due date' },
+  { key: 'updated', label: 'Last touched' },
+  { key: 'created', label: 'Newest' },
+  { key: 'cost', label: 'Cost' },
+  { key: 'rounds', label: 'Rounds' },
+  { key: 'title', label: 'Title' },
+]
+
+const LANE_LABEL: Record<LaneKey, string> = {
+  none: 'No swimlanes',
+  repo: 'Repository',
+  assignee: 'Owner',
+  harness: 'Harness',
+  priority: 'Priority',
+}
+
+export interface BoardArrangeProps {
+  sort: SortSpec
+  onSort: (s: SortSpec) => void
+  lanes: LaneKey
+  onLanes: (l: LaneKey) => void
+  wip: Record<string, number>
+  onWip: (w: Record<string, number>) => void
+}
+
+export function BoardArrange(p: BoardArrangeProps) {
+  const isMobile = useIsMobile()
+  const [menu, setMenu] = useState<'sort' | 'lanes' | 'wip' | null>(null)
+
+  const box: React.CSSProperties = {
+    position: 'absolute', top: 34, right: 0, zIndex: 41, width: 230,
+    ...surface, background: 'var(--bg-elevated)', padding: 8, display: 'grid', gap: 3,
+    boxShadow: 'var(--shadow-elevated)', maxHeight: 340, overflowY: 'auto',
+  }
+  const row = (on: boolean): React.CSSProperties => ({
+    display: 'flex', gap: 8, alignItems: 'center', textAlign: 'left', width: '100%',
+    padding: '6px 8px', borderRadius: 5, cursor: 'pointer', fontSize: 12,
+    border: `1px solid ${on ? 'var(--anthropic-orange)' : 'transparent'}`,
+    background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
+    color: on ? 'var(--text-primary)' : 'var(--text-secondary)',
+    minHeight: isMobile ? 44 : 28,
+  })
+  const trigger = { ...button(isMobile), height: isMobile ? 44 : 28 }
+  const limited = Object.keys(p.wip).length
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ position: 'relative' }}>
+        <button style={trigger} onClick={() => setMenu(m => (m === 'sort' ? null : 'sort'))}>
+          <ArrowDownUp size={13} />
+          {BOARD_SORTS.find(s => s.key === p.sort.key)?.label ?? 'Order'}
+          {p.sort.key !== 'manual' && <span>{p.sort.dir === 'asc' ? '↑' : '↓'}</span>}
+        </button>
+        {menu === 'sort' && (
+          <>
+            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+            <div style={box}>
+              <div style={{ ...microLabel, marginBottom: 3 }}>Order cards by</div>
+              {BOARD_SORTS.map(s => (
+                <button
+                  key={s.key}
+                  onClick={() => {
+                    // Pressing the ACTIVE key flips the direction — the second half of the same
+                    // gesture, so nobody has to find a separate up/down control.
+                    p.onSort(p.sort.key === s.key
+                      ? { key: s.key, dir: p.sort.dir === 'asc' ? 'desc' : 'asc' }
+                      : { key: s.key, dir: 'asc' })
+                  }}
+                  style={row(p.sort.key === s.key)}
+                >
+                  <span style={{ flex: 1 }}>{s.label}</span>
+                  {p.sort.key === s.key && <span>{p.sort.dir === 'asc' ? '↑' : '↓'}</span>}
+                </button>
+              ))}
+              <div style={{
+                ...microLabel, textTransform: 'none', letterSpacing: 0, padding: '4px 8px',
+                lineHeight: 1.5,
+              }}>
+                A card nothing could price sorts last whichever way the arrow points.
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ position: 'relative' }}>
+        <button style={trigger} onClick={() => setMenu(m => (m === 'lanes' ? null : 'lanes'))}>
+          <Rows3 size={13} /> {LANE_LABEL[p.lanes]}
+        </button>
+        {menu === 'lanes' && (
+          <>
+            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+            <div style={box}>
+              <div style={{ ...microLabel, marginBottom: 3 }}>Swimlanes</div>
+              {LANE_KEYS.map(k => (
+                <button key={k} onClick={() => { setMenu(null); p.onLanes(k) }} style={row(p.lanes === k)}>
+                  {LANE_LABEL[k]}
+                </button>
+              ))}
+              <div style={{
+                ...microLabel, textTransform: 'none', letterSpacing: 0, padding: '4px 8px',
+                lineHeight: 1.5,
+              }}>
+                A lane per value, each holding the whole pipeline — which repository, which agent,
+                which harness is doing what.
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ position: 'relative' }}>
+        <button style={trigger} onClick={() => setMenu(m => (m === 'wip' ? null : 'wip'))}>
+          <LayoutList size={13} /> WIP{limited > 0 ? ` · ${limited}` : ''}
+        </button>
+        {menu === 'wip' && (
+          <>
+            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+            <div style={{ ...box, width: 260 }}>
+              <div style={{ ...microLabel, marginBottom: 3 }}>Cards per column</div>
+              {COLUMN_ORDER.map(st => {
+                const c = STATUS[st]
+                const v = p.wip[st]
+                return (
+                  <label key={st} style={{ ...row(v !== undefined), cursor: 'default' }}>
+                    <span style={{ flex: 1, color: c.color }}>{c.label}</span>
+                    <input
+                      type="number" min={1} inputMode="numeric"
+                      value={v ?? ''}
+                      placeholder="—"
+                      onChange={e => {
+                        const n = Number(e.target.value)
+                        const next = { ...p.wip }
+                        // An empty box means NO limit, which is not the same as a limit of zero:
+                        // zero would put every column over its limit the moment anything landed.
+                        if (!Number.isFinite(n) || n <= 0) delete next[st]
+                        else next[st] = Math.floor(n)
+                        p.onWip(next)
+                      }}
+                      style={{ ...field(isMobile), width: 72, padding: '4px 8px' }}
+                    />
+                  </label>
+                )
+              })}
+              <div style={{
+                ...microLabel, textTransform: 'none', letterSpacing: 0, padding: '4px 8px',
+                lineHeight: 1.5,
+              }}>
+                A limit WARNS, it never blocks a drop. It is an agreement you make with yourself —
+                a board that refuses work teaches people to route around it.
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {p.lanes === 'priority' && (
+        <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+          {PRIORITY_ORDER.map(id => <span key={id} style={pill()}>{id}</span>)}
+        </span>
+      )}
+
+      <span style={{ flex: 1 }} />
+      {(p.sort.key !== 'manual' || p.lanes !== 'none' || limited > 0) && (
+        <button
+          onClick={() => { p.onSort({ key: 'manual', dir: 'asc' }); p.onLanes('none'); p.onWip({}) }}
+          style={{ ...trigger, color: 'var(--text-tertiary)' }}
+          title="Back to the plain board"
+        ><X size={12} /> Reset</button>
+      )}
+    </div>
+  )
+}

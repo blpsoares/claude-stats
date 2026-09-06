@@ -14,13 +14,14 @@
  * shows both and no total, and an open task shows no duration — "still running" is not "took N h".
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, BarChart3, CheckCircle2, ClipboardList, ExternalLink, FileText, Link2,
+  ArrowLeft, BarChart3, Bot, CheckCircle2, ClipboardList, ExternalLink, FileText, Link2,
   Filter, LayoutGrid, MessageSquare, Pencil, Plus, Rows3, Search, Trash2, X, XCircle,
 } from 'lucide-react'
+import { PRIORITY_ORDER, type SortSpec } from '@agentistics/core'
 import { useIsMobile } from '../hooks/useIsMobile'
 import type { AppContext } from '../lib/app-context'
 import { useFleet } from '../lib/fleet'
@@ -33,21 +34,26 @@ import { BoardView } from '../components/tasks/TaskBoard'
 import { TaskTable } from '../components/tasks/TaskTable'
 import { SessionPicker } from '../components/tasks/SessionPicker'
 import { SubtaskTable } from '../components/tasks/SubtaskTable'
-import { readBoardPrefs, writeBoardPrefs, type BoardView as ViewId } from '../components/tasks/boardPrefs'
+import {
+  readBoardPrefs, writeBoardPrefs, type BoardView as ViewId, type LaneKey,
+} from '../components/tasks/boardPrefs'
+import { BoardArrange } from '../components/tasks/BoardArrange'
+import { AgentsView } from '../components/tasks/AgentsView'
 import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
 import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
 import { NewSessionModal } from '../components/sessions/NewSessionModal'
 import {
-  COLUMN_ORDER, NA, SESSION_STATE, STATUS, button, field, fmtInt, fmtTokens, fmtUSD,
-  harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
+  COLUMN_ORDER, NA, PRIORITY, SESSION_STATE, STATUS, button, claimLeft, field, fmtInt, fmtTokens,
+  fmtUSD, harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from '../components/tasks/board'
 import {
   addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, editComment, fileUrl,
   attachSession, fmtDuration, markTask, patchSubtask, removeComment, removeLink, removeSubtask,
-  setBlockedBy, uploadFile, useTaskDetail, useTaskList,
-  type AttemptRollup, type AttemptView, type TaskDetail, type TaskFile, type TaskListRow,
-  type TasksError,
+  claimTask, editTask, moveTask, setBlockedBy, uploadFile, useNextTasks, useTaskActivity,
+  useTaskDetail, useTaskList,
+  type AttemptRollup, type AttemptView, type TaskDetail, type TaskFieldPatch, type TaskFile,
+  type TaskListRow, type TaskRecord, type TasksError,
 } from '../lib/tasks'
 
 function EmptyNotice({ error }: { error: TasksError }) {
@@ -59,6 +65,162 @@ function EmptyNotice({ error }: { error: TasksError }) {
   return (
     <div style={{ ...surface, padding: 16, color: 'var(--text-tertiary)', display: 'flex', gap: 10, alignItems: 'center', fontSize: 12.5 }}>
       <ClipboardList size={16} /> {text}
+    </div>
+  )
+}
+
+/**
+ * The PLAN half of a task: how urgent, whose it is, when it is due, and who is on it right now.
+ *
+ * It sits at the top of the rail because these are the fields that decide what happens NEXT, while
+ * everything below them (cost, rounds, tokens) records what already happened. The claim is here
+ * rather than under Actions for the same reason: it is a statement about the present.
+ */
+/**
+ * What has happened to THIS task, newest first.
+ *
+ * On a board several agents drive, "who moved this to blocked, and when" is not rhetorical — and
+ * the answer cannot come from the task record, which only ever holds the latest value of each
+ * field. A kind nobody has words for prints itself rather than vanishing.
+ */
+function ActivityTab({ id }: { id: string }) {
+  const { events, loading } = useTaskActivity(id, 100)
+  if (loading) {
+    return <div style={{ ...surface, padding: 14, fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>
+  }
+  if (events.length === 0) {
+    return (
+      <div style={{ ...surface, padding: 14, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+        Nothing recorded yet. Status moves, claims, priority changes and sessions filed under this
+        task land here as they happen — including the ones an assistant makes over the API.
+      </div>
+    )
+  }
+  return (
+    <div style={{ ...surface, padding: 14, display: 'grid', gap: 9 }}>
+      {events.map(e => (
+        <div key={e.id} style={{ display: 'flex', gap: 9, alignItems: 'baseline', fontSize: 12 }}>
+          <span style={{ ...microLabel, fontSize: 10, whiteSpace: 'nowrap' }}>
+            {new Date(e.at).toLocaleString()}
+          </span>
+          <span style={{ color: 'var(--text-secondary)' }}>
+            <strong style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{e.actor}</strong>
+            {' '}{e.kind === 'status' ? `moved ${e.from ?? '?'} → ${e.to ?? '?'}`
+              : e.kind === 'claim' ? (e.detail === 'takeover' ? 'took over' : 'claimed it')
+              : e.kind === 'release' ? 'released it'
+              : e.kind === 'priority' ? `set priority ${e.from ?? '?'} → ${e.to ?? '?'}`
+              : e.kind === 'assign' ? `set the owner to ${e.to || 'nobody'}`
+              : e.kind === 'session' ? `filed a ${e.detail ?? ''} session`.trim()
+              : e.kind === 'move' ? 'reordered it'
+              : e.kind}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PlanCard({ task, busy, onPatch, onClaim }: {
+  task: TaskRecord
+  busy: boolean
+  onPatch: (patch: TaskFieldPatch) => void | Promise<void>
+  onClaim: (release: boolean) => void | Promise<void>
+}) {
+  const isMobile = useIsMobile()
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+  const lease = task.claim ? claimLeft(task.claim.expiresAt, nowMs) : null
+
+  return (
+    <div style={{ ...surface, padding: 14, display: 'grid', gap: 12 }}>
+      <div style={microLabel}>Plan</div>
+
+      <div style={{ display: 'grid', gap: 6 }}>
+        <span style={{ ...microLabel, fontSize: 9 }}>Priority</span>
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          {PRIORITY_ORDER.map(id => {
+            const c = PRIORITY[id]!
+            const on = (task.priority ?? 'none') === id
+            return (
+              <button
+                key={id}
+                disabled={busy}
+                onClick={() => void onPatch({ priority: id })}
+                style={{
+                  padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 600,
+                  cursor: 'pointer', minHeight: isMobile ? 44 : 26,
+                  background: on ? c.dim : 'transparent',
+                  color: on ? c.color : 'var(--text-tertiary)',
+                  border: `1px solid ${on ? c.color : 'var(--border)'}`,
+                }}
+              >{c.label}</button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 6 }}>
+        <span style={{ ...microLabel, fontSize: 9 }}>Owner</span>
+        <input
+          defaultValue={task.assignee ?? ''} placeholder="a person, or an agent"
+          onBlur={e => {
+            if (e.target.value.trim() !== (task.assignee ?? '')) void onPatch({ assignee: e.target.value })
+          }}
+          style={field(isMobile)}
+        />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {([['startDate', 'Start'], ['dueDate', 'Due']] as const).map(([key, label]) => (
+          <div key={key} style={{ display: 'grid', gap: 6, flex: 1, minWidth: 110 }}>
+            <span style={{ ...microLabel, fontSize: 9 }}>{label}</span>
+            <input
+              type="date" defaultValue={(key === 'dueDate' ? task.dueDate : task.startDate) ?? ''}
+              onChange={e => void onPatch({ [key]: e.target.value } as TaskFieldPatch)}
+              style={{ ...field(isMobile), colorScheme: 'dark' }}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gap: 6, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <span style={{ ...microLabel, fontSize: 9 }}>Working on it</span>
+        {task.claim
+          ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={pill(lease!.expired ? 'var(--text-tertiary)' : 'var(--accent-green)')}>
+                <Bot size={10} /> {task.claim.by}
+              </span>
+              <span style={{
+                fontSize: 11,
+                color: lease!.expired ? 'var(--accent-red)' : 'var(--text-tertiary)',
+              }}>{lease!.text}</span>
+              <span style={{ flex: 1 }} />
+              <button
+                disabled={busy} onClick={() => void onClaim(true)}
+                style={{ ...button(isMobile), height: isMobile ? 44 : 26 }}
+                title={lease!.expired
+                  ? 'The lease has run out — clear the holder'
+                  : 'Give the task back to the board'}
+              >Release</button>
+            </div>
+          )
+          : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', flex: 1 }}>
+                Free — nobody has taken it.
+              </span>
+              <button
+                disabled={busy} onClick={() => void onClaim(false)}
+                style={{ ...button(isMobile), height: isMobile ? 44 : 26 }}
+                title="Take it, so an agent asking what to work on is told somebody has this"
+              >Take it</button>
+            </div>
+          )}
+      </div>
     </div>
   )
 }
@@ -125,8 +287,28 @@ function TaskList() {
   // which is the question the product exists for.
   // Restored, not re-decided: opening a task navigates away and unmounts this list, so a view that
   // resets itself on every back-press is a view nobody can stay in.
-  const [view, setViewState] = useState<ViewId>(() => readBoardPrefs().view)
+  const stored = useMemo(readBoardPrefs, [])
+  const [view, setViewState] = useState<ViewId>(stored.view)
   const setView = (v: ViewId) => { setViewState(v); writeBoardPrefs({ view: v }) }
+  // The kanban's arrangement, persisted with everything else the board remembers. The SORT is
+  // shared with the table on purpose: a board that ranks its cards one way in the grid and another
+  // in the columns is two boards, and the reader has to hold both.
+  const [sort, setSortState] = useState<SortSpec>(stored.sort)
+  const setSort = (v: SortSpec) => { setSortState(v); writeBoardPrefs({ sort: v }) }
+  const [lanes, setLanesState] = useState<LaneKey>(stored.lanes)
+  const setLanes = (v: LaneKey) => { setLanesState(v); writeBoardPrefs({ lanes: v }) }
+  const [wip, setWipState] = useState<Record<string, number>>(stored.wip)
+  const setWip = (v: Record<string, number>) => { setWipState(v); writeBoardPrefs({ wip: v }) }
+  const { fleet } = useFleet('en')
+  // The orchestration view's three reads. They poll on their own cadence — the queue changes when
+  // an agent claims something, which is not when `/api/tasks` changes.
+  const { next, reload: reloadNext } = useNextTasks()
+  const { events, reload: reloadEvents } = useTaskActivity(undefined, 60)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   /** The task whose session wizard is up — see `onCreateSession`. */
@@ -179,6 +361,9 @@ function TaskList() {
           </button>
           <button style={seg(view === 'board')} onClick={() => setView('board')}>
             <LayoutGrid size={14} /> Board
+          </button>
+          <button style={seg(view === 'agents')} onClick={() => setView('agents')}>
+            <Bot size={13} /> Agents
           </button>
           <button style={seg(view === 'table')} onClick={() => setView('table')}>
             <Rows3 size={14} /> Table
@@ -247,11 +432,42 @@ function TaskList() {
 
       {view === 'overview' && overview && <BoardOverviewView o={overview} />}
 
+      {view === 'agents' && (
+        <AgentsView
+          next={next}
+          rows={shown}
+          events={events}
+          sessions={fleet.sessions}
+          nowMs={nowMs}
+          onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
+          onRelease={async id => {
+            await claimTask(id, { by: 'you', release: true, force: true })
+            await Promise.all([reload(), reloadNext(), reloadEvents()])
+          }}
+        />
+      )}
+
       {view !== 'overview' && rows !== null && shown.length === 0 && (
         <EmptyNotice error={rows.length > 0 ? null : error} />
       )}
       {view === 'board' && shown.length > 0 && (
-        <BoardView rows={shown} onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)} />
+        <>
+          <BoardArrange
+            sort={sort} onSort={setSort}
+            lanes={lanes} onLanes={setLanes}
+            wip={wip} onWip={setWip}
+          />
+          <BoardView
+            rows={shown}
+            sort={sort}
+            lanes={lanes}
+            wip={wip}
+            sessions={fleet.sessions}
+            onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
+            onStatus={async (id, status) => { await markTask(id, status); await reload() }}
+            onMove={async (id, index) => { await moveTask(id, index); await reload() }}
+          />
+        </>
       )}
       {view === 'table' && (
         <TaskTable
@@ -259,6 +475,7 @@ function TaskList() {
           details={details}
           onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
           onStatus={async (ref, status) => { await markTask(ref, status); await reload() }}
+          onPriority={async (ref, priority) => { await editTask(ref, { priority }); await reload() }}
           onCreate={async (title, status) => {
             const made = await createTask(title)
             // Created straight into the group it was typed in — the "+ Add" row of a status column
@@ -779,7 +996,7 @@ function CommentsTab({ id, detail, onChanged }: {
   )
 }
 
-type Tab = 'overview' | 'sessions' | 'comments' | 'subtasks' | 'files'
+type Tab = 'overview' | 'sessions' | 'comments' | 'subtasks' | 'files' | 'activity'
 
 function TaskDetailView({ id }: { id: string }) {
   const { filters } = useOutletContext<AppContext>()
@@ -806,6 +1023,7 @@ function TaskDetailView({ id }: { id: string }) {
     ['comments', 'Comments', detail.comments.length],
     ['subtasks', 'Subtasks', detail.subtasks.length],
     ['files', 'Files', detail.files.length],
+    ['activity', 'Activity', 0],
   ]
 
   return (
@@ -901,6 +1119,8 @@ function TaskDetailView({ id }: { id: string }) {
             />
           )}
 
+          {tab === 'activity' && <ActivityTab id={id} />}
+
           {tab === 'files' && (
             <TaskFiles
               files={detail.files}
@@ -912,6 +1132,16 @@ function TaskDetailView({ id }: { id: string }) {
 
         {/* The facts column — Jira's right rail. */}
         <aside style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+          <PlanCard
+            task={detail.task}
+            busy={busy}
+            onPatch={async patch => { await run(() => editTask(id, patch)) }}
+            onClaim={async release => {
+              // `force` on a release: this is a person at the board, and the whole reason the lease
+              // is visible here is so a stale one can be cleared without hunting down the agent.
+              await run(() => claimTask(id, { by: 'you', ...(release ? { release: true, force: true } : { takeover: true }) }))
+            }}
+          />
           <div style={{ ...surface, padding: 14, display: 'grid', gap: 12 }}>
             <div style={{ ...microLabel }}>Details</div>
             <div style={{ display: 'grid', gap: 10 }}>

@@ -20,7 +20,7 @@ import {
 } from './task-model'
 import { boardProgress, DEFAULT_LEASE_MS, planNext } from './task-next'
 import { planMove } from './task-rank'
-import { compareBy } from './task-sort'
+import { compareBy } from '@agentistics/core'
 import { deleteTaskFile, deleteTaskFiles, readTaskFile, writeTaskFile } from './task-files'
 import type { TaskDetail, TaskListRow } from './task-report'
 

@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { Filters } from '@agentistics/core'
+import type { Filters, TaskPriorityId } from '@agentistics/core'
 import { getDateRangeFilter } from '../hooks/useData'
 
 export type LinkProvenance = 'assigned' | 'observed' | 'none'
@@ -42,6 +42,36 @@ export interface TaskRecord {
   /** Task ids that must finish first. */
   blockedBy?: string[]
   links?: TaskLink[]
+  /** Absent reads as `none` — "nobody has said", which is not the same as `low`. */
+  priority?: TaskPriorityId
+  assignee?: string
+  dueDate?: string
+  startDate?: string
+  labels?: string[]
+  /** Manual order, a fractional-index string. Absent = never dragged. */
+  rank?: string
+  /** Who is on it right now, and until when — a LEASE, so it expires on its own. */
+  claim?: TaskClaim
+}
+
+export interface TaskClaim {
+  by: string
+  at: string
+  expiresAt: string
+  sessionId?: string
+  note?: string
+}
+
+/** One thing that happened to a task. `kind`: status | claim | release | priority | assign | … */
+export interface TaskEvent {
+  id: string
+  taskId: string
+  at: string
+  actor: string
+  kind: string
+  detail?: string
+  from?: string
+  to?: string
 }
 
 export interface TaskLink { id: string; url: string; label?: string; kind?: string }
@@ -280,7 +310,20 @@ export async function createTask(title: string, detail?: string): Promise<TaskRe
   }
 }
 
-export const editTask = (ref: string, patch: { title?: string; detail?: string }) =>
+export interface TaskFieldPatch {
+  title?: string
+  detail?: string
+  priority?: TaskPriorityId
+  assignee?: string
+  dueDate?: string
+  startDate?: string
+  labels?: string[]
+  /** Who is making the change — it goes into the activity log. */
+  actor?: string
+}
+
+/** An absent field is left alone; an EMPTY STRING clears it. Same rule as the server's. */
+export const editTask = (ref: string, patch: TaskFieldPatch) =>
   post(`/api/tasks/${encodeURIComponent(ref)}`, patch)
 
 export const addComment = (ref: string, author: string, body: string) =>
@@ -357,3 +400,91 @@ export const patchSubtask = (
 
 export const removeSubtask = (ref: string, id: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/subtasks`, { id, remove: true })
+
+/**
+ * TAKE a task, or give it back.
+ *
+ * A LEASE, not a lock: it expires on its own, so a browser tab closed mid-task does not hold work
+ * forever. A refusal comes back `ok: false` naming the holder — rendered as a sentence, never as a
+ * silent no-op.
+ */
+export async function claimTask(ref: string, o: {
+  by: string
+  release?: boolean
+  sessionId?: string
+  takeover?: boolean
+  force?: boolean
+  leaseMs?: number
+}): Promise<{ ok: boolean; reason?: string; heldBy?: string; until?: string }> {
+  try {
+    const r = await fetch(`/api/tasks/${encodeURIComponent(ref)}/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(o),
+    })
+    return await r.json() as { ok: boolean; reason?: string; heldBy?: string; until?: string }
+  } catch {
+    return { ok: false, reason: 'unreachable' }
+  }
+}
+
+/** Drop a card at `index` within the column it is being dropped into. Status is `markTask`'s job. */
+export const moveTask = (ref: string, index: number, actor?: string) =>
+  post(`/api/tasks/${encodeURIComponent(ref)}/move`, { index, ...(actor ? { actor } : {}) })
+
+/** The activity log, newest first. No `ref` = the whole board. */
+export function useTaskActivity(ref?: string, limit = 60) {
+  const [events, setEvents] = useState<TaskEvent[]>([])
+  const [loading, setLoading] = useState(true)
+  const reload = useCallback(async () => {
+    const q = new URLSearchParams()
+    if (ref) q.set('task', ref)
+    q.set('limit', String(limit))
+    try {
+      const r = await fetch(`/api/tasks/activity?${q}`)
+      const body = await r.json() as { events?: TaskEvent[] }
+      setEvents(body.events ?? [])
+    } catch {
+      // An unreachable server keeps the last log rather than reporting an empty one — the same
+      // rule the fleet poller follows. "Nothing happened" and "nobody answered" are different.
+    } finally {
+      setLoading(false)
+    }
+  }, [ref, limit])
+  useEffect(() => { void reload() }, [reload])
+  return { events, loading, reload }
+}
+
+export interface NextReply {
+  ready: Array<{ task: TaskRecord; position: number }>
+  withheld: Array<{ id: string; title: string; why: string; detail?: string }>
+  progress: {
+    total: number
+    done: number
+    abandoned: number
+    open: number
+    blocked: number
+    claimed: number
+    ready: number
+    settled: boolean
+  }
+}
+
+/** What can be picked up right now, why the rest cannot, and whether the board is settled. */
+export function useNextTasks(actor?: string, intervalMs = 15000) {
+  const [next, setNext] = useState<NextReply | null>(null)
+  const reload = useCallback(async () => {
+    const q = new URLSearchParams()
+    if (actor) q.set('actor', actor)
+    try {
+      const r = await fetch(`/api/tasks/next?${q}`)
+      setNext(await r.json() as NextReply)
+    } catch { /* keep the last answer — see `useTaskActivity` */ }
+  }, [actor])
+  useEffect(() => {
+    void reload()
+    const t = setInterval(() => void reload(), intervalMs)
+    return () => clearInterval(t)
+  }, [reload, intervalMs])
+  return { next, reload }
+}
