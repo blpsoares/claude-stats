@@ -10,11 +10,15 @@
  */
 import React, { useCallback, useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { PlayCircle, Loader2, AlertTriangle, CheckCircle2, Clock, ChevronLeft, ChevronRight } from 'lucide-react'
+// `RotateCcw` is the restore verb's glyph. There is deliberately no `Github` here: lucide-react v1
+// — the version this repo installs — carries no brand icons, so the GitHub mark is the local
+// `GithubMark` SVG below rather than a new dependency for one glyph.
+import { PlayCircle, Loader2, AlertTriangle, CheckCircle2, Clock, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import type { AppContext } from '../../lib/app-context'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { OVERLAY_TOP } from '../../lib/mobileOverlay'
 import { SectionHeader, Divider, RecordCard, Checkbox } from './primitives'
 
 // Redeclared from `server/backup/backup-plan.ts` / `server/backup/schedule.ts` — `packages/web`
@@ -186,6 +190,45 @@ const RESTORE_TAIL_LINES = 15
 
 function unknownWord(pt: boolean): string {
   return pt ? 'desconhecido' : 'unknown'
+}
+
+/**
+ * The GitHub mark.
+ *
+ * NOT a lucide icon: `lucide-react` v1 — the version this repo installs — dropped every brand
+ * glyph, so there is no `Github` export to import (checked against the installed
+ * `lucide-react.d.ts`: `GitBranch`, `GitFork`, `GitMerge` … and no `Github`). A settings page may
+ * not pull in a new dependency for one glyph, and this file is the only one this change may touch,
+ * so the mark is inlined here. It paints in `currentColor` and takes a `size`, exactly like the
+ * lucide icons beside it, so it can sit on any row and inherit that row's colour.
+ */
+function GithubMark({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 16 16" fill="currentColor"
+      aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}
+    >
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+    </svg>
+  )
+}
+
+/**
+ * A section heading with a glyph beside it — the SAME `SectionHeader` every other section on this
+ * page uses, never a second heading style. Both children carry the header's own `marginBottom`, so
+ * the flex row centres their margin boxes against each other and the glyph sits on the word's line.
+ */
+function SectionHeaderWithIcon({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+      <span style={{
+        display: 'inline-flex', color: 'var(--text-tertiary)', flexShrink: 0, marginBottom: 14,
+      }}>
+        {icon}
+      </span>
+      <SectionHeader label={label} />
+    </div>
+  )
 }
 
 /** Mirrors the server's `GithubSectionUpdate` — every field optional, a control sends only its own. */
@@ -623,9 +666,18 @@ export default function BackupSettings() {
   const [listingBusy, setListingBusy] = useState(false)
   const [listingError, setListingError] = useState<string | null>(null)
   const [restoreJob, setRestoreJob] = useState<RestoreJob | null>(null)
-  /** The inline two-step confirmation, as `${tag}|${withRepos}`. `window.confirm` would block the
-   *  whole tab, so the button turns into "Confirm?" + Cancel in the row itself. */
-  const [confirming, setConfirming] = useState<string | null>(null)
+  /**
+   * The release the RESTORE MODAL is asking about, together with the machine it belongs to (the
+   * modal names both). `null` = the modal is closed.
+   *
+   * It replaced an inline two-step confirmation whose two buttons were named after their PAYLOAD
+   * ("Metrics only" / "Everything, including cloning repositories") and so never read as restore
+   * at all — reported verbatim: "eu cliquei em ver backup e nao tem a opcao de restaurar". Each
+   * release now carries ONE button and one verb, `Restaurar`, and the choice plus the warnings
+   * live in the modal it opens. Still not `window.confirm`: that blocks the whole tab, and this
+   * page polls a running restore job.
+   */
+  const [restoreAsk, setRestoreAsk] = useState<{ release: RestoreCandidate; machine: string | null } | null>(null)
   const [startBusy, setStartBusy] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
 
@@ -662,7 +714,7 @@ export default function BackupSettings() {
     setListingError(null)
     setListing(null)
     setStartError(null)
-    setConfirming(null)
+    setRestoreAsk(null)
     try {
       const r = await fetch('/api/backup/restore/list', {
         method: 'POST',
@@ -686,7 +738,7 @@ export default function BackupSettings() {
     }
   }, [restoreUrl, restoreToken, pt])
 
-  /** Reached only from the confirmation step. The token is NOT cleared on success: `start` needs
+  /** Reached only from the modal's confirm button. The token is NOT cleared on success: `start` needs
    *  the same credential the listing used, and a second restore from the same list must not ask
    *  for it again. */
   const beginRestore = useCallback(async (tag: string, withRepos: boolean) => {
@@ -707,7 +759,9 @@ export default function BackupSettings() {
         { ok: true; job: RestoreJob } | { ok: false; reason: string }
       if (data.ok) {
         setRestoreJob(data.job)
-        setConfirming(null)
+        // The modal closes only on a STARTED job. A refusal keeps it open with the server's own
+        // sentence inside it — closing on failure would drop the answer the click asked for.
+        setRestoreAsk(null)
       } else {
         setStartError(data.reason || (pt ? 'não foi possível iniciar' : 'could not start'))
       }
@@ -744,7 +798,15 @@ export default function BackupSettings() {
 
   return (
     <div>
-      <SectionHeader label={pt ? 'Backup' : 'Backup'} />
+      {/* The SCREEN's title, deliberately NOT a `SectionHeader`: every block below is one of those,
+          and a page title drawn in the section style put two identical uppercase labels three lines
+          apart with the intro between them — a screen that reads as having no levels at all, which
+          is the complaint this pass answers. `h2` because `SettingsPage` already owns the `h1`. */}
+      <h2 style={{
+        fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 6px',
+      }}>
+        {pt ? 'Backup' : 'Backup'}
+      </h2>
       <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '0 0 16px' }}>
         {pt
           ? 'Leva o histórico completo desta máquina — métricas, o repositório de projetos e (opcionalmente) as transcrições — para outra máquina. Credenciais nunca são incluídas.'
@@ -771,7 +833,10 @@ export default function BackupSettings() {
 
       {status && (
         <>
-          {/* Run now */}
+          {/* SECTION 1 — Backup now. The one thing this page DOES, at the top, under a heading of
+              its own like every other block: the page was one long unlabelled column and read as
+              such. */}
+          <SectionHeader label={pt ? 'Backup agora' : 'Backup now'} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
             <button
               type="button"
@@ -817,10 +882,16 @@ export default function BackupSettings() {
             </div>
           )}
 
-          {/* Where the backups GO, before anything about what they contain. It is the decision a
-              person makes first and revisits least — an unconnected machine is one whose whole
-              history lives only on the disk being replaced, and burying that under four sections
-              about format and recurrence answers questions nobody asked yet. */}
+          <Divider />
+
+          {/* SECTION 2 — Where the backups GO, before anything about what they contain. It is the
+              decision a person makes first and revisits least — an unconnected machine is one whose
+              whole history lives only on the disk being replaced, and burying that under four
+              sections about format and recurrence answers questions nobody asked yet.
+
+              Its `Divider` is INSIDE the conditional: a central answers 404 here and renders
+              nothing, and a divider left standing outside would draw two rules with nothing
+              between them. Same for the restore block below. */}
           {github && (
             <>
               <GithubVersioning
@@ -845,43 +916,74 @@ export default function BackupSettings() {
                 onSaveKeep={saveKeepRemote}
                 onToggleDeleteLocal={checked => void saveGithub('deleteLocalAfterUpload', { deleteLocalAfterUpload: checked })}
               />
+              <Divider />
             </>
           )}
 
-          <Divider />
-
-          {/* Restoring — the other half of versioning, and until now CLI-only. It sits right under
-              the repository block because that is the same question read backwards: where the
-              history goes, and where it comes back from. Absent entirely when the endpoint 404s
-              (a central) — see `loadRestoreJob`. */}
+          {/* SECTION 3 — Restoring: the other half of versioning, and until now CLI-only. It sits
+              right under the repository block because that is the same question read backwards:
+              where the history goes, and where it comes back from. Absent entirely when the
+              endpoint 404s (a central) — see `loadRestoreJob`. */}
           {restoreSupported === true && (
-            <RestoreSection
-              pt={pt}
-              configuredUrl={github?.configured ? github.url : null}
-              url={restoreUrl}
-              token={restoreToken}
-              onUrl={setRestoreUrl}
-              onToken={setRestoreToken}
-              onList={() => { void listRestore() }}
-              listingBusy={listingBusy}
-              listingError={listingError}
-              machines={listing}
-              job={restoreJob}
-              running={restoreRunning}
-              confirming={confirming}
-              onConfirming={setConfirming}
-              startBusy={startBusy}
-              startError={startError}
-              onStart={(tag, withRepos) => { void beginRestore(tag, withRepos) }}
-            />
+            <>
+              <RestoreSection
+                pt={pt}
+                configuredUrl={github?.configured ? github.url : null}
+                url={restoreUrl}
+                token={restoreToken}
+                onUrl={setRestoreUrl}
+                onToken={setRestoreToken}
+                onList={() => { void listRestore() }}
+                listingBusy={listingBusy}
+                listingError={listingError}
+                machines={listing}
+                job={restoreJob}
+                running={restoreRunning}
+                ask={restoreAsk}
+                onAsk={ask => { setStartError(null); setRestoreAsk(ask) }}
+                startBusy={startBusy}
+                startError={startError}
+                onStart={(tag, withRepos) => { void beginRestore(tag, withRepos) }}
+              />
+              <Divider />
+            </>
           )}
 
-          <Divider />
-
-          {/* Configuration — the facts this page does not let you change: destination, retention,
-              excluded secrets, and the last run. Layers and the schedule are below, interactive. */}
+          {/* SECTION 4 — Configuration: the facts this page does not let you change: destination,
+              retention, excluded secrets, and the last run. Layers and the schedule are below,
+              interactive. */}
           <SectionHeader label={pt ? 'Configuração' : 'Configuration'} />
-          <ConfigRow label={pt ? 'Destino' : 'Destination'} value={status.config.destDir} mono />
+          {/* Destination is TWO facts on a versioned machine, and showing only the first one was a
+              half-truth: the local directory is where the archive is written, and the repository is
+              where it then lives. Each is labelled for what it is; the repository row is absent —
+              not empty — when nothing is connected, which is exactly what "only the local path" has
+              always meant here. */}
+          <ConfigRow
+            label={github?.configured
+              ? (pt ? 'Destino — pasta local' : 'Destination — local folder')
+              : (pt ? 'Destino' : 'Destination')}
+            value={status.config.destDir}
+            mono
+          />
+          {github?.configured && (
+            <ConfigRow
+              label={pt ? 'Destino — repositório no GitHub' : 'Destination — GitHub repository'}
+              value={
+                <a
+                  href={github.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word',
+                  }}
+                >
+                  <GithubMark size={13} />
+                  {github.repo}
+                </a>
+              }
+            />
+          )}
           <ConfigRow
             label={pt ? 'Manter' : 'Keep'}
             value={pt
@@ -908,8 +1010,8 @@ export default function BackupSettings() {
             </div>
           )}
 
-          {/* Format — the four layers, under the names a person thinks in, each with its measured
-              size on this machine. Metrics is always on and non-interactive. */}
+          {/* SECTION 5 — Format: the four layers, under the names a person thinks in, each with its
+              measured size on this machine. Metrics is always on and non-interactive. */}
           <SectionHeader label={pt ? 'Formato' : 'Format'} />
           <p style={{ fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '-6px 0 12px' }}>
             {pt
@@ -928,7 +1030,8 @@ export default function BackupSettings() {
 
           <Divider />
 
-          {/* Recurrence — the schedule, and (deliberately separate) what a SCHEDULED run carries. */}
+          {/* SECTION 6 — Recurrence: the schedule, and (deliberately separate) what a SCHEDULED run
+              carries. */}
           <SectionHeader label={pt ? 'Recorrência' : 'Recurrence'} />
           <SchedulePicker
             value={SCHEDULE_IDS.includes(status.config.schedule as BackupScheduleId)
@@ -959,12 +1062,10 @@ export default function BackupSettings() {
             </p>
           )}
 
-          {/* GitHub versioning. Absent entirely when the endpoint 404s (a central) — see
-              `loadGithub`. */}
           <Divider />
 
-          {/* Per-harness coverage — last-backup is PER HARNESS, never one date at the top: an
-              unticked harness must read as unprotected. */}
+          {/* SECTION 7 — Per-harness coverage: last-backup is PER HARNESS, never one date at the
+              top: an unticked harness must read as unprotected. */}
           <SectionHeader label={pt ? 'Cobertura por harness' : 'Coverage by harness'} />
           {isMobile ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1029,8 +1130,8 @@ export default function BackupSettings() {
 
           <Divider />
 
-          {/* History — paginated, newest first. Unpaginated was an actual bug report: a machine
-              with months of daily backups rendered as one endless, unreadable table. */}
+          {/* SECTION 8 — History: paginated, newest first. Unpaginated was an actual bug report: a
+              machine with months of daily backups rendered as one endless, unreadable table. */}
           <SectionHeader label={pt ? 'Histórico' : 'History'} />
           {historyAll.length === 0 ? (
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)', padding: '8px 0 20px' }}>
@@ -1451,7 +1552,10 @@ function GithubVersioning({
 
   return (
     <div>
-      <SectionHeader label={pt ? 'Versionamento no GitHub' : 'GitHub versioning'} />
+      <SectionHeaderWithIcon
+        icon={<GithubMark size={13} />}
+        label={pt ? 'Versionamento no GitHub' : 'GitHub versioning'}
+      />
 
       {!section.configured ? (
         <GithubConnectForm
@@ -1476,8 +1580,12 @@ function GithubVersioning({
                 href={section.url}
                 target="_blank"
                 rel="noreferrer"
-                style={{ color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word' }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word',
+                }}
               >
+                <GithubMark size={13} />
                 {section.repo}
               </a>
             }
@@ -1874,15 +1982,18 @@ function GithubConnectForm({
  * - **Nothing is invented.** Every derived field on a `RestoreCandidate` is nullable, because a
  *   release whose body could not be decoded is still listed rather than hidden. A null is rendered
  *   as the word "unknown" — never `0`, never a blank cell that reads as zero.
- * - **A restore writes into `$HOME`, so it is confirmed first** — inline, in the row itself.
- *   `window.confirm` blocks the whole tab and would freeze a page that is polling a job.
+ * - **A restore writes into `$HOME`, so it is confirmed first** — in a MODAL this file builds, not
+ *   `window.confirm` (which blocks the whole tab and would freeze a page that is polling a job).
+ *   Each release carries ONE button, `Restaurar`, and the modal holds the choice and the warnings:
+ *   the two buttons that used to sit here were named after their payload and never read as the
+ *   verb, which is exactly what was reported.
  * - **Every refusal is the SERVER's own sentence, passed through untouched.** The credential rule
  *   ("log in with gh, or paste a token"), the URL rule, and "a restore is already running" are all
  *   enforced there and already written in words.
  */
 function RestoreSection({
   pt, configuredUrl, url, token, onUrl, onToken, onList, listingBusy, listingError, machines,
-  job, running, confirming, onConfirming, startBusy, startError, onStart,
+  job, running, ask, onAsk, startBusy, startError, onStart,
 }: {
   pt: boolean
   /** The repository this machine already versions to, when there is one. The URL field is
@@ -1902,9 +2013,9 @@ function RestoreSection({
   machines: RestoreMachine[] | null
   job: RestoreJob | null
   running: boolean
-  /** `${tag}|${withRepos}` of the release awaiting confirmation, if any. */
-  confirming: string | null
-  onConfirming: (key: string | null) => void
+  /** The release the modal is asking about, with the machine it belongs to. `null` = closed. */
+  ask: { release: RestoreCandidate; machine: string | null } | null
+  onAsk: (ask: { release: RestoreCandidate; machine: string | null } | null) => void
   startBusy: boolean
   startError: string | null
   onStart: (tag: string, withRepos: boolean) => void
@@ -1914,7 +2025,12 @@ function RestoreSection({
 
   return (
     <div>
-      <SectionHeader label={pt ? 'Restaurar' : 'Restore'} />
+      {/* The GitHub mark belongs on this heading too: a restore READS from a GitHub repository —
+          it is the versioning question asked backwards. */}
+      <SectionHeaderWithIcon
+        icon={<GithubMark size={13} />}
+        label={pt ? 'Restaurar' : 'Restore'}
+      />
       <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
         {pt
           ? 'Traz de volta o histórico de uma máquina a partir do repositório em que os backups dela foram versionados. Feito para a máquina recém-formatada: basta a URL do repositório. Uma restauração escreve dentro da sua pasta pessoal.'
@@ -1991,11 +2107,14 @@ function RestoreSection({
 
       {machines !== null && machines.length > 0 && (
         <div style={{ marginTop: 16 }}>
+          {/* The Restaurar buttons below are disabled while a restore runs, and this is the
+              sentence that says why — a disabled control that explains nothing is
+              indistinguishable from a broken one. */}
           {running && (
             <p style={{ fontSize: 11.5, color: 'var(--anthropic-orange)', lineHeight: 1.5, margin: '0 0 10px' }}>
               {pt
-                ? 'Uma restauração está em andamento — os botões abaixo voltam quando ela terminar.'
-                : 'A restore is running — the buttons below come back when it finishes.'}
+                ? 'Uma restauração já está em andamento — só uma roda por vez, então os botões Restaurar abaixo voltam quando ela terminar.'
+                : 'A restore is already running — only one runs at a time, so the Restore buttons below come back when it finishes.'}
             </p>
           )}
           {machines.map((m, mi) => (
@@ -2015,50 +2134,49 @@ function RestoreSection({
                   key={r.tagName}
                   release={r}
                   pt={pt}
-                  starting={startBusy}
                   disabled={running || startBusy}
-                  confirming={confirming}
-                  onConfirming={onConfirming}
-                  onStart={onStart}
+                  onRestore={() => onAsk({ release: r, machine: m.machine })}
                 />
               ))}
             </div>
           ))}
-          <GithubFeedback feedback={startError === null ? null : { ok: false, text: startError }} />
+          {/* Only when the modal is CLOSED: a refusal keeps the modal open and is shown inside it,
+              beside the button that asked for it. Repeating it out here would state the same
+              failure twice. */}
+          {ask === null && (
+            <GithubFeedback feedback={startError === null ? null : { ok: false, text: startError }} />
+          )}
         </div>
       )}
 
       {job && <RestoreJobBlock job={job} pt={pt} />}
+
+      {ask && (
+        <RestoreConfirmModal
+          release={ask.release}
+          machine={ask.machine}
+          pt={pt}
+          starting={startBusy}
+          error={startError}
+          onCancel={() => onAsk(null)}
+          onConfirm={withRepos => onStart(ask.release.tagName, withRepos)}
+        />
+      )}
     </div>
   )
 }
 
 /**
- * One release, and the two ways to restore it.
+ * What one release IS, in label/value pairs — the ONE place those four facts are worded, read by
+ * both the row and the modal that asks about it. Two lists would be two chances to describe the
+ * same backup differently on the two screens the user compares.
  *
- * The second button clones every repository the backup mapped, so it says so on its own line rather
- * than in a tooltip nobody opens. Both are two-step: pressing one turns THAT row into
- * "Confirm? / Cancel" and hides the other, because a restore writes into `$HOME` and the second
- * press must be about one specific choice.
+ * Every value is nullable on the wire and every null renders as the WORD unknown — never `0`,
+ * never a blank that reads as zero. That is the rule the whole restore screen is judged on.
  */
-function RestoreRelease({ release, pt, starting, disabled, confirming, onConfirming, onStart }: {
-  release: RestoreCandidate
-  pt: boolean
-  /** A start is in flight — the confirm button says so itself rather than only greying out. */
-  starting: boolean
-  disabled: boolean
-  confirming: string | null
-  onConfirming: (key: string | null) => void
-  onStart: (tag: string, withRepos: boolean) => void
-}) {
-  const isMobile = useIsMobile()
+function releaseFacts(release: RestoreCandidate, pt: boolean): { label: string; value: string }[] {
   const unknown = unknownWord(pt)
-  const keyOf = (withRepos: boolean): string => `${release.tagName}|${withRepos ? 'repos' : 'metrics'}`
-  const pending = confirming !== null
-    && (confirming === keyOf(false) || confirming === keyOf(true))
-  const pendingWithRepos = confirming === keyOf(true)
-
-  const facts: { label: string; value: string }[] = [
+  return [
     { label: pt ? 'Tamanho' : 'Size', value: release.sizeLabel ?? unknown },
     { label: pt ? 'Camadas' : 'Layers', value: release.layers === null ? unknown : release.layers.join(' + ') },
     { label: pt ? 'Sessões' : 'Sessions', value: release.sessions === null ? unknown : String(release.sessions) },
@@ -2067,6 +2185,25 @@ function RestoreRelease({ release, pt, starting, disabled, confirming, onConfirm
       value: release.harnesses === null ? unknown : release.harnesses.join(', '),
     },
   ]
+}
+
+/**
+ * One release, and ONE verb.
+ *
+ * It used to carry two buttons named after their payload — "Só métricas" and "Tudo, incluindo
+ * clonar repositórios" — with an inline two-step confirm. Reported verbatim: "eu cliquei em ver
+ * backup e nao tem a opcao de restaurar". Both buttons DID restore; neither said so. The row now
+ * says `Restaurar`, and the choice between the two payloads, with what each does to what you
+ * already have, is the modal it opens.
+ */
+function RestoreRelease({ release, pt, disabled, onRestore }: {
+  release: RestoreCandidate
+  pt: boolean
+  /** A restore is running, or a start is in flight. The sentence that says WHY is above the list. */
+  disabled: boolean
+  onRestore: () => void
+}) {
+  const facts = releaseFacts(release, pt)
 
   return (
     <div style={{
@@ -2097,73 +2234,308 @@ function RestoreRelease({ release, pt, starting, disabled, confirming, onConfirm
         </code>
       </div>
 
-      <div style={{
-        display: 'flex', flexDirection: isMobile ? 'column' : 'row',
-        flexWrap: 'wrap', gap: 8, marginTop: 10,
-      }}>
-        {pending ? (
-          <>
-            <RestoreButton
-              text={starting
-                ? (pt ? 'Iniciando…' : 'Starting…')
-                : (pt ? 'Confirmar?' : 'Confirm?')}
-              busy={starting}
-              primary
-              disabled={disabled}
-              onClick={() => onStart(release.tagName, pendingWithRepos)}
-            />
-            <RestoreButton
-              text={pt ? 'Cancelar' : 'Cancel'}
-              primary={false}
-              disabled={false}
-              onClick={() => onConfirming(null)}
-            />
-          </>
-        ) : (
-          <>
-            <RestoreButton
-              text={pt ? 'Só métricas' : 'Metrics only'}
-              primary
-              disabled={disabled}
-              onClick={() => onConfirming(keyOf(false))}
-            />
-            <RestoreButton
-              text={pt ? 'Tudo, incluindo clonar repositórios' : 'Everything, including cloning repositories'}
-              primary={false}
-              disabled={disabled}
-              onClick={() => onConfirming(keyOf(true))}
-            />
-          </>
-        )}
+      <div style={{ marginTop: 10 }}>
+        <RestoreButton
+          text={pt ? 'Restaurar' : 'Restore'}
+          icon={<RotateCcw size={14} />}
+          primary
+          disabled={disabled}
+          onClick={onRestore}
+        />
       </div>
-      {pending ? (
-        <p style={{ fontSize: 11, color: 'var(--anthropic-orange)', lineHeight: 1.45, margin: '6px 0 0' }}>
-          {pendingWithRepos
-            ? (pt
-              ? 'Vai escrever dentro da sua pasta pessoal E clonar todos os repositórios mapeados por este backup.'
-              : 'This will write inside your home directory AND clone every repository this backup mapped.')
-            : (pt
-              ? 'Vai escrever dentro da sua pasta pessoal.'
-              : 'This will write inside your home directory.')}
-        </p>
-      ) : (
-        <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '6px 0 0' }}>
-          {pt
-            ? '"Tudo" clona cada repositório mapeado por este backup — pode levar muitos minutos.'
-            : '“Everything” clones every repository this backup mapped — it can take many minutes.'}
-        </p>
-      )}
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '6px 0 0' }}>
+        {pt
+          ? 'Abre as opções e o que muda no que você já tem, antes de qualquer escrita.'
+          : 'Opens the choices, and what changes in what you already have, before anything is written.'}
+      </p>
     </div>
+  )
+}
+
+/**
+ * The RESTORE modal — the question this whole flow exists to ask, in one place.
+ *
+ * NOT `window.confirm`: it blocks the whole tab, and this page polls a running restore job. NOT the
+ * shared `ConfirmModal` from `primitives.tsx` either — that one takes a `message: string`, and what
+ * has to be on screen here is a backup's identity, two options with their own descriptions, and a
+ * block of what happens to the files already on this machine. So it is built here, out of the same
+ * boxes, colours and touch sizes the rest of this page uses.
+ *
+ * Escape and a backdrop click cancel. There is deliberately NO focus trap: the confirm button takes
+ * focus on open, and everything else stays reachable by Tab in document order — a hand-rolled trap
+ * is the thing that breaks keyboard use, not the absence of one.
+ *
+ * The WARNINGS are not written here from memory. They are `restore-plan.ts`'s own four rules:
+ * a local file that is NEWER is kept (`skip: 'newer-local'`), `preferences.json` is MERGED with
+ * local keys winning (`mergePreferences`), a repository whose destination directory already exists
+ * is SKIPPED (`destination-exists`), and the whole thing writes inside `$HOME`.
+ */
+function RestoreConfirmModal({ release, machine, pt, starting, error, onCancel, onConfirm }: {
+  release: RestoreCandidate
+  /** The machine this backup came from, or null when the release body never recorded one. */
+  machine: string | null
+  pt: boolean
+  starting: boolean
+  /** The server's own refusal for a failed start, untouched. Shown here because the modal stays
+   *  open on failure — closing it would drop the answer the click asked for. */
+  error: string | null
+  onCancel: () => void
+  onConfirm: (withRepos: boolean) => void
+}) {
+  const isMobile = useIsMobile()
+  // The choice, defaulting to the cheap one. "Everything" clones every repository the backup
+  // mapped and can run for many minutes, so it is never what a modal opens already selected.
+  const [withRepos, setWithRepos] = useState(false)
+  const confirmRef = React.useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [onCancel])
+
+  useEffect(() => { confirmRef.current?.focus() }, [])
+
+  const facts = releaseFacts(release, pt)
+  const identity: { label: string; value: string }[] = [
+    {
+      label: pt ? 'Máquina' : 'Machine',
+      value: machine ?? (pt
+        ? 'nenhum nome de máquina registrado no release'
+        : 'no machine name recorded in the release'),
+    },
+    { label: pt ? 'Data' : 'Date', value: new Date(release.createdAt).toLocaleString() },
+    ...facts,
+  ]
+
+  const confirmText = withRepos
+    ? (pt ? 'Restaurar tudo e clonar os repositórios' : 'Restore everything and clone repositories')
+    : (pt ? 'Restaurar só as métricas' : 'Restore metrics only')
+
+  return (
+    <div
+      onClick={onCancel}
+      role="presentation"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 2000,
+        display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center',
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(3px)',
+        // Full-screen on mobile — flush left, right and bottom, with only the status-bar inset
+        // reserved at the top (`OVERLAY_TOP`). A bare `0` here puts the dialog's own header under
+        // the iOS clock, which takes the taps: `mobileOverlay.ts` owns that decision for every
+        // full-screen overlay in the app, and its lint fails the build on a hardcoded zero.
+        padding: isMobile ? OVERLAY_TOP : 16,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={pt ? 'Restaurar backup' : 'Restore backup'}
+        style={{
+          width: '100%', maxWidth: isMobile ? '100%' : 560,
+          height: isMobile ? '100%' : undefined,
+          maxHeight: isMobile ? '100%' : '90vh',
+          overflowY: 'auto', boxSizing: 'border-box',
+          background: 'var(--bg-card)', border: isMobile ? 'none' : '1px solid var(--border)',
+          borderRadius: isMobile ? 0 : 12, padding: isMobile ? 16 : 22,
+          boxShadow: isMobile ? 'none' : '0 12px 48px rgba(0,0,0,0.5)',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{
+            display: 'inline-flex', padding: 8, borderRadius: 9,
+            background: 'var(--anthropic-orange-dim)', color: 'var(--anthropic-orange)',
+          }}>
+            <RotateCcw size={17} />
+          </span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {pt ? 'Restaurar este backup' : 'Restore this backup'}
+          </span>
+        </div>
+
+        {/* WHICH backup. Named before anything is chosen — restoring the wrong computer onto this
+            one is the accident the machine grouping in the list exists to prevent, and the modal
+            is the last place that can still say which machine this is. */}
+        <div>
+          {identity.map(f => (
+            <div
+              key={f.label}
+              style={{
+                display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12,
+                padding: '5px 0', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap',
+              }}
+            >
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)', flexShrink: 0 }}>{f.label}</span>
+              <span style={{
+                fontSize: 12, color: 'var(--text-primary)', textAlign: 'right',
+                minWidth: 0, wordBreak: 'break-word',
+              }}>
+                {f.value}
+              </span>
+            </div>
+          ))}
+          {/* The tag verbatim, in its own sideways-scrolling box — the page must not scroll
+              horizontally at 390px, and this modal IS the page there. */}
+          <div style={{ overflowX: 'auto', margin: '8px 0 0' }}>
+            <code style={{
+              fontFamily: 'monospace', fontSize: 11, color: 'var(--text-tertiary)', whiteSpace: 'pre',
+            }}>
+              {release.tagName}
+            </code>
+          </div>
+        </div>
+
+        {/* THE CHOICE. Two options, each named for what it does and carrying its own one-line
+            description — never a bare pair of buttons whose difference the reader has to infer. */}
+        <div role="radiogroup" aria-label={pt ? 'O que restaurar' : 'What to restore'} style={{
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          <RestoreChoice
+            selected={!withRepos}
+            disabled={starting}
+            onSelect={() => setWithRepos(false)}
+            title={pt ? 'Só as métricas' : 'Metrics only'}
+            description={pt
+              ? 'Traz sessões, métricas e configurações. Segundos.'
+              : 'Brings sessions, metrics and settings. Seconds.'}
+          />
+          <RestoreChoice
+            selected={withRepos}
+            disabled={starting}
+            onSelect={() => setWithRepos(true)}
+            title={pt ? 'Tudo, incluindo clonar os repositórios' : 'Everything, including cloning repositories'}
+            description={pt
+              ? 'Além das métricas, clona cada repositório que este backup mapeou. Pode levar muitos minutos.'
+              : 'On top of the metrics, clones every repository this backup mapped. It can take many minutes.'}
+          />
+        </div>
+
+        {/* WHAT HAPPENS TO WHAT YOU HAVE NOW. Every line is a rule that exists in
+            `restore-plan.ts`, not a reassurance written for this screen. */}
+        <div style={{
+          padding: '10px 12px', borderRadius: 8,
+          background: 'color-mix(in srgb, var(--anthropic-orange) 8%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--anthropic-orange) 28%, transparent)',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6,
+            fontSize: 12, fontWeight: 700, color: 'var(--text-primary)',
+          }}>
+            <AlertTriangle size={14} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
+            {pt ? 'O que acontece com o que você já tem' : 'What happens to what you have now'}
+          </div>
+          <ul style={{
+            margin: 0, paddingLeft: 18, fontSize: 11.5, lineHeight: 1.55,
+            color: 'var(--text-secondary)',
+          }}>
+            <li>{pt
+              ? 'Um arquivo que já existe aqui e é MAIS NOVO que o do backup é mantido — a restauração não sobrescreve às cegas.'
+              : 'A file you already have that is NEWER than the one in the backup is KEPT — the restore does not blindly overwrite.'}</li>
+            <li>{pt
+              ? 'As suas preferências são MESCLADAS, nunca substituídas: as suas chaves ganham, e só as que você não tem são trazidas do backup.'
+              : 'Your preferences are MERGED, never replaced: your local keys win, and only keys you do not have are taken from the backup.'}</li>
+            {withRepos && (
+              <li>{pt
+                ? 'Um repositório cujo diretório de destino JÁ EXISTE é pulado — um checkout que já está aí nunca é tocado nem sobrescrito.'
+                : 'A repository whose destination directory ALREADY EXISTS is skipped — a checkout that is already there is never touched or overwritten.'}</li>
+            )}
+            <li>{pt
+              ? 'A restauração escreve dentro da sua pasta pessoal.'
+              : 'The restore writes inside your home directory.'}</li>
+          </ul>
+        </div>
+
+        {/* The server's own refusal, untouched, beside the button that asked for it. */}
+        <GithubFeedback feedback={error === null ? null : { ok: false, text: error }} />
+
+        <div style={{
+          display: 'flex', gap: 8, marginTop: 2, justifyContent: 'flex-end',
+          flexDirection: isMobile ? 'column-reverse' : 'row',
+        }}>
+          <RestoreButton
+            text={pt ? 'Cancelar' : 'Cancel'}
+            primary={false}
+            disabled={false}
+            onClick={onCancel}
+          />
+          <RestoreButton
+            buttonRef={confirmRef}
+            text={starting ? (pt ? 'Iniciando…' : 'Starting…') : confirmText}
+            busy={starting}
+            primary
+            disabled={starting}
+            onClick={() => onConfirm(withRepos)}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** One of the modal's two options: a whole-card radio, ≥44px on mobile, carrying its own one-line
+ *  description. A bare button pair would leave the difference between the two to be inferred. */
+function RestoreChoice({ selected, disabled, onSelect, title, description }: {
+  selected: boolean
+  disabled: boolean
+  onSelect: () => void
+  title: string
+  description: string
+}) {
+  const isMobile = useIsMobile()
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      disabled={disabled}
+      onClick={onSelect}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3,
+        width: '100%', boxSizing: 'border-box', textAlign: 'left',
+        padding: '10px 12px', minHeight: isMobile ? 44 : undefined,
+        borderRadius: 8,
+        border: `1px solid ${selected ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+        background: selected ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',
+        cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+        fontFamily: 'inherit',
+      }}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', gap: 7,
+        fontSize: 12.5, fontWeight: 700,
+        color: selected ? 'var(--anthropic-orange)' : 'var(--text-primary)',
+      }}>
+        <span style={{
+          width: 12, height: 12, borderRadius: '50%', flexShrink: 0, boxSizing: 'border-box',
+          border: `2px solid ${selected ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+          background: selected ? 'var(--anthropic-orange)' : 'transparent',
+          boxShadow: selected ? 'inset 0 0 0 2px var(--bg-card)' : 'none',
+        }} />
+        {title}
+      </span>
+      <span style={{
+        fontSize: 11, lineHeight: 1.45, color: 'var(--text-tertiary)', fontWeight: 400,
+      }}>
+        {description}
+      </span>
+    </button>
   )
 }
 
 /** The row's own button shape — the same box the rest of this page uses, sized as a real touch
  *  target and full-width on mobile. */
-function RestoreButton({ text, primary, disabled, busy, onClick }: {
+function RestoreButton({ text, primary, disabled, busy, icon, buttonRef, onClick }: {
   text: string
   primary: boolean
   disabled: boolean
   busy?: boolean
+  /** A glyph before the label — the row's `Restaurar` carries one so the verb is recognisable
+   *  before it is read. Never shown while `busy`: the spinner takes that slot. */
+  icon?: React.ReactNode
+  /** So the modal can put focus on its confirm button when it opens. */
+  buttonRef?: React.RefObject<HTMLButtonElement | null>
   onClick: () => void
 }) {
   const isMobile = useIsMobile()
@@ -2171,6 +2543,7 @@ function RestoreButton({ text, primary, disabled, busy, onClick }: {
   return (
     <button
       type="button"
+      ref={buttonRef}
       onClick={onClick}
       disabled={disabled}
       style={{
@@ -2186,7 +2559,9 @@ function RestoreButton({ text, primary, disabled, busy, onClick }: {
         textAlign: 'center',
       }}
     >
-      {busy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
+      {busy
+        ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+        : icon}
       {text}
     </button>
   )
