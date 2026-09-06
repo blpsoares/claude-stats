@@ -125,6 +125,16 @@ const HARNESS_SORT: Record<HarnessId, number> = {
 export const HARNESS_ORDER: HarnessId[] = (Object.keys(HARNESS_SORT) as HarnessId[])
   .sort((a, b) => HARNESS_SORT[a] - HARNESS_SORT[b])
 
+/** One day's share of a session. The four counters plus what a day series needs to be drawn. */
+export interface SessionDayUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  /** Messages of BOTH roles, matching `dailyActivity.messageCount`. */
+  messages: number
+}
+
 export interface SessionMeta {
   session_id: string
   project_path: string
@@ -167,6 +177,27 @@ export interface SessionMeta {
    * total would report a context far past full on a session that never filled it.
    */
   context_tokens?: number
+  /**
+   * WHAT THIS SESSION DID ON EACH DAY — the one thing a date filter cannot otherwise know.
+   *
+   * A session is a SPAN and its four counters are LIFETIME totals, so a date range could only ever
+   * file the whole of it on one day. Filing it on the day it STARTED makes "today" nearly empty for
+   * anyone whose session has been open since Tuesday; filing it on every day it TOUCHES multiplies
+   * it by the number of those days — measured at 86x on a real machine before this field existed.
+   * Neither is a rounding error, and no third answer is derivable from a lifetime total.
+   *
+   * So the parser keeps the split it is already walking past: every turn carries a `timestamp`, and
+   * summing per day costs one map lookup on a loop that is already reading every line.
+   *
+   * The day key is `timestamp.slice(0, 10)` — UTC, matching `tagSessionDay` and `stats-cache.json`'s
+   * own day series. Two day rules exist in this repo and this is the one the aggregates use; the
+   * local-clock reading would put a 23:00 session on a different day from the bar it is plotted on.
+   *
+   * ABSENT on a session parsed before this existed, and on any harness whose adapter does not
+   * produce it. A consumer that finds it missing must fall back to the whole-session rule rather
+   * than treating the session as empty — the store is full of records written by older builds.
+   */
+  daily?: Record<string, SessionDayUsage>
   /**
    * The window that measurement should be read against, WHEN THE HARNESS ITSELF STATES IT.
    *

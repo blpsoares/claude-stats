@@ -1,5 +1,5 @@
 import { readFile } from 'fs/promises'
-import type { SessionMeta, TurnEvent } from '@agentistics/core'
+import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf } from '@agentistics/core'
 import { getGitFileStats } from './git'
 import { countGitCommands } from './harness-activity'
@@ -226,6 +226,24 @@ export async function parseSessionJsonl(
 
   let cwd = '', lastCwd = '', startTime = '', lastTime = '', firstPrompt = '', modelId = '', sessionTitle = ''
   let userMsgs = 0, assistantMsgs = 0, inputTokens = 0, outputTokens = 0
+  /**
+   * The session's work, SPLIT BY DAY — see `SessionMeta.daily`.
+   *
+   * Accumulated on the loop that is already reading every line, so it costs one map lookup per
+   * turn. The key is the ISO day of the turn's own `timestamp` (UTC), which is the rule
+   * `tagSessionDay` and `stats-cache.json`'s day series both use.
+   */
+  const daily = new Map<string, SessionDayUsage>()
+  const dayOf = (iso: string | undefined): SessionDayUsage | null => {
+    if (!iso || iso.length < 10) return null
+    const key = iso.slice(0, 10)
+    let d = daily.get(key)
+    if (!d) {
+      d = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 0 }
+      daily.set(key, d)
+    }
+    return d
+  }
   let cacheReadTokens = 0, cacheCreationTokens = 0
   /**
    * How full the window was on the LAST turn — a gauge, reassigned rather than accumulated.
@@ -320,6 +338,8 @@ export async function parseSessionJsonl(
     }
 
     if (e.type === 'user') {
+      // Counted for BOTH roles, matching `dailyActivity.messageCount`.
+      { const d = dayOf(ts); if (d) d.messages++ }
       const result = e.toolUseResult as Record<string, unknown> | undefined
       if (result && typeof result === 'object' && typeof result.agentId === 'string' && result.agentId) {
         sawAgentLaunch = true
@@ -371,12 +391,24 @@ export async function parseSessionJsonl(
       const msg = e.message as Record<string, unknown> | undefined
       if (!modelId && typeof msg?.model === 'string' && msg.model.startsWith('claude-')) modelId = msg.model
       const msgOutputTokens = (msg?.usage as Record<string, number> | undefined)?.output_tokens ?? 0
+      { const d = dayOf(ts); if (d) d.messages++ }
       if (msg?.usage) {
         const u = msg.usage as Record<string, number>
         inputTokens         += u.input_tokens ?? 0
         outputTokens        += u.output_tokens ?? 0
         cacheReadTokens     += u.cache_read_input_tokens ?? 0
         cacheCreationTokens += u.cache_creation_input_tokens ?? 0
+        // The SAME four counters, against the day this turn happened on. A turn with no readable
+        // timestamp contributes to the lifetime totals and to no day — it cannot be placed, and
+        // placing it on the session's start day would be inventing the one fact this exists to
+        // stop inventing.
+        const d = dayOf(ts)
+        if (d) {
+          d.input_tokens              += u.input_tokens ?? 0
+          d.output_tokens             += u.output_tokens ?? 0
+          d.cache_read_input_tokens   += u.cache_read_input_tokens ?? 0
+          d.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0
+        }
         // LAST wins, and only when the record actually carries an input side. A synthetic record of
         // all zeros would otherwise reset a real reading to "context empty" on the final turn.
         const sent = contextOfUsage(u)
@@ -496,6 +528,9 @@ export async function parseSessionJsonl(
     // Absent rather than zero when nothing was measured — a confident "0% of the window" on a
     // session that simply recorded no usage is the same lie `HARNESS_CAPABILITIES` prevents.
     ...(contextTokens > 0 ? { context_tokens: contextTokens } : {}),
+    // Only when there is something to say. An empty map on every session would be a field that
+    // means "no days" on a record that simply has no timestamps — see `SessionMeta.daily`.
+    ...(daily.size > 0 ? { daily: Object.fromEntries(daily) } : {}),
     first_prompt: firstPrompt,
     title: sessionTitle || undefined,
     user_interruptions: userInterruptions,

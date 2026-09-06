@@ -63,7 +63,11 @@ export async function cachedParseSession(
 }
 
 /** The shape of a stored `session` row. See the note in `cachedParseSession`. */
-const SESSION_SHAPE = 'v3'
+// v4: `SessionMeta.daily` — the per-day split of the four counters. Exactly the case the comment
+// above describes: without a bump, every transcript already in this cache went on answering in the
+// shape from before the field existed, so only the three sessions being appended to right now
+// gained it. Measured before the bump: 3 of 658.
+const SESSION_SHAPE = 'v4'
 
 /** Everything `scanProjectDir` needs from a transcript whose session already exists in
  *  Claude's own session-meta — which carries none of it. */

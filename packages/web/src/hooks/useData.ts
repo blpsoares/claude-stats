@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { activeInDays, daysBetween, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -367,6 +368,23 @@ export function getDateRangeFilter(dateRange: DateRange, customStart?: string, c
   const start = customStart ? utcStartOfDay(utcDateFromDayStr(customStart)) : new Date(0)
   const end = customEnd ? utcEndOfDay(utcDateFromDayStr(customEnd)) : now
   return { start, end }
+}
+
+/**
+ * A day range's messages, split between the two roles by the session's own lifetime ratio.
+ *
+ * `SessionDayUsage` records the COUNT and not the split, because that is what `dailyActivity` also
+ * records and matching it is what lets the two be compared. The ratio is a proportion of a measured
+ * total, not a guess at behaviour, and it is exact whenever the range is the whole session.
+ */
+function splitMessages(total: number, lifeUser: number, lifeAssistant: number): {
+  user_message_count: number
+  assistant_message_count: number
+} {
+  const life = lifeUser + lifeAssistant
+  if (life <= 0 || total <= 0) return { user_message_count: total, assistant_message_count: 0 }
+  const user = Math.round((lifeUser / life) * total)
+  return { user_message_count: user, assistant_message_count: Math.max(0, total - user) }
 }
 
 function inRange(date: Date, start: Date, end: Date) {
@@ -1175,11 +1193,29 @@ export function computeDerivedStats(
      * only attribution the data supports — and a wrong number stated confidently is worse than a
      * small one.
      */
-    const inDateRange = (s: { start_time?: string }) =>
-      isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
+    /**
+     * THE DAYS THIS FILTER COVERS, as the keys `SessionMeta.daily` is written with.
+     *
+     * Built once per range rather than per session: a 90-day filter over 650 sessions would
+     * otherwise rebuild the same list 650 times.
+     */
+    const rangeDays = new Set(daysBetween(start.getTime(), end.getTime()))
+    /**
+     * Is this session IN the range?
+     *
+     * A session that records its per-day split answers exactly — it is in the range if it did
+     * anything on one of these days, which is what makes a conversation open since Tuesday appear
+     * under "today". One that does not is filed on the day it STARTED, the answer this product has
+     * always given: falling back to the whole session would put its lifetime totals into every day
+     * it touches, measured at 86x on a real machine.
+     */
+    const inDateRange = (s: { start_time?: string; daily?: Record<string, DayUsage> }) =>
+      s.daily
+        ? activeInDays(s, rangeDays)
+        : isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
 
     // Filter sessions (date + projects + model + active-only)
-    const filteredSessions = harnessSessions.filter(s => {
+    const selectedSessions = harnessSessions.filter(s => {
       if (!inDateRange(s)) return false
       if (projectFiltered && !projectSet.has(s.project_path)) return false
       if (repoFiltered && !repoSet.has(s.git_remote || '')) return false
@@ -1187,6 +1223,43 @@ export function computeDerivedStats(
       if (modelSet && (!s.model || !modelSet.has(s.model))) return false
       if (activeOnly && !runningIds.has(s.session_id)) return false
       return true
+    })
+
+    /**
+     * EACH SESSION CUT DOWN TO THE RANGE — the projection every total below then inherits.
+     *
+     * Done here, once, rather than at the twenty places that sum these sessions. A session's four
+     * counters are LIFETIME totals, so a filtered list of whole sessions answers "everything those
+     * sessions ever did" under a heading that says "today" — measured at 86x on a real machine.
+     * Replacing the counters at the source is what makes every consumer right without each of them
+     * having to know.
+     *
+     * ONLY WHERE IT IS KNOWN, and only where it is ASKED FOR:
+     *   - a session with no `daily` is passed through untouched, because there is nothing to cut it
+     *     with; it was selected by its start day and its lifetime figure is the only one there is;
+     *   - an unbounded range projects nothing — "all" wants the lifetime totals, and slicing them
+     *     against every day would be arithmetic with no purpose.
+     *
+     * `daily` is dropped from the projection: it has already been spent, and leaving it would let a
+     * consumer slice an already-sliced session.
+     */
+    const rangeBounded = rangeDays.size > 0 && rangeDays.size <= 366
+    const filteredSessions = !rangeBounded ? selectedSessions : selectedSessions.map(s => {
+      const cut = sliceSession(s, rangeDays)
+      if (!cut) return s
+      const { daily: _daily, ...rest } = s
+      return {
+        ...rest,
+        input_tokens: cut.input_tokens,
+        output_tokens: cut.output_tokens,
+        cache_read_input_tokens: cut.cache_read_input_tokens,
+        cache_creation_input_tokens: cut.cache_creation_input_tokens,
+        // The message split is not recorded per day — only the total is — so the range's messages
+        // are apportioned to the two roles by the session's own ratio rather than invented. With no
+        // lifetime messages to take a ratio from, they go to the user side, which is what an
+        // unattributable message already does everywhere else.
+        ...splitMessages(cut.messages, s.user_message_count ?? 0, s.assistant_message_count ?? 0),
+      }
     })
 
     // Non-Claude sessions in the active date range — used to supplement statsCache totals
