@@ -307,6 +307,9 @@ async function pollOnce(): Promise<void> {
   }
 }
 
+/** The visibility listener, held beside the timer so the two are added and removed together. */
+let onVisible: (() => void) | null = null
+
 function ensurePolling(lang: 'pt' | 'en'): void {
   if (lang !== pollLang) {
     // The payload is localized by the server, so a language change invalidates the snapshot's
@@ -317,12 +320,32 @@ function ensurePolling(lang: 'pt' | 'en'): void {
   if (timer !== null) return
   void pollOnce()
   timer = setInterval(() => { void pollOnce() }, FLEET_POLL_MS)
+  /*
+   * A HIDDEN TAB IS NOT POLLING, whatever this interval says.
+   *
+   * Chrome throttles `setInterval` in a background tab to roughly once a minute, so a fleet left
+   * behind while you do something else is as old as the last throttled tick — and coming back
+   * showed states from a minute ago until the next one happened to fire. The same throttle is what
+   * made the conversation look stuck on the reader's own last message.
+   *
+   * Refcounted with the timer so the listener is added once and removed with it: this poll is
+   * module-level and shared by every mounted consumer, and a listener per consumer would fire N
+   * requests on every return to the tab.
+   */
+  if (onVisible === null) {
+    onVisible = () => { if (document.visibilityState === 'visible') void pollOnce() }
+    document.addEventListener('visibilitychange', onVisible)
+  }
 }
 
 function stopPolling(): void {
   if (timer === null) return
   clearInterval(timer)
   timer = null
+  if (onVisible !== null) {
+    document.removeEventListener('visibilitychange', onVisible)
+    onVisible = null
+  }
 }
 
 export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {

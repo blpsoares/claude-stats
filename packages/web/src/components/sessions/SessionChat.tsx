@@ -617,7 +617,26 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     nudgeChat.current = () => { void poll() }
     void poll()
     const t = setInterval(poll, CHAT_POLL_MS)
-    return () => { alive = false; nudgeChat.current = () => {}; clearInterval(t) }
+    /*
+     * A BACKGROUND TAB DOES NOT POLL, and nothing here noticed it coming back.
+     *
+     * Chrome throttles `setInterval` in a hidden tab to roughly once a minute, so leaving the
+     * session to do something else and returning meant the conversation on screen was as old as the
+     * last tick — the cached turns ending at your own last message — until the throttled interval
+     * happened to fire. Reported as "fica um tempo na minha última mensagem e depois de uns 5
+     * segundos aparece as mensagens". Measured against the server, which is not the slow part: the
+     * chat read answers in 100-220ms on every session on this machine.
+     *
+     * Coming back into view is the exact moment somebody wants what they missed, so it asks then.
+     */
+    const onVisible = () => { if (document.visibilityState === 'visible') void poll() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      alive = false
+      nudgeChat.current = () => {}
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [session.id, lang])
 
   /**
