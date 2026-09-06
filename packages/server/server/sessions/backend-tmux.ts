@@ -267,9 +267,12 @@ export const tmuxBackend: SessionBackend = {
     // a failure and THROWS — see `tmuxListIsEmptyState`. Swallowing them made a tmux that could not
     // be reached report every session as gone, which is the one answer a fleet monitor must never
     // give by accident.
-    const { code, out } = await tmux(listSessionsArgs())
-    if (!tmuxListIsEmptyState(code, out)) {
-      throw new Error(out.trim().split('\n')[0] || `tmux list-sessions failed (code ${code})`)
+    const { code, out, err } = await tmux(listSessionsArgs())
+    // BOTH streams: with no server tmux says nothing on stdout and puts its reason on stderr, so a
+    // stdout-only test would call the ordinary first-run state a failure. See `tmuxListIsEmptyState`.
+    if (!tmuxListIsEmptyState(code, out, err)) {
+      const said = (err.trim() || out.trim()).split('\n')[0]
+      throw new Error(said || `tmux list-sessions failed (code ${code})`)
     }
     return parseTmuxList(out)
   },

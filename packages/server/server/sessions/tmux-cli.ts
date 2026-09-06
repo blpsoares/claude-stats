@@ -307,10 +307,17 @@ export function attachArgs(id: string): string[] {
  * builds), and anything else is a failure the caller must THROW on — `createSessionsPoller` already
  * keeps its previous list and says the refresh failed, which is the honest answer and was
  * unreachable while this returned `[]`.
+ *
+ * **BOTH STREAMS ARE READ, and the first version of this read only stdout — which would have broken
+ * exactly the case the old code got right.** Measured: with no server, `list-sessions` writes
+ * NOTHING to stdout and puts `error connecting to …` on STDERR. Judging on stdout alone, a machine
+ * that has simply never started a session sees `code 1` with an empty string, falls through to
+ * "failure", and every poll throws — turning the ordinary first-run state into a permanent error.
+ * A rule about a message must be given the streams the message can arrive on.
  */
-export function tmuxListIsEmptyState(code: number, out: string): boolean {
+export function tmuxListIsEmptyState(code: number, out: string, err = ''): boolean {
   if (code === 0) return true
-  const text = out.toLowerCase()
+  const text = `${out}\n${err}`.toLowerCase()
   return text.includes('no server running on') || text.includes('error connecting to')
 }
 

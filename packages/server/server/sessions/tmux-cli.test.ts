@@ -320,6 +320,17 @@ describe('tmuxListIsEmptyState — an unreachable tmux is not an empty fleet', (
     expect(tmuxListIsEmptyState(0, 'agentop-x\t1\t0\t0\t1')).toBe(true)
   })
 
+  it('reads STDERR, which is where tmux actually puts the reason', () => {
+    // Measured: with no server, `list-sessions` writes NOTHING to stdout and `error connecting to
+    // …` to stderr. A stdout-only rule turns the ordinary first-run state — a machine that has
+    // never started a session — into a permanent polling error. The first version of this fix had
+    // exactly that bug.
+    expect(tmuxListIsEmptyState(1, '', 'error connecting to /tmp/tmux-1000/agentop (No such file or directory)')).toBe(true)
+    expect(tmuxListIsEmptyState(1, '', 'no server running on /tmp/tmux-1000/agentop')).toBe(true)
+    // And an empty stderr with a non-zero exit is still a failure.
+    expect(tmuxListIsEmptyState(1, '', '')).toBe(false)
+  })
+
   it('NO SERVER is the ordinary empty state, in both wordings tmux uses', () => {
     // Measured on this machine (tmux 3.2a): a socket that does not exist exits 1 with
     // `error connecting to /tmp/tmux-1000/<name> (No such file or directory)`. Older builds print
