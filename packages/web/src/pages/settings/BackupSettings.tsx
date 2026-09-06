@@ -295,6 +295,45 @@ const SCHEDULE_WORD: Record<string, { en: string; pt: string }> = {
 const MIN_CUSTOM_HOURS = 1
 
 /**
+ * The named shapes a backup can take — mirrored from `backup/backup-presets.ts` (the web bundle may
+ * never import from `packages/server`). `backup-presets.test.ts` owns the rules; this is the list
+ * and its words.
+ *
+ * Exactly one is RECOMMENDED, and it says so on the button. The four layer checkboxes are four
+ * independent switches, and asking somebody to pick among them is asking them to already know what
+ * a restore needs — the layers are not a preference, they decide whether a restore brings a
+ * machine back or half of one.
+ */
+const BACKUP_PRESETS: { id: string; layers: BackupLayer[]; recommended?: true }[] = [
+  { id: 'minimal', layers: ['metrics'] },
+  { id: 'recommended', layers: ['metrics', 'repos'], recommended: true },
+  { id: 'everything', layers: ['metrics', 'repos', 'archive', 'raw'] },
+]
+
+const PRESET_TEXT: Record<string, { en: { name: string; what: string }; pt: { name: string; what: string } }> = {
+  minimal: {
+    en: { name: 'Essentials', what: 'Sessions, metrics and settings. The dashboard comes back; the map of where your repositories were does not.' },
+    pt: { name: 'Essencial', what: 'Sessões, métricas e configurações. O dashboard volta; o mapa de onde ficavam seus repositórios não.' },
+  },
+  recommended: {
+    en: { name: 'Recommended', what: 'The essentials plus the map of every repository, a bundle of the commits that exist on no remote and a patch of your uncommitted work. The difference between “my dashboard is back” and “my machine is back”.' },
+    pt: { name: 'Recomendado', what: 'O essencial mais o mapa de cada repositório, um pacote dos commits que não estão em remote nenhum e um patch do que você não commitou. A diferença entre “meu dashboard voltou” e “minha máquina voltou”.' },
+  },
+  everything: {
+    en: { name: 'Everything', what: 'Adds the conversation transcripts. Complete, and much larger — a size to choose on purpose rather than arrive at.' },
+    pt: { name: 'Tudo', what: 'Inclui as transcrições das conversas. Completo, e muito maior — um tamanho para se escolher de propósito, não para se chegar sem querer.' },
+  },
+}
+
+/** Which preset a layer set IS, by SET and not by order — or null. Never a nearest guess: telling
+ *  somebody they are on the recommended shape when they are not is worse than saying they are on
+ *  their own. */
+function presetOf(layers: BackupLayer[]): string | null {
+  const want = [...new Set(layers)].sort().join(',')
+  return BACKUP_PRESETS.find(p => [...p.layers].sort().join(',') === want)?.id ?? null
+}
+
+/**
  * The four layers, under the names a person thinks in — never the CLI's own `metrics`/`repos`/
  * `archive`/`raw` vocabulary, which is what the read-only config rows above still use (that value
  * is deliberately untranslated, the same convention as `native`/`docker`). This is the only place
@@ -1018,6 +1057,14 @@ export default function BackupSettings() {
               ? 'O que um backup MANUAL grava. Um sinalizador explícito da CLI (--with-archive/--with-raw) tem prioridade sobre esta escolha.'
               : 'What a MANUAL backup writes. An explicit CLI flag (--with-archive/--with-raw) overrides this choice.'}
           </p>
+          {/* The named shapes, ABOVE the checkboxes. The checkboxes stay: a preset is a starting
+              point, not a cage, and the row below reflects whatever is ticked. */}
+          <PresetPicker
+            layers={status.config.layers}
+            pt={pt}
+            disabled={savingConfig}
+            onPick={layers => void patchConfig({ layers })}
+          />
           <LayerPicker
             layers={status.config.layers}
             sizes={status.config.layerSizes}
@@ -2692,6 +2739,81 @@ function RestoreField({
         onFocus={e => { if (!busy) e.currentTarget.style.borderColor = 'var(--anthropic-orange)' }}
         onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
       />
+    </div>
+  )
+}
+
+/**
+ * The three named shapes, one of them marked RECOMMENDED.
+ *
+ * Above the layer checkboxes rather than instead of them: a preset is a starting point, not a cage,
+ * and the checkboxes below go on showing exactly what is ticked. A hand-picked set that happens to
+ * equal a preset shows as that preset — order does not decide it — and a set matching none shows
+ * none selected rather than the nearest one.
+ */
+function PresetPicker({ layers, pt, disabled, onPick }: {
+  layers: BackupLayer[]
+  pt: boolean
+  disabled: boolean
+  onPick: (layers: BackupLayer[]) => void
+}) {
+  const isMobile = useIsMobile()
+  const current = presetOf(layers)
+  const shown = current ?? 'recommended'
+  const text = PRESET_TEXT[shown]!
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{
+        display: 'flex', gap: 8, flexWrap: 'wrap',
+        flexDirection: isMobile ? 'column' : 'row',
+      }}>
+        {BACKUP_PRESETS.map(p => {
+          const on = current === p.id
+          const t = PRESET_TEXT[p.id]!
+          return (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => onPick(p.layers)}
+              disabled={disabled}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                padding: isMobile ? '0 16px' : '7px 14px', minHeight: isMobile ? 44 : undefined,
+                width: isMobile ? '100%' : undefined,
+                borderRadius: 7,
+                border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+                background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
+                color: on ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+                fontSize: 12.5, fontWeight: on ? 700 : 500, fontFamily: 'inherit',
+                cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1,
+              }}
+            >
+              {pt ? t.pt.name : t.en.name}
+              {p.recommended && (
+                // Said on the button and not only in a paragraph: the whole point is that it is
+                // readable at the moment of choosing.
+                <span style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+                  padding: '1px 5px', borderRadius: 4,
+                  color: on ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                  border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+                }}>
+                  {pt ? 'sugerido' : 'suggested'}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '8px 0 0' }}>
+        {current === null
+          // Never presented as a preset it is not — the description shown belongs to a shape the
+          // user is not on, so it is labelled as a suggestion instead of a statement.
+          ? (pt
+            ? 'Você escolheu as camadas à mão. O sugerido é “Recomendado”.'
+            : 'You picked the layers by hand. The suggested shape is “Recommended”.')
+          : (pt ? text.pt.what : text.en.what)}
+      </p>
     </div>
   )
 }
