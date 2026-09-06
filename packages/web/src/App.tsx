@@ -3208,7 +3208,12 @@ export default function AppLayout() {
   // floating button. Two slots host them: the phone's sticky <header> below, and the desktop top
   // strip's trailing region. `stripTrailing` IS that region, so asking it is exact; a second copy
   // of its conditions would be a second place for the two to disagree.
-  const headerHostsMagnifier = (!inSessionsWorkspace && isMobile) || stripTrailing !== null
+  // The sessions workspace hosts it too, on a phone: `SessionsPage`'s own bar draws it (see its
+  // `magnifierButton`). Without this the layer ALSO drew its floating fallback at `top: 50%`, over
+  // the middle of the conversation — reported with a screenshot of it sitting on a paragraph. The
+  // condition names the three slots that exist; a fourth must be added here, or the floating button
+  // reappears on top of whatever that screen is showing.
+  const headerHostsMagnifier = isMobile || stripTrailing !== null
 
   return (
     <div style={{

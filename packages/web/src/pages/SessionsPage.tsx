@@ -24,6 +24,8 @@ import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { FleetOverview } from '../components/sessions/FleetOverview'
+import { MagnifierButton } from '../components/a11y/MagnifierButton'
+import { HideLensesButton } from '../components/a11y/HideLensesButton'
 import { ArtifactsAside } from '../components/sessions/ArtifactsAside'
 import {
   ASIDE_ANIM_MS, ASIDE_EASE, edgeHint, panelWidth, resolveArtifactLayout,
@@ -426,6 +428,31 @@ export default function SessionsPage() {
    * The 44px height stays — it is the mobile target this repo holds everything to — and the label
    * only costs width, which this bar has once the sliders icon's dead space is spent on it.
    */
+  /**
+   * THE MAGNIFIER, IN THE BAR — it was floating over the middle of the conversation.
+   *
+   * `MagnifierLayer` draws its own fixed button at `top: 50%` when no chrome offers it a slot, and
+   * this workspace was the one mobile screen that offered none (`headerHostsMagnifier` excludes it
+   * by name). So on a phone it sat in the vertical centre, over the message somebody was reading —
+   * reported as "ta perdida no meio da tela", with a screenshot of it on top of a paragraph.
+   *
+   * It belongs in the bar for the same reason it is in the desktop's strip, and it costs this bar
+   * nothing when it is not wanted: `MagnifierButton` returns null unless the magnifiers have been
+   * turned on, so a phone that never enabled them never gives up the width.
+   */
+  const magnifierButton = isMobile
+    ? (
+      <>
+        <MagnifierButton ctx={ctx} />
+        {/* Its pair. The floating fallback drew BOTH, and taking over the slot means taking over
+            both — a phone that had opened lenses here would otherwise have no way to hide them,
+            because a pinned lens takes no pointer events of its own. It renders nothing until
+            there is a lens to hide. */}
+        <HideLensesButton ctx={ctx} />
+      </>
+    )
+    : null
+
   const filterButton = (
     <button
       onClick={() => setSheetOpen(true)}
@@ -547,6 +574,7 @@ export default function SessionsPage() {
                 chrome, so the filters have to be reachable from it too — the list you go back to
                 is the thing they narrow. */}
             {filterButton}
+            {magnifierButton}
 
             {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
                 the title to about six characters. The `aria-label` carries the name. */}
@@ -668,6 +696,7 @@ export default function SessionsPage() {
             {pt ? 'Sessões' : 'Sessions'}
           </span>
           {filterButton}
+          {magnifierButton}
         </div>
         {/* `display: flex` again, and for the third time in this file's history the SAME rule:
             `flex: 1` on a child means nothing until its PARENT is a flex container. This div had
