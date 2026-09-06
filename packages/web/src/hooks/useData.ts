@@ -1832,31 +1832,25 @@ export function computeDerivedStats(
 
     // Agent metrics
     const agentInvocations: AgentInvocation[] = []
-    const agentTypeBreakdown: Record<string, { count: number; tokens: number; costUSD: number; durationMs: number; unmeasured: number }> = {}
+    const agentTypeBreakdown: Record<string, { count: number; tokens: number; costUSD: number; durationMs: number }> = {}
 
     for (const s of filteredSessions) {
       if (!s.agentMetrics?.invocations) continue
       for (const inv of s.agentMetrics.invocations) {
         agentInvocations.push(inv)
         const type = inv.agentType || 'unknown'
-        if (!agentTypeBreakdown[type]) agentTypeBreakdown[type] = { count: 0, tokens: 0, costUSD: 0, durationMs: 0, unmeasured: 0 }
+        if (!agentTypeBreakdown[type]) agentTypeBreakdown[type] = { count: 0, tokens: 0, costUSD: 0, durationMs: 0 }
         agentTypeBreakdown[type].count++
-        // An UNMEASURED invocation adds nothing and is COUNTED as adding nothing. `?? 0` alone
-        // would be the confident zero again, one layer up: the sum would look complete.
-        if (inv.measured === 'none') { agentTypeBreakdown[type].unmeasured++; continue }
-        agentTypeBreakdown[type].tokens += inv.totalTokens ?? 0
-        agentTypeBreakdown[type].costUSD += inv.costUSD ?? 0
-        agentTypeBreakdown[type].durationMs += inv.totalDurationMs ?? 0
+        agentTypeBreakdown[type].tokens += inv.totalTokens
+        agentTypeBreakdown[type].costUSD += inv.costUSD
+        agentTypeBreakdown[type].durationMs += inv.totalDurationMs
       }
     }
 
-    const measuredAgents = agentInvocations.filter(i => i.measured !== 'none')
     const totalAgentInvocations = agentInvocations.length
-    /** How many of those contributed nothing, so a partial sum can say it is partial. */
-    const unmeasuredAgentInvocations = agentInvocations.length - measuredAgents.length
-    const totalAgentTokens = measuredAgents.reduce((s, i) => s + (i.totalTokens ?? 0), 0)
-    const totalAgentCostUSD = measuredAgents.reduce((s, i) => s + (i.costUSD ?? 0), 0)
-    const totalAgentDurationMs = measuredAgents.reduce((s, i) => s + (i.totalDurationMs ?? 0), 0)
+    const totalAgentTokens = agentInvocations.reduce((s, i) => s + i.totalTokens, 0)
+    const totalAgentCostUSD = agentInvocations.reduce((s, i) => s + i.costUSD, 0)
+    const totalAgentDurationMs = agentInvocations.reduce((s, i) => s + i.totalDurationMs, 0)
 
     const { session: longestSession, unmeasured: longestSessionUnmeasured } =
       pickLongestSession(filteredSessions)
@@ -1983,7 +1977,6 @@ export function computeDerivedStats(
       agentInvocations,
       agentTypeBreakdown,
       totalAgentInvocations,
-      unmeasuredAgentInvocations,
       totalAgentTokens,
       totalAgentCostUSD,
       totalAgentDurationMs,

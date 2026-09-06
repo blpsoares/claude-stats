@@ -15,7 +15,9 @@
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
-import { TAIL_BYTES, readTailBytes, resolveChatTranscriptPath } from './chat-tail'
+import { resolveChatTranscriptPath } from './chat-tail'
+// The tail window moved into `transcript-window.ts`, shared with every harness reader.
+import { TAIL_BYTES, readTailBytes } from './transcript-window'
 import { conversationOfRow } from './row-conversation'
 import { findStepInTranscript, validStepRef, type StepDetail } from './step-detail'
 import { readFile } from 'node:fs/promises'

@@ -65,10 +65,11 @@ export async function loadConsolidated(): Promise<Map<string, SessionMeta>> {
       // method on it threw. Repaired HERE, on the way in, because the file on disk is already
       // wrong and fixing the adapter cannot reach it. See normalizeSessionTimes.
       normalizeSessionTimes(s)
-      // …and for the same reason, a record written before `AgentInvocation.measured` existed is
-      // read honestly rather than at face value: it filled every figure of an async agent with a
-      // zero and called it `completed`. `migrateAgentMetrics` is idempotent and recovers the shape
-      // from the content — see it for the one signature it looks for.
+      // …and for the same reason, a record written before `AgentInvocation.unmeasured` existed is
+      // read honestly rather than at face value. #373 stopped the READER publishing an async
+      // agent priced at nothing; it does not reach what is already in this store, where such a row
+      // has zeros and no mark and the new rule reads it as "measured, and it cost nothing".
+      // `migrateAgentMetrics` is idempotent and recovers the shape from the content.
       if (s.agentMetrics) s.agentMetrics = migrateAgentMetrics(s.agentMetrics)
       // (harness, id) key; first writer wins per key
       const key = `${s.harness}:${s.session_id}`

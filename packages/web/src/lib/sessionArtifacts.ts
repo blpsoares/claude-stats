@@ -12,11 +12,22 @@
  * `command`, so a `Bash` call's detail is a shell line — and "this looks like a path" would put
  * `rm -rf build/` in a list of files somebody is about to click.
  *
+ * AND IT IS THE CANONICAL NAME, NOT THE DISPLAYED ONE. A turn carries both: `name` is what the
+ * harness itself called the tool (agy's `write_to_file`), which is what the bubble shows because a
+ * conversation records what happened; `canonical` is the same tool under the shared vocabulary
+ * (`Write`), present only where the two differ. This set is written in the shared vocabulary, so it
+ * reads `canonical ?? name` — matching on the displayed name alone would make this panel blind on
+ * every harness but Claude, and rewriting the displayed name to suit this set is what put Claude's
+ * tool names in an Antigravity session's bubbles.
+ *
  * `Read` is excluded. The question this panel answers is what the session PRODUCED; an assistant
  * reading forty files to answer one question would bury the two it wrote.
  */
 
-/** The tools whose `detail` is a file path. Read from `chat-tail.ts`'s own priority list. */
+/**
+ * The tools whose `detail` is a file path, in the SHARED vocabulary — see `canonical` above.
+ * Read from `chat-tail.ts`'s own priority list.
+ */
 export const ARTIFACT_TOOLS: ReadonlySet<string> = new Set([
   'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
 ])
@@ -37,7 +48,14 @@ export interface Artifact {
 }
 
 interface Turnish {
-  tools?: { name: string; detail?: string; writes?: string[]; opaqueWrite?: boolean }[]
+  tools?: {
+    name: string
+    /** The shared-vocabulary name, when it differs from the displayed one. */
+    canonical?: string
+    detail?: string
+    writes?: string[]
+    opaqueWrite?: boolean
+  }[]
   pending?: boolean
 }
 
@@ -69,7 +87,7 @@ export function artifactsFromTurns(turns: readonly Turnish[]): Artifact[] {
         if (prevW) { prevW.touches += 1; prevW.order = order++; prevW.live = t?.pending === true }
         else seen.set(w, { first: 'Write', touches: 1, order: order++, live: t?.pending === true })
       }
-      if (!ARTIFACT_TOOLS.has(call.name)) continue
+      if (!ARTIFACT_TOOLS.has(call.canonical ?? call.name)) continue
       const path = call.detail?.trim()
       if (!path) continue
       // `toolDetail` appends an ellipsis past 200 characters. A truncated path names no file, and
@@ -81,7 +99,12 @@ export function artifactsFromTurns(turns: readonly Turnish[]): Artifact[] {
         prev.order = order++
         prev.live = t.pending === true
       } else {
-        seen.set(path, { first: call.name, touches: 1, order: order++, live: t.pending === true })
+        // The CANONICAL name again: `kind` is decided by whether the first touch was a `Write`, so
+        // recording agy's own `write_to_file` here would file every file it created as `edited`.
+        // Same reading as the `ARTIFACT_TOOLS` test above, and it must not drift from it.
+        seen.set(path, {
+          first: call.canonical ?? call.name, touches: 1, order: order++, live: t.pending === true,
+        })
       }
     }
   }

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { CheckCircle, Circle, XCircle, ChevronDown, ChevronUp, Bot } from 'lucide-react'
+import { CheckCircle, XCircle, ChevronDown, ChevronUp, Bot } from 'lucide-react'
 import { fmt, fmtCost } from '@agentistics/core'
 import type { AgentInvocation, HarnessId } from '@agentistics/core'
 import type { Lang } from '@agentistics/core'
@@ -7,17 +7,12 @@ import { MetricNote } from './MetricNote'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { capable } from '../lib/harness'
 import { NAtag } from './NAtag'
+import { unmeasuredNote } from '../lib/agentMeasured'
 
 interface AgentMetricsPanelProps {
   invocations: AgentInvocation[]
-  agentTypeBreakdown: Record<string, { count: number; tokens: number; costUSD: number; durationMs: number; unmeasured: number }>
+  agentTypeBreakdown: Record<string, { count: number; tokens: number; costUSD: number; durationMs: number }>
   totalInvocations: number
-  /**
-   * How many of `totalInvocations` contributed NOTHING to the totals because nothing could measure
-   * them — see `AgentInvocation.measured`. Reported so a partial sum says it is partial instead of
-   * reading as a complete one.
-   */
-  unmeasuredInvocations?: number
   totalTokens: number
   totalCostUSD: number
   totalDurationMs: number
@@ -32,6 +27,11 @@ interface AgentMetricsPanelProps {
 }
 
 
+
+/** No figure, and never a zero — see `agentMeasured.ts`. */
+function Absent() {
+  return <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+}
 
 function fmtDuration(ms: number): string {
   if (ms === 0) return '—'
@@ -87,29 +87,10 @@ function SummaryCard({ label, value, sub, accent }: { label: string; value: stri
   )
 }
 
-/**
- * ONE CELL that could not be measured.
- *
- * `NAtag` is the whole-panel placeholder for a harness that cannot produce agent metrics at all;
- * this is its per-cell twin, for one invocation inside a harness that can. It carries the REASON on
- * hover, because "N/A" alone in a column of numbers reads as a rendering fault.
- */
-function Unmeasured({ pt }: { pt: boolean }) {
-  return (
-    <span
-      title={pt
-        ? 'Não medido: a transcrição deste agente ainda não existe ou não está mais no disco.'
-        : 'Not measured: this agent’s transcript does not exist yet, or is no longer on disk.'}
-      style={{ color: 'var(--text-tertiary)', fontVariantNumeric: 'normal' }}
-    >—</span>
-  )
-}
-
 export function AgentMetricsPanel({
   invocations,
   agentTypeBreakdown,
   totalInvocations,
-  unmeasuredInvocations,
   totalTokens,
   totalCostUSD,
   totalDurationMs,
@@ -150,14 +131,10 @@ export function AgentMetricsPanel({
   const maxCount = sortedTypes[0]?.[1].count ?? 1
 
   const displayInvocations = showAll ? invocations : invocations.slice(0, 10)
-  /**
-   * The averages divide by the invocations that were MEASURED, not by all of them.
-   *
-   * Dividing a partial sum by a complete count is how an unmeasured agent quietly drags the average
-   * down — the zero this panel stopped printing, reappearing one arithmetic step later.
-   */
-  const measuredCount = Math.max(0, totalInvocations - (unmeasuredInvocations ?? 0))
-  const perCall = Math.max(1, measuredCount)
+  // Derived from the rows ON SCREEN rather than taken as a prop, so the sentence always describes
+  // the list the reader is looking at.
+  const unmeasuredShown = displayInvocations.filter(i => i.unmeasured).length
+  const note = unmeasuredNote(unmeasuredShown, displayInvocations.length, lang)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -172,7 +149,7 @@ export function AgentMetricsPanel({
         <SummaryCard
           label={pt ? 'Tokens de agentes' : 'Agent tokens'}
           value={fmt(totalTokens)}
-          sub={`avg ${fmt(Math.round(totalTokens / perCall))} / ${pt ? 'chamada' : 'call'}`}
+          sub={`avg ${fmt(Math.round(avgTokens))} / ${pt ? 'chamada' : 'call'}`}
           accent="var(--accent-blue)"
         />
         {/* Agents are a Claude-only capability, so the allocation uses CLAUDE's own C/A — never
@@ -183,27 +160,16 @@ export function AgentMetricsPanel({
             ? (pt ? 'Custo dos agentes (rateado)' : 'Agent cost (allocated)')
             : (pt ? 'Custo dos agentes' : 'Agent cost')}
           value={fmtCost(totalCostUSD * (planFactor ?? 1), currency, brlRate)}
-          sub={`avg ${fmtCost((totalCostUSD * (planFactor ?? 1)) / perCall, currency, brlRate)} / ${pt ? 'chamada' : 'call'}`}
+          sub={`avg ${fmtCost((totalCostUSD * (planFactor ?? 1)) / totalInvocations, currency, brlRate)} / ${pt ? 'chamada' : 'call'}`}
           accent="var(--anthropic-orange)"
         />
         <SummaryCard
           label={pt ? 'Duração total' : 'Total duration'}
           value={fmtDuration(totalDurationMs)}
-          sub={`avg ${fmtDuration(Math.round(totalDurationMs / perCall))} / ${pt ? 'chamada' : 'call'}`}
+          sub={`avg ${fmtDuration(Math.round(avgDurationMs))} / ${pt ? 'chamada' : 'call'}`}
           accent="var(--accent-green)"
         />
       </div>
-
-      {/* A PARTIAL SUM SAYS IT IS PARTIAL. Some invocations cannot be measured at all — an agent
-          launched a moment ago has written nothing yet, and one whose transcript is gone never
-          will — and a total that silently omits rows is a total nobody can check. */}
-      {(unmeasuredInvocations ?? 0) > 0 && (
-        <MetricNote>
-          {pt
-            ? `${unmeasuredInvocations} de ${totalInvocations} invocações não puderam ser medidas — a transcrição do agente ainda não existe ou não está mais no disco — e não entram nos totais acima.`
-            : `${unmeasuredInvocations} of ${totalInvocations} invocations could not be measured — the agent's transcript does not exist yet, or is no longer on disk — and are not in the totals above.`}
-        </MetricNote>
-      )}
 
       {/* What these numbers ARE. An agent's token figure is the harness's own rollup for that
           invocation, which is a different measurement from the session totals elsewhere — saying so
@@ -256,6 +222,11 @@ export function AgentMetricsPanel({
             ({pt ? `exibindo ${displayInvocations.length} de ${totalInvocations}` : `showing ${displayInvocations.length} of ${totalInvocations}`})
           </span>
         </div>
+        {note && (
+          <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-tertiary)', marginBottom: 8 }}>
+            {note}
+          </div>
+        )}
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: isMobile ? 'auto' : 'hidden', width: '100%' }}>
           <div style={{ minWidth: isMobile ? 480 : undefined }}>
           {/* Table header */}
@@ -295,17 +266,9 @@ export function AgentMetricsPanel({
             >
               <AgentTypeBadge type={inv.agentType} />
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                {/* `completed` is not the only thing that is not `failed`. A running agent and one
-                    whose outcome was never recorded both used to draw a green tick. */}
                 {inv.status === 'failed'
                   ? <XCircle size={11} color="var(--accent-red, #ef4444)" style={{ flexShrink: 0 }} />
-                  : inv.status === 'completed'
-                    ? <CheckCircle size={11} color="var(--accent-green)" style={{ flexShrink: 0 }} />
-                    : <Circle
-                        size={11}
-                        color={inv.status === 'running' ? 'var(--accent-green)' : 'var(--text-tertiary)'}
-                        style={{ flexShrink: 0 }}
-                      />
+                  : <CheckCircle size={11} color="var(--accent-green)" style={{ flexShrink: 0 }} />
                 }
                 <span style={{
                   fontSize: 11,
@@ -317,20 +280,21 @@ export function AgentMetricsPanel({
                   {inv.description || <em style={{ color: 'var(--text-tertiary)' }}>—</em>}
                 </span>
               </div>
-              {/* A figure that could not be measured renders N/A, never a formatted zero — the same
-                  rule this panel already applies to a harness that cannot produce agent metrics at
-                  all, now applied to one invocation inside a harness that can. */}
+              {/* An invocation whose subagent transcript is gone carries zeros because the type has
+                  no other value to carry. Rendering them would price real work at nothing — the
+                  confident 0 this product refuses everywhere else — so the cell says nothing
+                  instead, and the note under the heading says why. */}
               <span style={{ fontSize: 11, color: 'var(--text-primary)', textAlign: 'right' }}>
-                {inv.totalTokens === null ? <Unmeasured pt={pt} /> : fmt(inv.totalTokens)}
+                {inv.unmeasured ? <Absent /> : fmt(inv.totalTokens)}
               </span>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>
-                {inv.totalToolUseCount === null ? <Unmeasured pt={pt} /> : inv.totalToolUseCount}
+                {inv.unmeasured ? <Absent /> : inv.totalToolUseCount}
               </span>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>
-                {inv.totalDurationMs === null ? <Unmeasured pt={pt} /> : fmtDuration(inv.totalDurationMs)}
+                {inv.unmeasured ? <Absent /> : fmtDuration(inv.totalDurationMs)}
               </span>
               <span style={{ fontSize: 11, color: 'var(--anthropic-orange)', textAlign: 'right' }}>
-                {inv.costUSD === null ? <Unmeasured pt={pt} /> : fmtCost(inv.costUSD, currency, brlRate)}
+                {inv.unmeasured ? <Absent /> : fmtCost(inv.costUSD, currency, brlRate)}
               </span>
             </div>
           ))}

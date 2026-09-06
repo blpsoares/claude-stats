@@ -33,7 +33,7 @@ export default function ToolsPage() {
       </Section>
 
       <Section flashId="agents" title={<><Bot size={14} /> {lang === 'pt' ? 'Métricas de agentes' : 'Agent metrics'}</>}>
-        <AgentMetricsPanel invocations={derived.agentInvocations} agentTypeBreakdown={derived.agentTypeBreakdown} totalInvocations={derived.totalAgentInvocations} unmeasuredInvocations={derived.unmeasuredAgentInvocations} totalTokens={derived.totalAgentTokens} totalCostUSD={derived.totalAgentCostUSD} totalDurationMs={derived.totalAgentDurationMs} currency={currency} brlRate={brlRate} planFactor={ctx.costBasis === "plan" && ctx.planBasis.basis ? planAllocation(ctx.planBasis.basis).byHarness.claude ?? null : null} lang={lang} harness={filters.harness} />
+        <AgentMetricsPanel invocations={derived.agentInvocations} agentTypeBreakdown={derived.agentTypeBreakdown} totalInvocations={derived.totalAgentInvocations} totalTokens={derived.totalAgentTokens} totalCostUSD={derived.totalAgentCostUSD} totalDurationMs={derived.totalAgentDurationMs} currency={currency} brlRate={brlRate} planFactor={ctx.costBasis === "plan" && ctx.planBasis.basis ? planAllocation(ctx.planBasis.basis).byHarness.claude ?? null : null} lang={lang} harness={filters.harness} />
       </Section>
     </>
   )

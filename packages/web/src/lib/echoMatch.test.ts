@@ -94,3 +94,13 @@ test('the ordering rule never reaches past the last landing', () => {
 test('with nothing landed, a short echo still waits', () => {
   expect(pendingEchoes(['btw'], ['outra coisa qualquer'])).toEqual(['btw'])
 })
+
+test('a SHORT coincidental match never retires the messages before it', () => {
+  // "ok" equals an "ok" the person typed an hour ago. That is the coincidence SAFE_CONTAINS_LEN
+  // guards against; it may drop its own echo and nothing else, or one stale word silently clears
+  // a queue of real messages.
+  expect(pendingEchoes(
+    ['uma mensagem de verdade que ainda espera', 'ok'],
+    ['ok'],
+  )).toEqual(['uma mensagem de verdade que ainda espera'])
+})

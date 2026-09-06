@@ -4,6 +4,7 @@ import { activeMinutesOf } from '@agentistics/core'
 import { getGitFileStats } from './git'
 import { countGitCommands } from './harness-activity'
 import { extractAgentMetrics } from './agent-metrics'
+import { enrichFromSubagentTranscripts } from './subagent-metrics'
 import { addDelta, editDelta, type EditDelta } from './edit-lines'
 
 // File extension → language name (used when session-meta is absent)
@@ -448,17 +449,14 @@ export async function parseSessionJsonl(
   // Use whichever count is higher: git-tracked files changed or files Claude directly edited
   const filesModifiedCount = Math.max(gitFileStats.filesModified, claudeFilesModified.size)
 
-  /**
-   * Agent metrics, if this session used the Agent tool — the PARENT half only.
-   *
-   * What each async agent actually SPENT lives in its own transcript beside this one, and is filled
-   * in by `withSubagentMetrics` at the caching layer (`parse-cache-jsonl.ts`). It is deliberately
-   * NOT done here: this result is cached against THIS file's stamp, and a completed row would then
-   * hold numbers read from files that change while this one does not — a running agent's figures
-   * would freeze until something happened to write to the conversation.
-   */
+  // Extract agent metrics if this session used the Agent tool.
+  //
+  // The parse alone can no longer produce the NUMBERS: since Claude Code made the Agent tool
+  // asynchronous the parent transcript names the subagent and nothing else, so the invocations come
+  // back marked `unmeasured` and are filled in from each subagent's own transcript, which sits
+  // beside this file. See `subagent-metrics.ts`.
   const agentMetrics = toolCounts['Agent']
-    ? extractAgentMetrics(iterLines(content), modelId)
+    ? await enrichFromSubagentTranscripts(extractAgentMetrics(iterLines(content), modelId), filePath, sessionId)
     : undefined
 
   return {

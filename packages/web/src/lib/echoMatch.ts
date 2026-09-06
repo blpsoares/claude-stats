@@ -99,44 +99,61 @@ function withoutLeadingMarkers(turn: string): string {
   return collapseEcho(turn.trim().replace(/^(?:\[Image #\d+\]\s*)+/, ''))
 }
 
+/**
+ * How the transcript accounts for one echo.
+ *
+ *   `no`      nothing in the transcript looks like it — still waiting.
+ *   `weak`    matched, but only by EQUALITY on a string under `SAFE_CONTAINS_LEN`. Good enough to
+ *             retire that one echo, and NOT good enough to speak for the ones before it.
+ *   `anchor`  matched by a comparison a coincidence cannot fake.
+ */
+type EchoMatch = 'no' | 'weak' | 'anchor'
+
 export function pendingEchoes(
   echoes: readonly string[],
   userTurns: readonly string[],
 ): string[] {
   const seen = userTurns.map(collapseEcho).filter(t => t !== '')
   const stripped = userTurns.map(withoutLeadingMarkers).filter(t => t !== '')
-  const inTranscript = echoes.map(text => carriedByTranscript(text, userTurns, seen, stripped))
-  // The LAST echo the comparisons recognised. Delivery is FIFO, so everything before it went into
-  // the same pane earlier and was read no later — see the header's third shape.
-  const lastLanded = inTranscript.lastIndexOf(true)
-  return echoes.filter((_text, i) => i > lastLanded && !inTranscript[i])
+  const match = echoes.map(text => matchEcho(text, userTurns, seen, stripped))
+  // The last echo matched by something a coincidence cannot fake. Delivery is FIFO, so everything
+  // before it went into the same pane earlier and was read no later — the header's third shape.
+  //
+  // ONLY an `anchor` may speak for the messages before it. A `weak` match is the very coincidence
+  // `SAFE_CONTAINS_LEN` exists to guard against — a person types "ok" and the transcript has an
+  // "ok" from an hour ago — and letting one of those anchor the rule turns a mistake that cost ONE
+  // spurious retirement into one that silently clears the whole queue behind it. A message the
+  // person can no longer see is the failure this file exists to prevent.
+  const lastAnchor = match.lastIndexOf('anchor')
+  return echoes.filter((_text, i) => i > lastAnchor && match[i] === 'no')
 }
 
 /**
- * Whether the transcript carries this one echo, judged on TEXT alone.
+ * How the transcript accounts for this one echo, judged on TEXT alone.
  *
  * Split out because `pendingEchoes` now needs the answer for every echo, not just the one it is
  * deciding: the ordering rule above reads the whole vector.
  */
-function carriedByTranscript(
+function matchEcho(
   text: string,
   userTurns: readonly string[],
   seen: readonly string[],
   stripped: readonly string[],
-): boolean {
+): EchoMatch {
   const c = collapseEcho(text)
-  // An empty echo is nothing to wait for; treated as carried so it is dropped either way.
-  if (c === '') return true
-  if (seen.includes(c) || (c.length >= SAFE_CONTAINS_LEN && seen.some(t => t.includes(c)))) return true
+  // An empty echo is nothing to wait for. It anchors nothing — there is no evidence in it.
+  if (c === '') return 'weak'
+  if (seen.includes(c)) return c.length >= SAFE_CONTAINS_LEN ? 'anchor' : 'weak'
+  if (c.length >= SAFE_CONTAINS_LEN && seen.some(t => t.includes(c))) return 'anchor'
   const { prose, paths } = echoProse(text)
-  if (paths === 0) return false
+  if (paths === 0) return 'no'
   // The prose against the stored turn with its leading markers removed. EXACT equality is enough
   // here and is what makes it safe for a two-word message: the markers stand exactly where the
   // paths stood, so what remains on both sides is the same typed sentence — no coincidence to
   // guard against, and none of the length rule's caution is needed.
   if (prose !== '' && (stripped.includes(prose)
-    || (prose.length >= SAFE_CONTAINS_LEN && stripped.some(t => t.includes(prose))))) return true
+    || (prose.length >= SAFE_CONTAINS_LEN && stripped.some(t => t.includes(prose))))) return 'anchor'
   // Only files and no words: match a turn that is only markers, as many as there were paths.
-  if (prose === '' && userTurns.some(t => markerOnlyCount(t) === paths)) return true
-  return false
+  if (prose === '' && userTurns.some(t => markerOnlyCount(t) === paths)) return 'anchor'
+  return 'no'
 }

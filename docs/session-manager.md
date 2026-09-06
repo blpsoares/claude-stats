@@ -365,6 +365,70 @@ blind early Enter would select it and kill the session.
 Codex's reasoning effort is a `-c key=value` configuration override rather than a flag; it is not
 wired up because the key could not be verified from the CLI itself, and agentop does not guess flags.
 
+### Reading the conversation
+
+The Sessions workspace can show a session's **conversation**, not only its terminal screen. Whether
+it can for a given row depends on two independent things, and confusing them cost the feature its
+honesty once already — an Antigravity session with a perfectly good link showed a blank pane with
+no sentence on it, because the only transcript reader that existed was Claude's.
+
+**1. The LINK — is this row's conversation id exact?** A reader is only ever handed a
+`conversationId`, and `ManagedSession.conversationId` is written only where agentop itself handed
+that id to the CLI (`SpawnSpec.assignId` at spawn, or `resume` at reopen). The harness-and-directory
+inference behind the reopen offer never reaches a reader: it is good enough to offer a reopen a
+person confirms by title, and not good enough to put some other conversation from the same folder on
+screen under this session's name.
+
+**2. The FORMAT — has anybody written a reader for it?** `harness-transcript.ts` holds one entry per
+harness. An absent reader is refused in a sentence that names the harness, never rendered as an
+empty conversation.
+
+| Harness | Exact link comes from | Transcript read from |
+|---|---|---|
+| claude | `--session-id` at spawn, plus its own `~/.claude/sessions/<pid>.json` | `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` |
+| copilot | `--session-id` at spawn | `~/.copilot/session-state/<id>/events.jsonl` |
+| codex | `codex resume <id>` | `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl` |
+| kimi | `--resume <id>` | `~/.kimi-code/sessions/*/session_<id>/agents/main/wire.jsonl` |
+| antigravity | `--conversation <id>` | `brain/<id>/.system_generated/logs/transcript_full.jsonl` |
+| **gemini** | **never** | — |
+
+**Gemini can never be read here, and that is a fact about the LINK.** Its `-r, --resume` takes
+`latest` or an index rather than an id, and `--session-id` is deliberately not used because gemini's
+session id in this product is synthetic (`<dir>/<file>`), so a recorded UUID would resolve to nothing
+while looking exact. A gemini row therefore never carries a conversation id at all; the row says so
+(`conversationBlind`) and the workspace hides the chat tab rather than offering one that cannot work.
+A reader for its file format would be code nothing can reach. Its format is nonetheless recorded in
+`harness-transcript.ts` so the measurement is not spent twice: it is a patch log rather than one
+message per line.
+
+The same applies, per row, to any harness whose session was **started fresh** without an id —
+antigravity, codex and kimi only gain the link on a reopen, so a freshly spawned row of those three
+is blind until it is reopened, and says so.
+
+#### Three rules every reader follows
+
+Each was a real defect first, in a different harness each time.
+
+- **The same turn is often written twice, in two different places.** Codex writes
+  `event_msg/{user,agent}_message` beside `response_item/message`; kimi writes `turn.prompt` beside
+  `context.append_message`; antigravity writes the tool REQUEST beside its EXECUTION. Exactly one
+  family is read and the other is ignored outright, and the one read is the SUPERSET — measured,
+  codex's `event_msg` covers 21 of 42 user messages and kimi's `turn.prompt` 15 of 22, so choosing
+  the smaller one silently drops turns.
+- **What nobody said is never drawn as a message.** Every harness puts its own injected material
+  under the user's role and each declares it differently: kimi stamps `message.origin.kind`, copilot
+  keeps the person's `content` apart from a wrapped `transformedContent`, codex has a `developer`
+  role plus `<…>` envelopes — and codex also has entries with no marker at all (measured: 11 of 32
+  untagged user messages were the harness loading an `AGENTS.md`). Those become unattributed notes
+  that NAME the kind and never carry the body. An entry nothing recognises stays the person's:
+  hiding a real message is the expensive direction.
+- **A tool call is shown under the harness's OWN name.** A conversation records what happened, and
+  antigravity ran `run_command`, not `Bash`. The shared vocabulary (`canonicalTool`) is carried
+  alongside as `canonical` and is what anything selecting or counting reads — the artifacts panel
+  picks the file-writing tools by Claude's names and keeps working for every harness. A shell
+  detail goes through `commandSummary`, so a session that opens every command with `cd <dir>` does
+  not draw a column of identical `cd` rows.
+
 ## Scrolling an attached session
 
 Sessions are hosted on agentop's own tmux socket (`-L agentop`), and agentop sets its options on it

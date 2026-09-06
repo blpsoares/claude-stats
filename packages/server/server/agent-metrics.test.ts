@@ -1,202 +1,89 @@
-import { describe, expect, it } from 'bun:test'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { rollupAgentMetrics } from '@agentistics/core'
-import { extractAgentMetrics, withSubagentMetrics } from './agent-metrics'
+import { test, expect } from 'bun:test'
+import { extractAgentMetrics } from './agent-metrics'
 
-const line = (o: unknown) => JSON.stringify(o)
+/** The `Agent` tool_use as the session transcript records it. */
+function agentCall(id: string, description: string, subagentType = 'general-purpose') {
+  return JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { description, subagent_type: subagentType } }] },
+  })
+}
 
-const launch = (toolUseId: string, description: string) => line({
-  type: 'assistant',
-  message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Agent', input: { description, subagent_type: 'general-purpose' } }] },
+/** The result Claude Code writes TODAY: the agent is launched async and carries no numbers. */
+function asyncResult(id: string, agentId: string, description: string) {
+  return JSON.stringify({
+    type: 'user',
+    toolUseResult: {
+      agentId, description, isAsync: true, status: 'async_launched',
+      resolvedModel: 'claude-haiku-4-5-20251001',
+      outputFile: `/tmp/tasks/${agentId}.output`, canReadOutputFile: true,
+    },
+    message: { content: [{ type: 'tool_result', tool_use_id: id }] },
+  })
+}
+
+/** The result Claude Code wrote until 2026-08-13, with the numbers inline. */
+function legacyResult(id: string) {
+  return JSON.stringify({
+    type: 'user',
+    toolUseResult: {
+      status: 'completed', agentType: 'explorer',
+      totalTokens: 900, totalDurationMs: 4200, totalToolUseCount: 6,
+      usage: { input_tokens: 100, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 30 },
+      toolStats: { readCount: 2, searchCount: 1, bashCount: 3, editFileCount: 0, linesAdded: 9, linesRemoved: 1, otherToolCount: 0 },
+    },
+    message: { content: [{ type: 'tool_result', tool_use_id: id }] },
+  })
+}
+
+test('the async shape is recorded as UNMEASURED and NAMES its transcript, never priced at zero', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_1', 'Task 1: backup-plan.ts'),
+    asyncResult('toolu_1', 'a23c974fb8aab9fbf', 'Task 1: backup-plan.ts'),
+  ], 'claude-opus-5')
+
+  expect(m.invocations).toHaveLength(1)
+  const inv = m.invocations[0]!
+  expect(inv.unmeasured).toBe(true)
+  expect(inv.agentId).toBe('a23c974fb8aab9fbf')
+  expect(inv.description).toBe('Task 1: backup-plan.ts')
+  expect(inv.agentType).toBe('general-purpose')
 })
 
-/** The ACK Claude Code writes for an async launch: an id, and no numbers whatsoever. */
-const asyncAck = (toolUseId: string, agentId: string) => line({
-  type: 'user',
-  message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'launched' }] },
-  toolUseResult: { isAsync: true, status: 'async_launched', agentId, description: 'x' },
+test('an unmeasured invocation is counted, and counted SEPARATELY', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_1', 'one'), asyncResult('toolu_1', 'aOne', 'one'),
+    agentCall('toolu_2', 'two'), legacyResult('toolu_2'),
+  ], 'claude-opus-5')
+
+  expect(m.totalInvocations).toBe(2)
+  expect(m.unmeasuredInvocations).toBe(1)
 })
 
-/** The older SYNCHRONOUS result, which carried the numbers itself. */
-const syncResult = (toolUseId: string) => line({
-  type: 'user',
-  message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'done' }] },
-  toolUseResult: {
-    status: 'completed', agentType: 'general-purpose', totalTokens: 1234, totalDurationMs: 5000,
-    totalToolUseCount: 7,
-    usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 1000, cache_creation_input_tokens: 204 },
-    toolStats: { readCount: 1, searchCount: 2, bashCount: 3, editFileCount: 4, linesAdded: 5, linesRemoved: 6, otherToolCount: 7 },
-  },
+test('an unmeasured invocation adds nothing to the totals — it is not a zero, it is an absence', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_1', 'one'), asyncResult('toolu_1', 'aOne', 'one'),
+  ], 'claude-opus-5')
+
+  expect(m.totalTokens).toBe(0)
+  expect(m.totalCostUSD).toBe(0)
+  expect(m.unmeasuredInvocations).toBe(1)
 })
 
-const notification = (agentId: string, toolUseId: string, status: string) => line({
-  type: 'user',
-  message: { role: 'user', content: `<task-notification>\n<task-id>${agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>${status}</status>\n</task-notification>` },
-})
+test('the legacy shape is read exactly as it always was', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_2', 'legacy one'), legacyResult('toolu_2'),
+  ], 'claude-opus-5')
 
-describe('extractAgentMetrics — an async launch carries no numbers, and must not invent them', () => {
-  it('reports an async launch as UNMEASURED, never as a completed zero', () => {
-    // The production bug: `{isAsync: true, status: "async_launched", agentId}` has no `usage` and no
-    // `totalTokens`, and `?? 0` filled the gap. Measured on one machine: 74 sessions of them, all
-    // reading `status: "completed", totalTokens: 0, costUSD: 0`.
-    const m = extractAgentMetrics([launch('t1', 'Task 1'), asyncAck('t1', 'a1')], 'claude-sonnet-5')
-    const inv = m.invocations[0]!
-    expect(inv.measured).toBe('none')
-    expect(inv.totalTokens).toBe(null)
-    expect(inv.costUSD).toBe(null)
-    expect(inv.status).not.toBe('completed')
-    expect(inv.agentId).toBe('a1')
-  })
-
-  it('leaves a SYNCHRONOUS result exactly as the harness reported it', () => {
-    const m = extractAgentMetrics([launch('t1', 'Task 1'), syncResult('t1')], 'claude-sonnet-5')
-    const inv = m.invocations[0]!
-    expect(inv.measured).toBe('harness')
-    expect(inv.totalTokens).toBe(1234)
-    expect(inv.totalToolUseCount).toBe(7)
-    expect(inv.toolStats?.linesAdded).toBe(5)
-    expect(inv.costUSD).toBeGreaterThan(0)
-  })
-
-  it('reads the outcome the parent RECORDED, wherever the notification sits in the file', () => {
-    const m = extractAgentMetrics(
-      [launch('t1', 'a'), asyncAck('t1', 'a1'), launch('t2', 'b'), asyncAck('t2', 'a2'),
-        notification('a1', 't1', 'completed'), notification('a2', 't2', 'failed')],
-      'claude-sonnet-5',
-    )
-    const byId = new Map(m.invocations.map(i => [i.agentId, i]))
-    expect(byId.get('a1')!.status).toBe('completed')
-    expect(byId.get('a2')!.status).toBe('failed')
-    // …and knowing the outcome is NOT knowing the numbers.
-    expect(byId.get('a1')!.totalTokens).toBe(null)
-  })
-
-  it('says UNKNOWN for an agent with no notification, never "running"', () => {
-    // This is a transcript read after the fact: nothing here can tell "still working" from "the
-    // session ended without saying". The live answer is the workspace's Subagents tab.
-    const m = extractAgentMetrics([launch('t1', 'a'), asyncAck('t1', 'a1')], 'claude-sonnet-5')
-    expect(m.invocations[0]!.status).toBe('unknown')
-  })
-
-  it('counts an agent that was launched and never answered AT ALL', () => {
-    // These were dropped — an invocation only existed once a result matched — so a session with
-    // three agents in flight reported having run none, and the count went UP when they finished.
-    const m = extractAgentMetrics([launch('t1', 'in flight')], 'claude-sonnet-5')
-    expect(m.totalInvocations).toBe(1)
-    expect(m.invocations[0]!.measured).toBe('none')
-    expect(m.invocations[0]!.description).toBe('in flight')
-  })
-})
-
-describe('rollupAgentMetrics — a partial sum says it is partial', () => {
-  it('sums only what was measured, and counts what was not', () => {
-    const m = extractAgentMetrics(
-      [launch('t1', 'a'), syncResult('t1'), launch('t2', 'b'), asyncAck('t2', 'a2')],
-      'claude-sonnet-5',
-    )
-    expect(m.totalInvocations).toBe(2)
-    expect(m.unmeasuredInvocations).toBe(1)
-    expect(m.totalTokens).toBe(1234)
-    expect(m.totalDurationMs).toBe(5000)
-  })
-
-  it('is a pure re-roll of whatever list it is given', () => {
-    expect(rollupAgentMetrics([])).toEqual({
-      invocations: [], totalInvocations: 0, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0,
-      unmeasuredInvocations: 0,
-    })
-  })
-})
-
-describe('withSubagentMetrics — the numbers come from the agent’s OWN transcript', () => {
-  const usage = (o: Record<string, number>, at: string) => line({
-    type: 'assistant', timestamp: at,
-    message: { model: 'claude-haiku-4-5-20251001', usage: o, content: [{ type: 'tool_use', id: 'x', name: 'Bash' }] },
-  })
-
-  async function fixture(): Promise<{ dir: string; transcript: string }> {
-    const dir = await mkdtemp(join(tmpdir(), 'agentistics-agents-'))
-    const transcript = join(dir, 'conv.jsonl')
-    await writeFile(transcript, [launch('t1', 'Task 1'), asyncAck('t1', 'a1'), notification('a1', 't1', 'completed')].join('\n'))
-    await mkdir(join(dir, 'conv', 'subagents'), { recursive: true })
-    await writeFile(join(dir, 'conv', 'subagents', 'agent-a1.jsonl'), [
-      usage({ input_tokens: 8, output_tokens: 12, cache_read_input_tokens: 97_781, cache_creation_input_tokens: 261 }, '2026-09-04T14:00:00.000Z'),
-      usage({ input_tokens: 2, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 }, '2026-09-04T14:00:30.000Z'),
-    ].join('\n'))
-    return { dir, transcript }
-  }
-
-  it('fills an unmeasured invocation with the FOUR counters and prices them', async () => {
-    const { dir, transcript } = await fixture()
-    try {
-      const filled = await withSubagentMetrics(
-        extractAgentMetrics([launch('t1', 'Task 1'), asyncAck('t1', 'a1')], 'claude-sonnet-5'),
-        transcript,
-      )
-      const inv = filled.invocations[0]!
-      expect(inv.measured).toBe('transcript')
-      expect(inv.inputTokens).toBe(10)
-      expect(inv.outputTokens).toBe(15)
-      expect(inv.cacheReadTokens).toBe(97_881)
-      expect(inv.cacheWriteTokens).toBe(261)
-      // Every counter — an in+out reading of this row is 0,03 % of the volume.
-      expect(inv.totalTokens).toBe(98_167)
-      expect(inv.costUSD).toBeGreaterThan(0)
-      expect(inv.totalToolUseCount).toBe(2)
-      expect(inv.totalDurationMs).toBe(30_000)
-      // The counts are reconstructable from the transcript; the LINE deltas are not, so no
-      // half-filled record is invented.
-      expect(inv.toolStats).toBeUndefined()
-      expect(filled.unmeasuredInvocations).toBe(0)
-      expect(filled.totalTokens).toBe(98_167)
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('prices against the AGENT’s model, not the conversation’s', async () => {
-    // An agent is routinely launched on a cheaper model than the conversation it belongs to, and
-    // pricing its cache reads at the parent's rate is a wrong number that looks plausible.
-    const { dir, transcript } = await fixture()
-    try {
-      const asSonnet = await withSubagentMetrics(
-        extractAgentMetrics([launch('t1', 'x'), asyncAck('t1', 'a1')], 'claude-sonnet-5'), transcript)
-      const asOpus = await withSubagentMetrics(
-        extractAgentMetrics([launch('t1', 'x'), asyncAck('t1', 'a1')], 'claude-opus-5'), transcript)
-      expect(asSonnet.invocations[0]!.costUSD).toBe(asOpus.invocations[0]!.costUSD)
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('leaves an invocation the HARNESS measured exactly as reported', async () => {
-    const { dir, transcript } = await fixture()
-    try {
-      const before = extractAgentMetrics([launch('t1', 'x'), syncResult('t1')], 'claude-sonnet-5')
-      const after = await withSubagentMetrics(before, transcript)
-      expect(after.invocations[0]!.measured).toBe('harness')
-      expect(after.invocations[0]!.totalTokens).toBe(1234)
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('leaves an agent with no transcript UNMEASURED rather than zeroing it', async () => {
-    const { dir, transcript } = await fixture()
-    try {
-      const filled = await withSubagentMetrics(
-        extractAgentMetrics([launch('t9', 'x'), asyncAck('t9', 'nosuchagent')], 'claude-sonnet-5'),
-        transcript,
-      )
-      expect(filled.invocations[0]!.measured).toBe('none')
-      expect(filled.invocations[0]!.totalTokens).toBe(null)
-      expect(filled.unmeasuredInvocations).toBe(1)
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
-
-  it('never looks up a file for an invocation with no recorded agent id', async () => {
-    // Inventing a file name from a description is how one agent's tokens get attributed to another.
-    const { dir, transcript } = await fixture()
-    try {
-      const filled = await withSubagentMetrics(
-        extractAgentMetrics([launch('t1', 'no id anywhere')], 'claude-sonnet-5'), transcript)
-      expect(filled.invocations[0]!.measured).toBe('none')
-    } finally { await rm(dir, { recursive: true, force: true }) }
-  })
+  const inv = m.invocations[0]!
+  expect(inv.unmeasured).toBeUndefined()
+  expect(inv.agentType).toBe('explorer')
+  expect(inv.totalTokens).toBe(900)
+  expect(inv.totalDurationMs).toBe(4200)
+  expect(inv.totalToolUseCount).toBe(6)
+  expect(inv.inputTokens).toBe(100)
+  expect(inv.cacheReadTokens).toBe(5000)
+  expect(inv.toolStats.bashCount).toBe(3)
+  expect(inv.costUSD).toBeGreaterThan(0)
+  expect(m.unmeasuredInvocations).toBe(0)
 })

@@ -471,7 +471,7 @@ export async function readConversationFacts(
 
 export async function readFleetPullRequests(
   lang: CliLang, id: string,
-): Promise<{ pulls: unknown[]; unavailable?: string; detail?: string }> {
+): Promise<{ pulls: unknown[]; limit?: number; unavailable?: string; detail?: string }> {
   const pt = lang === 'pt'
   const host = await hostFor(lang)
   if (!host.sessions) return { pulls: [], unavailable: 'no-repo' }
@@ -490,6 +490,12 @@ export async function readFleetPullRequests(
   const out = await readPullRequests(row.cwd)
   return {
     pulls: out.pulls,
+    // The cap the read actually used. This reply is built FIELD BY FIELD rather than spread, which
+    // is right — it is the boundary between a module's shape and the wire — but it means a new
+    // field is on the wire only once it is named HERE. `limit` was added to `PrList` and to the
+    // browser's type and forgotten in this object, so the caption could never claim the window and
+    // said the same sentence for four pull requests and for thirty.
+    ...(out.limit !== undefined ? { limit: out.limit } : {}),
     ...(out.unavailable ? { unavailable: out.unavailable } : {}),
     ...(out.detail ? { detail: out.detail } : {}),
   }

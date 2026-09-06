@@ -42,41 +42,26 @@ export async function cachedParseSession(
 ): Promise<SessionMeta> {
   const stamp = await stampOf(filePath)
   if (!stamp) {
-    return completeSessionAgents(
-      await parseSessionJsonl(filePath, sessionId, fallbackPath, source), filePath, cache)
+    return parseSessionJsonl(filePath, sessionId, fallbackPath, source)
   }
 
+  // The SHAPE is part of the variant, for the reason `ENRICH_SHAPE` is — and this kind was missing
+  // it. A stored row is only readable by the code that WROTE it, so a change to what
+  // `parseSessionJsonl` produces goes on serving the old shape for every file that has not been
+  // appended to since. It is not hypothetical: the async-agent fix (#373) changed what an
+  // invocation carries, and every transcript already in this cache kept answering in the shape from
+  // before it. Bump this whenever `SessionMeta` gains, loses or re-means a field this parser fills.
   const variant = `${SESSION_SHAPE}:${source}`
   const hit = cache.get<SessionMeta>('session', stamp, variant)
-  // A HIT IS STILL COMPLETED, for the same reason `cachedEnrich`'s is: the agents' numbers are not
-  // in this file and not in this row.
-  if (hit) return completeSessionAgents(hit, filePath, cache)
+  if (hit) return hit
 
   const parsed = await parseSessionJsonl(filePath, sessionId, fallbackPath, source)
   cache.set('session', stamp, parsed, variant)
-  return completeSessionAgents(parsed, filePath, cache)
+  return parsed
 }
 
-/**
- * The SHAPE of a stored `session` row, in its variant.
- *
- * A stored row is only readable by the code that wrote it — the same reason `ENRICH_SHAPE` exists,
- * which this kind was missing. Without it a change to what `parseSessionJsonl` PRODUCES serves the
- * old shape from before the change, for every file that has not been appended to since. That is not
- * hypothetical: it is how 74 sessions kept reporting agent invocations in the pre-`measured` shape
- * after the reader that produced them had been replaced. Bump this whenever `SessionMeta` gains,
- * loses or re-means a field this parser fills.
- */
+/** The shape of a stored `session` row. See the note in `cachedParseSession`. */
 const SESSION_SHAPE = 'v2'
-
-/** `withSubagentMetrics` over a whole session, or the session untouched when it has no agents. */
-async function completeSessionAgents(
-  meta: SessionMeta, filePath: string, cache: ParseCache,
-): Promise<SessionMeta> {
-  if (!meta.agentMetrics) return meta
-  const { withSubagentMetrics } = await import('./agent-metrics')
-  return { ...meta, agentMetrics: await withSubagentMetrics(meta.agentMetrics, filePath, cache) }
-}
 
 /** Everything `scanProjectDir` needs from a transcript whose session already exists in
  *  Claude's own session-meta — which carries none of it. */
@@ -152,21 +137,13 @@ export async function cachedEnrich(
 
   const variant = `${ENRICH_SHAPE}:${metaModel}`
   const hit = cache.get<EnrichResult>('enrich', stamp, variant)
-  // A HIT IS STILL COMPLETED. The agents' numbers are not in this file and not in this row; a
-  // cached row carries their invocations UNMEASURED, and filling them costs a stat per agent plus a
-  // cache hit each, since `withSubagentMetrics` keys them on their own stamps. Returning the row
-  // as-is would make a running agent's numbers freeze until something wrote to the parent.
-  if (hit) return completeAgents(hit, filePath, cache)
+  if (hit) return hit
 
   const content = await readFile(filePath, 'utf-8').catch(() => '')
   if (!content) return null
 
   const lines = content.split('\n')
   const model = deriveModel(lines)
-  // The parent half is cached HERE, against this file's stamp. The agents' own numbers are NOT:
-  // `withSubagentMetrics` caches each agent transcript against its own stamp, because those files
-  // change while this one does not — see `agent-metrics.ts`. So this row is completed on every
-  // read, and the completion is itself cached one level down.
   const metrics = extractAgentMetrics(lines, metaModel || model || '')
   const result: EnrichResult = {
     model,
@@ -175,19 +152,5 @@ export async function cachedEnrich(
     agentMetrics: metrics.totalInvocations > 0 ? metrics : null,
   }
   cache.set('enrich', stamp, result, variant)
-  return completeAgents(result, filePath, cache)
-}
-
-/**
- * Fill in what the agents' OWN transcripts know, on whichever copy of the row we are holding.
- *
- * Stored UNCOMPLETED on purpose: the row is keyed on the parent's stamp, so a completion written
- * into it would be a number cached under a key that does not name where it came from.
- */
-async function completeAgents(
-  result: EnrichResult, filePath: string, cache: ParseCache,
-): Promise<EnrichResult> {
-  if (!result.agentMetrics) return result
-  const { withSubagentMetrics } = await import('./agent-metrics')
-  return { ...result, agentMetrics: await withSubagentMetrics(result.agentMetrics, filePath, cache) }
+  return result
 }
