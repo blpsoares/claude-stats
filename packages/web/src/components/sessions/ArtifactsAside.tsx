@@ -1644,11 +1644,18 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
           flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, margin: '4px 4px 0 0',
           borderRadius: 6, padding: 0,
-          border: '1px solid var(--border-subtle)', background: 'transparent',
-          color: 'var(--text-tertiary)', cursor: 'pointer',
+          // THE TOUCH TARGET GREW AND THE ICON DID NOT. At 44px this was an 11px tertiary glyph in
+          // an empty square — present, hit-testable, and invisible on a phone: reported as "só
+          // falta colocar um ícone que me leve até o arquivo" about a button that was already
+          // there. Measured on a 390px viewport: sixteen of them rendered at x=336, 44px wide, and
+          // the reader saw none. The target is a rule; the icon has to be read at the same size.
+          border: `1px solid ${isMobile ? 'color-mix(in srgb, var(--anthropic-orange) 40%, transparent)' : 'var(--border-subtle)'}`,
+          background: 'transparent',
+          color: isMobile ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+          cursor: 'pointer',
         }}
       >
-        <ExternalLink size={11} />
+        <ExternalLink size={isMobile ? 17 : 11} />
       </button>
     )}
     </div>

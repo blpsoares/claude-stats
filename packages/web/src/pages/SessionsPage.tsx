@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { ChevronLeft, MessagesSquare, PanelRight, Plus, TerminalSquare } from 'lucide-react'
+import { ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
 import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -623,21 +623,19 @@ export default function SessionsPage() {
               aria-label={pt ? 'Conteúdos da sessão' : 'Session contents'}
               aria-expanded={art.open}
               style={{
-                position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
                 width: 44, height: 44, flexShrink: 0, border: 'none', background: 'transparent',
                 color: art.open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
                 cursor: 'pointer',
               }}
             >
-              <PanelRight size={18} />
-              {art.count > 0 && (
-                <span style={{
-                  position: 'absolute', top: 5, right: 2,
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8,
-                  background: 'var(--anthropic-orange)', color: '#fff', fontSize: 10, fontWeight: 700,
-                }}>{art.count}</span>
-              )}
+              {/* THE DESKTOP'S ICON, and the desktop's reasoning with it: a panel glyph says
+                  "something opens here" and leaves the reader to find out what, while `FileText`
+                  names what the panel opens on nine times out of ten. And NO count — it counts
+                  everything the session ever touched, past fifty on an ordinary afternoon, and a
+                  figure nobody acts on is furniture with a number on it. Two layouts wearing two
+                  icons for one panel is the same feature learnt twice. */}
+              <FileText size={18} />
             </button>
 
             {rowIndex.get(selected.id) && (
@@ -666,12 +664,20 @@ export default function SessionsPage() {
               `resolveArtifactLayout` already says so. It sits above the bar too — the bar's back
               arrow would leave the session entirely, and the way out of the panel is the panel's
               own close, which `ArtifactsAside` draws. */}
-          {artLayout.layout === 'fullscreen' && artifactsPane && (
+          {/* IT SLIDES, and that needs it MOUNTED while it moves — a conditional render returns a
+              different tree and there is nothing left to animate, which is why it appeared instantly
+              and the desktop's does not. Same easing and duration as the "more" sheet, so the two
+              surfaces on this layout move alike. `visibility` is what keeps a closed panel out of
+              the tab order without taking the transition with it. */}
+          {artifactsPane && (
             <div style={{
               position: 'fixed', inset: 0, zIndex: 70,
               display: 'flex', flexDirection: 'column',
               paddingTop: 'var(--safe-top)',
               background: 'var(--bg-surface)',
+              transform: artLayout.layout === 'fullscreen' ? 'translateX(0)' : 'translateX(100%)',
+              visibility: artLayout.layout === 'fullscreen' ? 'visible' : 'hidden',
+              transition: 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.28s',
             }}>{artifactsPane}</div>
           )}
           {filtersSheet}
