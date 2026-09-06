@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { sessionInRange } from '../lib/sessionSpan'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -1151,9 +1152,18 @@ export function computeDerivedStats(
       isDateStr(d.date) && inRange(parseISO(d.date), start, end)
     )
 
-    // Shared date predicate — reused for filteredSessions and nonClaudeInRange
-    const inDateRange = (s: { start_time?: string }) =>
-      isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
+    /**
+     * Shared date predicate — reused for filteredSessions and nonClaudeInRange.
+     *
+     * A SESSION IS A SPAN, NOT AN INSTANT, and this used to test only its start. Measured: the
+     * session doing all of today's work started three days earlier and was still running, so every
+     * hour of it counted on the day it BEGAN and "today" was empty while four assistants were live.
+     * `sessionInRange` claims a session for a range its activity OVERLAPS — see `sessionSpan.ts`.
+     */
+    const startMs = start.getTime()
+    const endMs = end.getTime()
+    const inDateRange = (s: { start_time?: string; end_time?: string }) =>
+      sessionInRange(s, startMs, endMs)
 
     // Filter sessions (date + projects + model + active-only)
     const filteredSessions = harnessSessions.filter(s => {
