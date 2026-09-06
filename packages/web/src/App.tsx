@@ -3329,7 +3329,14 @@ export default function AppLayout() {
       // height the shorter box did — `box-sizing: border-box` is global — while the border box
       // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
       // pixel it left, and nothing anchors to an edge that is not the screen's.
-      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
+      // `100%` ON A PHONE, NOT `100dvh` — and the difference is not cosmetic. The lock above makes
+      // the body `position: fixed; inset: 0`, and `inset` resolves against the INITIAL CONTAINING
+      // BLOCK, which on iOS Safari is the SMALL viewport (URL bar expanded). `dvh` is the DYNAMIC
+      // one, taller whenever that chrome is collapsed. A shell of `100dvh` inside a small-viewport
+      // box is taller than its parent, which clips — so the composer and the bar anchored to it sat
+      // below the visible edge. `100%` is the very box the lock established, so they cannot
+      // disagree. Off the lock (desktop, and any non-mobile) nothing changes.
+      height: inSessionsWorkspace ? (isMobile ? '100%' : '100vh') : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.

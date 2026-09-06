@@ -241,6 +241,18 @@ html.ag-viewport-locked > body {
   overflow: hidden;
   overscroll-behavior: none;
 }
+/* AND THE SHELL MEASURES AGAINST THAT BOX, not against a viewport unit.
+   `inset: 0` resolves against the INITIAL CONTAINING BLOCK, which on iOS Safari is the SMALL
+   viewport — the one with the URL bar expanded. `100dvh` is the DYNAMIC one, which is taller
+   whenever the browser's chrome is collapsed. Mixing the two put a shell inside a shorter box that
+   clips, so its foot — the composer, and the bar anchored to it — sat below the visible area with
+   nothing on screen explaining where it went.
+   `height: 100%` all the way down is the same box the lock already established, so the two cannot
+   disagree by construction. It is the locked case only: everywhere else `#root` is content-sized
+   and the window scrolls. */
+html.ag-viewport-locked > body > #root {
+  height: 100%;
+}
 
 /* Bottom nav safe-area padding.
    `box-sizing: border-box` is global, so this padding EATS the nav's height instead of adding to
