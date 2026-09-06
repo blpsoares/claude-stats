@@ -254,7 +254,20 @@ export async function runFleetAction(
       // start an assistant anywhere on this machine.
       const fleet = await host.sessions()
       const row = fleet.sessions.find(r => r.id === req.id)
-      if (!row?.resume) return { ok: false, message: s.sessionsReopenNone }
+      // TWO DIFFERENT FACTS, and collapsing them sent people to the wrong place.
+      //
+      // `sessionsReopenNone` says "nothing on this machine resolves this row" — a statement about
+      // the CONVERSATION, and the honest answer when the row is here and has no reopen target. It
+      // was also being given when the row was simply GONE from the list, which happens routinely:
+      // `claimResume` hands each conversation to at most one row, so reopening one closed row can
+      // drop a sibling that was showing the same conversation, and any list a person is looking at
+      // is up to one poll old. Measured on a real fleet of 326: a row whose `resume` was ENABLED in
+      // the list refused on the click, with a sentence that reads as "this conversation is lost".
+      //
+      // A stale row is RECOVERABLE — refresh and the list is right — so it gets its own sentence
+      // saying so. Reported as "reabro as sessões pela UI e elas não reabrem".
+      if (!row) return { ok: false, message: s.sessionsRowGone }
+      if (!row.resume) return { ok: false, message: s.sessionsReopenNone }
       const out = await host.resumeSession({
         sessionId: row.resume.sessionId,
         harness: row.harness,
