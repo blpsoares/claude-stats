@@ -122,6 +122,57 @@ type GithubSectionJson =
     deleteLocalAfterUpload: boolean
   }
 
+/**
+ * RESTORE — mirrors `server/backup/restore-routes.ts`'s `RestoreCandidate` / `RestoreMachine` /
+ * `RestoreJob`. Redeclared for the same reason every other wire shape on this page is: `packages/web`
+ * may never import `packages/server`.
+ *
+ * EVERY derived field is nullable, and that is the whole point of the shape: a release whose body
+ * could not be decoded is still LISTED — dropping it could hide somebody's only copy — with what is
+ * unknown SAID. Rendering a null `sessions` as `0` or a null `sizeLabel` as an empty cell would
+ * invent a fact about a stranger's backup, which is the one thing a restore screen must never do.
+ */
+interface RestoreCandidate {
+  tagName: string
+  createdAt: string
+  sizeLabel: string | null
+  layers: BackupLayer[] | null
+  harnesses: string[] | null
+  sessions: number | null
+  sha256: string | null
+}
+
+/** `machine === null` is a backup whose machine name the release body never recorded — said in
+ *  words, never printed as a name. */
+interface RestoreMachine {
+  machine: string | null
+  releases: RestoreCandidate[]
+}
+
+type RestoreJobState = 'queued' | 'running' | 'done' | 'failed'
+
+/** A restore in flight. It is a JOB and not a request/response because the repos phase clones every
+ *  repository the backup mapped and can take many minutes — see `restore-routes.ts`. */
+interface RestoreJob {
+  id: string
+  tag: string
+  withRepos: boolean
+  state: RestoreJobState
+  startedAt: string
+  finishedAt: string | null
+  lines: string[]
+  written: number | null
+  reason: string | null
+}
+
+/** How many of a running restore's tail lines the block below shows. The server keeps 500 (the
+ *  repos phase prints thousands); a screen only ever needs the end. */
+const RESTORE_TAIL_LINES = 15
+
+function unknownWord(pt: boolean): string {
+  return pt ? 'desconhecido' : 'unknown'
+}
+
 /** Mirrors the server's `GithubSectionUpdate` — every field optional, a control sends only its own. */
 interface GithubUpdate {
   label?: string
@@ -526,6 +577,120 @@ export default function BackupSettings() {
     void saveGithub('keepRemote', { keepRemote: value })
   }, [keepDraft, pt, saveGithub])
 
+  // -------------------------------------------------------------------------
+  // Restore — the scenario this exists for is a machine that has just been reformatted, whose owner
+  // has the repository URL and nothing else. So it asks for a URL and (only if this machine has no
+  // `gh` login) a token, and every fact it shows comes from the repository.
+  // -------------------------------------------------------------------------
+  /**
+   * Whether this machine can restore at all. `null` while the probe is in flight, `false` for a
+   * central — `GET /api/backup/restore/status` answers 404 there (`index.ts`'s `TEAM_CENTRAL`
+   * guard) and 404 renders NOTHING, exactly like the GitHub block above: a central aggregates other
+   * machines and has no harness directories of its own to restore into, so an error box would
+   * report a fault that isn't one.
+   */
+  const [restoreSupported, setRestoreSupported] = useState<boolean | null>(null)
+  const [restoreUrl, setRestoreUrl] = useState('')
+  const [restoreToken, setRestoreToken] = useState('')
+  const [listing, setListing] = useState<RestoreMachine[] | null>(null)
+  const [listingBusy, setListingBusy] = useState(false)
+  const [listingError, setListingError] = useState<string | null>(null)
+  const [restoreJob, setRestoreJob] = useState<RestoreJob | null>(null)
+  /** The inline two-step confirmation, as `${tag}|${withRepos}`. `window.confirm` would block the
+   *  whole tab, so the button turns into "Confirm?" + Cancel in the row itself. */
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [startBusy, setStartBusy] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
+
+  /** The one read. It doubles as the availability probe (404 → this section does not exist here)
+   *  and as the poll, so a restore started from the CLI or another tab is picked up on mount rather
+   *  than running invisibly. */
+  const loadRestoreJob = useCallback(async () => {
+    try {
+      const r = await fetch('/api/backup/restore/status')
+      if (!r.ok) { setRestoreSupported(false); setRestoreJob(null); return }
+      const data = (await r.json()) as { job: RestoreJob | null }
+      setRestoreSupported(true)
+      setRestoreJob(data.job)
+    } catch {
+      setRestoreSupported(false)
+    }
+  }, [])
+
+  useEffect(() => { void loadRestoreJob() }, [loadRestoreJob])
+
+  const restoreRunning = restoreJob !== null
+    && (restoreJob.state === 'queued' || restoreJob.state === 'running')
+
+  // Polling STOPS the moment the state is terminal: `restoreRunning` goes false, this effect tears
+  // its own timer down, and nothing is left asking every two seconds forever.
+  useEffect(() => {
+    if (!restoreRunning) return
+    const timer = setInterval(() => { void loadRestoreJob() }, 2000)
+    return () => clearInterval(timer)
+  }, [restoreRunning, loadRestoreJob])
+
+  const listRestore = useCallback(async () => {
+    setListingBusy(true)
+    setListingError(null)
+    setListing(null)
+    setStartError(null)
+    setConfirming(null)
+    try {
+      const r = await fetch('/api/backup/restore/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: restoreUrl.trim(),
+          token: restoreToken.trim() || undefined,
+        }),
+      })
+      const data = (await r.json()) as
+        { ok: true; machines: RestoreMachine[] } | { ok: false; reason: string }
+      // The server's own sentence, passed through untouched — the credential rule and the URL rule
+      // are enforced there, and composing a friendlier copy here would be a second explanation of
+      // somebody else's check.
+      if (data.ok) setListing(data.machines)
+      else setListingError(data.reason || (pt ? 'não foi possível listar' : 'could not list'))
+    } catch {
+      setListingError(pt ? 'a requisição falhou' : 'the request failed')
+    } finally {
+      setListingBusy(false)
+    }
+  }, [restoreUrl, restoreToken, pt])
+
+  /** Reached only from the confirmation step. The token is NOT cleared on success: `start` needs
+   *  the same credential the listing used, and a second restore from the same list must not ask
+   *  for it again. */
+  const beginRestore = useCallback(async (tag: string, withRepos: boolean) => {
+    setStartBusy(true)
+    setStartError(null)
+    try {
+      const r = await fetch('/api/backup/restore/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: restoreUrl.trim(),
+          tag,
+          token: restoreToken.trim() || undefined,
+          withRepos,
+        }),
+      })
+      const data = (await r.json()) as
+        { ok: true; job: RestoreJob } | { ok: false; reason: string }
+      if (data.ok) {
+        setRestoreJob(data.job)
+        setConfirming(null)
+      } else {
+        setStartError(data.reason || (pt ? 'não foi possível iniciar' : 'could not start'))
+      }
+    } catch {
+      setStartError(pt ? 'a requisição falhou' : 'the request failed')
+    } finally {
+      setStartBusy(false)
+    }
+  }, [restoreUrl, restoreToken, pt])
+
   /** Metrics can never be toggled off — this only ever fires for `repos`/`archive`/`raw`, and
    *  `updateBackupConfig` (server) normalizes the set regardless, so this is a UI convenience,
    *  never the enforcement. */
@@ -657,6 +822,31 @@ export default function BackupSettings() {
           )}
 
           <Divider />
+
+          {/* Restoring — the other half of versioning, and until now CLI-only. It sits right under
+              the repository block because that is the same question read backwards: where the
+              history goes, and where it comes back from. Absent entirely when the endpoint 404s
+              (a central) — see `loadRestoreJob`. */}
+          {restoreSupported === true && (
+            <RestoreSection
+              pt={pt}
+              url={restoreUrl}
+              token={restoreToken}
+              onUrl={setRestoreUrl}
+              onToken={setRestoreToken}
+              onList={() => { void listRestore() }}
+              listingBusy={listingBusy}
+              listingError={listingError}
+              machines={listing}
+              job={restoreJob}
+              running={restoreRunning}
+              confirming={confirming}
+              onConfirming={setConfirming}
+              startBusy={startBusy}
+              startError={startError}
+              onStart={(tag, withRepos) => { void beginRestore(tag, withRepos) }}
+            />
+          )}
 
           <Divider />
 
@@ -1542,6 +1732,458 @@ function GithubConnectForm({
           ? `Pela linha de comando o mesmo passo é: ${GITHUB_SETUP_COMMAND}`
           : `From the command line the same step is: ${GITHUB_SETUP_COMMAND}`}
       </p>
+    </div>
+  )
+}
+
+/**
+ * RESTORE — bringing a machine's whole history back from the repository its backups were versioned
+ * to.
+ *
+ * The scenario every decision here is written against is the one `restore-routes.ts` states: a
+ * machine that has just been REFORMATTED. It has the repository URL and nothing else — no stored
+ * config, no token, no local history, no expected hash. So this section asks for a URL, offers a
+ * token field only for the machine that has no `gh` login (the server tries `gh` first), and every
+ * fact it shows about a release comes from the repository rather than from anything local.
+ *
+ * Three rules it must not break:
+ *
+ * - **Nothing is invented.** Every derived field on a `RestoreCandidate` is nullable, because a
+ *   release whose body could not be decoded is still listed rather than hidden. A null is rendered
+ *   as the word "unknown" — never `0`, never a blank cell that reads as zero.
+ * - **A restore writes into `$HOME`, so it is confirmed first** — inline, in the row itself.
+ *   `window.confirm` blocks the whole tab and would freeze a page that is polling a job.
+ * - **Every refusal is the SERVER's own sentence, passed through untouched.** The credential rule
+ *   ("log in with gh, or paste a token"), the URL rule, and "a restore is already running" are all
+ *   enforced there and already written in words.
+ */
+function RestoreSection({
+  pt, url, token, onUrl, onToken, onList, listingBusy, listingError, machines,
+  job, running, confirming, onConfirming, startBusy, startError, onStart,
+}: {
+  pt: boolean
+  url: string
+  token: string
+  onUrl: (v: string) => void
+  onToken: (v: string) => void
+  onList: () => void
+  listingBusy: boolean
+  /** The server's own refusal for the LISTING, untouched. */
+  listingError: string | null
+  /** `null` = nothing asked for yet. An empty array is a real answer: the repository holds no
+   *  backup releases, which is a different fact from "not asked". */
+  machines: RestoreMachine[] | null
+  job: RestoreJob | null
+  running: boolean
+  /** `${tag}|${withRepos}` of the release awaiting confirmation, if any. */
+  confirming: string | null
+  onConfirming: (key: string | null) => void
+  startBusy: boolean
+  startError: string | null
+  onStart: (tag: string, withRepos: boolean) => void
+}) {
+  const isMobile = useIsMobile()
+  const canList = url.trim().length > 0 && !listingBusy
+
+  return (
+    <div>
+      <SectionHeader label={pt ? 'Restaurar' : 'Restore'} />
+      <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
+        {pt
+          ? 'Traz de volta o histórico de uma máquina a partir do repositório em que os backups dela foram versionados. Feito para a máquina recém-formatada: basta a URL do repositório. Uma restauração escreve dentro da sua pasta pessoal.'
+          : 'Brings a machine’s history back from the repository its backups were versioned to. Built for the machine that has just been reformatted: the repository URL is all it needs. A restore writes inside your home directory.'}
+      </p>
+
+      <RestoreField
+        label={pt ? 'URL do repositório' : 'Repository URL'}
+        hint={pt
+          ? 'O repositório privado onde os backups desta (ou de outra) máquina foram versionados.'
+          : 'The private repository this machine’s — or another machine’s — backups were versioned to.'}
+        value={url}
+        placeholder="https://github.com/owner/repo"
+        password={false}
+        busy={listingBusy}
+        canSubmit={canList}
+        onChange={onUrl}
+        onSubmit={onList}
+      />
+      <RestoreField
+        label={pt ? 'Token do GitHub (opcional)' : 'GitHub token (optional)'}
+        hint={pt
+          ? 'Só é necessário se esta máquina não tiver login no GitHub CLI: o servidor tenta o `gh` primeiro e só usa este campo quando não há credencial nenhuma. Numa máquina recém-formatada, `gh auth login` costuma ser o caminho mais curto.'
+          : 'Only needed when this machine has no GitHub CLI login: the server tries `gh` first and falls back to this field only when there is no credential at all. On a freshly reformatted machine, `gh auth login` is usually the shorter road.'}
+        value={token}
+        placeholder={pt ? 'ghp_… (não é exibido)' : 'ghp_… (never shown back)'}
+        password
+        busy={listingBusy}
+        canSubmit={canList}
+        onChange={onToken}
+        onSubmit={onList}
+      />
+
+      <button
+        type="button"
+        onClick={onList}
+        disabled={!canList}
+        style={{
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+          padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+          width: isMobile ? '100%' : undefined,
+          borderRadius: 7, border: `1px solid ${canList ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+          background: canList ? 'var(--anthropic-orange-dim)' : 'transparent',
+          color: canList ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+          fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+          cursor: canList ? 'pointer' : 'not-allowed', opacity: canList ? 1 : 0.6,
+        }}
+      >
+        {listingBusy
+          ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> {pt ? 'Procurando…' : 'Looking…'}</>
+          : (pt ? 'Ver backups' : 'List backups')}
+      </button>
+
+      <GithubFeedback feedback={listingError === null ? null : { ok: false, text: listingError }} />
+
+      {/* The result, grouped by the MACHINE that made each backup — never one flat chronological
+          list. A repository can hold several machines' backups (that is what the labelled tags are
+          for), and interleaving them makes "the newest" whichever machine happened to run last.
+          Restoring the wrong computer onto this one is the accident this grouping exists to
+          prevent. */}
+      {machines !== null && machines.length === 0 && (
+        <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '14px 0 0' }}>
+          {pt
+            ? 'Este repositório não tem nenhum release de backup.'
+            : 'This repository holds no backup releases.'}
+        </p>
+      )}
+
+      {machines !== null && machines.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          {running && (
+            <p style={{ fontSize: 11.5, color: 'var(--anthropic-orange)', lineHeight: 1.5, margin: '0 0 10px' }}>
+              {pt
+                ? 'Uma restauração está em andamento — os botões abaixo voltam quando ela terminar.'
+                : 'A restore is running — the buttons below come back when it finishes.'}
+            </p>
+          )}
+          {machines.map((m, mi) => (
+            <div key={m.machine ?? `unnamed-${mi}`} style={{ marginBottom: 18 }}>
+              <div style={{
+                fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 8,
+                wordBreak: 'break-word',
+              }}>
+                {/* A machine with no recorded name is SAID, never printed as if `null` were a
+                    name — the release body simply never carried one. */}
+                {m.machine ?? (pt
+                  ? 'Backups sem nome de máquina registrado no release'
+                  : 'Backups with no machine name recorded in the release')}
+              </div>
+              {m.releases.map(r => (
+                <RestoreRelease
+                  key={r.tagName}
+                  release={r}
+                  pt={pt}
+                  starting={startBusy}
+                  disabled={running || startBusy}
+                  confirming={confirming}
+                  onConfirming={onConfirming}
+                  onStart={onStart}
+                />
+              ))}
+            </div>
+          ))}
+          <GithubFeedback feedback={startError === null ? null : { ok: false, text: startError }} />
+        </div>
+      )}
+
+      {job && <RestoreJobBlock job={job} pt={pt} />}
+    </div>
+  )
+}
+
+/**
+ * One release, and the two ways to restore it.
+ *
+ * The second button clones every repository the backup mapped, so it says so on its own line rather
+ * than in a tooltip nobody opens. Both are two-step: pressing one turns THAT row into
+ * "Confirm? / Cancel" and hides the other, because a restore writes into `$HOME` and the second
+ * press must be about one specific choice.
+ */
+function RestoreRelease({ release, pt, starting, disabled, confirming, onConfirming, onStart }: {
+  release: RestoreCandidate
+  pt: boolean
+  /** A start is in flight — the confirm button says so itself rather than only greying out. */
+  starting: boolean
+  disabled: boolean
+  confirming: string | null
+  onConfirming: (key: string | null) => void
+  onStart: (tag: string, withRepos: boolean) => void
+}) {
+  const isMobile = useIsMobile()
+  const unknown = unknownWord(pt)
+  const keyOf = (withRepos: boolean): string => `${release.tagName}|${withRepos ? 'repos' : 'metrics'}`
+  const pending = confirming !== null
+    && (confirming === keyOf(false) || confirming === keyOf(true))
+  const pendingWithRepos = confirming === keyOf(true)
+
+  const facts: { label: string; value: string }[] = [
+    { label: pt ? 'Tamanho' : 'Size', value: release.sizeLabel ?? unknown },
+    { label: pt ? 'Camadas' : 'Layers', value: release.layers === null ? unknown : release.layers.join(' + ') },
+    { label: pt ? 'Sessões' : 'Sessions', value: release.sessions === null ? unknown : String(release.sessions) },
+    {
+      label: pt ? 'Harnesses' : 'Harnesses',
+      value: release.harnesses === null ? unknown : release.harnesses.join(', '),
+    },
+  ]
+
+  return (
+    <div style={{
+      border: '1px solid var(--border)', borderRadius: 8, padding: '10px 12px',
+      marginBottom: 8, background: 'var(--bg-elevated)',
+    }}>
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
+        {new Date(release.createdAt).toLocaleString()}
+      </div>
+      <div style={{
+        display: 'flex', flexWrap: 'wrap', gap: '2px 14px', margin: '4px 0 0',
+        fontSize: 11.5, color: 'var(--text-secondary)',
+      }}>
+        {facts.map(f => (
+          <span key={f.label}>
+            <span style={{ color: 'var(--text-tertiary)' }}>{f.label}: </span>
+            {f.value}
+          </span>
+        ))}
+      </div>
+      {/* The tag is what `agentop restore` takes, so it is shown verbatim. It scrolls inside its
+          own box: nothing on this page may make the page itself scroll sideways at 390px. */}
+      <div style={{ overflowX: 'auto', margin: '6px 0 0' }}>
+        <code style={{
+          fontFamily: 'monospace', fontSize: 11, color: 'var(--text-tertiary)', whiteSpace: 'pre',
+        }}>
+          {release.tagName}
+        </code>
+      </div>
+
+      <div style={{
+        display: 'flex', flexDirection: isMobile ? 'column' : 'row',
+        flexWrap: 'wrap', gap: 8, marginTop: 10,
+      }}>
+        {pending ? (
+          <>
+            <RestoreButton
+              text={starting
+                ? (pt ? 'Iniciando…' : 'Starting…')
+                : (pt ? 'Confirmar?' : 'Confirm?')}
+              busy={starting}
+              primary
+              disabled={disabled}
+              onClick={() => onStart(release.tagName, pendingWithRepos)}
+            />
+            <RestoreButton
+              text={pt ? 'Cancelar' : 'Cancel'}
+              primary={false}
+              disabled={false}
+              onClick={() => onConfirming(null)}
+            />
+          </>
+        ) : (
+          <>
+            <RestoreButton
+              text={pt ? 'Só métricas' : 'Metrics only'}
+              primary
+              disabled={disabled}
+              onClick={() => onConfirming(keyOf(false))}
+            />
+            <RestoreButton
+              text={pt ? 'Tudo, incluindo clonar repositórios' : 'Everything, including cloning repositories'}
+              primary={false}
+              disabled={disabled}
+              onClick={() => onConfirming(keyOf(true))}
+            />
+          </>
+        )}
+      </div>
+      {pending ? (
+        <p style={{ fontSize: 11, color: 'var(--anthropic-orange)', lineHeight: 1.45, margin: '6px 0 0' }}>
+          {pendingWithRepos
+            ? (pt
+              ? 'Vai escrever dentro da sua pasta pessoal E clonar todos os repositórios mapeados por este backup.'
+              : 'This will write inside your home directory AND clone every repository this backup mapped.')
+            : (pt
+              ? 'Vai escrever dentro da sua pasta pessoal.'
+              : 'This will write inside your home directory.')}
+        </p>
+      ) : (
+        <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '6px 0 0' }}>
+          {pt
+            ? '"Tudo" clona cada repositório mapeado por este backup — pode levar muitos minutos.'
+            : '“Everything” clones every repository this backup mapped — it can take many minutes.'}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** The row's own button shape — the same box the rest of this page uses, sized as a real touch
+ *  target and full-width on mobile. */
+function RestoreButton({ text, primary, disabled, busy, onClick }: {
+  text: string
+  primary: boolean
+  disabled: boolean
+  busy?: boolean
+  onClick: () => void
+}) {
+  const isMobile = useIsMobile()
+  const live = !disabled
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+        padding: isMobile ? '0 14px' : '7px 14px', minHeight: isMobile ? 44 : undefined,
+        width: isMobile ? '100%' : undefined, boxSizing: 'border-box',
+        borderRadius: 7,
+        border: `1px solid ${live && primary ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+        background: live && primary ? 'var(--anthropic-orange-dim)' : 'transparent',
+        color: live ? (primary ? 'var(--anthropic-orange)' : 'var(--text-secondary)') : 'var(--text-tertiary)',
+        fontSize: 12.5, fontWeight: primary ? 700 : 500, fontFamily: 'inherit',
+        cursor: live ? 'pointer' : 'not-allowed', opacity: live ? 1 : 0.6,
+        textAlign: 'center',
+      }}
+    >
+      {busy && <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}
+      {text}
+    </button>
+  )
+}
+
+/**
+ * The running (or finished) restore.
+ *
+ * The tail is bounded at `RESTORE_TAIL_LINES` and scrolls inside its own box — the repos phase
+ * prints thousands of lines and the end is where the outcome is. A finished job KEEPS its lines
+ * beside its outcome: "it wrote 699 files" is worth much less without what it was doing.
+ */
+function RestoreJobBlock({ job, pt }: { job: RestoreJob; pt: boolean }) {
+  const active = job.state === 'queued' || job.state === 'running'
+  const tail = job.lines.slice(-RESTORE_TAIL_LINES)
+  const stateWord = job.state === 'queued' ? (pt ? 'na fila' : 'queued')
+    : job.state === 'running' ? (pt ? 'em andamento' : 'running')
+    : job.state === 'done' ? (pt ? 'concluída' : 'done')
+    : (pt ? 'falhou' : 'failed')
+
+  return (
+    <div style={{
+      marginTop: 16, padding: '10px 12px', borderRadius: 8,
+      background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+        {active
+          ? <Loader2 size={14} style={{ color: 'var(--anthropic-orange)', animation: 'spin 1s linear infinite', flexShrink: 0 }} />
+          : job.state === 'done'
+            ? <CheckCircle2 size={14} style={{ color: 'var(--accent-green)', flexShrink: 0 }} />
+            : <AlertTriangle size={14} style={{ color: '#ef4444', flexShrink: 0 }} />}
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-primary)' }}>
+          {pt ? `Restauração ${stateWord}` : `Restore ${stateWord}`}
+        </span>
+        <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          {job.withRepos
+            ? (pt ? '· tudo, incluindo repositórios' : '· everything, including repositories')
+            : (pt ? '· só métricas' : '· metrics only')}
+        </span>
+      </div>
+
+      <div style={{ overflowX: 'auto', margin: '4px 0 0' }}>
+        <code style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-tertiary)', whiteSpace: 'pre' }}>
+          {job.tag}
+        </code>
+      </div>
+
+      {job.state === 'done' && (
+        <p style={{ fontSize: 12, color: 'var(--accent-green)', lineHeight: 1.45, margin: '6px 0 0' }}>
+          {/* `written` is nullable on the wire like every other derived number here, so a job that
+              finished without one says so rather than reporting a confident zero. */}
+          {job.written === null
+            ? (pt ? 'Concluída — número de arquivos desconhecido.' : 'Done — the number of files written is unknown.')
+            : (pt ? `Concluída — ${job.written} arquivo(s) escrito(s).` : `Done — ${job.written} file(s) written.`)}
+        </p>
+      )}
+      {job.state === 'failed' && (
+        <p style={{ fontSize: 12, color: '#ef4444', lineHeight: 1.45, margin: '6px 0 0' }}>
+          {/* The server's own reason, untouched. */}
+          {job.reason ?? (pt ? 'falhou, sem motivo registrado' : 'failed, with no recorded reason')}
+        </p>
+      )}
+
+      {tail.length > 0 && (
+        <div style={{
+          marginTop: 8, padding: '8px 10px', borderRadius: 7,
+          background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
+          overflowX: 'auto',
+        }}>
+          <pre style={{
+            margin: 0, fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5,
+            color: 'var(--text-secondary)', whiteSpace: 'pre',
+          }}>
+            {tail.join('\n')}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One field of the restore form.
+ *
+ * Styled exactly like `GithubConnectForm`'s own fields — same box, same focus accent, same
+ * deliberate ABSENCE of an inline `font-size` (`index.css` forces 16px on every mobile input to
+ * stop iOS Safari zooming the viewport, and a value here would only be a live-looking line that
+ * rule already overrides). It is its own component rather than a call into that form's local
+ * closure so that neither section can change the other's fields by accident.
+ */
+function RestoreField({
+  label, hint, value, placeholder, password, busy, canSubmit, onChange, onSubmit,
+}: {
+  label: string
+  hint: string
+  value: string
+  placeholder: string
+  password: boolean
+  busy: boolean
+  /** Whether Enter should submit — the same predicate the button is disabled by, so the key and
+   *  the button can never disagree. */
+  canSubmit: boolean
+  onChange: (v: string) => void
+  onSubmit: () => void
+}) {
+  const isMobile = useIsMobile()
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>{label}</div>
+      <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>{hint}</p>
+      <input
+        type={password ? 'password' : 'text'}
+        value={value}
+        placeholder={placeholder}
+        disabled={busy}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && canSubmit) { e.preventDefault(); onSubmit() } }}
+        style={{
+          width: '100%', minWidth: 0, boxSizing: 'border-box',
+          padding: '7px 10px', minHeight: isMobile ? 44 : undefined,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+          fontFamily: password ? 'monospace' : 'inherit', color: 'var(--text-primary)', outline: 'none',
+          transition: 'border-color 0.15s',
+          ...(busy ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+        }}
+        onFocus={e => { if (!busy) e.currentTarget.style.borderColor = 'var(--anthropic-orange)' }}
+        onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)' }}
+      />
     </div>
   )
 }
