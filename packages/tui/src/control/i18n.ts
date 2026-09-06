@@ -1255,8 +1255,9 @@ const EN: ControlStrings = {
   backupLayerAlwaysOn: 'always on — a backup with no metrics restores nothing',
   backupLayerSizeUnknown: 'known after running',
   backupLayerDescription: {
-    metrics: 'The computed record of every session — cost, tokens, model, duration, files touched — '
-      + 'plus the deep Claude aggregate, tags, workflows and your preferences.',
+    metrics: 'Your agentistics settings, plus the computed record of every session — cost, tokens, '
+      + 'model, duration, files touched — the deep Claude aggregate, tags, workflows, attachments '
+      + 'and your event subscriptions.',
     repos: 'A map of every project directory, plus a bundle of each repository\'s commits that are '
       + 'not on its remote, and a patch of the uncommitted changes in each working tree. Restores '
       + 'your repository layout and unpushed work.',
@@ -1808,8 +1809,9 @@ const PT: ControlStrings = {
   backupLayerAlwaysOn: 'sempre ativo — um backup sem métricas não restaura nada',
   backupLayerSizeUnknown: 'conhecido só depois de rodar',
   backupLayerDescription: {
-    metrics: 'O registro calculado de cada sessão — custo, tokens, modelo, duração, arquivos '
-      + 'tocados — mais o agregado profundo do Claude, tags, workflows e suas preferências.',
+    metrics: 'Suas configurações do agentistics, mais o registro calculado de cada sessão — custo, '
+      + 'tokens, modelo, duração, arquivos tocados — o agregado profundo do Claude, tags, '
+      + 'workflows, anexos e as assinaturas de evento.',
     repos: 'Um mapa de cada diretório de projeto, mais um bundle dos commits de cada repositório '
       + 'que não estão no remoto, e um patch das mudanças não commitadas de cada working tree. '
       + 'Restaura a estrutura dos seus repositórios e o trabalho não enviado.',

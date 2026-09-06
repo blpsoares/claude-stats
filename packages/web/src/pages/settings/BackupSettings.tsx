@@ -354,10 +354,12 @@ const LAYER_NAME: Record<BackupLayer, { en: string; pt: string }> = {
  */
 const LAYER_DESCRIPTION: Record<BackupLayer, { en: string; pt: string }> = {
   metrics: {
-    en: 'The computed record of every session — cost, tokens, model, duration, files touched — '
-      + 'plus the deep Claude aggregate, tags, workflows and your preferences.',
-    pt: 'O registro calculado de cada sessão — custo, tokens, modelo, duração, arquivos tocados — '
-      + 'mais o agregado profundo do Claude, tags, workflows e suas preferências.',
+    en: 'Your agentistics settings, plus the computed record of every session — cost, tokens, '
+      + 'model, duration, files touched — the deep Claude aggregate, tags, workflows, attachments '
+      + 'and your event subscriptions.',
+    pt: 'Suas configurações do agentistics, mais o registro calculado de cada sessão — custo, '
+      + 'tokens, modelo, duração, arquivos tocados — o agregado profundo do Claude, tags, '
+      + 'workflows, anexos e as assinaturas de evento.',
   },
   repos: {
     en: 'A map of every project directory, plus a bundle of each repository\'s commits that are '
@@ -593,6 +595,10 @@ export default function BackupSettings() {
           setLabelDraft(data.section.label)
           setKeepDraft(String(data.section.keepRemote))
         }
+        // Also here, not only on load: connecting fills `github`, and without this the restore
+        // field below stayed empty until a reload while its own hint said it was prefilled.
+        const connected = data.section.configured ? data.section.url : ''
+        setRestoreUrl(prev => (prev.trim() ? prev : connected))
         setConnectToken('')
         setConnectUrl('')
       } else {
@@ -968,6 +974,10 @@ export default function BackupSettings() {
               <RestoreSection
                 pt={pt}
                 configuredUrl={github?.configured ? github.url : null}
+                // A configured machine on `auth: 'gh'` has a working gh by construction — it is
+                // how the repository was verified. An unconfigured one is told by the probe.
+                ghUsable={github === null ? false
+                  : github.configured ? github.auth === 'gh' : github.gh?.usable === true}
                 url={restoreUrl}
                 token={restoreToken}
                 onUrl={setRestoreUrl}
@@ -1667,8 +1677,8 @@ function GithubVersioning({
             // one backup is one GitHub release. Reported as not understood, and fairly: the number
             // decides when your OLDEST backup is deleted, and nothing on screen said so.
             hint={pt
-              ? 'Cada backup é um release. Ao passar desse número, o mais ANTIGO desta máquina é apagado do GitHub — ex.: 7 guarda a última semana de backups diários. Deixe 0 para nunca apagar nada. Só conta os desta máquina: os de outra nunca são tocados.'
-              : 'Each backup is one release. Past this number, the OLDEST of this machine is deleted from GitHub — e.g. 7 keeps the last week of daily backups. Leave it at 0 to never delete anything. It counts only this machine’s: another machine’s are never touched.'}
+              ? 'Quantos backups DESTA máquina ficam guardados. Com 2: você tem o mais recente e o anterior; ao fazer um novo, ele vira o mais recente, o que era mais recente vira o anterior, e o que era anterior é APAGADO do GitHub. 0 nunca apaga nada. Backups de outras máquinas no mesmo repositório nunca são tocados.'
+              : 'How many of THIS machine’s backups are kept. With 2: you have the newest and the one before it; when a new one is made it becomes the newest, the old newest becomes the one before, and the third is DELETED from GitHub. 0 never deletes anything. Other machines’ backups in the same repository are never touched.'}
             value={keepDraft}
             onChange={onKeepDraft}
             onSave={onSaveKeep}
@@ -2039,10 +2049,19 @@ function GithubConnectForm({
  *   enforced there and already written in words.
  */
 function RestoreSection({
-  pt, configuredUrl, url, token, onUrl, onToken, onList, listingBusy, listingError, machines,
-  job, running, ask, onAsk, startBusy, startError, onStart,
+  pt, configuredUrl, ghUsable, url, token, onUrl, onToken, onList, listingBusy, listingError,
+  machines, job, running, ask, onAsk, startBusy, startError, onStart,
 }: {
   pt: boolean
+  /**
+   * Whether the GitHub CLI on this machine can authenticate.
+   *
+   * When it can, the token field is NOT SHOWN AT ALL. It existed as a fallback for a machine with
+   * no `gh`, and offering a credential box to somebody who needs no credential is the habit this
+   * whole feature avoids teaching — it reads as "you must paste a token", which is exactly the
+   * question the gh path answers.
+   */
+  ghUsable: boolean
   /** The repository this machine already versions to, when there is one. The URL field is
    *  prefilled from it — one repository, asked once — and stays editable, because restoring
    *  another machine's backup from a different repository is a real thing to want. */
@@ -2103,11 +2122,12 @@ function RestoreSection({
         onChange={onUrl}
         onSubmit={onList}
       />
-      <RestoreField
-        label={pt ? 'Token do GitHub (opcional)' : 'GitHub token (optional)'}
+      {/* Only when `gh` cannot serve. See `ghUsable`. */}
+      {!ghUsable && <RestoreField
+        label={pt ? 'Token do GitHub' : 'GitHub token'}
         hint={pt
-          ? 'Só é necessário se esta máquina não tiver login no GitHub CLI: o servidor tenta o `gh` primeiro e só usa este campo quando não há credencial nenhuma. Numa máquina recém-formatada, `gh auth login` costuma ser o caminho mais curto.'
-          : 'Only needed when this machine has no GitHub CLI login: the server tries `gh` first and falls back to this field only when there is no credential at all. On a freshly reformatted machine, `gh auth login` is usually the shorter road.'}
+          ? 'Esta máquina não tem login no GitHub CLI. `gh auth login` costuma ser o caminho mais curto — feito isso, este campo some.'
+          : 'This machine has no GitHub CLI login. `gh auth login` is usually the shorter road — once it is done, this field disappears.'}
         value={token}
         placeholder={pt ? 'ghp_… (não é exibido)' : 'ghp_… (never shown back)'}
         password
@@ -2115,7 +2135,7 @@ function RestoreSection({
         canSubmit={canList}
         onChange={onToken}
         onSubmit={onList}
-      />
+      />}
 
       <button
         type="button"
