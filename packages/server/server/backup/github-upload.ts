@@ -29,6 +29,7 @@ import { gh, type FetchLike } from './github-api'
 import type { GithubBackupConfig } from './github-store'
 import { readGithubConfig } from './github-store'
 import { resolveGithubAuth } from './github-cli'
+import { alreadyUploaded, isEmptyRepoError, seedRepository } from './github-seed'
 import type { BackupLayer } from './backup-plan'
 import type { BackupRecord } from './backup-store'
 import { recordPrune } from './backup-store'
@@ -125,8 +126,23 @@ export async function uploadBackupToGithub(
     hostname: manifest.hostname,
   })
 
-  log(`github backup: creating release ${tag}…`)
-  const created = await gh<CreatedRelease>(
+  // ALREADY THERE? Asked before anything is sent. The upload deletes the local archive once the
+  // copy is confirmed, so a second run over an already-uploaded backup would re-send ~90 MB to
+  // replace a release that is already correct — and would do it after removing the file it is
+  // replacing. The tag names one backup of one machine, so this is exact rather than approximate.
+  const existing = await gh<{ tag_name: string }[]>(
+    `/repos/${config.owner}/${config.repo}/releases?per_page=100`, token, {}, fetchImpl,
+  )
+  // `Array.isArray` and not just `ok`: this pre-check exists only to SAVE work, so anything
+  // unexpected in the answer must let the upload proceed rather than throw. Crashing a backup over
+  // an optimisation is backwards.
+  if (existing.ok && Array.isArray(existing.data)
+    && alreadyUploaded(existing.data.map(r => r.tag_name), tag)) {
+    log(`github backup: ${tag} is already on GitHub — nothing to send`)
+    return { ok: true, htmlUrl: '', deletedLocal: false, verifyMs: 0, tag }
+  }
+
+  const createRelease = async (): Promise<Awaited<ReturnType<typeof gh<CreatedRelease>>>> => gh<CreatedRelease>(
     `/repos/${config.owner}/${config.repo}/releases`, token,
     {
       method: 'POST',
@@ -135,6 +151,22 @@ export async function uploadBackupToGithub(
     },
     fetchImpl,
   )
+
+  log(`github backup: creating release ${tag}…`)
+  let created = await createRelease()
+
+  // A repository made by following "create a private repository", with the README box left
+  // unticked, has NO COMMITS — and GitHub refuses a release on one: `422 Repository is empty.`
+  // (measured 2026-09-06). That is the repository every first-time setup produces, so the FIRST
+  // backup of every new setup failed with nothing but "upload failed". Give it a commit and try
+  // once more.
+  if (!created.ok && isEmptyRepoError(created.message)) {
+    log('github backup: the repository has no commits yet — adding a README so it can hold releases')
+    const seeded = await seedRepository(config.owner, config.repo, token, fetchImpl)
+    if (!seeded.ok) return fail(`the repository is empty and could not be initialised: ${seeded.reason}`)
+    created = await createRelease()
+  }
+
   if (!created.ok) return fail(`could not create the release: ${created.message}`)
 
   const fileName = basename(record.path)

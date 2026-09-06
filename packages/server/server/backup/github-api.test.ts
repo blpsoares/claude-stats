@@ -202,3 +202,35 @@ describe('gh() — never throws, never leaks the token', () => {
     expect(res.ok).toBe(true)
   })
 })
+
+test('a 422 carries the nested reason, which is the only part that says WHAT was invalid', async () => {
+  // Measured against the real API on 2026-09-06: creating a release on a repository with no
+  // commits answers
+  //   {"message":"Validation Failed","errors":[{"code":"custom","message":"Repository is empty."}]}
+  // and the top-level `message` alone is "Validation Failed" — true, useless, and identical to
+  // every other 422 GitHub can return. The upload's own recovery reads this string to decide
+  // whether to give the repository a first commit, so dropping the nested half made the fix
+  // unreachable AND left the user with "upload failed" and nothing to act on.
+  const res = await gh('/x', 'tok', {}, async () => new Response(
+    JSON.stringify({
+      message: 'Validation Failed',
+      errors: [{ resource: 'Release', code: 'custom', message: 'Repository is empty.' }],
+    }),
+    { status: 422, headers: { 'Content-Type': 'application/json' } },
+  ))
+  expect(res.ok).toBe(false)
+  if (res.ok) return
+  expect(res.message).toContain('Validation Failed')
+  expect(res.message).toContain('Repository is empty.')
+})
+
+test('an errors[] entry with no message of its own does not produce a dangling separator', async () => {
+  const res = await gh('/x', 'tok', {}, async () => new Response(
+    JSON.stringify({ message: 'Validation Failed', errors: [{ code: 'missing_field' }] }),
+    { status: 422, headers: { 'Content-Type': 'application/json' } },
+  ))
+  expect(res.ok).toBe(false)
+  if (res.ok) return
+  expect(res.message).toContain('Validation Failed')
+  expect(res.message.trimEnd().endsWith(':')).toBe(false)
+})

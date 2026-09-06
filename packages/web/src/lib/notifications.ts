@@ -198,6 +198,25 @@ export function resolveNotification(n: AppNotification, lang: 'pt' | 'en'): Loca
   if (n.code === 'member.auth_rejected' && n.meta?.status && message) {
     message = `${message} (HTTP ${n.meta.status})`
   }
+
+  // EVERY remaining {placeholder}, from `meta` under the same name.
+  //
+  // The cases above are the ones that TRANSFORM their value — a `v` prefix, a fallback noun when
+  // the fact is missing, a whole different sentence for the peer codes — and they run first so
+  // this never overrides them. What was missing was the ordinary case, and its absence was a bug
+  // factory: interpolation was a hand-written list, so every new code with a new placeholder
+  // shipped showing its own braces. Seen on screen as "Salvando {layers}." and "Motivo: {reason}".
+  //
+  // A placeholder with NO value in `meta` is LEFT ALONE rather than replaced: printing the word
+  // `undefined` inside a sentence a person reads is worse than a visible brace, because it looks
+  // like the value.
+  if (message && n.meta) {
+    const meta = n.meta
+    message = message.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (whole, key: string) => {
+      const v = meta[key]
+      return v === undefined || v === null ? whole : String(v)
+    })
+  }
   return { title, message }
 }
 

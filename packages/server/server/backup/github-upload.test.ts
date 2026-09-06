@@ -231,8 +231,12 @@ describe('uploadBackupToGithub — every failure keeps the local file, and names
         if (String(url).endsWith('/releases') && init?.method === 'POST') {
           return new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
         }
-        uploadCalled = true
-        return new Response('{}', { status: 200 })
+        // Only the ASSET upload counts, which is what this test means. Anything else the upload
+        // path asks for first — the "is this backup already on GitHub?" listing, for one — is a
+        // read that sends no archive, and treating every non-POST request as an upload would make
+        // this test fail on a request that uploads nothing.
+        if (String(url).includes('/assets')) uploadCalled = true
+        return new Response('[]', { status: 200 })
       }
       const outcome = await uploadBackupToGithub(CONFIG, record, { fetchImpl })
       expect(outcome.ok).toBe(false)

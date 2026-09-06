@@ -124,9 +124,27 @@ function redact(message: string, token: string): string {
 function apiMessageFrom(bodyText: string): string | null {
   try {
     const parsed = JSON.parse(bodyText) as unknown
-    if (parsed && typeof parsed === 'object' && typeof (parsed as { message?: unknown }).message === 'string') {
-      return (parsed as { message: string }).message
-    }
+    if (!parsed || typeof parsed !== 'object') return null
+    const top = (parsed as { message?: unknown }).message
+    if (typeof top !== 'string') return null
+
+    // GitHub's 422 puts the ACTUAL reason inside `errors[]` and leaves the top level as the
+    // useless "Validation Failed". Measured 2026-09-06: creating a release on a repository with no
+    // commits answers exactly that, with `errors[0].message === 'Repository is empty.'` — and the
+    // upload's own recovery reads this string to decide whether to give the repository a first
+    // commit, so dropping the nested half made a working fix unreachable and left the user with
+    // "upload failed" and nothing to act on.
+    //
+    // Entries with no `message` of their own contribute nothing rather than an empty fragment: a
+    // sentence ending in a dangling colon reads as truncated output.
+    const errors = (parsed as { errors?: unknown }).errors
+    const details = Array.isArray(errors)
+      ? errors
+        .map(e => (e && typeof e === 'object' ? (e as { message?: unknown }).message : null))
+        .filter((m): m is string => typeof m === 'string' && m.trim().length > 0)
+      : []
+
+    return details.length ? `${top}: ${details.join('; ')}` : top
   } catch {
     // Not JSON, or not shaped like GitHub's error body — fall through to the generic message.
   }

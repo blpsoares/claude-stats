@@ -277,3 +277,44 @@ describe('Task 13 — the two resync notification codes (member.resync_started /
     }
   })
 })
+
+describe('every {placeholder} is interpolated, not only the hand-listed ones', () => {
+  test('a placeholder with no hand-written case still resolves from meta', async () => {
+    // Seen on screen: a toast reading "Salvando {layers}." and another "Motivo: {reason}".
+    // Interpolation was a hand-written list — `user`, `version`, `central` — so every new
+    // notification with a new placeholder shipped showing its own braces. The list is the bug,
+    // not the missing entries: the next person adding a code would have hit it again.
+    const s = await freshStore()
+    const out = s.resolveNotification(
+      note('a', { code: 'backup.started', meta: { layers: 'metrics + repos' } }), 'pt',
+    )
+    expect(out.message).toContain('metrics + repos')
+    expect(out.message).not.toContain('{layers}')
+  })
+
+  test('a placeholder with NO value in meta is left alone, never replaced with "undefined"', async () => {
+    // An empty slot is a missing fact. Printing the word `undefined` in a sentence a person reads
+    // is worse than leaving the brace, because it looks like the value.
+    const s = await freshStore()
+    const out = s.resolveNotification(note('a', { code: 'backup.failed', meta: {} }), 'en')
+    expect(out.message).not.toContain('undefined')
+  })
+
+  test('the same placeholder appearing twice is replaced everywhere', async () => {
+    const s = await freshStore()
+    const out = s.resolveNotification(
+      note('a', { code: 'backup.done', meta: { layers: 'metrics', size: '4 MB' } }), 'en',
+    )
+    expect(out.message).toContain('metrics')
+    expect(out.message).toContain('4 MB')
+  })
+
+  test('a numeric value interpolates — `skipped` is a count, not a string', async () => {
+    const s = await freshStore()
+    const out = s.resolveNotification(
+      note('a', { code: 'backup.done.skipped', meta: { layers: 'metrics', size: '4 MB', skipped: 3 } }), 'pt',
+    )
+    expect(out.message).toContain('3')
+    expect(out.message).not.toContain('{skipped}')
+  })
+})
