@@ -3316,22 +3316,31 @@ export default function AppLayout() {
       // holds. What changes is that this div's border box now reaches the real bottom of the
       // screen, so a fixed descendant has nothing left to resolve against wrongly. The nav then
       // overlays its own padding, which is what the padding is for.
-      // ON A PHONE THIS IS THE MEASURED VISIBLE BAND, NOT `100dvh`. `dvh` tracks the collapsing
-      // URL bar and is deliberately blind to the KEYBOARD, which is the one thing that has to be
-      // subtracted here — see `lockViewport` above. With the document locked, a shell of `100dvh`
-      // would leave the composer sitting behind the keyboard with no scroll left to rescue it.
-      height: inSessionsWorkspace ? (isMobile ? viewport.height : '100vh') : undefined,
-      // WebKit can still slide the visual viewport DOWN inside the locked layout. It is normally
-      // 0; honouring it costs one margin and keeps the shell inside the band it was measured from.
-      ...(inSessionsWorkspace && isMobile && viewport.top > 0 ? { marginTop: viewport.top } : {}),
+      // THE BOX REACHES THE FLOOR; THE KEYBOARD IS PADDING. This briefly took its height from
+      // `visualViewport.height` instead, and that is the SAME MISTAKE the long note above records
+      // for `calc(100dvh - nav)`, made again from a different direction: a shorter box ends above
+      // the bottom of the screen, and because `#root` clips (see below), a `position: fixed`
+      // descendant anchors to THAT edge rather than the window's — so the bottom bar and the
+      // composer came up already floating, before any keyboard. The visual viewport is also the
+      // one measurement that is not always trustworthy at rest: Safari's collapsing toolbars and a
+      // non-zero `offsetTop` both make it shorter than the screen with nothing covering anything.
+      //
+      // `100dvh` + `padding-bottom: <keyboard>` gives the flex algorithm the same definite content
+      // height the shorter box did — `box-sizing: border-box` is global — while the border box
+      // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
+      // pixel it left, and nothing anchors to an edge that is not the screen's.
+      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
-      // ...and not while the keyboard is up either: the bar steps aside for it (see its own note),
-      // so reserving its band would put a strip of nothing between the search field and the
-      // keyboard. The condition is the bar's own, restated in one place rather than two.
-      ...(inSessionsWorkspace && isMobile && !sessionOpen && !viewport.keyboard
-        ? { paddingBottom: 'var(--mobile-nav-h)' }
+      // THE BAND AT THE FOOT, and only ever one of the two — they cannot co-occur, because the bar
+      // steps aside for the keyboard (see its own note). The nav's band is reserved only on the
+      // LIST, where the bar is actually drawn; the keyboard's is reserved whenever it is up, and
+      // that is what lifts the composer clear of it now that the box itself reaches the floor.
+      ...(inSessionsWorkspace && isMobile
+        ? (viewport.keyboard
+            ? { paddingBottom: viewport.keyboardInset }
+            : (!sessionOpen ? { paddingBottom: 'var(--mobile-nav-h)' } : {}))
         : {}),
       background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
       paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth),

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { keyboardOpen, shellRect, type ViewportRect } from '../lib/mobileViewport'
+import { keyboardInset, keyboardOpen, shellRect, type ViewportRect } from '../lib/mobileViewport'
 
 /**
  * The VISIBLE band of the screen, and whether a keyboard is eating it.
@@ -16,6 +16,14 @@ import { keyboardOpen, shellRect, type ViewportRect } from '../lib/mobileViewpor
 export interface Viewport extends ViewportRect {
   /** A software keyboard is up. `false` whenever it cannot be told. */
   keyboard: boolean
+  /**
+   * How many CSS pixels of the layout viewport it is covering — 0 when it is not up.
+   *
+   * This, not `height`, is what the shell spends. A box sized to the VISIBLE band ends above the
+   * bottom of the screen and takes every `position: fixed` descendant with it; the same number
+   * spent as padding lifts the content just as far while the box still reaches the floor.
+   */
+  keyboardInset: number
 }
 
 const layoutHeight = (): number => (typeof window === 'undefined' ? 0 : window.innerHeight)
@@ -24,7 +32,8 @@ const read = (active: boolean): Viewport => {
   const layout = layoutHeight()
   const vv = active && typeof window !== 'undefined' ? window.visualViewport : null
   const rect = shellRect(vv, layout)
-  return { ...rect, keyboard: active && keyboardOpen(layout, rect.height) }
+  const up = active && keyboardOpen(layout, rect.height)
+  return { ...rect, keyboard: up, keyboardInset: up ? keyboardInset(layout, rect.height) : 0 }
 }
 
 export function useVisualViewport(active: boolean): Viewport {
@@ -35,7 +44,8 @@ export function useVisualViewport(active: boolean): Viewport {
       const next = read(active)
       // Same numbers, same object: this fires on every keyboard frame, and a new object each time
       // would re-render the whole workspace ~60 times a second while the keyboard slides.
-      return prev.top === next.top && prev.height === next.height && prev.keyboard === next.keyboard
+      return prev.top === next.top && prev.height === next.height
+        && prev.keyboard === next.keyboard && prev.keyboardInset === next.keyboardInset
         ? prev
         : next
     })

@@ -18,18 +18,25 @@
  *      routinely does not, so the document is left permanently scrolled — which is why the input
  *      and the fixed bottom nav both come back a little higher than they went.
  *
- * So the document is LOCKED (`body.ag-viewport-locked`, index.css) and the shell is measured
- * against the VISUAL viewport instead. Locking alone would be half a fix, and the wrong half: with
- * nothing left to scroll, the composer would simply sit behind the keyboard. `visualViewport.height`
- * is the visible band with the keyboard already subtracted, so the composer rises by construction
- * and — the whole point — comes back to exactly where it was, because the number it is derived
- * from does.
+ * So the document is LOCKED (`body.ag-viewport-locked`, index.css) and the keyboard is MEASURED
+ * here. Locking alone would be half a fix, and the wrong half: with nothing left to scroll, the
+ * composer would simply sit behind the keyboard.
+ *
+ * WHAT THE SHELL SPENDS IS `keyboardInset`, AS PADDING — never `height` as its own height. Sizing
+ * the shell to the visible band was tried and reverted within the hour: a shorter box ends above
+ * the bottom of the screen, and since `#root` clips on a phone, every `position: fixed` descendant
+ * anchors to that edge instead of the window's — so the bottom bar and the composer came up
+ * already floating, before any keyboard was involved. The visible band is also not reliably the
+ * screen at rest (Safari's collapsing toolbars, a non-zero `offsetTop`), which is exactly when a
+ * shell must be right without anything having happened yet. `100dvh` + `padding-bottom: inset`
+ * gives the same content height with the border box still on the floor.
+ *
+ * `100dvh` cannot do the job alone, either: it tracks the collapsing URL bar and is deliberately
+ * blind to the keyboard, which is the one thing being measured here. The two together are the fix.
  *
  * `offsetTop` is the residue: WebKit can still scroll the visual viewport WITHIN the locked layout.
- * It is normally 0, and honouring it costs one translate.
- *
- * `100dvh` cannot do this job. It tracks the collapsing URL bar and is deliberately blind to the
- * keyboard, which is the one thing being measured here.
+ * It is read so the measurement stays honest, and deliberately not acted on — a shell that moves
+ * with it is the floating box again.
  */
 
 /** The visible band: its height, and how far WebKit has slid it down the locked layout. */
