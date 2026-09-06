@@ -28,7 +28,7 @@ import { asideCache, asideKey } from '../../lib/asideCache'
 import {
   FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
   BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
-  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest,
+  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X,
 } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -54,6 +54,7 @@ import {
   cannotWriteText, offerableScopes, runText, runningMcpCount, scopeText,
   type McpEntry, type McpListPayload, type McpScope,
 } from '../../lib/mcpPanel'
+import { splitAsideTabs } from '../../lib/asideTabs'
 import { fmt, fmtCost } from '@agentistics/core'
 import {
   galleryFileCount, galleryGroups, parseGalleryScope, parseGalleryView, producedGroups,
@@ -126,6 +127,142 @@ export interface ArtifactsAsideProps {
    * asked not to give.
    */
   facts?: ReadonlyMap<string, { bytes: number; scope: 'project' | 'temp' }>
+}
+
+/** The gap between two tabs. Shared by the bar and the ruler, or the measurement is of a different
+ *  row from the one it is measuring for. */
+const TAB_GAP = 2
+
+/** Something is RUNNING behind this tab — the reason to look now. Drawn identically wherever a tab
+ *  is, so the bar and the grid can never disagree about which ones are live. */
+function RunningDot() {
+  return (
+    <span
+      aria-hidden
+      style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }}
+    />
+  )
+}
+
+/**
+ * EVERY TAB, as a grid of labelled tiles.
+ *
+ * Every tab and not only the ones that did not fit: a grid whose contents change as the panel
+ * resizes puts the same tab in a different place each time somebody looks for it. The current one
+ * is marked, so this reads as a launcher rather than a leftovers menu.
+ *
+ * It is a POPOVER, not permanent chrome. That is the whole reason this design was chosen over a
+ * vertical icon rail: a rail costs 46px in the one dimension this panel is poor in (440px on
+ * desktop, ~343px on a phone), while this costs nothing while it is closed.
+ */
+function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
+  tabs: readonly { id: TabId; label: string; icon: React.ReactNode; count: number | null }[]
+  active: TabId
+  pt: boolean
+  isMobile: boolean
+  /**
+   * The control that opened this.
+   *
+   * It has to be excluded from the outside-click, and NOT because of tidiness: a `mousedown` on it
+   * is outside this element, so the dismiss fired, and then the same gesture's `click` toggled the
+   * grid straight back open. Pressing the button to close it made it BLINK and stay — reported as
+   * exactly that. A popover has to know what opened it.
+   */
+  anchor: React.RefObject<HTMLButtonElement | null>
+  onPick: (id: TabId) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  // `esc` closes and the focus goes back to the control that opened it — the same rule the
+  // restriction table's maximized view keeps.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (anchor.current?.contains(t)) return   // the toggle answers for itself
+      if (ref.current && !ref.current.contains(t)) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    // `mousedown` and not `click`: the control that opened this would otherwise reopen it on the
+    // same gesture that closed it.
+    document.addEventListener('mousedown', onDown)
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown) }
+  }, [onClose, anchor])
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={pt ? 'Todas as abas' : 'All tabs'}
+      style={{
+        position: 'absolute', top: 'calc(100% - 1px)', left: 6, right: 6, zIndex: 40,
+        padding: 10, borderRadius: 11, background: 'var(--bg-surface)',
+        border: '1px solid var(--anthropic-orange)',
+        boxShadow: '0 12px 30px -10px rgba(0,0,0,0.45)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase',
+          color: 'var(--text-tertiary)',
+        }}>{pt ? 'Todas as abas' : 'All tabs'}</span>
+        <button
+          onClick={onClose}
+          aria-label={pt ? 'Fechar' : 'Close'}
+          style={{
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+            border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
+          }}
+        ><X size={13} /></button>
+      </div>
+      <div style={{
+        display: 'grid', gap: 6,
+        // Four across on a desktop aside, three on the narrower one a phone gets — a tile below
+        // ~74px cannot hold a word, and a truncated label is the ambiguity this design avoids.
+        gridTemplateColumns: `repeat(${isMobile ? 3 : 4}, minmax(0, 1fr))`,
+      }}>
+        {tabs.map(t => {
+          const on = t.id === active
+          return (
+            <button
+              key={t.id}
+              onClick={() => onPick(t.id)}
+              aria-current={on}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                padding: isMobile ? '10px 3px' : '9px 3px 8px',
+                minHeight: isMobile ? 66 : undefined,
+                borderRadius: 9, cursor: 'pointer', fontFamily: 'inherit',
+                border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
+                background: on ? 'rgba(232,105,11,0.10)' : 'var(--bg-card)',
+                color: on ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+            >
+              <span style={{ display: 'inline-flex', position: 'relative' }}>
+                {t.icon}
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: on ? 700 : 500, lineHeight: 1.25, maxWidth: '100%',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{t.label}</span>
+              {/* The count travels to the grid too — a tile that dropped it would say less than the
+                  bar cell it replaces. A tab NOBODY HAS OPENED has no count, and says so with a
+                  dash and a reason on hover: "not asked yet" and "there are none" are different
+                  facts, and a `0` would claim the second one. */}
+              <span
+                title={t.count === null
+                  ? (pt ? 'Ainda não lido — abra a aba para contar.' : 'Not read yet — open the tab to count.')
+                  : undefined}
+                style={{ fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}
+              >{t.count === null ? '—' : t.count}</span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 /** `new` and `edited` read at a glance from the glyph; the word is beside it for everyone else. */
@@ -280,8 +417,27 @@ export function ArtifactsAside({
     () => groupSkills(skills ?? [], skillQuery, pt ? 'pt' : 'en'),
     [skills, skillQuery, pt],
   )
+  const [gridOpen, setGridOpen] = useState(false)
+  /**
+   * OPENING THE ASIDE ASKS EVERY TAB FOR ITS NUMBER.
+   *
+   * Skills, PRs, Subagents and MCPs each fetch for themselves, and each used to wait for its own
+   * tab to be opened — so the bar and the grid could only draw a dash until somebody had walked
+   * into all four, one at a time. Asked for directly: "abrir a sessao ja deve disparar a busca".
+   *
+   * THE MOUNT IS THE RIGHT MOMENT, and it is the aside's OWN open rather than the session's: this
+   * component is unmounted while the panel is shut (`SessionsPage` drops it once the closing
+   * animation ends), so mounting IS the panel appearing. With it shut there is no bar and no grid,
+   * so a count nobody can see would be a multi-MB transcript read, a `/proc` scan and a GitHub call
+   * spent on every session somebody clicks past.
+   *
+   * What stays lazy is the RE-READ, not the first one. A finished tab's answer cannot change, and
+   * `asideCache` serves the second open of the same session for free — so this costs one request
+   * per tab per session, once. Only the tab actually on screen keeps polling; see the subagents
+   * effect, where the poll is scheduled against `tab` and not against this.
+   */
+
   useEffect(() => {
-    if (tab !== 'skills') return
     // The cached list is already on screen; this refreshes BEHIND it and only when it has aged out.
     // A fetch on every mount is the reload being fixed; never fetching would pin the list forever.
     const key = asideKey(sessionId, 'skills')
@@ -299,7 +455,7 @@ export function ArtifactsAside({
       })
       .catch(() => { if (alive) setSkills(s => s ?? []) })
     return () => { alive = false }
-  }, [tab, skills, sessionId, pt])
+  }, [skills, sessionId, pt])
 
   /** The repository's pull requests. Read when the tab opens, then cached — see `github-prs.ts`. */
   type PrAnswer = {
@@ -311,7 +467,6 @@ export function ArtifactsAside({
   }
   const [prs, setPrs] = useState<PrAnswer | null>(() => asideCache.read<PrAnswer>(asideKey(sessionId, 'prs')).value ?? null)
   useEffect(() => {
-    if (tab !== 'prs') return
     const key = asideKey(sessionId, 'prs')
     const hit = asideCache.read<PrAnswer>(key)
     if (hit.value && !hit.stale) return
@@ -321,7 +476,7 @@ export function ArtifactsAside({
       .then((d: PrAnswer) => { asideCache.write(key, d); if (alive) setPrs(d) })
       .catch(() => { if (alive) setPrs(p => p ?? { pulls: [], unavailable: 'failed' }) })
     return () => { alive = false }
-  }, [tab, prs, sessionId, pt])
+  }, [prs, sessionId, pt])
 
   const feedRef = useRef<HTMLDivElement>(null)
   /** A clock, so "3m ago" ages while the panel is open rather than freezing at its first render. */
@@ -375,81 +530,203 @@ export function ArtifactsAside({
   )
 
   /** The three tabs. A count rides each one, so the panel says what is behind a tab unopened. */
+  /**
+   * EVERY COUNT IS `null` UNTIL SOMEBODY HAS ASKED. It is never a `0`.
+   *
+   * On the BAR a zero was invisible — `count > 0` hid it — so the lie sat in the data for as long
+   * as the bar was the only reader. The grid shows every tile's number, including a zero, and the
+   * moment it did, `Skills 0` and `Subagents 0` appeared on tabs nobody had opened. Reported
+   * exactly that way: "mostra os itens zerados, mas quando eu entro dai ele mostra o numero real".
+   *
+   * The comment that used to sit on the Skills line called `?? 0` "honest rather than lazy" and
+   * then, one clause later, stated the rule it was breaking — a number the panel has not measured
+   * is the thing this codebase refuses to print everywhere else. A control that has not asked and
+   * a thing that is empty are different facts, and only the second one is about the session.
+   *
+   * `loading` is the conversation's own signal, so the four counts derived from its turns wait on
+   * it; the three tabs that fetch for themselves wait on their own answer.
+   */
   const tabs: { id: TabId; label: string; icon: React.ReactNode; count: number | null }[] = [
-    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: artifacts.length },
-    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: docs.length },
-    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: feed.length },
+    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: loading ? null : artifacts.length },
+    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: loading ? null : docs.length },
+    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: loading ? null : feed.length },
     {
       id: 'gallery',
       label: pt ? 'Galeria' : 'Gallery',
       icon: <Image size={12} />,
-      count: galleryFiles,
+      count: loading ? null : galleryFiles,
     },
-    // The count is 0 until the tab is opened, and that is honest rather than lazy: the panel has
-    // not asked the host yet, and a number it has not measured is the thing this codebase refuses
-    // to print everywhere else.
-    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills?.length ?? 0 },
-    // `null`, not 0, wherever a count would be a claim: only Claude Code records subagents at all,
-    // and until the tab is opened this panel has not asked. See `subagentCount`.
+    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills === null ? null : skills.length },
     {
       id: 'agents',
       label: pt ? 'Subagentes' : 'Subagents',
       icon: <Bot size={12} />,
       count: subagentCount(agentsState),
     },
-    { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp?.servers.length ?? null },
-    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs?.pulls.length ?? 0 },
+    { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp === null ? null : mcp.servers.length },
+    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs === null ? null : prs.pulls.length },
   ]
 
+  /**
+   * THE BAR KEEPS WHAT FITS; the grid holds the rest — and every other tab with it.
+   *
+   * Eight tabs do not fit 440px, and less of them fit the `min(440px, 88%)` the aside gets on a
+   * phone. The bar used to scroll sideways, which put the tabs past the fold out of sight with
+   * nothing on screen saying they existed. The split is the pure `asideTabs.ts`; what lives here is
+   * the MEASURING, because the labels are words in two languages and a width estimated from
+   * character counts is wrong in one of them.
+   *
+   * The ruler below is how they are measured: an aria-hidden row holding every tab at its real
+   * size, laid out but never painted. Measuring the visible bar instead would only ever report the
+   * tabs that already fit, which is the answer this is trying to compute.
+   */
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const rulerRef = useRef<HTMLDivElement | null>(null)
+  const [tabWidths, setTabWidths] = useState<Record<string, number>>({})
+  const [barWidth, setBarWidth] = useState(0)
+  const [overflowWidth, setOverflowWidth] = useState(0)
+  const gridBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // Re-measured when the LABELS can change (language) or the set does — not on every render.
+  const tabSig = tabs.map(t => `${t.id}:${t.label}:${t.count ?? ''}`).join('|')
+  useEffect(() => {
+    const measure = () => {
+      const ruler = rulerRef.current
+      if (ruler) {
+        const next: Record<string, number> = {}
+        let ctrl = 0
+        for (const el of Array.from(ruler.children)) {
+          const id = (el as HTMLElement).dataset.tabId
+          const w = el.getBoundingClientRect().width
+          if (id) next[id] = w
+          else ctrl = w
+        }
+        setTabWidths(next)
+        setOverflowWidth(ctrl)
+      }
+      const bar = barRef.current
+      // `clientWidth` minus the padding the bar draws its tabs inside of.
+      if (bar) setBarWidth(Math.max(0, bar.clientWidth - 16))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (barRef.current) ro.observe(barRef.current)
+    return () => ro.disconnect()
+  }, [tabSig, isMobile])
+
+  const split = splitAsideTabs(
+    tabs.map(t => ({ id: t.id, width: tabWidths[t.id] ?? 0 })),
+    tab,
+    { container: barWidth, overflowWidth, gap: TAB_GAP },
+  )
+  const onBar = tabs.filter(t => split.bar.includes(t.id))
+
+  /** A tab's own cell. One renderer for the bar and the ruler, so they can never measure apart. */
+  const tabCell = (t: (typeof tabs)[number], forRuler: boolean) => {
+    const on = !forRuler && tab === t.id
+    return (
+      <button
+        key={t.id}
+        {...(forRuler ? { 'data-tab-id': t.id, tabIndex: -1 } : { role: 'tab', 'aria-selected': on })}
+        onClick={forRuler ? undefined : () => { setTab(t.id); setGridOpen(false) }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5, padding: '4px 9px',
+          borderRadius: 7, border: 'none', cursor: forRuler ? 'default' : 'pointer',
+          fontFamily: 'inherit', fontSize: 11.5, fontWeight: on ? 700 : 500,
+          background: on ? 'var(--bg-elevated)' : 'transparent',
+          color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
+          // 44px is the MOBILE number; applying it on desktop turns the bar into a row of buttons.
+          minHeight: isMobile ? 44 : undefined, flexShrink: 0, whiteSpace: 'nowrap',
+        }}
+      >
+        {t.icon}
+        {t.label}
+        {/* THE COUNTS STAY ON THE BAR. `Subagentes 64` is what says what is behind a tab without
+            opening it, and it is the whole reason this design was chosen over a vertical rail. */}
+        {t.count !== null && t.count > 0 && (
+          <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{t.count}</span>
+        )}
+        {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
+        {t.id === 'mcps' && runningMcpCount(mcp?.servers ?? null) > 0 && <RunningDot />}
+        {t.id === 'agents' && runningCount(agentsState) > 0 && <RunningDot />}
+      </button>
+    )
+  }
+
   const tabBar = (
-    // SEVEN tabs do not fit a 390px phone, and the panel body must never make the PAGE scroll
-    // sideways. So the bar scrolls inside itself — the same rule this codebase applies to a wide
-    // table — and each cell keeps a 44px touch target on mobile.
-    <div role="tablist" style={{
-      display: 'flex', gap: 2, padding: '6px 8px', flexShrink: 0,
-      borderBottom: '1px solid var(--border)',
-      overflowX: 'auto', overflowY: 'hidden', scrollbarWidth: 'thin',
-    }}>
-      {tabs.map(t => {
-        const on = tab === t.id
-        return (
+    <div style={{ position: 'relative', flexShrink: 0 }}>
+      <div ref={barRef} role="tablist" style={{
+        display: 'flex', gap: TAB_GAP, padding: '6px 8px', alignItems: 'center',
+        borderBottom: '1px solid var(--border)',
+        // NO horizontal scroll any more: what does not fit is in the grid, where it can be SEEN.
+        // `hidden` stays as the backstop for the one frame before the first measurement lands.
+        overflow: 'hidden',
+      }}>
+        {onBar.map(t => tabCell(t, false))}
+        {split.overflow && (
           <button
-            key={t.id}
-            role="tab"
-            aria-selected={on}
-            onClick={() => setTab(t.id)}
+            ref={gridBtnRef}
+            onClick={() => setGridOpen(v => !v)}
+            aria-expanded={gridOpen}
+            aria-haspopup="true"
+            title={pt ? 'Todas as abas' : 'All tabs'}
             style={{
-              display: 'flex', alignItems: 'center', gap: 5, padding: '4px 9px',
-              borderRadius: 7, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-              fontSize: 11.5, fontWeight: on ? 700 : 500,
-              background: on ? 'var(--bg-elevated)' : 'transparent',
-              color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
-              // 44px is the MOBILE number; applying it on desktop turns the bar into a row of
-              // buttons. A tab must also not shrink, or the scroll it lives in cannot work.
-              minHeight: isMobile ? 44 : undefined, flexShrink: 0, whiteSpace: 'nowrap',
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 'auto',
+              padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: 11.5, fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap',
+              minHeight: isMobile ? 44 : undefined,
+              // A real control, not a placeholder. It was a dashed outline in the tertiary colour
+              // and read as the disabled remains of something — the same thing that made the MCP
+              // tab's add button disappear into the cards under it.
+              border: '1px solid var(--anthropic-orange)',
+              background: gridOpen ? 'var(--anthropic-orange)' : 'rgba(232,105,11,0.10)',
+              color: gridOpen ? '#fff' : 'var(--anthropic-orange)',
             }}
           >
-            {t.icon}
-            {t.label}
-            {t.count !== null && t.count > 0 && (
-              <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{t.count}</span>
-            )}
-            {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
-            {t.id === 'mcps' && runningMcpCount(mcp?.servers ?? null) > 0 && (
-              <span
-                aria-hidden
-                style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }}
-              />
-            )}
-            {t.id === 'agents' && runningCount(agentsState) > 0 && (
-              <span
-                aria-hidden
-                style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }}
-              />
+            <LayoutGrid size={12} />
+            <span>{pt ? 'Todas' : 'All'}</span>
+            {/* `+5`, never `5`. A bare number here sits beside tiles and tabs whose numbers count
+                ITEMS — `MCPs 5` and `All 5` on one row meant two different things. The `+` says
+                "five more of these", which is what it is. */}
+            {split.hidden.length > 0 && (
+              <span style={{ fontSize: 10, opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>
+                +{split.hidden.length}
+              </span>
             )}
           </button>
-        )
-      })}
+        )}
+      </div>
+
+      {/* THE RULER — every tab at its real size, laid out and never painted. `visibility: hidden`
+          rather than `display: none`, which measures nothing at all. */}
+      <div
+        ref={rulerRef}
+        aria-hidden
+        style={{
+          position: 'absolute', top: 0, left: 0, display: 'flex', gap: TAB_GAP,
+          visibility: 'hidden', pointerEvents: 'none', height: 0, overflow: 'hidden',
+        }}
+      >
+        {tabs.map(t => tabCell(t, true))}
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px',
+          fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0,
+        }}>
+          <LayoutGrid size={12} />{pt ? 'Todas' : 'All'}<span style={{ fontSize: 10 }}>+88</span>
+        </span>
+      </div>
+
+      {gridOpen && (
+        <TabGrid
+          tabs={tabs}
+          active={tab}
+          pt={pt}
+          isMobile={isMobile}
+          anchor={gridBtnRef}
+          onPick={id => { setTab(id); setGridOpen(false); gridBtnRef.current?.focus() }}
+          onClose={() => { setGridOpen(false); gridBtnRef.current?.focus() }}
+        />
+      )}
     </div>
   )
 
@@ -462,7 +739,6 @@ export function ArtifactsAside({
    */
   useEffect(() => {
     // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
-    if (tab !== 'agents') return
     const key = asideKey(sessionId, 'subagents')
     const hit = asideCache.read<SubagentsState>(key)
     // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
@@ -493,7 +769,10 @@ export function ArtifactsAside({
         asideCache.write(key, next)
         if (!alive) return
         setAgentsState(next)
-        const wait = subagentsPollMs(next)
+        // POLLED ONLY WHILE THE TAB IS ON SCREEN. The list costs a full read of the parent
+        // transcript, and re-reading it every five seconds for a count in a corner of a bar is the
+        // disk-burner `chat-tail.ts` documents, moved one panel over.
+        const wait = tab === 'agents' ? subagentsPollMs(next) : null
         if (wait !== null) timer = setTimeout(read, wait)
       } catch {
         if (alive) setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
@@ -603,7 +882,6 @@ export function ArtifactsAside({
    * harness's own command produced, not the one this panel guessed it would produce.
    */
   useEffect(() => {
-    if (tab !== 'mcps') return
     // The DIRECTORY is part of the key: the `local` and `project` scopes are read against it, so
     // two sessions in different repositories have genuinely different answers.
     const key = asideKey(sessionId, 'mcps', cwd ?? '')
@@ -636,7 +914,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false }
-  }, [tab, sessionId, cwd, pt, mcpNonce])
+  }, [sessionId, cwd, pt, mcpNonce])
 
   const mcpBody = (): React.ReactNode => (
     <McpTab
