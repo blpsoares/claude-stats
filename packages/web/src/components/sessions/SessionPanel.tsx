@@ -44,6 +44,16 @@ export interface SessionPanelProps {
   authorName?: string
   /** Called after a verb that removes the row — the panel has nothing left to show. */
   onGone?: () => void
+  /**
+   * A verb REPLACED this session with another — go to it.
+   *
+   * Reopening mints a NEW managed id for the same conversation, retires the row it replaced, and
+   * `collapseSupersededSessions` then drops the old row from the fleet entirely. Without this the
+   * panel stays selecting an id that no longer resolves: it empties, and every button on it acts on
+   * a row the server cannot find. Reported as "reabri uma sessão fechada e não me permitia stopar
+   * ela". `SessionActions` has always answered with the new id; only this surface was not listening.
+   */
+  onOpened?: (id: string) => void
   /** Provided together — see the module header. Their presence means "a shared header up in
    *  App.tsx already shows the title/tabs/actions for this session; draw none of your own." */
   view?: SessionView
@@ -52,7 +62,7 @@ export interface SessionPanelProps {
   onArtifacts?: SessionChatProps['onArtifacts']
 }
 
-export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, view: viewProp, onViewChange, onArtifacts }: SessionPanelProps) {
+export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, onOpened, view: viewProp, onViewChange, onArtifacts }: SessionPanelProps) {
   /**
    * Is this a session of ANOTHER machine, reached through the relay?
    *
@@ -147,6 +157,7 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
             lang={lang}
             act={act}
             {...(onGone ? { onGone } : {})}
+            {...(onOpened ? { onOpened } : {})}
           />
         )}
       </header>

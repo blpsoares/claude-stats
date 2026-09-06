@@ -55,29 +55,21 @@ async function runWriters(file: string, ids: string[]): Promise<void> {
 }
 
 /*
- * ⚠️ SKIPPED, and this note is why — it is not a test that was written and forgotten.
+ * IT RUNS AGAIN. It was skipped with a note asking for `lockFile` to be INSTRUMENTED rather than
+ * guessed at, and that is what found the fault.
  *
- * It is INTERMITTENT inside the full suite and green in isolation: run alone it passes every time
- * (verified 4/4 with a standalone script, all six records present), and inside `bun test` over the
- * whole repo it fails roughly one run in three with one or two records missing. It broke the
- * release build exactly that way.
+ * Six processes taking the lock 25 times each, counting which branch each blocked acquirer took:
+ * the age-based expiry NEVER fired (`staleOld: 0`, so the 5s contention fallback and the 15s
+ * staleness were both red herrings — the first hypothesis, and wrong). What fired was `stat`
+ * throwing `ENOENT`: the lock released in the instant between the failed `mkdir` and the `stat`.
+ * That branch answered with `rm(dir, {recursive: true})`, and by the time the `rm` ran another
+ * process could already hold a NEW lock at that path — so it deleted a live lock and both holders
+ * proceeded. Measured **31 overlapping acquisitions out of 150**.
  *
- * WHAT IS ESTABLISHED:
- *   - The writer processes all exit 0, so it is not the test's own plumbing failing; the check for
- *     that is above and it does not fire.
- *   - The failing runs complete in ~275ms, so the lock's 5s contention timeout is NOT being
- *     reached — the "proceed without the lock" fallback is not the explanation, which was the first
- *     hypothesis and is wrong.
- *   - The lock demonstrably helps: removing it fails this test EVERY time, with the lock it fails
- *     sometimes. So the mechanism works and something about it is incomplete.
- *
- * WHAT IS NOT: why concurrent load changes the outcome. Do not guess at it — instrument
- * `lockFile` and print which branch each writer took.
- *
- * It is skipped rather than deleted because a red build teaches people to ignore red builds, and
- * deleting it would lose the only thing that can prove the lock finished.
+ * With a vanished lock answered by RETRYING and an abandoned one taken over by `rename`, the same
+ * probe measures **0 out of 600** across three rounds of eight processes.
  */
-test.skip('a record written by one process is not erased by another', async () => {
+test('a record written by one process is not erased by another', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'agentop-registry-'))
   const file = join(dir, 'managed-sessions.json')
   try {

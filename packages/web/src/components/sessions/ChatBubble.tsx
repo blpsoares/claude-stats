@@ -25,10 +25,11 @@ import remarkGfm from 'remark-gfm'
 // message written across several lines renders as one run-on paragraph — which is what "the
 // messages are not formatted" turned out to mean. `HarnessChat` has always used it.
 import remarkBreaks from 'remark-breaks'
-import { Check, Clock, CornerUpLeft, Loader, User } from 'lucide-react'
+import { Check, Clock, Copy, CornerUpLeft, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { splitSlashLine } from '../../lib/slashLine'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
+import { copyText } from '../../lib/clipboard'
 import { echoStatus } from '../../lib/echoStatus'
 import { messageTime } from '../../lib/messageTime'
 import { attachmentUrl } from '../../lib/attachmentUrl'
@@ -193,11 +194,20 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
    * every messaging application has taught, and it is reachable without first finding a 24px
    * button that only appears when the pointer is over the right message.
    *
-   * ONE ENTRY, deliberately. A context menu offered on a conversation invites "copy", "quote",
-   * "open in the terminal" and four more, and each of those is a decision about what a session can
-   * do that has not been made. Reply is the one this file already supports.
+   * TWO ENTRIES. It was one, deliberately — a context menu on a conversation invites "quote",
+   * "open in the terminal" and four more, each a decision about what a session can do that has not
+   * been made. COPY was asked for and is not one of those: it takes text the reader has already
+   * selected and puts it on their own clipboard. It touches no session, decides nothing, and is the
+   * gesture the right-click was reached for in the first place. The rest of the list stays refused.
    */
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
+  /** The last copy's outcome, cleared on a timer — see the note beside the button. */
+  const [copied, setCopied] = useState<'ok' | 'fail' | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 2000)
+    return () => clearTimeout(t)
+  }, [copied])
   const bodyRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (menuAt === null) return
@@ -455,7 +465,49 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
                 ? (pt ? 'Responder ao trecho' : 'Reply to excerpt')
                 : (pt ? 'Responder' : 'Reply')}
             </button>
+
+            {/* COPY. What it copies is what the reader can SEE they selected — the excerpt when
+                there is one, the whole message otherwise — so the menu never quietly takes more
+                than the highlight promised. The label says which, because "copy" over a selection
+                that is about to be ignored is the wrong answer given confidently. */}
+            <button
+              role="menuitem"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                const text = excerpt ? excerpt.text : turn.text
+                setMenuAt(null)
+                // Best effort, and SAID either way: `navigator.clipboard` is unavailable over plain
+                // http on a non-localhost origin — which is exactly how this dashboard is reached
+                // from another machine on the LAN — and a menu item that silently does nothing
+                // there is the control-that-reads-as-broken this codebase argues against.
+                void copyText(text).then(ok => setCopied(ok ? 'ok' : 'fail'))
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                minHeight: 34, padding: '6px 8px', borderRadius: 6, border: 'none',
+                background: 'transparent', color: 'var(--text-primary)',
+                fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
+              }}
+            >
+              <Copy size={13} style={{ flexShrink: 0 }} />
+              {excerpt
+                ? (pt ? 'Copiar trecho' : 'Copy excerpt')
+                : (pt ? 'Copiar mensagem' : 'Copy message')}
+            </button>
           </div>
+        )}
+
+        {/* The outcome of a copy, where the copy happened. `role="status"` so it is announced. */}
+        {copied && (
+          <p role="status" style={{
+            margin: '4px 0 0', fontSize: 10.5, lineHeight: 1.4,
+            color: copied === 'ok' ? 'var(--text-tertiary)' : 'var(--accent-red)',
+            alignSelf: mine ? 'flex-end' : 'flex-start',
+          }}>
+            {copied === 'ok'
+              ? (pt ? 'copiado' : 'copied')
+              : (pt ? 'o navegador não liberou a área de transferência aqui' : 'the browser did not allow the clipboard here')}
+          </p>
         )}
 
         {/* Reply to just what is selected. It is the only control that appears ON a selection, so

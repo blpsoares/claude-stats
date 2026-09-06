@@ -552,6 +552,17 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     el.style.height = `${Math.min(el.scrollHeight, maxComposerH)}px`
   }, [draft, maxComposerH])
 
+  /**
+   * Ask for the transcript NOW, outside the interval.
+   *
+   * The interval is tuned for watching (`CHAT_POLL_MS`), and the two moments a reader is actually
+   * waiting are not on it: the instant a message is sent, and the instant a turn ends. On both, the
+   * answer changed and the next scheduled read is up to three seconds away — which is the whole of
+   * "as mensagens chegam de forma travada". A ref rather than state, so nudging never re-renders
+   * and never restarts the interval it lives beside.
+   */
+  const nudgeChat = useRef<() => void>(() => {})
+
   useEffect(() => {
     let alive = true
     const poll = async () => {
@@ -564,13 +575,38 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
         sessionScratch.writeChat(scratchId, next as unknown as CachedChat)
       } catch { /* transient — keep the last conversation rather than blanking it */ }
     }
+    nudgeChat.current = () => { void poll() }
     void poll()
     const t = setInterval(poll, CHAT_POLL_MS)
-    return () => { alive = false; clearInterval(t) }
+    return () => { alive = false; nudgeChat.current = () => {}; clearInterval(t) }
   }, [session.id, lang])
 
+  /**
+   * IS THE LIVE SCREEN WORTH WATCHING RIGHT NOW?
+   *
+   * `session.state` alone was the answer, and it is up to a FLEET poll late — five seconds, plus
+   * the confirmation `attention-confirm.ts` requires. So every turn began with a dead window: the
+   * message was already in the pane and the assistant already producing, while the chat had not
+   * opened the stream that shows it. Measured why it matters: Claude writes its JSONL once a
+   * message is FINISHED (the file grows in one ~5 KB jump and then sits still for eight seconds),
+   * so the transcript can never stream — the screen is the only place the text exists as it is
+   * typed, and being late to it is being late to all of it.
+   *
+   * A PENDING ECHO is the signal the fleet does not have yet: we typed into that pane ourselves a
+   * moment ago. It clears exactly when the transcript catches up, so this needs no timer and cannot
+   * leak a capture loop — and the case where it holds longest, a message sitting in the harness's
+   * queue, is precisely the one somebody is watching the screen to understand.
+   */
   const working = session.state === 'working'
-  const { state: term } = useTerminalStream(working ? session.id : null)
+  const { state: term } = useTerminalStream(working || echo.length > 0 ? session.id : null)
+
+  // A turn just ENDED. The live bubble is gone the moment `working` drops, and the real one is up
+  // to `CHAT_POLL_MS` away — a gap where neither source is showing the answer that just finished.
+  const wasWorking = useRef(working)
+  useEffect(() => {
+    if (wasWorking.current && !working) nudgeChat.current()
+    wasWorking.current = working
+  }, [working])
 
   const turns = useMemo(() => payload?.turns ?? [], [payload])
 
@@ -909,6 +945,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       // Echoed straight away. It is already in the session; the transcript catches up in a poll or
       // two, and this is what makes pressing enter visibly do something.
       editEcho(list => [...list, full])
+      // Ask for the transcript at once. The harness writes the user turn as soon as it takes the
+      // message, and the next scheduled read is up to `CHAT_POLL_MS` away — three seconds in which
+      // the echo sits there labelled as undelivered when it has in fact already landed.
+      nudgeChat.current()
       setDraft('')
       sessionScratch.clearDraft(scratchId)
       setAttached([])

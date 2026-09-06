@@ -193,6 +193,13 @@ export interface CliStrings {
   sessTakeoverRefused: (reason: TakeoverRefusal) => string
   /** The fallback title for a session the user never named. */
   sessUntitled: (harness: string, project: string) => string
+  /**
+   * A session the backend is running that the registry has no record of.
+   *
+   * It has no harness and no directory to be named by, so the generic fallback produced a bare `?`.
+   * This says what it actually is — see `session-adopt.ts` for how a row gets into that state.
+   */
+  sessUnregistered: (handle: string) => string
   sessKilled: (id: string) => string
   /** The turn was handed back. Deliberately distinct from `sessKilled` — the session is still up. */
   sessInterrupted: (id: string) => string
@@ -545,6 +552,7 @@ const EN: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} in ${project}` : harness),
+  sessUnregistered: (handle: string) => `unregistered session ${handle}`,
   sessKilled: (id: string) => `stopped ${id}.`,
   sessInterrupted: (id: string) => `asked ${id} to stop what it was doing — the session is still up.`,
   sessInterruptIdle: (id: string) => `${id} is not working right now, so there is nothing to stop.`,
@@ -829,6 +837,7 @@ const PT: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} em ${project}` : harness),
+  sessUnregistered: (handle: string) => `sessão sem registro ${handle}`,
   sessKilled: (id: string) => `${id} encerrada.`,
   sessInterrupted: (id: string) => `pedi para ${id} parar o que estava fazendo — a sessão continua de pé.`,
   sessInterruptIdle: (id: string) => `${id} não está trabalhando agora, então não há o que parar.`,
