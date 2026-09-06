@@ -293,6 +293,14 @@ export type GithubSection =
     deleteLocalAfterUpload: boolean
     /** Which credential this machine uses. `'gh'` means NOTHING is stored here. */
     auth: 'token' | 'gh'
+    /**
+     * A better name for this machine than the one stored, or null.
+     *
+     * Non-null only when the stored label is the hostname (a default nobody typed) AND a central
+     * holds a real name for the same machine. Offered, never applied: the label rides in the
+     * release tag, so switching it splits this machine's history in two. See `suggestedLabel`.
+     */
+    suggestedLabel: string | null
   }
 
 export async function readGithubSection(file?: string): Promise<GithubSection> {
@@ -312,6 +320,21 @@ export async function readGithubSection(file?: string): Promise<GithubSection> {
     keepRemote: config.keepRemote,
     deleteLocalAfterUpload: config.deleteLocalAfterUpload,
     auth: config.auth ?? 'token',
+    suggestedLabel: await labelSuggestion(config.label ?? hostname()),
+  }
+}
+
+/** The offer, or null. A preferences read that fails offers nothing — a suggestion is a
+ *  convenience and must never be a reason a settings page cannot load. */
+async function labelSuggestion(stored: string): Promise<string | null> {
+  try {
+    const { readPreferences } = await import('./preferences')
+    const { defaultMachineLabel, suggestedLabel } = await import('./backup/machine-label')
+    const prefs = await readPreferences() as { team?: { connections?: { id: string; machineName?: string }[] } }
+    const fromCentral = defaultMachineLabel('', prefs.team?.connections ?? [])
+    return suggestedLabel(stored, hostname(), fromCentral || null)
+  } catch {
+    return null
   }
 }
 

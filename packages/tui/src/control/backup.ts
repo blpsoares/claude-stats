@@ -440,6 +440,8 @@ export type GithubSection =
     deleteLocalAfterUpload: boolean
     /** Which credential this machine uses. `'gh'` means NOTHING is stored here. */
     auth: 'token' | 'gh'
+    /** A better name than the one stored, or null — see `suggestedLabel` on the server. */
+    suggestedLabel: string | null
   }
 
 /**

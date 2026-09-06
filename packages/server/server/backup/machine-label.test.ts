@@ -1,8 +1,8 @@
 /**
  * machine-label.test.ts — what this machine calls itself in its backup release tags.
  */
-import { test, expect } from 'bun:test'
-import { defaultMachineLabel } from './machine-label'
+import { describe, test, expect } from 'bun:test'
+import { defaultMachineLabel, suggestedLabel } from './machine-label'
 
 test('a central that already named this machine wins over the hostname', () => {
   // The hostname is what a laptop was called at the factory. `BRAIAODE2` names nothing to anyone,
@@ -33,4 +33,31 @@ test('a hostname is still the answer when nothing else exists', () => {
   // backups would be indistinguishable from every other machine's in the same repository.
   expect(defaultMachineLabel('', [])).toBe('')
   expect(defaultMachineLabel('  ', [{ id: 'c1', machineName: '  ' }])).toBe('  ')
+})
+
+describe('suggestedLabel — offering the better name without taking the choice away', () => {
+  test('a stored label that is exactly the hostname was never CHOSEN, so a central name is offered', () => {
+    // The label is written once, at connect time, from whatever the default was then. A stored
+    // value equal to the hostname is that default showing through — nobody typed `BRAIAODE2`. When
+    // a central holds a real name for the same machine, saying so is the whole of the fix.
+    expect(suggestedLabel('BRAIAODE2', 'BRAIAODE2', 'Alienware')).toBe('Alienware')
+  })
+
+  test('a label the user actually chose is never second-guessed', () => {
+    // Silently switching would be worse than the original problem: the label rides in the release
+    // tag, so changing it splits one machine's history into two that retention then treats as two
+    // machines. Offering is right; deciding is not ours.
+    expect(suggestedLabel('meu-note', 'BRAIAODE2', 'Alienware')).toBe(null)
+  })
+
+  test('nothing is offered when there is nothing better to offer', () => {
+    expect(suggestedLabel('BRAIAODE2', 'BRAIAODE2', 'BRAIAODE2')).toBe(null)
+    expect(suggestedLabel('BRAIAODE2', 'BRAIAODE2', null)).toBe(null)
+    expect(suggestedLabel('Alienware', 'BRAIAODE2', 'Alienware')).toBe(null)
+  })
+
+  test('case and surrounding space do not make two names look different', () => {
+    expect(suggestedLabel('braiaode2', 'BRAIAODE2', 'Alienware')).toBe('Alienware')
+    expect(suggestedLabel(' BRAIAODE2 ', 'BRAIAODE2', 'Alienware')).toBe('Alienware')
+  })
 })

@@ -89,7 +89,10 @@ test('the cockpit contract carries the GitHub section, and it is the SAME shape 
   // The tui mirror declares exactly these keys. A field added on one side and not the other is
   // what this assertion exists to catch, before a cockpit renders `undefined`.
   expect(Object.keys(section).sort())
-    .toEqual(['auth', 'configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo', 'url'])
+    .toEqual([
+      'auth', 'configured', 'deleteLocalAfterUpload', 'keepRemote', 'label', 'repo',
+      'suggestedLabel', 'url',
+    ])
   expect(JSON.stringify(section)).not.toContain('ghp_')
   rmSync(dir, { recursive: true, force: true })
 })

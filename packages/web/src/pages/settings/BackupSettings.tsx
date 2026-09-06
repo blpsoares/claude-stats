@@ -124,6 +124,17 @@ type GithubSectionJson =
     /** How many of THIS machine's releases to keep. 0 = keep them all. */
     keepRemote: number
     deleteLocalAfterUpload: boolean
+    /** Which credential this machine uses. `'gh'` means nothing is stored here. */
+    auth: 'token' | 'gh'
+    /**
+     * A better name for this machine than the one stored, or null.
+     *
+     * Non-null only when the stored label is the hostname — a default nobody typed — AND a central
+     * holds a real name for the same machine. OFFERED, never applied: the label rides in the
+     * release tag, so switching it splits this machine's history into two that retention then
+     * treats as two machines.
+     */
+    suggestedLabel: string | null
   }
 
 /**
@@ -1479,6 +1490,11 @@ function GithubVersioning({
                 ? `Várias máquinas podem versionar no MESMO repositório, e este nome é o que separa os backups delas: ele entra na tag do release, e a retenção só apaga releases desta máquina — nunca os de outra. \`agentop restore <url> --from ${section.label}\` restaura especificamente esta máquina.`
                 : `Several machines can version to the SAME repository, and this name is what tells their backups apart: it rides in the release tag, and retention only ever deletes this machine’s own releases — never another machine’s. \`agentop restore <url> --from ${section.label}\` restores this machine specifically.`}
               value={labelDraft}
+              suggestion={section.suggestedLabel}
+              suggestionText={pt
+                ? 'A central chama esta máquina de'
+                : 'The central calls this machine'}
+              onSuggestion={onLabelDraft}
               onChange={onLabelDraft}
               onSave={onSaveLabel}
               saveLabel={pt ? 'Salvar' : 'Save'}
@@ -1544,7 +1560,12 @@ function GithubVersioning({
  */
 function GithubTextField({
   label, hint, value, onChange, onSave, saveLabel, savingLabel, saving, busy, dirty, numeric, feedback,
+  suggestion, suggestionText, onSuggestion,
 }: {
+  /** A better value this machine could use, offered as one click. See `suggestedLabel`. */
+  suggestion?: string | null
+  suggestionText?: string
+  onSuggestion?: (v: string) => void
   label: string
   hint: string
   value: string
@@ -1613,6 +1634,26 @@ function GithubTextField({
             : saveLabel}
         </button>
       </div>
+      {/* The offer. It fills the FIELD rather than saving: the label rides in the release tag, so
+          the person should see the value land and press Save themselves — a one-click rename that
+          also splits a machine's history is a click nobody agreed to. */}
+      {suggestion && suggestion !== value && onSuggestion && (
+        <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '6px 0 0' }}>
+          {suggestionText}{' '}
+          <button
+            type="button"
+            onClick={() => onSuggestion(suggestion)}
+            disabled={busy}
+            style={{
+              padding: 0, border: 'none', background: 'none', font: 'inherit',
+              color: 'var(--anthropic-orange)', fontWeight: 700,
+              cursor: busy ? 'not-allowed' : 'pointer', textDecoration: 'underline',
+            }}
+          >
+            {suggestion}
+          </button>
+        </p>
+      )}
       <GithubFeedback feedback={feedback} />
     </div>
   )

@@ -35,3 +35,29 @@ export function defaultMachineLabel(hostname: string, connections: LabelSource[]
     .sort((a, b) => a.id.localeCompare(b.id))
   return named[0]?.machineName?.trim() ?? hostname
 }
+
+/**
+ * A better name to OFFER for this machine, or null.
+ *
+ * The label is written once, at connect time, from whatever the default was then — so a stored
+ * value equal to the hostname is that default showing through rather than a choice: nobody typed
+ * `BRAIAODE2`. When a central holds a real name for the same machine (`Alienware`), saying so is
+ * the whole of the fix.
+ *
+ * It is an OFFER and never an automatic switch. The label rides in the release tag, so changing it
+ * splits one machine's history into two that retention — which only deletes releases it can prove
+ * are this machine's — then treats as two machines, pruning one half and letting the other grow
+ * forever. Choosing that is the user's, in one click, with the consequence visible.
+ *
+ * Comparison folds case and surrounding space, because `braiaode2` and `BRAIAODE2` are the same
+ * machine and offering a rename over that difference would be noise.
+ */
+export function suggestedLabel(
+  stored: string, hostname: string, fromCentral: string | null,
+): string | null {
+  const norm = (v: string): string => v.trim().toLowerCase()
+  if (!fromCentral) return null
+  if (norm(stored) !== norm(hostname)) return null      // deliberately chosen — leave it alone
+  if (norm(fromCentral) === norm(stored)) return null   // nothing better to offer
+  return fromCentral
+}
