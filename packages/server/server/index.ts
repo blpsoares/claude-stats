@@ -14,7 +14,6 @@ import {
 } from './notifications-store'
 import { streamViaClaude, execCommand, ensureNayChat, ensureClaudeChat, CLAUDE_CHAT_DIR, type ChatMessage, type ChatModelId, type ChatAttachment } from './chat-tty'
 import { getChatDriver, chatHarnessStatus } from './chat-drivers/index'
-import { listMcpServers, removeMcpServer } from './mcp-list'
 import { listNaySessions, getNaySessionMessages } from './nay-sessions'
 import { listClaudeSessions, getClaudeSessionMessages, type ClaudeSessionSummary, type ClaudeSessionMessage } from './claude-sessions'
 import { listCodexSessions, getCodexSessionMessages, type CodexSessionSummary, type CodexSessionMessage } from './codex-sessions'
@@ -1288,25 +1287,65 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
-    if (url.pathname === '/api/mcp-list' && req.method === 'GET') {
-      const projectPath = url.searchParams.get('projectPath') ?? null
-      const result = await listMcpServers(projectPath)
-      return new Response(JSON.stringify(result), {
+    // THE MCP PANEL — what this machine has configured, what is running, and the two writes.
+    //
+    // Guarded by the `/api/mcp` prefix in `capability-guard.ts` (mcpAdmin). The writes run the
+    // HARNESS's own `claude mcp` command rather than editing `~/.claude.json`: every running
+    // `claude` rewrites that file, so our bytes would vanish or clobber theirs — the same reason
+    // `rename-spec.ts` types `/rename` instead of writing the session file.
+    if (url.pathname === '/api/mcp/servers' && req.method === 'GET') {
+      const { listMcp } = await import('./mcp-admin')
+      const payload = await listMcp(url.searchParams.get('projectPath'))
+      return new Response(JSON.stringify(payload), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       })
     }
 
-    if (url.pathname === '/api/mcp-action' && req.method === 'POST') {
+    if ((url.pathname === '/api/mcp/install' || url.pathname === '/api/mcp/remove'
+      || url.pathname === '/api/mcp/replace') && req.method === 'POST') {
       try {
-        const body = await req.json() as { action: 'remove'; name: string }
-        if (body.action === 'remove') {
-          const result = await removeMcpServer(body.name)
-          return new Response(JSON.stringify(result), {
+        const read = await readJsonLimited<{
+          paste?: string; name?: string; scope?: string; projectPath?: string; lang?: string
+          original?: string
+        }>(req, LIMITS.bodyBytes)
+        if (!read.ok) {
+          return new Response(JSON.stringify({ ok: false, message: read.error }), {
+            status: read.error === 'too_large' ? 413 : 400,
             headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           })
         }
-        return new Response(JSON.stringify({ ok: false, error: 'unknown action' }), {
-          status: 400,
+        const body = read.value
+        const lang = body.lang === 'pt' ? 'pt' : 'en'
+        // The scope is the USER'S CHOICE and is never inferred: `user` reaches every project on this
+        // machine and `project` is written into a repository other people pull.
+        const scope = body.scope
+        if (scope !== 'user' && scope !== 'local' && scope !== 'project') {
+          return new Response(JSON.stringify({ ok: false, message: 'bad scope' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const { installMcp, replaceMcp, uninstallMcp } = await import('./mcp-admin')
+        const result = url.pathname === '/api/mcp/install'
+          ? await installMcp({
+            paste: body.paste ?? '', scope, lang,
+            ...(body.name ? { name: body.name } : {}),
+            ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+          })
+          // REPLACE is remove-then-add, because `add-json` refuses an existing name. The ORIGINAL
+          // travels with it: it is the only thing that can put the server back if the add fails,
+          // and it is on screen at the moment the button is pressed.
+          : url.pathname === '/api/mcp/replace'
+            ? await replaceMcp({
+              name: body.name ?? '', scope, lang,
+              paste: body.paste ?? '', original: body.original ?? '',
+              ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+            })
+            : await uninstallMcp({
+              name: body.name ?? '', scope, lang,
+              ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+            })
+        return new Response(JSON.stringify(result), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
       } catch (err) {
@@ -1333,6 +1372,22 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
       }
+    }
+
+    /**
+     * The RAW fleet snapshot, in the cockpit's own shape.
+     *
+     * `/api/fleet` answers the browser's `FleetRow`, which is deliberately narrower. This is for the
+     * other agentop processes — the cockpit and the one-shot commands — so they can read the
+     * snapshot of the poller that has MEMORY instead of building a second one that disagrees with
+     * it. See `shared-snapshot.ts`. Guarded by the `/api/fleet` prefix already registered in
+     * `capability-guard.ts`, like every other route here.
+     */
+    if (url.pathname === '/api/fleet/snapshot' && req.method === 'GET') {
+      const { readRawFleetSnapshot } = await import('./cli-start')
+      return new Response(JSON.stringify(await readRawFleetSnapshot()), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
     }
 
     if (url.pathname === '/api/fleet' && req.method === 'GET') {
@@ -1435,6 +1490,38 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
       const { readFleetSkills, fleetLang } = await import('./sessions/fleet-web')
       const out = await readFleetSkills(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // The repository's pull requests, read through `gh` in the SESSION's directory. A READ: no
+    // route here opens, merges or comments on anything.
+    // What only the conversation's own transcript can answer — today, how many times it has been
+    // compacted. Guarded by the `/api/fleet` PREFIX already registered in `capability-guard.ts`.
+    if (url.pathname === '/api/fleet/conversation' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ unavailable: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readConversationFacts, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readConversationFacts(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    if (url.pathname === '/api/fleet/prs' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ pulls: [], unavailable: 'no-repo' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetPullRequests, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetPullRequests(fleetLang(url.searchParams.get('lang')), id)
       return new Response(JSON.stringify(out), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       })
@@ -1658,8 +1745,90 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // The SUBAGENTS this conversation ran — the list, and one agent's own activity. Both ride the
+    // `/api/fleet` prefix guard and the central 404 above.
+    //
+    // `supported: false` is a real answer here: only Claude Code records subagents
+    // (`HARNESS_CAPABILITIES.agents`), and answering "0 subagents" for the other five would be the
+    // confident zero this area exists to prevent.
+    if (url.pathname === '/api/fleet/subagents' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionSubagents, readSubagentActivity } = await import('./sessions/subagents-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        const host = await hostForFleet(lang)
+        const agent = url.searchParams.get('agent')
+        // ONE route, two questions: without `agent` it is the list, with it the agent's activity.
+        // Splitting them would be two paths resolving the same row through the same three steps.
+        // Paged: choosing which agents to show costs a stat each, while summarising one costs
+        // reading its transcript. See `pageOfAgents`.
+        const num = (v: string | null): number | undefined => {
+          const n = Number(v)
+          return v !== null && Number.isFinite(n) ? n : undefined
+        }
+        const payload = agent
+          ? await readSubagentActivity(host, lang, id, agent)
+          : await readSessionSubagents(host, lang, id, {
+            ...(num(url.searchParams.get('limit')) !== undefined ? { limit: num(url.searchParams.get('limit'))! } : {}),
+            ...(num(url.searchParams.get('offset')) !== undefined ? { offset: num(url.searchParams.get('offset'))! } : {}),
+          })
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // ONE STEP of that conversation, opened up — the Live feed's rows expand into the command that
+    // ran and what it printed, WHILE it runs. Guarded by the `/api/fleet` PREFIX in
+    // `capability-guard.ts` (localShell) and 404'd on a central with the rest of `/api/fleet*`, both
+    // above: it needs no new entry, which is the point of the prefix.
+    if (url.pathname === '/api/fleet/step' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const ref = url.searchParams.get('ref')
+      if (!id || !ref) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionStep } = await import('./sessions/step-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        // `agent` opens a step of a SUBAGENT's own conversation — its activity feed carries refs
+        // from its own transcript, which are not in the parent's.
+        const agent = url.searchParams.get('agent')
+        const payload = await readSessionStep(
+          await hostForFleet(lang), lang, id, ref, agent ?? undefined,
+        )
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     // One hosted session's conversation, for the workspace's chat view. Claude only in practice —
     // the module refuses in words wherever the live-session -> conversation link is not exact.
+    // One hosted session's conversation, for the workspace's chat view. Which harnesses can be read
+    // is `harness-transcript.ts`; the module refuses IN WORDS wherever the conversation link is not
+    // exact or nothing here parses that harness's transcript format.
     if (url.pathname === '/api/fleet/chat' && req.method === 'GET') {
       const id = url.searchParams.get('id')
       if (!id) {
@@ -2772,7 +2941,12 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         import('./machine-fleet-relay'),
       ])
       const answer = await resolveMachineAction(principal, machineId, {
-        action, id: sessionId, ...(typeof b.text === 'string' ? { text: b.text } : {}),
+        action, id: sessionId,
+        ...(typeof b.text === 'string' ? { text: b.text } : {}),
+        // The dialog option the person picked. Validated as a finite number here and re-resolved
+        // against the LIVE screen by the machine, which refuses when the options changed — a poll
+        // is five seconds old, and five seconds is enough for one dialog to become another.
+        ...(typeof b.choice === 'number' && Number.isFinite(b.choice) ? { choice: b.choice } : {}),
       }, {
         listMachines,
         isOnline: id => agent.hasAgentSocket(id),

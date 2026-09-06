@@ -21,6 +21,7 @@ import { useNavigate } from 'react-router-dom'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { HarnessMark } from '../sessions/HarnessMark'
 import { SessionFacts } from '../sessions/SessionFacts'
+import { sessionPath } from '../../lib/sessionRoute'
 
 /**
  * The dot a state earns, or null for one that earns none.
@@ -55,7 +56,7 @@ export function SessionsRail({ rows, selectedId }: {
       {shown.map(s => (
         <button
           key={s.id}
-          onClick={() => navigate(`/sessions/${s.id}`)}
+          onClick={() => navigate(sessionPath(s.id))}
           aria-label={s.title}
           onMouseEnter={e => {
             const r = e.currentTarget.getBoundingClientRect()

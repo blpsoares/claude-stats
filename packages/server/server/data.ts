@@ -16,7 +16,6 @@ import { UUID_RE, decodeProjectDir, getProjectGitStats, getGitRemote } from './g
 import { parseSessionJsonl } from './jsonl'
 import type { MachineInfo } from './team-tokens'
 import { runHealthChecks, analyzeToolHealthIssues, analyzeCacheStaleness } from './health'
-import { extractAgentMetricsFromFile } from './agent-metrics'
 import { openParseCache, NOOP_PARSE_CACHE, type ParseCache } from './parse-cache'
 import { cachedParseSession, cachedEnrich } from './parse-cache-jsonl'
 

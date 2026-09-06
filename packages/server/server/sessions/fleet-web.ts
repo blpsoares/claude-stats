@@ -16,6 +16,7 @@
  * host per request would fire one per poll.
  */
 
+import type { HarnessId } from '@agentistics/core'
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
@@ -253,7 +254,20 @@ export async function runFleetAction(
       // start an assistant anywhere on this machine.
       const fleet = await host.sessions()
       const row = fleet.sessions.find(r => r.id === req.id)
-      if (!row?.resume) return { ok: false, message: s.sessionsReopenNone }
+      // TWO DIFFERENT FACTS, and collapsing them sent people to the wrong place.
+      //
+      // `sessionsReopenNone` says "nothing on this machine resolves this row" — a statement about
+      // the CONVERSATION, and the honest answer when the row is here and has no reopen target. It
+      // was also being given when the row was simply GONE from the list, which happens routinely:
+      // `claimResume` hands each conversation to at most one row, so reopening one closed row can
+      // drop a sibling that was showing the same conversation, and any list a person is looking at
+      // is up to one poll old. Measured on a real fleet of 326: a row whose `resume` was ENABLED in
+      // the list refused on the click, with a sentence that reads as "this conversation is lost".
+      //
+      // A stale row is RECOVERABLE — refresh and the list is right — so it gets its own sentence
+      // saying so. Reported as "reabro as sessões pela UI e elas não reabrem".
+      if (!row) return { ok: false, message: s.sessionsRowGone }
+      if (!row.resume) return { ok: false, message: s.sessionsReopenNone }
       const out = await host.resumeSession({
         sessionId: row.resume.sessionId,
         harness: row.harness,
@@ -418,6 +432,88 @@ export async function readFleetSkillBody(
   }
 }
 
+/**
+ * The pull requests of the repository a session is working in.
+ *
+ * Resolved against the SESSION's directory, never the server's: a machine running agentop for
+ * something else would otherwise be asked about agentop.
+ */
+/**
+ * Facts about the CONVERSATION behind a row that only its transcript can answer.
+ *
+ * Today: how many times it has been compacted. Asked for on the session's stats card, beside the
+ * context gauge, because they answer the same question from two sides — the gauge says how full
+ * this window is, the count says how many windows came before it.
+ *
+ * `compactions` is ABSENT rather than zero whenever it could not be established: a row with no
+ * linked conversation, a transcript not on this machine, a file that would not read. The card says
+ * which; a confident `0` would read as a conversation that has never been compacted.
+ */
+export async function readConversationFacts(
+  lang: CliLang, id: string,
+): Promise<{ compactions?: number; unavailable?: string }> {
+  const pt = lang === 'pt'
+  const host = await hostFor(lang)
+  if (!host.sessions) return { unavailable: controlStrings(lang).sessionsNoHost }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row?.conversationId) {
+    return {
+      unavailable: row?.conversationBlind ?? (pt
+        ? 'Esta sessão ainda não tem uma conversa vinculada.'
+        : 'This session has no linked conversation yet.'),
+    }
+  }
+  const { countCompactions, resolveChatTranscriptPath } = await import('./chat-tail')
+  const path = await resolveChatTranscriptPath(row.cwd, row.conversationId).catch(() => null)
+  if (!path) {
+    return {
+      unavailable: pt
+        ? 'A transcrição desta conversa não foi encontrada nesta máquina.'
+        : 'This conversation’s transcript was not found on this machine.',
+    }
+  }
+  const n = await countCompactions(path)
+  if (n === null) {
+    return {
+      unavailable: pt ? 'Não foi possível ler a transcrição.' : 'The transcript could not be read.',
+    }
+  }
+  return { compactions: n }
+}
+
+export async function readFleetPullRequests(
+  lang: CliLang, id: string,
+): Promise<{ pulls: unknown[]; limit?: number; unavailable?: string; detail?: string }> {
+  const pt = lang === 'pt'
+  const host = await hostFor(lang)
+  if (!host.sessions) return { pulls: [], unavailable: 'no-repo' }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row?.cwd) {
+    return {
+      pulls: [],
+      unavailable: 'no-repo',
+      detail: pt
+        ? 'Esta sessão não tem uma pasta registrada.'
+        : 'This session has no recorded folder.',
+    }
+  }
+  const { readPullRequests } = await import('./github-prs')
+  const out = await readPullRequests(row.cwd)
+  return {
+    pulls: out.pulls,
+    // The cap the read actually used. This reply is built FIELD BY FIELD rather than spread, which
+    // is right — it is the boundary between a module's shape and the wire — but it means a new
+    // field is on the wire only once it is named HERE. `limit` was added to `PrList` and to the
+    // browser's type and forgotten in this object, so the caption could never claim the window and
+    // said the same sentence for four pull requests and for thirty.
+    ...(out.limit !== undefined ? { limit: out.limit } : {}),
+    ...(out.unavailable ? { unavailable: out.unavailable } : {}),
+    ...(out.detail ? { detail: out.detail } : {}),
+  }
+}
+
 /** The questions a start EARNS, and the places it could happen — the wizard, as data. */
 export interface FleetNewOptions {
   /**
@@ -473,22 +569,39 @@ export async function readNewOptions(lang: CliLang, query: string): Promise<Flee
     if (!host.startableHarnesses || !host.spawnSession) {
       return { harnesses: [], projects: [], tasks: [], unavailable: s.sessionsNoHost }
     }
+    const { readHarnessDefaults } = await import('./harness-defaults')
+    type Defaults = Awaited<ReturnType<typeof readHarnessDefaults>>
     const [harnesses, projects, tasks] = await Promise.all([
       host.startableHarnesses(),
       host.searchProjects ? host.searchProjects(query).catch(() => []) : Promise.resolve([]),
       host.sessionTasks ? host.sessionTasks().catch(() => []) : Promise.resolve([]),
     ])
+    // What each CLI will actually do here with no flags, read from THIS MACHINE's own settings
+    // files. `spawn-spec.ts` publishes none — no CLI prints its default in `--help` — but the
+    // picker offering "Default" without naming it is naming a thing without naming it, which is
+    // what was reported. Never a guess: an unreadable file or a missing key yields nothing and the
+    // picker keeps its plain "Default". See `harness-defaults.ts`.
+    const configured = new Map(await Promise.all(harnesses.map(async h =>
+      [h.id, await readHarnessDefaults(h.id as HarnessId).catch(() => ({} as Defaults))] as const,
+    )))
     return {
-      harnesses: harnesses.map(h => ({
-        id: h.id,
-        label: h.label,
-        modelSuggestions: [...h.modelSuggestions],
-        models: modelsFor(h.id),
-        ...(h.defaultModel ? { defaultModel: h.defaultModel } : {}),
-        supportsModel: h.supportsModel,
-        efforts: [...h.efforts],
-        ...(h.defaultEffort ? { defaultEffort: h.defaultEffort } : {}),
-      })),
+      harnesses: harnesses.map(h => {
+        const here = configured.get(h.id) ?? {}
+        // The tool's own published default outranks the machine's, on the rare day one publishes
+        // one: it is a fact about every machine, where this is a fact about ours.
+        const defaultModel = h.defaultModel ?? here.model
+        const defaultEffort = h.defaultEffort ?? here.effort
+        return {
+          id: h.id,
+          label: h.label,
+          modelSuggestions: [...h.modelSuggestions],
+          models: modelsFor(h.id),
+          ...(defaultModel ? { defaultModel } : {}),
+          supportsModel: h.supportsModel,
+          efforts: [...h.efforts],
+          ...(defaultEffort ? { defaultEffort } : {}),
+        }
+      }),
       projects: projects.map(p => ({
         path: p.path,
         label: p.label,

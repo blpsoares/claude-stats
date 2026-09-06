@@ -66,7 +66,7 @@ import { TeamLogin } from './components/TeamLogin'
 import { Login } from './components/Login'
 import { ModeSwitch } from './components/nav/ModeSwitch'
 import { TopBar } from './components/nav/TopBar'
-import { headerFit } from './lib/headerFit'
+import { COST_BASIS_W, FULL_BAR_W, headerFit, stripPadding } from './lib/headerFit'
 import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
@@ -97,6 +97,8 @@ import { CentralSessions } from './components/sessions/CentralSessions'
 // filter row in the strip and the body under it have to move together at every width.
 import { PAGE_INSET, PAGE_MAX_WIDTH } from './components/sessions/FleetOverview'
 import { setFleetSourceCentral } from './lib/fleet'
+import { sessionPath } from './lib/sessionRoute'
+import { SessionStatsMenu } from './components/sessions/SessionStatsMenu'
 
 /**
  * What the SESSIONS filter bar may filter by — narrower than the dashboard's on purpose: a fleet
@@ -1620,7 +1622,6 @@ export default function AppLayout() {
   /** The artifacts panel's open flag and count — see `artifactsStore` for why it is not a prop. */
   const artifacts = useArtifacts()
 
-  const stripFit = headerFit(Math.max(0, filterSlotW - actionsW))
   /**
    * Active sessions only — the fleet's own dimension (see `FiltersBar`'s doc comment on
    * `onActiveOnlyChange`), not part of `Filters`. Defaults to ON the moment you land in the
@@ -2024,6 +2025,26 @@ export default function AppLayout() {
   // cannot support falls back rather than rendering a page of N/A.
   const costBasis: CostBasis =
     isCentral || !billingReady.ready || planBasis.basis === null ? 'api' : costBasisState
+  /**
+   * The centring padding the strip can AFFORD, and what the bar therefore has to draw in.
+   *
+   * The action cluster used to be charged twice — once for being a sibling that takes room, and
+   * again as the padding that pulls the filters onto the strip's own centre line. On a 1273px
+   * window with a 258px cluster that is 516px gone, and the bar compacted with most of the header
+   * empty beside it. `stripPadding` takes the centring out of the SLACK instead: centring is a
+   * nicety, a date control collapsed into a popover is something somebody has to go looking for.
+   *
+   * The cost-basis toggle is budgeted only where it is actually drawn — it is absent on a central
+   * and on a machine with no billing set up, and reserving room for a control that is not on screen
+   * compacts a bar that would have fitted.
+   */
+  const stripExtra = (!isCentral && billingReady.ready && planBasis.basis !== null) ? COST_BASIS_W : 0
+  // The SESSIONS strip does not centre its filters at all — its slot carries no padding — so it
+  // is charged none. It was being charged `actionsW` for a padding that is not there, which is
+  // the same double-subtraction seen from its other side.
+  const stripPad = inSessionsWorkspace ? 0 : stripPadding(filterSlotW, actionsW, FULL_BAR_W + stripExtra)
+  const stripFit = headerFit(Math.max(0, filterSlotW - stripPad), stripExtra)
+
   const setCostBasis = useCallback((b: CostBasis) => {
     setCostBasisState(b)
     void saveBilling({ ...billing, costBasis: b })
@@ -2872,6 +2893,25 @@ export default function AppLayout() {
           conversation, and the conversation does not leave the machine. A control that cannot work
           is not rendered inert — the same rule the fleet's verbs keep. The sentence is on the row
           in the panel's place, so the absence is explained where the button would have been. */}
+      {/* WHAT THIS CONVERSATION HAS SPENT. The context percentage rides the button, because it is
+          the one figure that changes what you do next: a session near its window is one to finish
+          rather than extend. The record comes from the store by CONVERSATION id — a session the
+          store has not seen yet reads as "not recorded yet", never as zero. */}
+      {selectedFleetSession && (
+        <SessionStatsMenu
+          harness={selectedFleetSession.harness}
+          sessionId={selectedFleetSession.conversationId ?? selectedFleetSession.id}
+          meta={selectedFleetSession.conversationId
+            ? data?.sessions?.find(x => x.session_id === selectedFleetSession.conversationId)
+            : undefined}
+          lang={lang === 'pt' ? 'pt' : 'en'}
+          currency={currency}
+          brlRate={brlRate}
+          {...(selectedFleetSession.model ? { startedModel: selectedFleetSession.model } : {})}
+          {...(selectedFleetSession.effort ? { startedEffort: selectedFleetSession.effort } : {})}
+        />
+      )}
+
       {selectedFleetSession && !isCentral && (
         <button
           onClick={toggleArtifacts}
@@ -2908,7 +2948,7 @@ export default function AppLayout() {
           act={headerFleetAct}
           onGone={() => navigate('/sessions')}
           // A reopen mints a NEW session; going to it is what makes the verb visibly do something.
-          onOpened={id => navigate(`/sessions/${id}`)}
+          onOpened={id => navigate(sessionPath(id))}
         />
       )}
     </div>
@@ -2942,7 +2982,7 @@ export default function AppLayout() {
           on the STRIP's centre line rather than the centre of what is left beside them. */}
       <div ref={setFilterSlotEl} style={{
         flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center',
-        paddingLeft: actionsW, boxSizing: 'border-box',
+        paddingLeft: stripPad, boxSizing: 'border-box',
       }}>
         <FiltersBar
           inline

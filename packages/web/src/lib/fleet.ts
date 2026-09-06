@@ -20,6 +20,8 @@ import { cacheIsUsable, stripVolatile } from './fleetCache'
 import { getCentralMachine } from './centralMachinePick'
 import { relayedToSessions, type RelayedRow } from './relayedSessions'
 import { notifyFleetTransitions, type SessionActivity } from './sessionNotifications'
+import { parseActResult } from './fleetAct'
+import { parseRelayActResult } from './relayAct'
 
 /** Mirrors `SessionAction` in `@agentistics/tui/control/sessions`, minus the verbs a page cannot do. */
 export type FleetActionId =
@@ -59,6 +61,8 @@ export interface FleetRow {
   task?: string
   note?: string
   model?: string
+  /** The reasoning effort this session was started with. Absent = the harness's own default. */
+  effort?: string
   conversationId?: string
   approvalLines?: string[]
   dialogOptions?: { number: number; label: string; selected?: boolean }[]
@@ -253,6 +257,14 @@ async function pollCentralOnce(): Promise<void> {
  */
 let lastActivity: Record<string, SessionActivity> | null = null
 
+/**
+ * How long a verb may go unanswered before the UI says so.
+ *
+ * Long enough that ordinary slowness is not reported as a failure — a `prompt` reads the pane
+ * before typing — and short enough that nobody sits in front of a spinner wondering.
+ */
+const ACT_TIMEOUT_MS = 20_000
+
 async function pollOnce(): Promise<void> {
   if (pollCentral) return pollCentralOnce()
   try {
@@ -326,25 +338,82 @@ export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {
 
   const act = useCallback<FleetState['act']>(async req => {
     try {
-      const res = await fetch(`/api/fleet/act?lang=${lang}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(req),
-      })
-      const json = await res.json().catch(() => null) as { ok?: boolean; message?: string } | null
-      const out = {
-        ok: Boolean(json?.ok),
-        message: json?.message
-          ?? (lang === 'pt' ? 'A ação não pôde ser executada.' : 'The action could not be run.'),
+      /*
+       * A VERB THAT NEVER ANSWERS MUST STOP BEING A SPINNER.
+       *
+       * There was no timeout, so a request the machine did not answer left the composer spinning
+       * for as long as the page stayed open. Measured from a real transcript: a message reached the
+       * session's pane at 18:46:45 and a SECOND copy of it at 18:51:17 — four and a half minutes
+       * later, because from the outside the first one had simply not happened. The duplicate was
+       * not a double send; it was the only thing a person can do with a control that never comes
+       * back.
+       *
+       * The budget is generous on purpose: `prompt` reads the pane before typing and a busy machine
+       * is slow, so a short timeout would report failures that are merely slowness — and a message
+       * reported as failed is one somebody sends again, which is the bug this is fixing.
+       *
+       * IT DOES NOT CLAIM THE VERB FAILED. The request may well have landed; what timed out is our
+       * knowledge of it. The sentence says exactly that, and the poll that follows is what settles
+       * it — which is why `pollOnce` still runs.
+       */
+      const ctl = new AbortController()
+      const timer = setTimeout(() => ctl.abort(), ACT_TIMEOUT_MS)
+      let res: Response
+      /*
+       * A CENTRAL ACTS THROUGH THE RELAY, and for one release it did not.
+       *
+       * The fleet a central shows is the RELAYED one (`pollCentralOnce`), but every verb was posted
+       * to `/api/fleet/act` — the machine's own route, which a central refuses outright in
+       * `index.ts`'s `TEAM_CENTRAL` block and again under `localShell` in `capability-guard.ts`.
+       * Both refusals are correct and stay. The consequence was that the workspace on a central
+       * could READ a fleet and act on none of it: every button reached a 403 for a session that was
+       * right there on screen.
+       *
+       * So the verb goes where the rows came from, addressed to the same machine the picker chose.
+       * The machine re-checks its own consent, its verb allowlist and its sharing rules on arrival;
+       * nothing decided in this browser is trusted there.
+       */
+      const machineId = getCentralMachine()
+      const url = machineId
+        ? `/api/team/machine-fleet/act?lang=${lang}`
+        : `/api/fleet/act?lang=${lang}`
+      const body = machineId ? { ...req, machineId } : req
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: ctl.signal,
+        })
+      } finally {
+        clearTimeout(timer)
       }
+      // Read through `parseActResult`, which is where "every field the answer carries is carried
+      // on" is written down and tested. This was an object literal building `{ ok, message }` while
+      // the declared return type promised `id?: string` — so a reopen spawned its session and the
+      // UI stood still on the dead row, because the id it needed to follow had been dropped.
+      // The two routes answer DIFFERENT SHAPES, and reading one as the other is how a silence
+      // becomes a success. A relayed answer is `{reply}` when the machine spoke and `{reason}` when
+      // it did not — the second is a statement about the CHANNEL, not about the verb.
+      const raw = await res.json().catch(() => null)
+      const out = machineId ? parseRelayActResult(raw, lang) : parseActResult(raw, lang)
       // Re-read immediately: the verb changed the machine, and waiting up to five seconds to show
       // it is how a control that worked looks like one that did nothing.
       await pollOnce()
       return out
-    } catch {
+    } catch (err) {
+      // A poll settles what actually happened — see the note above. It runs even here.
+      void pollOnce()
+      const timedOut = err instanceof Error && err.name === 'AbortError'
       return {
         ok: false,
-        message: lang === 'pt' ? 'Erro de rede ao falar com esta máquina.' : 'Network error talking to this machine.',
+        message: timedOut
+          ? (lang === 'pt'
+            ? 'A máquina não respondeu a tempo. A ação pode ter acontecido — confira a lista antes de repetir.'
+            : 'The machine did not answer in time. The action may still have happened — check the list before repeating it.')
+          : (lang === 'pt'
+            ? 'Erro de rede ao falar com esta máquina.'
+            : 'Network error talking to this machine.'),
       }
     }
   }, [lang])

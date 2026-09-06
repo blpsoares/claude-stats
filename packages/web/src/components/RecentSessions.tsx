@@ -14,6 +14,8 @@ import {
   canSubmit,
   composerReducer,
   interactionBlock,
+  type ComposerAction,
+  type ComposerState,
 } from '../lib/terminalInput'
 import { operatorId, recordPromptSend, resolveAuthor } from '../lib/promptAudit'
 import { getTerminalZoom, setTerminalZoom, subscribeTerminalZoom, ZOOM_STEP, ZOOM_MIN, ZOOM_MAX } from '../lib/terminalZoom'
@@ -1631,12 +1633,18 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
 const TYPING_T = {
   pt: {
     live: 'Digitando direto na sessão — teclas (incl. Ctrl+C) chegam ao processo.',
+    // "Armado" e "a próxima tecla chega" são coisas diferentes, e um terminal não dá nenhum outro
+    // sinal de qual das duas é a verdadeira.
+    clickToType: 'Pronto para receber teclas — clique no terminal acima para digitar nele.',
+    lineHasKeys: 'Escrevendo uma linha inteira — o terminal não recebe teclas enquanto isso.',
     connecting: 'Conectando o teclado à sessão…',
     unavailable: 'Não foi possível abrir o canal de escrita.',
     notDelivered: 'Não entregue:',
   },
   en: {
     live: 'Typing straight into the session — keys (incl. Ctrl+C) reach the process.',
+    clickToType: 'Ready for keys — click the terminal above to type into it.',
+    lineHasKeys: 'Composing a whole line — the terminal is not taking keys meanwhile.',
     connecting: 'Connecting the keyboard to the session…',
     unavailable: 'The write channel could not be opened.',
     notDelivered: 'Not delivered:',
@@ -1673,20 +1681,47 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
   // Phase 2b — DIRECT TYPING. The composer's consent (one opt-in) also opens the terminal's keystroke
   // channel. Direct typing is allowed for any LIVE, managed row — including one on a dialog: a sighted
   // single keystroke answers a prompt, unlike the blind line composer, which alone refuses a dialog.
-  const [typingArmed, setTypingArmed] = useState(false)
+  //
+  // THE STATE MACHINE LIVES HERE, not inside the composer, because the SURFACE it holds decides
+  // whether the emulator takes keys. It was the composer's own state, so the composer armed itself,
+  // focused its own field, and the terminal — the thing the button is named after — never got the
+  // keyboard: "a digitação fica especificamente NO input do type into this session ao invés de me
+  // permitir digitar direto no terminal renderizado". One owner, one surface at a time.
+  const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER)
   const rowBlock = row ? interactionBlock(row.state) : 'external'
   const canType = !!row && !!act && rowBlock !== 'external' && rowBlock !== 'not-running'
-  const write = useTerminalWrite(id, typingArmed && canType, lang === 'pt' ? 'pt' : 'en')
+  // A row with no live process cannot be typed into either way — revoke rather than leave a consent
+  // standing over a dead session. `awaiting-approval` is NOT such a case: a sighted keystroke answers
+  // the dialog, which is precisely what the blind line send cannot do.
+  const hardBlocked = rowBlock === 'external' || rowBlock === 'not-running'
+  useEffect(() => {
+    if (hardBlocked && composer.armed) dispatchComposer({ type: 'disarm' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hardBlocked])
+  const write = useTerminalWrite(id, composer.armed && canType, lang === 'pt' ? 'pt' : 'en')
   // The emulator accepts keys only once the channel is actually OPEN — so a captured keystroke can
-  // always be delivered (no local echo; a key you can see was typed is a key that landed).
-  const interactive = typingArmed && canType && write.ready
+  // always be delivered (no local echo; a key you can see was typed is a key that landed) — AND only
+  // while the keyboard is the terminal's. Two fields both taking keys is what this replaced.
+  const interactive = composer.armed && canType && write.ready && composer.surface === 'terminal'
+  // A channel that could not open leaves the LINE EDITOR as the only way in, so open it rather than
+  // leave an armed terminal that silently eats every key. Keyed on the phase, so it happens once.
+  const channelDead = composer.armed && canType && write.state.phase === 'closed'
+  useEffect(() => {
+    if (channelDead) dispatchComposer({ type: 'surface', surface: 'line' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelDead])
+  // Does the EMULATOR hold the keyboard right now? Focus events bubble in React, so the box around
+  // xterm's own textarea is enough — and this is the difference between "armed" and "your next
+  // keystroke lands", which is the one thing a person cannot tell by looking at a terminal.
+  const [termFocused, setTermFocused] = useState(false)
   const tw = TYPING_T[lang]
   // The one honest status for the keystroke channel: connecting → live, a drop, or a not-delivered.
   const typingNotice: { tone: 'live' | 'wait' | 'bad'; text: string } | null =
-    !typingArmed || !canType ? null
+    !composer.armed || !canType ? null
     : write.state.undelivered && write.reason ? { tone: 'bad', text: `${tw.notDelivered} ${write.reason}` }
     : write.state.phase === 'closed' ? { tone: 'bad', text: write.reason ?? tw.unavailable }
-    : write.ready ? { tone: 'live', text: tw.live }
+    : composer.surface === 'line' ? { tone: 'wait', text: tw.lineHasKeys }
+    : write.ready ? { tone: 'live', text: termFocused ? tw.live : tw.clickToType }
     : { tone: 'wait', text: tw.connecting }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, height: fill ? '100%' : undefined, flex: fill ? 1 : undefined }}>
@@ -1727,10 +1762,18 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
         )}
       </div>
       <div
+        onFocus={() => setTermFocused(true)}
+        onBlur={() => setTermFocused(false)}
         style={{
           height: fill ? undefined : fixedHeight, flex: fill ? 1 : undefined, minHeight: fill ? 0 : undefined,
           borderRadius: 8, overflow: 'hidden',
-          border: '1px solid var(--border-subtle)', background: theme === 'light' ? '#ffffff' : '#0e1116',
+          // The one visual difference between "read-only" and "your keys land here". A terminal
+          // gives no other sign, so an armed pane that is not focused looks exactly like one that is.
+          border: interactive && termFocused
+            ? '1px solid var(--anthropic-orange)'
+            : '1px solid var(--border-subtle)',
+          boxShadow: interactive && termFocused ? '0 0 0 2px rgba(232,105,11,0.22)' : undefined,
+          background: theme === 'light' ? '#ffffff' : '#0e1116',
         }}
       >
         <Suspense fallback={<div style={{ padding: 16, fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>{lang === 'pt' ? 'Carregando o emulador…' : 'Loading the emulator…'}</div>}>
@@ -1774,7 +1817,11 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
           driving a live fleet row the page can act on. Read-only terminals (history rows, or a page
           with no `act`) render no composer, so a field that does nothing is never shown. */}
       {row && act && (
-        <TerminalComposer row={row} act={act} authorName={authorName} lang={lang} isMobile={isMobile} onArmedChange={setTypingArmed} />
+        <TerminalComposer
+          row={row} act={act} authorName={authorName} lang={lang} isMobile={isMobile}
+          state={composer} dispatch={dispatchComposer}
+          channelDead={write.state.phase === 'closed'}
+        />
       )}
       <style>{`@keyframes ag-term-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }`}</style>
     </div>
@@ -1792,39 +1839,45 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
  *    then lost — nothing is delivered per key, and the one line's outcome is always on screen.
  *  - AUDIT: the delivered-or-failed line is recorded through `recordPromptSend`; keystrokes are not.
  */
-function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange }: {
+function TerminalComposer({ row, act, authorName, lang, isMobile, state: composer, dispatch, channelDead }: {
   row: FleetRow
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
     => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
   lang: 'pt' | 'en'
   isMobile: boolean
-  /** The SAME consent arms direct terminal typing (Phase 2b) — the parent opens the keystroke
-   *  channel when this turns true. One opt-in, not two. */
-  onArmedChange?: (armed: boolean) => void
+  /**
+   * The composer's state and its dispatch, OWNED BY THE REGION.
+   *
+   * They used to live here, which is how the one button labelled "type into this session" came to
+   * focus the one field that cannot type into the session: the emulator's stdin is decided by
+   * `surface`, and a state this component held privately was a state the emulator could not read.
+   */
+  state: ComposerState
+  dispatch: React.Dispatch<ComposerAction>
+  /** The keystroke channel could not be opened — the line editor is then the only way in, and says so. */
+  channelDead: boolean
 }) {
-  const [composer, dispatch] = useReducer(composerReducer, INITIAL_COMPOSER)
   // A brief "delivered" confirmation; the durable record lives in the audit panel below the card.
   const [flash, setFlash] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const t = COMPOSER_T[lang]
 
-  // Tell the parent whenever consent changes, so the terminal's own keystroke channel opens/closes
-  // in lockstep with the line composer's arming.
-  useEffect(() => { onArmedChange?.(composer.armed) }, [composer.armed, onArmedChange])
-
   // `external` / `not-running` are HARD blocks — no live process, nothing to type into either way, so
-  // the composer is closed entirely. `awaiting-approval` is NOT a hard block for Phase 2b: a sighted
-  // keystroke ANSWERS the dialog (the coordinator's decision), so consent survives it and direct
-  // typing keeps working; only the blind LINE prompt is refused there, by the server, and its refusal
-  // is reported honestly by the delivery banner below.
+  // the composer is closed entirely (the REGION revokes the consent; this only stops drawing).
+  // `awaiting-approval` is NOT a hard block for Phase 2b: a sighted keystroke ANSWERS the dialog, so
+  // consent survives it and direct typing keeps working; only the blind LINE prompt is refused there,
+  // by the server, and its refusal is reported honestly by the delivery banner below.
   const block = interactionBlock(row.state)
   const hardBlock = block === 'awaiting-approval' ? null : block
   const onDialog = block === 'awaiting-approval'
-  useEffect(() => {
-    if (hardBlock && composer.armed) dispatch({ type: 'disarm' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hardBlock])
+  const lining = composer.surface === 'line'
+
+  /** Open the line editor and put the caret in it — the ONE place that field takes focus. */
+  const openLine = () => {
+    dispatch({ type: 'surface', surface: 'line' })
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
 
   async function send() {
     if (!canSubmit(composer)) return
@@ -1866,7 +1919,9 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button
-          onClick={(e) => { e.stopPropagation(); dispatch({ type: 'arm' }); setFlash(false); setTimeout(() => inputRef.current?.focus(), 0) }}
+          // NO focus grab. Arming hands the keyboard to the TERMINAL — `SessionTerminal` focuses
+          // itself the moment the channel opens, which is the moment a key can actually be delivered.
+          onClick={(e) => { e.stopPropagation(); dispatch({ type: 'arm' }); setFlash(false) }}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
             minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 16px' : '4px 12px', borderRadius: 8,
@@ -1883,6 +1938,58 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
 
   const sending = composer.status === 'sending'
   const failed = composer.status === 'failed'
+
+  /** The verb that revokes consent. Identical on both surfaces, so it is written once. */
+  const stopButton = (
+    <button
+      type="button"
+      onClick={() => dispatch({ type: 'disarm' })}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+        minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+        fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+        border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+      }}
+    >
+      <Hand size={13} /> <span>{t.stop}</span>
+    </button>
+  )
+
+  /**
+   * ARMED, KEYBOARD ON THE TERMINAL — the default, and the whole point of the button that got here.
+   *
+   * No field is drawn, deliberately: an input on screen is where a person types, whatever a sentence
+   * beside it says, and that is exactly how the previous version swallowed every keystroke meant for
+   * the pane. The line editor is one click away and says what it is for.
+   */
+  if (!lining) {
+    return (
+      <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600,
+          color: 'var(--anthropic-orange)', minWidth: 0,
+        }}>
+          <Keyboard size={13} style={{ flexShrink: 0 }} />
+          <span>{t.typingHere}</span>
+        </span>
+        <button
+          type="button"
+          onClick={openLine}
+          title={t.lineWhy}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+            minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+            fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+            border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+          }}
+        >
+          <Send size={13} /> <span>{t.openLine}</span>
+        </button>
+        {stopButton}
+      </div>
+    )
+  }
+
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -1936,19 +2043,30 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
         >
           <Send size={13} /> <span>{sending ? t.sending : t.send}</span>
         </button>
-        <button
-          type="button"
-          onClick={() => dispatch({ type: 'disarm' })}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-            minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
-            fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
-            border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
-          }}
-        >
-          <Hand size={13} /> <span>{t.stop}</span>
-        </button>
+        {/* Back to the pane. ABSENT when the keystroke channel could not be opened — a control whose
+            only outcome is a terminal that eats keys is worse than no control, and the sentence
+            under the field says why it is not there. */}
+        {!channelDead && (
+          <button
+            type="button"
+            onClick={() => dispatch({ type: 'surface', surface: 'terminal' })}
+            disabled={sending}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+              minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+              fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit',
+              cursor: sending ? 'default' : 'pointer', opacity: sending ? 0.5 : 1,
+              border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+            }}
+          >
+            <Terminal size={13} /> <span>{t.backToTerminal}</span>
+          </button>
+        )}
+        {stopButton}
       </form>
+      {channelDead && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{t.lineOnly}</div>
+      )}
       {/* HONEST DELIVERY — the one place the line's fate is reported. */}
       {sending && <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t.delivering}</div>}
       {failed && (
@@ -1970,6 +2088,11 @@ const COMPOSER_T = {
     arm: 'Digitar nesta sessão',
     readonly: 'Somente leitura até você começar a digitar. Ao ligar, as teclas (incl. Ctrl+C) vão direto ao processo.',
     stop: 'Parar',
+    typingHere: 'Digite no terminal acima.',
+    openLine: 'Escrever uma linha inteira',
+    lineWhy: 'Um campo local: você escreve a linha toda, corrige, e ela é enviada de uma vez com Enter.',
+    backToTerminal: 'Voltar ao terminal',
+    lineOnly: 'O canal de teclas não abriu, então este campo é o único caminho até a sessão — ele envia a linha inteira de uma vez.',
     onDialogHint: 'Esta sessão está num diálogo — responda digitando direto no terminal acima; enviar uma linha aqui é recusado.',
     writingTo: 'Escrevendo em',
     placeholder: 'Uma linha para enviar a esta sessão…',
@@ -1989,6 +2112,11 @@ const COMPOSER_T = {
     arm: 'Type into this session',
     readonly: 'Read-only until you start typing. Once on, keys (incl. Ctrl+C) go straight to the process.',
     stop: 'Stop',
+    typingHere: 'Type in the terminal above.',
+    openLine: 'Compose a whole line',
+    lineWhy: 'A local field: write the whole line, fix it, and send it in one go with Enter.',
+    backToTerminal: 'Back to the terminal',
+    lineOnly: 'The keystroke channel did not open, so this field is the only way into the session — it sends the whole line at once.',
     onDialogHint: 'This session is on a dialog — answer it by typing directly in the terminal above; sending a line here is refused.',
     writingTo: 'Writing to',
     placeholder: 'One line to send to this session…',

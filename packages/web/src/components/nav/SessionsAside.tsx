@@ -27,6 +27,7 @@ import { NewSessionModal } from '../sessions/NewSessionModal'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
 import { SessionFacts } from '../sessions/SessionFacts'
+import { sessionPath } from '../../lib/sessionRoute'
 import {
   MAX_PINNED, getPinnedIds, movePinnedSession, pinnedServerSnapshot, resolvePinnedRows,
   subscribePinnedSessions, togglePinnedSession,
@@ -286,7 +287,7 @@ export function SessionsAside({
             setCreating(false)
             // Straight into it. The row will arrive on the next poll; navigating now means the
             // panel is already open on it when it does.
-            if (id) navigate(`/sessions/${id}`)
+            if (id) navigate(sessionPath(id))
           }}
         />
       )}
@@ -415,7 +416,7 @@ export function SessionsAside({
                     pinned
                     {...(tap ? { tap } : {})}
                     onPin={() => flip(s)}
-                    onOpen={() => (onOpenRow ? onOpenRow(s) : navigate(`/sessions/${s.id}`))}
+                    onOpen={() => (onOpenRow ? onOpenRow(s) : navigate(sessionPath(s.id)))}
                     onMoveBy={d => movePinnedSession(i, i + d)}
                     {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
                     onOpenMenu={(x, y, verbs) => openMenu(s, x, y, verbs)}
@@ -441,7 +442,7 @@ export function SessionsAside({
                 key={`${i}-${b.label}`}
                 label={b.label} rows={b.rows} pinned={pinned}
                 sessionId={sessionId} tap={tap} onPin={flip}
-                onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(`/sessions/${s.id}`))}
+                onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(sessionPath(s.id)))}
                 {...(rowsById ? { rowsById } : {})}
                 onOpenMenu={openMenu}
               />

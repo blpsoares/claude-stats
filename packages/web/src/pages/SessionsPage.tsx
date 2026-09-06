@@ -38,6 +38,7 @@ import { SessionsAside } from '../components/nav/SessionsAside'
 import { SessionActions } from '../components/sessions/SessionActions'
 import { filterFleet } from '../lib/fleetFilter'
 import { FiltersSheet } from '../components/sessions/FiltersSheet'
+import { sessionPath } from '../lib/sessionRoute'
 
 /** The dimensions a live fleet row can be narrowed by — the same set on both layouts. */
 const FLEET_FILTER_DIMS: Array<'harnesses' | 'repos' | 'projects' | 'models'> =
@@ -120,6 +121,8 @@ export default function SessionsPage() {
   const [artifacts, setArtifacts] = useState<readonly Artifact[]>([])
   const [artifactsLoading, setArtifactsLoading] = useState(true)
   const [artifactsUnavailable, setArtifactsUnavailable] = useState<string | undefined>(undefined)
+  /** The conversation behind these lists is the END of a longer one — see `chat-web.ts`'s `older`. */
+  const [artifactsOlder, setArtifactsOlder] = useState<string | undefined>(undefined)
   const [artifactsUnlisted, setArtifactsUnlisted] = useState(false)
   /** The conversation's turns, for the LIVE tab — the same ones the chat renders. */
   const [artifactTurns, setArtifactTurns] = useState<readonly LiveTurn[]>([])
@@ -185,12 +188,13 @@ export default function SessionsPage() {
     return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
   }, [artWidth])
   const art = useArtifacts()
-  const onArtifacts = useCallback((a: { artifacts: Artifact[]; loading: boolean; unavailable?: string; unlisted: boolean; turns: readonly LiveTurn[] }) => {
+  const onArtifacts = useCallback((a: { artifacts: Artifact[]; loading: boolean; unavailable?: string; older?: string; unlisted: boolean; turns: readonly LiveTurn[] }) => {
     setArtifacts(a.artifacts)
     setArtifactsUnlisted(a.unlisted)
     setArtifactTurns(a.turns)
     setArtifactsLoading(a.loading)
     setArtifactsUnavailable(a.unavailable)
+    setArtifactsOlder(a.older)
     if (selected) setArtifactCount(selected.id, a.artifacts.length)
   }, [selected])
 
@@ -348,6 +352,9 @@ export default function SessionsPage() {
   const artifactsPane = selected === undefined ? null : (
     <ArtifactsAside
       sessionId={selected.id}
+      // The MCP tab's per-directory scopes are resolved against this; with no directory they are
+      // absent from the picker rather than silently widened to "this machine".
+      {...(selected.cwd ? { cwd: selected.cwd } : {})}
       lang={pt ? 'pt' : 'en'}
       // Only what the server confirmed is still a file with content. Until it has answered the
       // list is shown as recorded, so the panel is never empty for the length of a request.
@@ -355,6 +362,7 @@ export default function SessionsPage() {
       facts={onDisk}
       loading={artifactsLoading}
       {...(artifactsUnavailable ? { unavailable: artifactsUnavailable } : {})}
+      {...(artifactsOlder ? { older: artifactsOlder } : {})}
       unlistedWrites={artifactsUnlisted}
       turns={artifactTurns}
       tabRequest={art.tabRequest}
@@ -370,6 +378,9 @@ export default function SessionsPage() {
       theme={theme === 'light' ? 'light' : 'dark'}
       act={act}
       onGone={() => navigate('/sessions')}
+      // Follow a reopen to the row it created. Without it the panel keeps an id the fleet no longer
+      // carries — see `SessionPanel`'s own `onOpened`.
+      onOpened={id => navigate(sessionPath(id))}
       // CONTROLLED on both layouts now. Passing `onViewChange` is what suppresses SessionPanel's
       // own header, and mobile draws the same three things in the row that already holds the back
       // button — one bar instead of two stacked ones saying overlapping things.
@@ -557,7 +568,7 @@ export default function SessionsPage() {
                 lang={pt ? 'pt' : 'en'}
                 act={act}
                 onGone={() => navigate('/sessions')}
-                onOpened={id => navigate(`/sessions/${id}`)}
+                onOpened={id => navigate(sessionPath(id))}
               />
             )}
           </div>

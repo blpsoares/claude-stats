@@ -45,13 +45,23 @@ export async function cachedParseSession(
     return parseSessionJsonl(filePath, sessionId, fallbackPath, source)
   }
 
-  const hit = cache.get<SessionMeta>('session', stamp, source)
+  // The SHAPE is part of the variant, for the reason `ENRICH_SHAPE` is — and this kind was missing
+  // it. A stored row is only readable by the code that WROTE it, so a change to what
+  // `parseSessionJsonl` produces goes on serving the old shape for every file that has not been
+  // appended to since. It is not hypothetical: the async-agent fix (#373) changed what an
+  // invocation carries, and every transcript already in this cache kept answering in the shape from
+  // before it. Bump this whenever `SessionMeta` gains, loses or re-means a field this parser fills.
+  const variant = `${SESSION_SHAPE}:${source}`
+  const hit = cache.get<SessionMeta>('session', stamp, variant)
   if (hit) return hit
 
   const parsed = await parseSessionJsonl(filePath, sessionId, fallbackPath, source)
-  cache.set('session', stamp, parsed, source)
+  cache.set('session', stamp, parsed, variant)
   return parsed
 }
+
+/** The shape of a stored `session` row. See the note in `cachedParseSession`. */
+const SESSION_SHAPE = 'v2'
 
 /** Everything `scanProjectDir` needs from a transcript whose session already exists in
  *  Claude's own session-meta — which carries none of it. */

@@ -99,3 +99,27 @@ describe('confirmActivities', () => {
     expect(r.memory.lastRaw.has('b')).toBe(false)
   })
 })
+
+describe('corroboration', () => {
+  it('an UNCORROBORATED working reading waits for a second poll', () => {
+    // Movement alone on a harness that prints a working marker: most likely a repaint.
+    const a = confirmActivities(EMPTY_CONFIRM_MEMORY, new Map([['s', 'waiting']]), new Set(['s']))
+    const b = confirmActivities(a.memory, new Map([['s', 'working']]), new Set())
+    expect(b.activities.get('s')).toBe('waiting')
+    const c = confirmActivities(b.memory, new Map([['s', 'working']]), new Set())
+    expect(c.activities.get('s')).toBe('working')
+  })
+
+  it('a CORROBORATED working reading is believed at once', () => {
+    const a = confirmActivities(EMPTY_CONFIRM_MEMORY, new Map([['s', 'waiting']]), new Set(['s']))
+    const b = confirmActivities(a.memory, new Map([['s', 'working']]), new Set(['s']))
+    expect(b.activities.get('s')).toBe('working')
+  })
+
+  it('omitting the set keeps every existing caller exactly as it was', () => {
+    // The parameter is optional so that callers and their tests are untouched by its addition.
+    const a = confirmActivities(EMPTY_CONFIRM_MEMORY, new Map([['s', 'waiting']]))
+    const b = confirmActivities(a.memory, new Map([['s', 'working']]))
+    expect(b.activities.get('s')).toBe('working')
+  })
+})

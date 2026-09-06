@@ -109,6 +109,12 @@ export interface CliStrings {
     external: string
     closed: string
   }
+  /**
+   * The mark a row wears when the MAIN agent has finished its turn while something it started is
+   * still running — a background subagent. Appended to the state word, never instead of it: the
+   * session needs a person, and the mark only says why the harness still looks busy.
+   */
+  sessBackground: string
   /** Said on a session whose harness has no probed approval markers. */
   sessApprovalBlind: (harness: string) => string
   /**
@@ -187,6 +193,13 @@ export interface CliStrings {
   sessTakeoverRefused: (reason: TakeoverRefusal) => string
   /** The fallback title for a session the user never named. */
   sessUntitled: (harness: string, project: string) => string
+  /**
+   * A session the backend is running that the registry has no record of.
+   *
+   * It has no harness and no directory to be named by, so the generic fallback produced a bare `?`.
+   * This says what it actually is — see `session-adopt.ts` for how a row gets into that state.
+   */
+  sessUnregistered: (handle: string) => string
   sessKilled: (id: string) => string
   /** The turn was handed back. Deliberately distinct from `sessKilled` — the session is still up. */
   sessInterrupted: (id: string) => string
@@ -504,6 +517,7 @@ const EN: CliStrings = {
     closed: 'off',
     external: 'external',
   },
+  sessBackground: 'subagent',
   sessApprovalBlind: (harness: string) =>
     `agentop has no verified screen markers for ${harness}, so a blocking question here shows as "needs you" like any other pause.`,
   sessDirGone: 'this directory no longer exists — a removed worktree, most likely. Reopening will not work until it is back.',
@@ -552,6 +566,7 @@ const EN: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} in ${project}` : harness),
+  sessUnregistered: (handle: string) => `unregistered session ${handle}`,
   sessKilled: (id: string) => `stopped ${id}.`,
   sessInterrupted: (id: string) => `asked ${id} to stop what it was doing — the session is still up.`,
   sessInterruptIdle: (id: string) => `${id} is not working right now, so there is nothing to stop.`,
@@ -796,6 +811,7 @@ const PT: CliStrings = {
     closed: 'fechada',
     external: 'externa',
   },
+  sessBackground: 'subagente',
   sessApprovalBlind: (harness: string) =>
     `o agentop não tem marcadores de tela verificados para ${harness}, então uma pergunta bloqueante aqui aparece como "precisa de você", como qualquer outra pausa.`,
   sessDirGone: 'este diretório não existe mais — provavelmente uma worktree removida. Reabrir não vai funcionar enquanto ele não voltar.',
@@ -844,6 +860,7 @@ const PT: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} em ${project}` : harness),
+  sessUnregistered: (handle: string) => `sessão sem registro ${handle}`,
   sessKilled: (id: string) => `${id} encerrada.`,
   sessInterrupted: (id: string) => `pedi para ${id} parar o que estava fazendo — a sessão continua de pé.`,
   sessInterruptIdle: (id: string) => `${id} não está trabalhando agora, então não há o que parar.`,

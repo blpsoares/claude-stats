@@ -69,9 +69,23 @@ export function DatePicker({
     return !isBefore(date, rangeStartDate) && !isAfter(date, rangeEndDate)
   }
 
+  /**
+   * A BOUND ON A CALENDAR IS A DAY, NOT AN INSTANT — and this compared a day against one.
+   *
+   * `maxDate` defaults to `new Date()`, the current moment, while each cell was built at 12:00. So
+   * before noon, TODAY's cell was `isAfter` the bound and today could not be picked: the calendar's
+   * own "Today" shortcut did nothing, and the newest selectable day was yesterday. Reported as
+   * "today continua nao funcionando".
+   *
+   * Both sides are now taken to the END of their day, so the comparison asks the only question a
+   * calendar can answer: is this day after the last allowed day?
+   */
+  const endOfDayLocal = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999)
+
   const isDisabled = (date: Date) => {
-    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12)
-    if (isAfter(d, maxDate)) return true
+    const d = endOfDayLocal(date)
+    if (isAfter(d, endOfDayLocal(maxDate))) return true
     if (minDate) {
       const md = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate(), 0)
       if (isBefore(d, md)) return true

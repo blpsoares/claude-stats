@@ -22,6 +22,39 @@ const richRow = {
 }
 
 describe('reduceMachineFleetRow', () => {
+  it('the SCREEN consent carries the terminal and the dialog — and never the transcript', () => {
+    // The switch `remoteSessions.ts` describes, doing what it describes. `chatTurns` is the one
+    // field NEITHER switch grants: on-demand chat retrieval was removed from the reverse channel
+    // and its route answers 410, so a screen consent must not quietly reopen it.
+    const out = reduceMachineFleetRow(richRow, { screens: true })
+    expect(out.lastLines).toEqual(['$ rm -rf /tmp/x', 'are you sure?'])
+    expect(out.approvalLines).toEqual(['1. Yes', '2. Yes, always', '3. No'])
+    expect(out.dialogOptions).toEqual([{ number: 1, label: 'Yes', selected: true }])
+    expect(Object.keys(out)).not.toContain('chatTurns')
+    // And nothing else came with them.
+    for (const k of ['attachCommand', 'approvalBlind', 'resume', 'pid', 'projectRoot']) {
+      expect(Object.keys(out)).not.toContain(k)
+    }
+  })
+
+  it('ABSENT consent reads as no screen — a caller that forgets loses it, never gains it', () => {
+    // The direction every consent in this product takes, applied to a parameter added to a
+    // function that already had callers.
+    const out = reduceMachineFleetRow(richRow)
+    expect(Object.keys(out)).not.toContain('lastLines')
+    expect(reduceMachineFleetRow(richRow, { screens: false }).lastLines).toBeUndefined()
+  })
+
+  it('a half-read dialog option is DROPPED rather than offered', () => {
+    // A malformed option that reached the central would be rendered as a button that sends a
+    // number nobody read off the screen — the accident `parseDialogOptions` refuses at the source.
+    const out = reduceMachineFleetRow(
+      { ...richRow, dialogOptions: [{ number: 1, label: 'Yes', selected: true }, { label: 'no number' }, 'junk'] },
+      { screens: true },
+    )
+    expect(out.dialogOptions).toEqual([{ number: 1, label: 'Yes', selected: true }])
+  })
+
   it('never carries the screen, the conversation or the dialog', () => {
     // The guarantee the whole feature rests on. A screen is the transcript with the formatting
     // left on, and on-demand chat retrieval was removed from this channel on purpose.

@@ -337,6 +337,24 @@ export interface AttentionRules {
    * is the only working signal there is, and claiming otherwise would be a guess.
    */
   working?: RegExp[]
+  /**
+   * The MAIN agent is producing, right now.
+   *
+   * Distinct from `working`, and the distinction is the whole point: claude prints `esc to
+   * interrupt` whenever ANYTHING is interruptible — a background subagent included — so a session
+   * that has already answered you and is waiting still carries it. Reading that as `working` told
+   * a person nothing was needed from them when something was. Measured on a live session:
+   *
+   *   waiting, subagents running   `⏵⏵ auto mode on · esc to interrupt · ← 6 agents`
+   *   the agent actually producing `· Jitterbugging… (37s · ↓ 1.7k tokens · thought for 17s)`
+   *
+   * The whimsical verb changes every frame; what does not is the elapsed time and the token
+   * counter, so that is what is matched.
+   *
+   * Optional, like `working`: a harness that does not draw one is not given a guess. Where it is
+   * absent the old behaviour stands exactly.
+   */
+  mainWorking?: RegExp[]
   /** Provenance — the exact CLI version the frames came from, and the date. */
   probed: string
 }
@@ -345,7 +363,15 @@ export interface SessionBackend {
   readonly id: 'tmux' | 'pty'
   /** Why this backend cannot run here, already localized. Absent when it can. */
   unavailable(): Promise<string | undefined>
-  spawn(req: BackendSpawn): Promise<void>
+  /**
+   * Start the session. Resolves once the session EXISTS — not once its first prompt has landed.
+   *
+   * An `initialPrompt` is delivered as a FOLLOW-UP: the harness has to draw its input box before a
+   * prompt can be typed into it, and waiting for that held every caller for the whole of the CLI's
+   * startup. `delivery` is that follow-up, for the rare caller that must wait; ignoring it is the
+   * normal case and never leaves an unhandled rejection.
+   */
+  spawn(req: BackendSpawn): Promise<{ delivery?: Promise<void> } | void>
   list(): Promise<BackendSession[]>
   /** Newest-last lines of the last rendered frame, trailing blanks removed. */
   capture(id: string, lines: number): Promise<string[]>

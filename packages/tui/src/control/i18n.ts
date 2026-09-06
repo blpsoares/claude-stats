@@ -415,6 +415,14 @@ export interface ControlStrings {
   /** Reopen was asked for on a row whose conversation cannot be resolved. */
   sessionsReopenNone: string
   /**
+   * The row asked for is no longer in this machine's list — a STALE list, not a lost conversation.
+   *
+   * Its own sentence because it sends the reader somewhere different: refreshing fixes it. Any list
+   * on screen is up to one poll old, and `claimResume` gives each conversation to at most one row,
+   * so reopening one closed row legitimately drops a sibling showing the same conversation.
+   */
+  sessionsRowGone: string
+  /**
    * A START request that arrived over HTTP and cannot be honoured (`fleet-spawn.ts`).
    *
    * The cockpit's own wizard can produce none of these — it only ever offers what this machine can
@@ -1107,6 +1115,7 @@ const EN: ControlStrings = {
   sessionsClosedNote: 'not running — reopen it to pick this conversation back up.',
   sessionsNoHost: 'session control is not available on this machine.',
   sessionsReopenNone: 'no conversation to reopen — nothing on this machine resolves this row.',
+  sessionsRowGone: 'this row is no longer in the list — refresh and try again.',
   spawnUnknownHarness: h => `this machine cannot start ${h} — no spawn spec for it here.`,
   spawnCwdMissing: 'no directory given — a session has to start somewhere.',
   spawnCwdRelative: cwd => `${cwd} is not an absolute path, and a relative one would resolve against this server's own directory.`,
@@ -1661,6 +1670,7 @@ const PT: ControlStrings = {
   sessionsClosedNote: 'não está rodando — reabra para retomar esta conversa.',
   sessionsNoHost: 'o controle de sessões não está disponível nesta máquina.',
   sessionsReopenNone: 'nenhuma conversa para reabrir — nada nesta máquina resolve esta linha.',
+  sessionsRowGone: 'esta linha não está mais na lista — atualize e tente de novo.',
   spawnUnknownHarness: h => `esta máquina não sabe iniciar ${h} — não há spawn spec para ele aqui.`,
   spawnCwdMissing: 'nenhum diretório informado — uma sessão precisa começar em algum lugar.',
   spawnCwdRelative: cwd => `${cwd} não é um caminho absoluto, e um relativo seria resolvido a partir do diretório do próprio servidor.`,

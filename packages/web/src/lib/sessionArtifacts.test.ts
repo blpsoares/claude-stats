@@ -114,3 +114,31 @@ describe('files the SHELL wrote', () => {
     expect(hasUnlistedWrites([])).toBe(false)
   })
 })
+
+describe('a harness that does not speak Claude', () => {
+  it('finds an agy write through `canonical`, while the bubble keeps agy\'s own name', () => {
+    // The turn carries both readings: `name` is what agy called the tool and is what the
+    // conversation shows; `canonical` is the shared vocabulary this set is written in. Selecting on
+    // the displayed name would leave this panel blind on every harness but Claude, and rewriting
+    // the displayed name to suit this set put Claude's tool names in an Antigravity session.
+    const out = artifactsFromTurns([{
+      tools: [
+        { name: 'write_to_file', canonical: 'Write', detail: '/repo/a.ts' },
+        { name: 'replace_file_content', canonical: 'Edit', detail: '/repo/b.ts' },
+        { name: 'view_file', canonical: 'Read', detail: '/repo/c.ts' },
+      ],
+    }])
+    // The write and the edit are found; the READ is not — this panel answers what the session
+    // PRODUCED. Order is the panel's own (newest first) and is asserted by the tests above.
+    expect(out.map(a => a.path).sort()).toEqual(['/repo/a.ts', '/repo/b.ts'])
+    expect(out.find(a => a.path === '/repo/a.ts')!.kind).toBe('new')
+    expect(out.find(a => a.path === '/repo/b.ts')!.kind).toBe('edited')
+  })
+
+  it('a tool with no canonical reading is judged by its own name, as Claude\'s always were', () => {
+    expect(artifactsFromTurns([{ tools: [{ name: 'Write', detail: '/repo/x.ts' }] }]))
+      .toHaveLength(1)
+    expect(artifactsFromTurns([{ tools: [{ name: 'manage_task', detail: 'complete' }] }]))
+      .toEqual([])
+  })
+})

@@ -243,9 +243,27 @@ export interface SessionMeta {
 
 export interface AgentInvocation {
   toolUseId: string
+  /**
+   * The subagent's own transcript id, when the harness names one.
+   *
+   * Present since Claude Code made the `Agent` tool asynchronous (2026-08-14): the parent's result
+   * carries no numbers any more, only this id, and the numbers live in
+   * `<project>/<session-id>/subagents/agent-<agentId>.jsonl`. Absent on every record written before
+   * that, and on any harness that names no such file.
+   */
+  agentId?: string
   agentType: string
   description: string
   status: 'completed' | 'failed'
+  /**
+   * `true` when the numbers below could NOT be established for this invocation.
+   *
+   * Read it BEFORE reading any figure here: an unmeasured invocation carries zeros because the type
+   * has no other value to carry, and a zero rendered as a fact is the confident-0 this repository
+   * forbids everywhere else. A surface must render N/A for these, exactly as it does for a metric a
+   * harness cannot produce (`HARNESS_CAPABILITIES`). Absent means measured.
+   */
+  unmeasured?: true
   totalTokens: number
   totalDurationMs: number
   totalToolUseCount: number
@@ -268,6 +286,13 @@ export interface AgentInvocation {
 export interface SessionAgentMetrics {
   invocations: AgentInvocation[]
   totalInvocations: number
+  /**
+   * How many of them carry no established numbers — so a surface can say that the totals beside it
+   * cover fewer invocations than it is showing, instead of implying the rest cost nothing.
+   *
+   * Optional because a record stored before this existed has no such count; absent is not zero.
+   */
+  unmeasuredInvocations?: number
   totalTokens: number
   totalDurationMs: number
   totalCostUSD: number
@@ -561,7 +586,13 @@ export function mergeStatsCaches(caches: StatsCache[]): StatsCache {
   return out
 }
 
-export type DateRange = '7d' | '30d' | '90d' | 'all'
+/**
+ * `today` is the CURRENT day, in progress, and it is its own preset rather than a custom range of
+ * one day. Asked for: "ao lado do botão all deve ter um botão today pq o today do calendário pode
+ * funcionar tipo, today até dia X. já o today do lado do all significa que só quero ver hoje."
+ * They answer two different questions, so they are two different controls.
+ */
+export type DateRange = 'today' | '7d' | '30d' | '90d' | 'all'
 
 export interface Filters {
   dateRange: DateRange

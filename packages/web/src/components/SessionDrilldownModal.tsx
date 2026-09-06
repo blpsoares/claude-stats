@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import {
   X, Clock, FileCode, GitCommit, Wrench, MessageSquare, Bot, Zap, AlertTriangle,
-  CheckCircle, XCircle, Globe, Workflow as WorkflowIcon,
+  CheckCircle, Circle, XCircle, Globe, Workflow as WorkflowIcon,
 } from 'lucide-react'
 import type { SessionMeta, Lang, WorkflowRun } from '@agentistics/core'
 import { sessionTime } from '../lib/sessionTime'
@@ -397,17 +397,21 @@ export function SessionDrilldownModal({ session, globalModelUsage, currency, brl
                       {inv.agentType}
                     </span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                      {/* `completed` is not the only thing that is not `failed` — a running agent
+                          and one whose outcome was never recorded both drew a green tick. */}
                       {inv.status === 'failed'
                         ? <XCircle size={11} color="#ef4444" style={{ flexShrink: 0 }} />
-                        : <CheckCircle size={11} color="var(--accent-green, #22c55e)" style={{ flexShrink: 0 }} />
+                        : inv.status === 'completed'
+                          ? <CheckCircle size={11} color="var(--accent-green, #22c55e)" style={{ flexShrink: 0 }} />
+                          : <Circle size={11} color={inv.status === 'running' ? 'var(--accent-green, #22c55e)' : 'var(--text-tertiary)'} style={{ flexShrink: 0 }} />
                       }
                       <span style={{ color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {inv.description || <em style={{ color: 'var(--text-tertiary)' }}>—</em>}
                       </span>
                     </div>
-                    <span style={{ color: 'var(--text-primary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt(inv.totalTokens, fullPrecision)}</span>
-                    <span style={{ color: 'var(--text-secondary)', textAlign: 'right' }}>{fmtAgentDuration(inv.totalDurationMs)}</span>
-                    <span style={{ color: 'var(--anthropic-orange)', textAlign: 'right' }}>{fmtCost(inv.costUSD, currency, brlRate)}</span>
+                    <span title={inv.totalTokens === null ? (pt ? 'Não medido: a transcrição deste agente ainda não existe ou não está mais no disco.' : 'Not measured: this agent’s transcript does not exist yet, or is no longer on disk.') : undefined} style={{ color: inv.totalTokens === null ? 'var(--text-tertiary)' : 'var(--text-primary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{inv.totalTokens === null ? '—' : fmt(inv.totalTokens, fullPrecision)}</span>
+                    <span style={{ color: 'var(--text-secondary)', textAlign: 'right' }}>{inv.totalDurationMs === null ? '—' : fmtAgentDuration(inv.totalDurationMs)}</span>
+                    <span style={{ color: inv.costUSD === null ? 'var(--text-tertiary)' : 'var(--anthropic-orange)', textAlign: 'right' }}>{inv.costUSD === null ? '—' : fmtCost(inv.costUSD, currency, brlRate)}</span>
                   </div>
                 ))}
                 {agentInvocations.length > 20 && (

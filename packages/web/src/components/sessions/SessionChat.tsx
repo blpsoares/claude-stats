@@ -39,12 +39,12 @@ import { isImagePath } from '../../lib/attachmentPreview'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
-import { sessionScratch, type CachedChat } from '../../lib/sessionScratch'
+import { scratchKey, sessionScratch, type CachedChat } from '../../lib/sessionScratch'
 import { composerMaxHeight } from '../../lib/composerHeight'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
 import { MAX_ATTACHMENTS, attachmentRoom, planPaste } from '../../lib/pastePlan'
-import { appendDictation, dictatedText, dictationError, dictationLocale, dictationSupport, insecureAlternative } from '../../lib/dictation'
+import { appendDictation, dictationError, dictationLocale, dictationSupport, insecureAlternative, splitDictation } from '../../lib/dictation'
 import { modelSwitchLine, modelSwitchReason } from '../../lib/modelSwitch'
 import {
   applySkill, emptyPickerReason, filterSkills, flattenGroups, groupSkills, slashMisplaced,
@@ -67,6 +67,8 @@ interface ChatPayload {
   turns: ChatTurn[]
   unavailable?: string
   live: boolean
+  /** Already-localized: these turns are the END of a longer conversation. See `chat-web.ts`. */
+  older?: string
 }
 
 export interface SessionChatProps {
@@ -87,6 +89,14 @@ export interface SessionChatProps {
     artifacts: Artifact[]
     loading: boolean
     unavailable?: string
+    /**
+     * Already-localized: the conversation is a WINDOW onto a longer one.
+     *
+     * Handed over for the same reason the turns are: every list the panel builds is built from
+     * these turns and inherits their cap, so the panel has to be able to say so instead of showing
+     * an empty gallery that reads as "there was never anything here".
+     */
+    older?: string
     /** Writes this reader cannot name — see `hasUnlistedWrites`. */
     unlisted: boolean
     /** The turns themselves, for the panel's LIVE tab. Handed over rather than re-fetched. */
@@ -128,8 +138,18 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * The draft starts from the person's own words. Losing typed text to a click is the one thing
    * here that cannot be recovered from anywhere — a conversation re-fetches, a paragraph does not.
    */
-  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(session.id) as ChatPayload | null)
-  const [draft, setDraft] = useState(() => sessionScratch.readDraft(session.id))
+  /**
+   * WHAT THE SCRATCH BELONGS TO — the conversation, never this row.
+   *
+   * One conversation is reachable through several rows: an `exited` managed row deliberately does
+   * not cover its conversation, so the same conversation is also listed as a `closed:<id>` row you
+   * can reopen, and every reopen mints a new managedId for it. Keyed on the row, closing a session
+   * threw away its cached turns and the paragraph somebody had typed into it. See `scratchKey`.
+   */
+  const scratchId = scratchKey(session)
+
+  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(scratchId) as ChatPayload | null)
+  const [draft, setDraft] = useState(() => sessionScratch.readDraft(scratchId))
 
   /**
    * Every change to the draft, PERSISTED against the session it belongs to.
@@ -142,23 +162,62 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editDraft = useCallback((next: string | ((prev: string) => string)) => {
     setDraft(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeDraft(session.id, v)
+      sessionScratch.writeDraft(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
 
-  const shownId = useRef(session.id)
+  /**
+   * A KEY CHANGE IS NOT ALWAYS A SESSION CHANGE, and treating it as one is what took the focus.
+   *
+   * `scratchKey` answers `row:<id>` while a row has no `conversationId` and `conv:<id>` once it
+   * learns one — and a live session learns it MID-USE, the moment the poller can prove the link.
+   * The reload then ran while somebody was typing: every read moved to a slot holding nothing, so
+   * `payload` came back `null`, the composer's whole subtree was replaced by the "loading"
+   * paragraph, and the focused textarea left the DOM — taking the half-written draft with it.
+   * Reported as "eu to digitando e do nada o foco sai do campo de input".
+   *
+   * The ROW is what says whether this is the same session. When it is, the scratch is CARRIED to
+   * the new key and nothing else moves, so the change becomes invisible — which is what it always
+   * should have been.
+   *
+   * ONE effect decides this, not two: a second effect on the same key cannot ask "is this a switch"
+   * after the first has already recorded the answer.
+   */
+  const shownId = useRef(scratchId)
+  const shownRow = useRef(session.id)
   useEffect(() => {
-    if (shownId.current === session.id) return
-    shownId.current = session.id
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setReplyTo(sessionScratch.readReply(session.id))
-  }, [session.id])
+    if (shownId.current === scratchId) return
+    const sameSession = shownRow.current === session.id
+    if (sameSession) sessionScratch.migrate(shownId.current, scratchId)
+    shownId.current = scratchId
+    shownRow.current = session.id
+    if (sameSession) return
+    // A GENUINE switch. Everything per-conversation is read back from the other session's own slot;
+    // the scroll position is the one thing not restored, because opening mid-history is
+    // disorienting.
+    landedRef.current = false
+    setAtTail(true)
+    setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
+    setDraft(sessionScratch.readDraft(scratchId))
+    setReplyTo(sessionScratch.readReply(scratchId))
+    setEcho(sessionScratch.readEchoes(scratchId))
+    setAttached(sessionScratch.readAttachments(scratchId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scratchId])
   const [sending, setSending] = useState(false)
   /** Dictation. `recognitionRef` holds the live recogniser so a second click stops it. */
   const [listening, setListening] = useState(false)
+  /**
+   * What the recogniser is hearing RIGHT NOW, before it has settled on it.
+   *
+   * Shown beside the field and never written into the draft: an interim result is a guess the
+   * recogniser replaces as it hears more. It is the whole of "see the capture happening" — with
+   * `interimResults` off, a person speaking saw an unchanged field and concluded the microphone was
+   * broken, which is exactly what was reported.
+   */
+  const [heard, setHeard] = useState('')
   const recognitionRef = useRef<{ stop: () => void } | null>(null)
   const dictation = useMemo(
     () => dictationSupport(typeof window === 'undefined' ? undefined : (window as never), pt ? 'pt' : 'en'),
@@ -191,20 +250,27 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       }
       rec.lang = dictationLocale(pt ? 'pt' : 'en')
       rec.continuous = true
-      rec.interimResults = false
+      // ON. See `heard`: without it nothing reaches the screen until a phrase is over.
+      rec.interimResults = true
       // Both decisions are PURE and tested (`dictation.ts`): which results this event contributed,
       // and where they land in what is already typed. This loop used to read `e.results` from index
       // 0 on every event while `continuous` is true — and that list is CUMULATIVE, so every event
       // re-emitted the whole session and the draft grew "one", "one one two", "one one two one two
       // three". `resultIndex` is the index of the first result the event changed, which is exactly
       // what this event contributed.
-      rec.onresult = e => { editDraft(d => appendDictation(d, dictatedText(e))) }
+      rec.onresult = e => {
+        const { final, interim } = splitDictation(e)
+        // Only the settled half is kept. The rest is shown and thrown away on the next event.
+        if (final !== '') editDraft(d => appendDictation(d, final))
+        setHeard(interim)
+      }
       // Both end the same way. A recogniser that stopped on its own (a timeout, a denied
       // permission) must not leave the button lit — a control that says it is listening when it
       // is not is worse than one that never started.
-      rec.onend = () => { setListening(false); recognitionRef.current = null }
+      rec.onend = () => { setListening(false); setHeard(''); recognitionRef.current = null }
       rec.onerror = e => {
         setListening(false)
+        setHeard('')
         recognitionRef.current = null
         // The REASON reaches the screen. This handler used to discard its event, so a refused
         // permission, an unreachable recognition service, a missing microphone and a moment of
@@ -387,7 +453,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     return () => document.removeEventListener('keydown', onKey)
   }, [recall])
   /** Messages sent from here and not yet seen in the transcript. See the header. */
-  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(session.id))
+  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(scratchId))
 
   /**
    * Every change to the echo list, persisted against the session it belongs to.
@@ -399,10 +465,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editEcho = useCallback((next: string[] | ((prev: string[]) => string[])) => {
     setEcho(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeEchoes(session.id, v)
+      sessionScratch.writeEchoes(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
   /**
    * The message being replied to.
@@ -413,7 +479,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * mail has always done. Saying it plainly beats a UI that implies threading the session cannot do.
    */
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(
-    () => sessionScratch.readReply(session.id),
+    () => sessionScratch.readReply(scratchId),
   )
 
   /**
@@ -428,9 +494,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * write one conversation's reply into another's slot.
    */
   const editReply = useCallback((next: ReplyTarget | null) => {
-    sessionScratch.writeReply(session.id, next)
+    sessionScratch.writeReply(scratchId, next)
     setReplyTo(next)
-  }, [session.id])
+  }, [scratchId])
   /**
    * Files written to THIS MACHINE, whose paths go into the message.
    *
@@ -438,7 +504,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * no channel a byte array could travel down — but every one of these CLIs reads a file it is
    * pointed at. The chip says the name; the message carries the path.
    */
-  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(session.id))
+  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(scratchId))
 
   /**
    * Every change to the attachment list, persisted against the session it belongs to — the same
@@ -448,10 +514,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editAttached = useCallback((next: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
     setAttached(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeAttachments(session.id, v)
+      sessionScratch.writeAttachments(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -495,15 +561,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * back. What must never happen is one session's quote appearing under another's name, and a
    * per-id read is what rules that out.
    */
-  useEffect(() => {
-    landedRef.current = false
-    setAtTail(true)
-    setReplyTo(sessionScratch.readReply(session.id))
-    setEcho(sessionScratch.readEchoes(session.id))
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setAttached(sessionScratch.readAttachments(session.id))
-  }, [session.id])
+
 
   /** The ceiling, re-measured when the window changes size. */
   const [maxComposerH, setMaxComposerH] = useState(() => composerMaxHeight(
@@ -532,6 +590,17 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     el.style.height = `${Math.min(el.scrollHeight, maxComposerH)}px`
   }, [draft, maxComposerH])
 
+  /**
+   * Ask for the transcript NOW, outside the interval.
+   *
+   * The interval is tuned for watching (`CHAT_POLL_MS`), and the two moments a reader is actually
+   * waiting are not on it: the instant a message is sent, and the instant a turn ends. On both, the
+   * answer changed and the next scheduled read is up to three seconds away — which is the whole of
+   * "as mensagens chegam de forma travada". A ref rather than state, so nudging never re-renders
+   * and never restarts the interval it lives beside.
+   */
+  const nudgeChat = useRef<() => void>(() => {})
+
   useEffect(() => {
     let alive = true
     const poll = async () => {
@@ -541,16 +610,41 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
         const next = await res.json() as ChatPayload
         setPayload(next)
         // Write through, so the NEXT visit starts where this one ended.
-        sessionScratch.writeChat(session.id, next as unknown as CachedChat)
+        sessionScratch.writeChat(scratchId, next as unknown as CachedChat)
       } catch { /* transient — keep the last conversation rather than blanking it */ }
     }
+    nudgeChat.current = () => { void poll() }
     void poll()
     const t = setInterval(poll, CHAT_POLL_MS)
-    return () => { alive = false; clearInterval(t) }
+    return () => { alive = false; nudgeChat.current = () => {}; clearInterval(t) }
   }, [session.id, lang])
 
+  /**
+   * IS THE LIVE SCREEN WORTH WATCHING RIGHT NOW?
+   *
+   * `session.state` alone was the answer, and it is up to a FLEET poll late — five seconds, plus
+   * the confirmation `attention-confirm.ts` requires. So every turn began with a dead window: the
+   * message was already in the pane and the assistant already producing, while the chat had not
+   * opened the stream that shows it. Measured why it matters: Claude writes its JSONL once a
+   * message is FINISHED (the file grows in one ~5 KB jump and then sits still for eight seconds),
+   * so the transcript can never stream — the screen is the only place the text exists as it is
+   * typed, and being late to it is being late to all of it.
+   *
+   * A PENDING ECHO is the signal the fleet does not have yet: we typed into that pane ourselves a
+   * moment ago. It clears exactly when the transcript catches up, so this needs no timer and cannot
+   * leak a capture loop — and the case where it holds longest, a message sitting in the harness's
+   * queue, is precisely the one somebody is watching the screen to understand.
+   */
   const working = session.state === 'working'
-  const { state: term } = useTerminalStream(working ? session.id : null)
+  const { state: term } = useTerminalStream(working || echo.length > 0 ? session.id : null)
+
+  // A turn just ENDED. The live bubble is gone the moment `working` drops, and the real one is up
+  // to `CHAT_POLL_MS` away — a gap where neither source is showing the answer that just finished.
+  const wasWorking = useRef(working)
+  useEffect(() => {
+    if (wasWorking.current && !working) nudgeChat.current()
+    wasWorking.current = working
+  }, [working])
 
   const turns = useMemo(() => payload?.turns ?? [], [payload])
 
@@ -685,6 +779,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   /** ONE stable reference for every bubble's reply button — see `ChatBubble`'s memo. */
   const onReplyToTurn = useCallback((t: ChatTurn) => {
     editReply({ role: t.role, text: t.text }); setAtTail(true); toTail()
+    // Choosing a message to answer IS starting to write one. Asked for, and it is the same call the
+    // skill picker already makes after inserting: the next thing the person does is type.
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -701,6 +798,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     const text = markExcerpt(t.text, selected)
     if (text === '') return
     editReply({ role: t.role, text, excerpt: true }); setAtTail(true); toTail()
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -740,8 +838,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       unlisted: hasUnlistedWrites(turns),
       turns,
       ...(payload?.unavailable ? { unavailable: payload.unavailable } : {}),
+      ...(payload?.older ? { older: payload.older } : {}),
     })
-  }, [artifacts, loading, turns, payload?.unavailable, onArtifacts])
+  }, [artifacts, loading, turns, payload?.unavailable, payload?.older, onArtifacts])
 
   const canPrompt = !loading && session.actionable && !blocked && payload.live !== false
   /**
@@ -888,10 +987,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       // Echoed straight away. It is already in the session; the transcript catches up in a poll or
       // two, and this is what makes pressing enter visibly do something.
       editEcho(list => [...list, full])
+      // Ask for the transcript at once. The harness writes the user turn as soon as it takes the
+      // message, and the next scheduled read is up to `CHAT_POLL_MS` away — three seconds in which
+      // the echo sits there labelled as undelivered when it has in fact already landed.
+      nudgeChat.current()
       setDraft('')
-      sessionScratch.clearDraft(session.id)
+      sessionScratch.clearDraft(scratchId)
       setAttached([])
-      sessionScratch.writeAttachments(session.id, [])
+      sessionScratch.writeAttachments(scratchId, [])
       editReply(null)
       setAtTail(true)
       toTail()
@@ -933,6 +1036,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
           ) : turns.length === 0 && live === null && echo.length === 0 ? (
             <Muted text={pt ? 'Esta conversa ainda não tem mensagens.' : 'This conversation has no messages yet.'} />
           ) : null}
+
+          {/* Where the window BEGINS, said at the top of the scroll — the one place a reader looks
+              when they wonder where the rest went. Everything derived from these turns (the
+              gallery, Files, Live) inherits the same cap and says so in its own panel. */}
+          {!loading && payload?.older && (
+            <p style={{
+              margin: 0, textAlign: 'center', fontSize: 11, lineHeight: 1.5,
+              color: 'var(--text-tertiary)',
+            }}>{payload.older}</p>
+          )}
 
           {turns.map((t, i) => (
             <ChatBubble
@@ -1158,6 +1271,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   decisions — the name and how much of the message is shown — are in
                   `replyQuote.ts`, which is also what composes the `> ` block that actually
                   travels. */}
+              {/* WHAT THE MICROPHONE IS HEARING, live. Interim results are a guess the recogniser
+                  keeps revising, so they are shown here and never written into the field — the
+                  settled words land in the draft on their own. `role="status"` so it is announced,
+                  and it disappears the moment listening stops. */}
+              {listening && (
+                <p role="status" style={{
+                  margin: '0 0 8px', padding: '6px 10px', borderRadius: 9,
+                  background: 'var(--bg-elevated)', borderLeft: '3px solid var(--accent-red)',
+                  fontSize: 12, lineHeight: 1.45, color: 'var(--text-secondary)',
+                  fontStyle: heard === '' ? 'italic' : 'normal',
+                }}>
+                  {heard === ''
+                    ? (pt ? 'ouvindo…' : 'listening…')
+                    : heard}
+                </p>
+              )}
+
               {replyTo && (
                 <div style={{
                   display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8,
@@ -1485,7 +1615,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       cursor: canPrompt ? 'pointer' : 'default',
                     }}
                   >
-                    <Mic size={15} />
+                    {/* PULSING WHILE IT LISTENS. A microphone button that only changes tint looks
+                        the same as one that did nothing, which is how "o mic não funciona" starts:
+                        the recogniser was running and nothing on screen said so. The ring is the
+                        state, the words below are the evidence. */}
+                    <span style={{ position: 'relative', display: 'flex' }}>
+                      {listening && (
+                        <span
+                          aria-hidden
+                          className="ag-mic-pulse"
+                          style={{
+                            position: 'absolute', inset: -5, borderRadius: 12,
+                            border: '1.5px solid var(--accent-red)', pointerEvents: 'none',
+                          }}
+                        />
+                      )}
+                      <Mic size={15} />
+                    </span>
                   </button>
                 )}
 
@@ -1676,96 +1822,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         </>
                       )}
 
-                      {/* SKILLS. The picker INSERTS `/<name> ` into the draft and focuses the
-                          field — it does not send. Two reasons: most skills take an argument, and
-                          the composer's whole contract is that what reaches the session is what the
-                          person chose to send.
-
-                          It inherits the `prompt` action's refusals and STATES them: the session
-                          must be running, and it is refused while a DIALOG is open, because a slash
-                          command typed into a permission prompt goes into that dialog's own filter
-                          and the submit takes the highlighted option. Same rule `promptSession` and
-                          `rename` already enforce, said here rather than discovered by doing it. */}
-                      {(skills === null || skills.length > 0 || skillsNote) && (
-                        <>
-                          <div style={{ height: 1, background: 'var(--border)', margin: '4px 2px' }} />
-                          <p style={{
-                            margin: '2px 8px 4px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                            letterSpacing: '0.06em', color: 'var(--text-tertiary)',
-                          }}>
-                            Skills
-                          </p>
-                          {/* The PERMANENT fact first. A harness that can never do this is told so,
-                              rather than being told it is not running — which is true, irrelevant,
-                              and would change to a different refusal if it started. */}
-                          {skillsNote ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {skillsNote}
-                            </p>
-                          ) : !canPrompt || blocked ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {blocked
-                                ? (pt
-                                    ? 'Esta sessão está numa pergunta. Responda primeiro — uma barra digitada aí entra no filtro do diálogo.'
-                                    : 'This session is on a question. Answer it first — a slash typed there goes into the dialog’s own filter.')
-                                : (pt
-                                    ? 'Esta sessão não está rodando, então não dá para escrever nela.'
-                                    : 'This session is not running, so there is nothing to write to.')}
-                            </p>
-                          ) : skills === null ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                              {pt ? 'Lendo…' : 'Reading…'}
-                            </p>
-                          ) : (
-                            <>
-                              {skills.length > 6 && (
-                                <input
-                                  value={skillQuery}
-                                  onChange={e => setSkillQuery(e.target.value)}
-                                  placeholder={pt ? `Filtrar ${skills.length} skills…` : `Filter ${skills.length} skills…`}
-                                  style={{
-                                    width: '100%', boxSizing: 'border-box', margin: '2px 0 4px',
-                                    padding: '5px 8px', borderRadius: 6, fontSize: 11.5,
-                                    border: '1px solid var(--border-subtle)', background: 'var(--bg-card)',
-                                    color: 'var(--text-primary)', fontFamily: 'inherit', outline: 'none',
-                                  }}
-                                />
-                              )}
-                              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                                {shownSkills.length === 0 && (
-                                  <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                                    {pt ? 'Nenhuma skill com esse nome.' : 'No skill by that name.'}
-                                  </p>
-                                )}
-                                {shownSkills.map(sk => (
-                                  <button
-                                    key={sk.name}
-                                    title={sk.description}
-                                    onClick={() => {
-                                      setMoreOpen(false)
-                                      setSkillQuery('')
-                                      editDraft(d => (d.trim() === '' ? `/${sk.name} ` : `${d.replace(/\s+$/, '')} /${sk.name} `))
-                                      textareaRef.current?.focus()
-                                    }}
-                                    style={{
-                                      display: 'block', width: '100%', textAlign: 'left',
-                                      minHeight: 36, padding: '6px 8px', borderRadius: 7, border: 'none',
-                                      background: 'transparent', color: 'var(--text-primary)',
-                                      fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
-                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    /{sk.name}
-                                  </button>
-                                ))}
-                              </div>
-                              <p style={{ margin: '2px 8px 4px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
-                                {pt ? 'Escreve no campo; não envia.' : 'Types into the field; does not send.'}
-                              </p>
-                            </>
-                          )}
-                        </>
-                      )}
+                      {/* THE SKILLS LIST LIVED HERE AND IS GONE. It was the only place to see
+                          them; there is a dedicated view now, and two lists of one thing are two
+                          places for them to disagree about what is installed. What stays is the
+                          `/` picker IN THE FIELD, which is a different gesture — completing what
+                          you are already typing, not browsing. */}
                     </div>
                   )}
                 </div>

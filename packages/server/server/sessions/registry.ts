@@ -27,6 +27,7 @@ import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { MANAGED_SESSIONS_FILE } from '../config'
 import type { ManagedSession } from './types'
+import { withFileLock } from './file-lock'
 
 /**
  * A short, lowercase id that is safe as a tmux session name.
@@ -212,8 +213,16 @@ export function createSessionRegistry(file: string): SessionRegistry {
   // Chains `fn` behind whatever is already queued, so its read and write run as one atomic step
   // relative to every other call made through this same function. Kept alive across a rejection —
   // otherwise one failed mutation would wedge every mutation queued after it.
+  //
+  // AND ACROSS PROCESSES. The chain is per process, and agentop runs as several: the systemd
+  // server, the cockpit, and every one-shot `agentop session …`. Two of them read the same list,
+  // each adds its own record, each writes the whole thing back — and one record is gone. Measured:
+  // two sessions started minutes apart came back with an identical `createdAt` and no label,
+  // because both records had been erased and re-created by adoption, which cannot know a name.
+  // That is the one bug behind "the title I typed was ignored" and "rename does not rename".
+  // See `file-lock.ts` for why the lock can never wedge the product.
   function enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const next = queue.then(fn)
+    const next = queue.then(() => withFileLock(file, fn))
     queue = next.catch(() => undefined)
     return next
   }

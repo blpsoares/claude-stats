@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { sessionInRange } from '../lib/sessionSpan'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -354,6 +355,10 @@ function utcDateFromDayStr(dayStr: string): Date {
  */
 export function getDateRangeFilter(dateRange: DateRange, customStart?: string, customEnd?: string) {
   const now = utcEndOfDay(new Date())
+  // TODAY is the current day alone, in progress. It ends at the end of the day rather than at this
+  // instant: a range that stopped at `now` would exclude a session whose only recorded activity is
+  // a few seconds ahead of the browser's clock, and the ranges below already end there.
+  if (dateRange === 'today') return { start: utcStartOfDay(new Date()), end: now }
   if (dateRange === '7d') return { start: utcStartOfDay(subDays(now, 7)), end: now }
   if (dateRange === '30d') return { start: utcStartOfDay(subDays(now, 30)), end: now }
   if (dateRange === '90d') return { start: utcStartOfDay(subDays(now, 90)), end: now }
@@ -1151,9 +1156,18 @@ export function computeDerivedStats(
       isDateStr(d.date) && inRange(parseISO(d.date), start, end)
     )
 
-    // Shared date predicate — reused for filteredSessions and nonClaudeInRange
-    const inDateRange = (s: { start_time?: string }) =>
-      isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
+    /**
+     * Shared date predicate — reused for filteredSessions and nonClaudeInRange.
+     *
+     * A SESSION IS A SPAN, NOT AN INSTANT, and this used to test only its start. Measured: the
+     * session doing all of today's work started three days earlier and was still running, so every
+     * hour of it counted on the day it BEGAN and "today" was empty while four assistants were live.
+     * `sessionInRange` claims a session for a range its activity OVERLAPS — see `sessionSpan.ts`.
+     */
+    const startMs = start.getTime()
+    const endMs = end.getTime()
+    const inDateRange = (s: { start_time?: string; end_time?: string }) =>
+      sessionInRange(s, startMs, endMs)
 
     // Filter sessions (date + projects + model + active-only)
     const filteredSessions = harnessSessions.filter(s => {

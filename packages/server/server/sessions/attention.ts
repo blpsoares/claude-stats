@@ -109,8 +109,20 @@ export function attentionOf(o: {
 
   // The marker is PROOF of work only while the screen has been moving at all recently. A footer
   // that lingers is not evidence, and silence eventually outweighs it — see `MARKER_STALE_MS`.
+  //
+  // AND IT MUST BE THE MAIN AGENT. `esc to interrupt` is printed whenever anything is
+  // interruptible, background subagents included, so a session that had already answered and was
+  // waiting for a person read as `working` — telling them nothing was needed when something was.
+  // Where the harness draws a distinct marker for its own turn (`mainWorking`), that is what
+  // counts; the interruptible marker alone means work is happening SOMEWHERE, which
+  // `backgroundWork` below reports separately. A harness with no `mainWorking` keeps the old
+  // behaviour exactly.
   const silentFor = o.nowMs - o.lastActivityMs
-  if (silentFor <= MARKER_STALE_MS && working(text)) {
+  const mainMarker = o.rules?.mainWorking
+  const producing = mainMarker
+    ? mainMarker.some(re => re.test(text))
+    : working(text)
+  if (silentFor <= MARKER_STALE_MS && producing) {
     return 'working'
   }
 
@@ -139,12 +151,73 @@ export function attentionOf(o: {
  * cannot check — see `approval-spec.ts`.
  */
 export function approvalTail(frame: readonly string[], max = 10): string[] {
-  const lines = frame.slice(Math.max(0, frame.length - Math.max(0, max)))
+  const from = Math.max(0, frame.length - Math.max(0, dialogHeight(frame, max)))
+  const lines = frame.slice(from)
   let start = 0
   let end = lines.length
   while (start < end && (lines[start] ?? '').trim() === '') start++
   while (end > start && (lines[end - 1] ?? '').trim() === '') end--
   return lines.slice(start, end)
+}
+
+/** A numbered option row, in the shape `parseDialogOptions` reads. Kept in step with it by test. */
+const OPTION_ROW = /^\s*(?:❯|>)?\s*(\d{1,2})\.\s+\S/
+
+/** How far above the first option the question itself may reach. */
+const QUESTION_LINES = 12
+
+/**
+ * HOW MANY LINES THE DIALOG ACTUALLY OCCUPIES — PURE.
+ *
+ * `max` was a flat count sized for a permission prompt with three short options, and an
+ * `AskUserQuestion` is much taller: four options, several of them wrapping onto two lines, plus a
+ * footer. The window then began BELOW the question, and the card showed a list of answers with
+ * nothing saying what was being asked — reported with a screenshot whose first line is the middle
+ * of a sentence.
+ *
+ * The dialog's own structure says where it starts: its FIRST OPTION. `parseDialogOptions` already
+ * anchors on `1.` for the same reason, bottom-up, because the dialog is the last block on screen.
+ * So the window is "everything from a little above option 1", which grows with the dialog instead
+ * of guessing at its height.
+ *
+ * IT ONLY EVER GROWS THE WINDOW, and only when it found an anchor. With no `1.` in range this
+ * returns `max` unchanged — the permission-prompt case, and every frame this cannot read. Reaching
+ * further up on a frame whose shape is unknown is how the conversation above a dialog ends up
+ * printed under "you are about to confirm this", which is the failure `approvalTail`'s own header
+ * calls the worst possible way to be wrong.
+ *
+ * The extra room above option 1 is bounded (`QUESTION_LINES`) for that same reason: a question is a
+ * sentence or two, not a screen.
+ */
+export function dialogHeight(frame: readonly string[], max: number): number {
+  // Look no further up than the question could possibly reach — the same bound the return honours.
+  const limit = Math.max(0, max) + QUESTION_LINES
+  const from = Math.max(0, frame.length - limit)
+  const blank = (i: number) => (frame[i] ?? '').trim() === ''
+  for (let i = frame.length - 1; i >= from; i--) {
+    const m = OPTION_ROW.exec(frame[i] ?? '')
+    if (!m || m[1] !== '1') continue
+    /*
+     * THE QUESTION IS THE BLOCK IMMEDIATELY ABOVE OPTION 1, and a blank line is what separates it
+     * from the conversation. A flat "N lines above" cannot tell the two apart, and reaching one
+     * line too far prints somebody's earlier prose under "you are about to confirm this".
+     *
+     *   …conversation…      ← must not be reached
+     *   (blank)             ← the boundary
+     *   Devo abrir a issue…  ← the question
+     *   (blank)             ← the dialog's own spacing
+     *     1. …              ← the anchor
+     */
+    let top = i
+    // The dialog's own spacing above option 1.
+    while (top > from && blank(top - 1)) top--
+    // The question itself: the contiguous non-blank block.
+    while (top > from && !blank(top - 1)) top--
+    const height = frame.length - top
+    // Never smaller than the flat window: this only ever grows it.
+    return Math.min(limit, Math.max(Math.max(0, max), height))
+  }
+  return Math.max(0, max)
 }
 
 /** A line that is only box-drawing or rule characters — a frame's furniture, never its content. */
@@ -186,4 +259,27 @@ export function frameTail(frame: readonly string[], max = 4): string[] {
     out.push(line)
   }
   return out.reverse()
+}
+
+
+/**
+ * Is something running that is NOT the main agent's turn — PURE.
+ *
+ * True when the harness says something is interruptible while its own turn marker is absent: a
+ * background subagent, a watcher, a build being followed. The session still NEEDS A PERSON, and
+ * that is what the state says; this is the mark beside it, so "needs you" does not read as "and
+ * nothing is happening".
+ *
+ * Answers `false` for a harness with no `mainWorking`: without a way to tell the main turn apart,
+ * every interruptible frame would be reported as background work, which is a confident claim made
+ * out of an absence.
+ */
+export function backgroundWork(o: {
+  frame: readonly string[]
+  rules?: AttentionRules
+}): boolean {
+  if (!o.rules?.mainWorking?.length || !o.rules.working?.length) return false
+  const text = o.frame.join('\n')
+  if (o.rules.mainWorking.some(re => re.test(text))) return false
+  return o.rules.working.some(re => re.test(text))
 }

@@ -119,6 +119,8 @@ export interface FleetRow {
   task?: string
   note?: string
   model?: string
+  /** The reasoning effort this session was started with — see `ControlSession.effort`. */
+  effort?: string
   conversationId?: string
   /** The dialog this session is blocked on, verbatim, and the options read off it. */
   approvalLines?: string[]
@@ -194,6 +196,7 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
     ...(row.task ? { task: row.task } : {}),
     ...(row.note ? { note: row.note } : {}),
     ...(row.model ? { model: row.model } : {}),
+    ...(row.effort ? { effort: row.effort } : {}),
     ...(row.conversationId ? { conversationId: row.conversationId } : {}),
     ...(row.approvalLines?.length ? { approvalLines: row.approvalLines } : {}),
     ...(row.dialogOptions?.length ? { dialogOptions: [...row.dialogOptions] } : {}),

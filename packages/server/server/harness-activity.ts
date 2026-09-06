@@ -14,14 +14,41 @@ import type { HarnessId } from '@agentistics/core'
  *  `(?![\w-])` rather than the `\b` the original rule used: `\b` matches between `t` and `-`, so
  *  `git commit-tree` (plumbing, writes no commit) counted as one. Rare enough that no real total
  *  moves, wrong enough that it should not be carried into five more harnesses. */
+/**
+ * The part before `git` that is still a way of RUNNING git.
+ *
+ * A CLOSED LIST of wrapper verbs, not "a few words". The permissive version was tried first and is
+ * wrong in the direction that matters: `echo git commit` and `# git commit is the next step` both
+ * counted as commits, and the existing tests said so immediately. A counter that inflates on prose
+ * is worse than one that misses a wrapper, because nothing on screen says which happened.
+ *
+ * Each entry is a program that RUNS another program. `npm`/`yarn`/`pnpm` are deliberately absent:
+ * `npm run git commit` runs a script named `git`, not git.
+ */
+const WRAPPERS = 'rtk|sudo|doas|env|command|time|nice|ionice|docker|podman|kubectl|nix'
+const WRAPPER = `(?:cd\\s+\\S+\\s+&&\\s+)?(?:(?:${WRAPPERS})(?:\\s+[\\w./@#:=-]+){0,3}\\s+)?`
+/** `git`, or an absolute/relative path ending in it — `/usr/bin/git commit` is still a commit. */
+const GIT = '(?:[\\w./-]*/)?git'
+const GIT_COMMIT = new RegExp(`^${WRAPPER}${GIT}\\s+commit(?![\\w-])`)
+const GIT_PUSH = new RegExp(`^${WRAPPER}${GIT}\\s+push(?![\\w-])`)
+
 export function countGitCommands(cmd: string): { commits: number; pushes: number } {
   let commits = 0, pushes = 0
   for (const seg of cmd.split(/&&|\|\||;|\n/)) {
     const s = seg.trim()
     // The optional `cd … &&` prefix survives from the original rule: the split above already
     // separates that case, but a segment may still arrive whole from a caller that did not split.
-    if (/^(cd\s+\S+\s+&&\s+)?git\s+commit(?![\w-])/.test(s)) commits++
-    if (/^(cd\s+\S+\s+&&\s+)?git\s+push(?![\w-])/.test(s)) pushes++
+    //
+    // AND A WRAPPER. `git` is routinely reached through one — `rtk proxy git commit`, `sudo -u ci
+    // git push`, `nix run nixpkgs#git -- commit`, `docker exec app git commit`. Anchoring on `git`
+    // made every one of those invisible: measured on a real session, 62 commits counted as 2,
+    // because the whole machine routes git through `rtk proxy`.
+    //
+    // The wrapper is matched as a BOUNDED prefix — a few plain words and flags, never `.*` — so
+    // this still cannot count `echo "run git commit"` or a path that merely ends in `git`. The
+    // segment must still be a COMMAND whose verb is `git`.
+    if (GIT_COMMIT.test(s)) commits++
+    if (GIT_PUSH.test(s)) pushes++
   }
   return { commits, pushes }
 }

@@ -18,13 +18,17 @@ describe('remoteActionAllowed', () => {
     for (const a of REMOTE_SCREEN_ACTIONS) expect(remoteActionAllowed(a, nothing)).toBe(false)
   })
 
-  it('refuses approve and prompt EVEN WITH the screen consent — they are not implemented yet', () => {
-    // The screen does not travel in this phase, so the honest answer is that they are unavailable.
-    // A button that takes an unread choice is the accident parseDialogOptions exists to prevent.
-    for (const a of REMOTE_SCREEN_ACTIONS) {
-      expect(remoteActionAllowed(a, granted)).toBe(false)
-      expect(remoteActionAllowed(a, withScreens)).toBe(false)
-    }
+  it('refuses approve and prompt on the FLEET consent alone — the screen is what they need', () => {
+    // Answering a dialog needs the dialog to be READABLE: the keystroke cannot know which option it
+    // is taking, and a claude permission prompt is `1. Yes / 2. Yes, always / 3. No`. A central
+    // holding the verbs without the screen would be choosing for the person.
+    for (const a of REMOTE_SCREEN_ACTIONS) expect(remoteActionAllowed(a, granted)).toBe(false)
+  })
+
+  it('allows them once the SCREEN consent is given — that switch is what it is for', () => {
+    for (const a of REMOTE_SCREEN_ACTIONS) expect(remoteActionAllowed(a, withScreens)).toBe(true)
+    // And the screenless ones are unaffected by it.
+    for (const a of REMOTE_SCREENLESS_ACTIONS) expect(remoteActionAllowed(a, withScreens)).toBe(true)
   })
 
   it('is CLOSED — an action it does not know is refused', () => {
@@ -49,7 +53,10 @@ describe('remoteActionRefusal', () => {
   it('distinguishes the three reasons — a missing verb must never be unexplained', () => {
     expect(remoteActionRefusal('rename', nothing)).toBe('no-consent')
     expect(remoteActionRefusal('approve', granted)).toBe('needs-screen')
-    expect(remoteActionRefusal('prompt', withScreens)).toBe('needs-screen')
+    // With the screen granted there is nothing left to explain: a refusal code for an action that
+    // IS allowed would put a sentence under a button that works.
+    expect(remoteActionRefusal('prompt', withScreens)).toBeNull()
+    expect(remoteActionRefusal('approve', withScreens)).toBeNull()
     expect(remoteActionRefusal('teleport', granted)).toBe('unknown')
   })
 

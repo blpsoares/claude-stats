@@ -61,13 +61,21 @@ export interface GalleryTabProps {
   /** Which side is shown — see `GalleryScope`. */
   scope: GalleryScope
   onScopeChange: (scope: GalleryScope) => void
+  /**
+   * Already-localized: the conversation these groups came from is a WINDOW onto a longer one.
+   *
+   * The gallery lists the files of the turns it was given, and that list is capped at the end of
+   * the transcript — so on a long conversation it empties itself, which reads as "everything
+   * disappeared" unless the panel says what actually happened. Reported exactly that way.
+   */
+  older?: string
 }
 
 /** How long a touch has to hold to mean "right-click". The same 500ms the session rows use. */
 const LONG_PRESS_MS = 500
 
 export function GalleryTab({
-  sessionId, groups: allGroups, lang, view, onViewChange, scope, onScopeChange,
+  sessionId, groups: allGroups, lang, view, onViewChange, scope, onScopeChange, older,
 }: GalleryTabProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
@@ -148,10 +156,16 @@ export function GalleryTab({
   }, [pt])
 
   if (allGroups.length === 0) {
+    // The window outranks the "nothing yet" sentence, which would be FALSE on a long conversation:
+    // files were sent, they are simply older than the turns this view holds.
     return (
-      <Empty text={pt
-        ? 'Nada enviado nesta conversa ainda. Imagens e arquivos que você anexar a uma mensagem aparecem aqui, agrupados pela mensagem que os levou.'
-        : 'Nothing sent in this conversation yet. Images and files you attach to a message appear here, grouped by the message that carried them.'} />
+      <Empty text={older
+        ? `${older} ${pt
+          ? 'Arquivos enviados antes disso não estão nesta lista.'
+          : 'Files sent before that are not in this list.'}`
+        : pt
+          ? 'Nada enviado nesta conversa ainda. Imagens e arquivos que você anexar a uma mensagem aparecem aqui, agrupados pela mensagem que os levou.'
+          : 'Nothing sent in this conversation yet. Images and files you attach to a message appear here, grouped by the message that carried them.'} />
     )
   }
 
@@ -207,6 +221,16 @@ export function GalleryTab({
           onClick={() => onViewChange('grid')}
         />
       </div>
+
+      {/* The window, stated ONCE at the top of a NON-empty gallery too: a list showing four files
+          out of forty is a wrong answer nobody can see is wrong, which is worse than an empty one. */}
+      {older && (
+        <p style={{
+          margin: 0, padding: '6px 10px', flexShrink: 0,
+          fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}>{older}</p>
+      )}
 
       {notice && (
         <p role="status" style={{

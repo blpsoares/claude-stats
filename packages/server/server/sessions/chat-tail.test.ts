@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises'
 import {
-  forgetChatTailContent, forgetChatTailPaths, readRecentChatTurns, resolveChatTranscriptPath,
+  forgetChatTailContent, forgetChatTailPaths, readChatWindow, readRecentChatTurns,
+  resolveChatTranscriptPath,
 } from './chat-tail'
 
 const SESSION_ID = 'a1b2c3d4-e5f6-4789-a0b1-c2d3e4f56789'
@@ -366,5 +367,42 @@ describe('a queued_command carries envelopes too', () => {
     const turns = await readRecentChatTurns(file)
     expect(turns.some(t => t.role === 'user' && (t.text ?? '').includes('/login'))).toBe(true)
     expect(turns.some(t => (t.text ?? '').includes('<command-name>'))).toBe(false)
+  })
+})
+
+describe('readChatWindow — the cap is a fact about the READ, and it says so', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'chat-window-')) })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  const userLine = (text: string): string =>
+    JSON.stringify({ type: 'user', message: { role: 'user', content: text } })
+
+  test('a conversation SHORTER than the cap reports nothing older', async () => {
+    const path = join(root, 'short.jsonl')
+    await writeFile(path, `${[userLine('one'), userLine('two')].join('\n')}\n`)
+    const out = await readChatWindow(path, 10)
+    expect(out.turns.length).toBe(2)
+    expect(out.older).toBe(false)
+  })
+
+  test('a walk that stops ON the cap with transcript above it reports older', async () => {
+    // The reported bug: a long session's gallery emptied itself and nothing on screen said why.
+    // The gallery lists the files of the turns it was given, so the cap has to be visible here or
+    // it is invisible everywhere.
+    const path = join(root, 'long.jsonl')
+    const lines = Array.from({ length: 20 }, (_, i) => userLine(`m${i}`))
+    await writeFile(path, `${lines.join('\n')}\n`)
+    const out = await readChatWindow(path, 5)
+    expect(out.turns.length).toBe(5)
+    expect(out.older).toBe(true)
+    // The window is the END of the conversation, not its start.
+    expect(out.turns[out.turns.length - 1]!.text).toContain('m19')
+  })
+
+  test('the trailing newline every transcript ends with is not "there is more"', async () => {
+    const path = join(root, 'exact.jsonl')
+    await writeFile(path, `${[userLine('a'), userLine('b')].join('\n')}\n`)
+    expect((await readChatWindow(path, 2)).older).toBe(false)
   })
 })

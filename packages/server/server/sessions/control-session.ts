@@ -87,7 +87,15 @@ export function toControlSession(
           },
         }
       : {}),
-    fallback: s.sessUntitled(harness || '?', project),
+    // An UNREGISTERED row knows neither its harness nor its directory, so `sessUntitled` had
+    // nothing to build a name from and produced the literal `?` — a row that says nothing at all
+    // about why it is strange. `session-adopt.ts` already says such a row "is visible and says what
+    // it is"; this is what makes that true. It is a real state with a real cause (the registry's
+    // cross-process write race), and naming it is what tells someone the session is fine and only
+    // its record is missing.
+    fallback: v.status === 'unregistered'
+      ? s.sessUnregistered(v.id.slice(0, 12))
+      : s.sessUntitled(harness || '?', project),
   })
   return {
     id: v.id,
@@ -100,9 +108,17 @@ export function toControlSession(
     cwd: v.cwd,
     project,
     ...(v.model ? { model: v.model } : {}),
+    ...(v.effort ? { effort: v.effort } : {}),
     ...(v.note ? { note: v.note } : {}),
     state,
-    stateLabel: stateLabel(state, s),
+    // The mark rides ON the state word rather than in a cell of its own, so it reaches every
+    // surface that draws a row — the cockpit, `session ls`, the workspace, the extension, the
+    // relayed fleet — from the one place the word is decided. A cell of its own would have to be
+    // added to each of them, and the first one missed would say `needs you` about a session that
+    // still has work running, which is the reading this mark exists to correct.
+    stateLabel: v.background ? `${stateLabel(state, s)} · ${s.sessBackground}` : stateLabel(state, s),
+    // The machine-readable half, for a surface that wants to style it rather than read it.
+    ...(v.background ? { background: true } : {}),
     actionable: v.status !== 'external' && v.status !== 'closed',
     // Stated only where it is TRUE and only for a session we actually HOST. A row that is closed or
     // running outside agentop has no screen to read at all, so "approval detection is unavailable

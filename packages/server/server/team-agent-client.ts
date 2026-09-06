@@ -538,7 +538,10 @@ export function announceRemoteConsentNow(connId: string): void {
  */
 async function answerFleetRequest(connId: string, socket: WebSocket, raw: string): Promise<void> {
   try {
-    const msg = JSON.parse(raw) as { type?: string; rid?: unknown; op?: unknown; action?: unknown; id?: unknown; text?: unknown }
+    const msg = JSON.parse(raw) as {
+      type?: string; rid?: unknown; op?: unknown; action?: unknown; id?: unknown
+      text?: unknown; choice?: unknown
+    }
     if (msg?.type !== 'fleet-request' || typeof msg.rid !== 'string' || !msg.rid) return
     const conn = readTeamConnections(await readPreferences()).find(c => c.id === connId)
     if (!conn) return
@@ -586,6 +589,11 @@ async function answerFleetRequest(connId: string, socket: WebSocket, raw: string
         action: typeof msg.action === 'string' ? msg.action : '',
         id: typeof msg.id === 'string' ? msg.id : '',
         ...(typeof msg.text === 'string' ? { text: msg.text } : {}),
+        // The option the person PICKED off the relayed dialog. Only a real number crosses:
+        // `runFleetAction` reads an absent choice as "press the dialog's confirm key", which is
+        // right where there is nothing to choose between and wrong on a `1. Yes / 2. Yes, always /
+        // 3. No`. A junk value must become "no choice", never "option NaN".
+        ...(typeof msg.choice === 'number' && Number.isFinite(msg.choice) ? { choice: msg.choice } : {}),
       }, {
         ...fleetDeps,
         // `runFleetAction` is the SAME path the machine's own web Sessions page calls, so every
