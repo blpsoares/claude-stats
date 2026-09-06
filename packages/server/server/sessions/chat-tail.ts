@@ -258,11 +258,11 @@ function extractAssistantText(e: Record<string, unknown>): string | null {
 
 /** The tool names an assistant entry is calling, when it carries no text at all — see `ChatTurn.pending`. */
 /** The tools one assistant event invoked, each with the first meaningful line of its input. */
-function extractToolCalls(e: Record<string, unknown>): Array<{ name: string; detail?: string }> {
+function extractToolCalls(e: Record<string, unknown>): Array<{ name: string; detail?: string; ref?: string }> {
   if (e.type !== 'assistant') return []
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   if (!Array.isArray(msgContent)) return []
-  const out: Array<{ name: string; detail?: string }> = []
+  const out: Array<{ name: string; detail?: string; ref?: string }> = []
   for (const part of msgContent as Record<string, unknown>[]) {
     if (part.type !== 'tool_use' || typeof part.name !== 'string') continue
     const detail = toolDetail(part.input)
@@ -274,6 +274,10 @@ function extractToolCalls(e: Record<string, unknown>): Array<{ name: string; det
     const writes = cmd === '' ? [] : shellWrites(cmd)
     out.push({
       name: part.name,
+      // The id `/api/fleet/step` opens this call with — see `ChatTurn.tools[].ref`. Only when the
+      // transcript actually carries one: a row with no ref draws no chevron rather than a control
+      // whose only outcome is a refusal.
+      ...(typeof part.id === 'string' && part.id !== '' ? { ref: part.id } : {}),
       ...(detail ? { detail } : {}),
       ...(writes.length > 0 ? { writes } : {}),
       ...(cmd !== '' && writes.length === 0 && hasUnreadableWrite(cmd) ? { opaqueWrite: true } : {}),
