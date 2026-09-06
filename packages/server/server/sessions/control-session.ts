@@ -87,7 +87,15 @@ export function toControlSession(
           },
         }
       : {}),
-    fallback: s.sessUntitled(harness || '?', project),
+    // An UNREGISTERED row knows neither its harness nor its directory, so `sessUntitled` had
+    // nothing to build a name from and produced the literal `?` — a row that says nothing at all
+    // about why it is strange. `session-adopt.ts` already says such a row "is visible and says what
+    // it is"; this is what makes that true. It is a real state with a real cause (the registry's
+    // cross-process write race), and naming it is what tells someone the session is fine and only
+    // its record is missing.
+    fallback: v.status === 'unregistered'
+      ? s.sessUnregistered(v.id.slice(0, 12))
+      : s.sessUntitled(harness || '?', project),
   })
   return {
     id: v.id,
