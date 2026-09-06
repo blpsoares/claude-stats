@@ -165,8 +165,14 @@ test('connecting through the GitHub CLI stores NO token at all', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghcli-'))
   const file = join(dir, 'github.json')
   const res = await connectGithub({
-    url: 'https://github.com/me/backups', token: 'ghp_from_gh_only_for_the_check', auth: 'gh',
+    url: 'https://github.com/me/backups', token: '', auth: 'gh',
     file,
+    // INJECTED, and the reason is a defect this test had: without it, `auth: 'gh'` reaches the real
+    // `ghToken()` and shells out to `gh auth token`. It passed on the machine it was written on —
+    // which has gh logged in — and failed on CI, which does not. A test whose result depends on
+    // whether the machine running it happens to be authenticated is a test that passed for the
+    // wrong reason, and it would have gone on passing here while proving nothing.
+    askGh: async () => ({ ok: true, token: 'ghp_from_gh_only_for_the_check' }),
     fetchImpl: async () => new Response(
       JSON.stringify({ private: true, permissions: { push: true } }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
