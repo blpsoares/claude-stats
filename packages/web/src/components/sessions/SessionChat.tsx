@@ -44,7 +44,7 @@ import { composerMaxHeight } from '../../lib/composerHeight'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
 import { MAX_ATTACHMENTS, attachmentRoom, planPaste } from '../../lib/pastePlan'
-import { appendDictation, dictatedText, dictationError, dictationLocale, dictationSupport, insecureAlternative } from '../../lib/dictation'
+import { appendDictation, dictationError, dictationLocale, dictationSupport, insecureAlternative, splitDictation } from '../../lib/dictation'
 import { modelSwitchLine, modelSwitchReason } from '../../lib/modelSwitch'
 import {
   applySkill, emptyPickerReason, filterSkills, flattenGroups, groupSkills, slashMisplaced,
@@ -168,17 +168,56 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   }, [scratchId])
 
 
+  /**
+   * A KEY CHANGE IS NOT ALWAYS A SESSION CHANGE, and treating it as one is what took the focus.
+   *
+   * `scratchKey` answers `row:<id>` while a row has no `conversationId` and `conv:<id>` once it
+   * learns one — and a live session learns it MID-USE, the moment the poller can prove the link.
+   * The reload then ran while somebody was typing: every read moved to a slot holding nothing, so
+   * `payload` came back `null`, the composer's whole subtree was replaced by the "loading"
+   * paragraph, and the focused textarea left the DOM — taking the half-written draft with it.
+   * Reported as "eu to digitando e do nada o foco sai do campo de input".
+   *
+   * The ROW is what says whether this is the same session. When it is, the scratch is CARRIED to
+   * the new key and nothing else moves, so the change becomes invisible — which is what it always
+   * should have been.
+   *
+   * ONE effect decides this, not two: a second effect on the same key cannot ask "is this a switch"
+   * after the first has already recorded the answer.
+   */
   const shownId = useRef(scratchId)
+  const shownRow = useRef(session.id)
   useEffect(() => {
     if (shownId.current === scratchId) return
+    const sameSession = shownRow.current === session.id
+    if (sameSession) sessionScratch.migrate(shownId.current, scratchId)
     shownId.current = scratchId
+    shownRow.current = session.id
+    if (sameSession) return
+    // A GENUINE switch. Everything per-conversation is read back from the other session's own slot;
+    // the scroll position is the one thing not restored, because opening mid-history is
+    // disorienting.
+    landedRef.current = false
+    setAtTail(true)
     setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
     setDraft(sessionScratch.readDraft(scratchId))
     setReplyTo(sessionScratch.readReply(scratchId))
+    setEcho(sessionScratch.readEchoes(scratchId))
+    setAttached(sessionScratch.readAttachments(scratchId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scratchId])
   const [sending, setSending] = useState(false)
   /** Dictation. `recognitionRef` holds the live recogniser so a second click stops it. */
   const [listening, setListening] = useState(false)
+  /**
+   * What the recogniser is hearing RIGHT NOW, before it has settled on it.
+   *
+   * Shown beside the field and never written into the draft: an interim result is a guess the
+   * recogniser replaces as it hears more. It is the whole of "see the capture happening" — with
+   * `interimResults` off, a person speaking saw an unchanged field and concluded the microphone was
+   * broken, which is exactly what was reported.
+   */
+  const [heard, setHeard] = useState('')
   const recognitionRef = useRef<{ stop: () => void } | null>(null)
   const dictation = useMemo(
     () => dictationSupport(typeof window === 'undefined' ? undefined : (window as never), pt ? 'pt' : 'en'),
@@ -211,20 +250,27 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       }
       rec.lang = dictationLocale(pt ? 'pt' : 'en')
       rec.continuous = true
-      rec.interimResults = false
+      // ON. See `heard`: without it nothing reaches the screen until a phrase is over.
+      rec.interimResults = true
       // Both decisions are PURE and tested (`dictation.ts`): which results this event contributed,
       // and where they land in what is already typed. This loop used to read `e.results` from index
       // 0 on every event while `continuous` is true — and that list is CUMULATIVE, so every event
       // re-emitted the whole session and the draft grew "one", "one one two", "one one two one two
       // three". `resultIndex` is the index of the first result the event changed, which is exactly
       // what this event contributed.
-      rec.onresult = e => { editDraft(d => appendDictation(d, dictatedText(e))) }
+      rec.onresult = e => {
+        const { final, interim } = splitDictation(e)
+        // Only the settled half is kept. The rest is shown and thrown away on the next event.
+        if (final !== '') editDraft(d => appendDictation(d, final))
+        setHeard(interim)
+      }
       // Both end the same way. A recogniser that stopped on its own (a timeout, a denied
       // permission) must not leave the button lit — a control that says it is listening when it
       // is not is worse than one that never started.
-      rec.onend = () => { setListening(false); recognitionRef.current = null }
+      rec.onend = () => { setListening(false); setHeard(''); recognitionRef.current = null }
       rec.onerror = e => {
         setListening(false)
+        setHeard('')
         recognitionRef.current = null
         // The REASON reaches the screen. This handler used to discard its event, so a refused
         // permission, an unreachable recognition service, a missing microphone and a moment of
@@ -515,15 +561,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * back. What must never happen is one session's quote appearing under another's name, and a
    * per-id read is what rules that out.
    */
-  useEffect(() => {
-    landedRef.current = false
-    setAtTail(true)
-    setReplyTo(sessionScratch.readReply(scratchId))
-    setEcho(sessionScratch.readEchoes(scratchId))
-    setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(scratchId))
-    setAttached(sessionScratch.readAttachments(scratchId))
-  }, [scratchId])
+
 
   /** The ceiling, re-measured when the window changes size. */
   const [maxComposerH, setMaxComposerH] = useState(() => composerMaxHeight(
@@ -741,6 +779,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   /** ONE stable reference for every bubble's reply button — see `ChatBubble`'s memo. */
   const onReplyToTurn = useCallback((t: ChatTurn) => {
     editReply({ role: t.role, text: t.text }); setAtTail(true); toTail()
+    // Choosing a message to answer IS starting to write one. Asked for, and it is the same call the
+    // skill picker already makes after inserting: the next thing the person does is type.
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -757,6 +798,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     const text = markExcerpt(t.text, selected)
     if (text === '') return
     editReply({ role: t.role, text, excerpt: true }); setAtTail(true); toTail()
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -1229,6 +1271,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   decisions — the name and how much of the message is shown — are in
                   `replyQuote.ts`, which is also what composes the `> ` block that actually
                   travels. */}
+              {/* WHAT THE MICROPHONE IS HEARING, live. Interim results are a guess the recogniser
+                  keeps revising, so they are shown here and never written into the field — the
+                  settled words land in the draft on their own. `role="status"` so it is announced,
+                  and it disappears the moment listening stops. */}
+              {listening && (
+                <p role="status" style={{
+                  margin: '0 0 8px', padding: '6px 10px', borderRadius: 9,
+                  background: 'var(--bg-elevated)', borderLeft: '3px solid var(--accent-red)',
+                  fontSize: 12, lineHeight: 1.45, color: 'var(--text-secondary)',
+                  fontStyle: heard === '' ? 'italic' : 'normal',
+                }}>
+                  {heard === ''
+                    ? (pt ? 'ouvindo…' : 'listening…')
+                    : heard}
+                </p>
+              )}
+
               {replyTo && (
                 <div style={{
                   display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8,
@@ -1556,7 +1615,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       cursor: canPrompt ? 'pointer' : 'default',
                     }}
                   >
-                    <Mic size={15} />
+                    {/* PULSING WHILE IT LISTENS. A microphone button that only changes tint looks
+                        the same as one that did nothing, which is how "o mic não funciona" starts:
+                        the recogniser was running and nothing on screen said so. The ring is the
+                        state, the words below are the evidence. */}
+                    <span style={{ position: 'relative', display: 'flex' }}>
+                      {listening && (
+                        <span
+                          aria-hidden
+                          className="ag-mic-pulse"
+                          style={{
+                            position: 'absolute', inset: -5, borderRadius: 12,
+                            border: '1.5px solid var(--accent-red)', pointerEvents: 'none',
+                          }}
+                        />
+                      )}
+                      <Mic size={15} />
+                    </span>
                   </button>
                 )}
 
@@ -1747,96 +1822,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         </>
                       )}
 
-                      {/* SKILLS. The picker INSERTS `/<name> ` into the draft and focuses the
-                          field — it does not send. Two reasons: most skills take an argument, and
-                          the composer's whole contract is that what reaches the session is what the
-                          person chose to send.
-
-                          It inherits the `prompt` action's refusals and STATES them: the session
-                          must be running, and it is refused while a DIALOG is open, because a slash
-                          command typed into a permission prompt goes into that dialog's own filter
-                          and the submit takes the highlighted option. Same rule `promptSession` and
-                          `rename` already enforce, said here rather than discovered by doing it. */}
-                      {(skills === null || skills.length > 0 || skillsNote) && (
-                        <>
-                          <div style={{ height: 1, background: 'var(--border)', margin: '4px 2px' }} />
-                          <p style={{
-                            margin: '2px 8px 4px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                            letterSpacing: '0.06em', color: 'var(--text-tertiary)',
-                          }}>
-                            Skills
-                          </p>
-                          {/* The PERMANENT fact first. A harness that can never do this is told so,
-                              rather than being told it is not running — which is true, irrelevant,
-                              and would change to a different refusal if it started. */}
-                          {skillsNote ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {skillsNote}
-                            </p>
-                          ) : !canPrompt || blocked ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {blocked
-                                ? (pt
-                                    ? 'Esta sessão está numa pergunta. Responda primeiro — uma barra digitada aí entra no filtro do diálogo.'
-                                    : 'This session is on a question. Answer it first — a slash typed there goes into the dialog’s own filter.')
-                                : (pt
-                                    ? 'Esta sessão não está rodando, então não dá para escrever nela.'
-                                    : 'This session is not running, so there is nothing to write to.')}
-                            </p>
-                          ) : skills === null ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                              {pt ? 'Lendo…' : 'Reading…'}
-                            </p>
-                          ) : (
-                            <>
-                              {skills.length > 6 && (
-                                <input
-                                  value={skillQuery}
-                                  onChange={e => setSkillQuery(e.target.value)}
-                                  placeholder={pt ? `Filtrar ${skills.length} skills…` : `Filter ${skills.length} skills…`}
-                                  style={{
-                                    width: '100%', boxSizing: 'border-box', margin: '2px 0 4px',
-                                    padding: '5px 8px', borderRadius: 6, fontSize: 11.5,
-                                    border: '1px solid var(--border-subtle)', background: 'var(--bg-card)',
-                                    color: 'var(--text-primary)', fontFamily: 'inherit', outline: 'none',
-                                  }}
-                                />
-                              )}
-                              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                                {shownSkills.length === 0 && (
-                                  <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                                    {pt ? 'Nenhuma skill com esse nome.' : 'No skill by that name.'}
-                                  </p>
-                                )}
-                                {shownSkills.map(sk => (
-                                  <button
-                                    key={sk.name}
-                                    title={sk.description}
-                                    onClick={() => {
-                                      setMoreOpen(false)
-                                      setSkillQuery('')
-                                      editDraft(d => (d.trim() === '' ? `/${sk.name} ` : `${d.replace(/\s+$/, '')} /${sk.name} `))
-                                      textareaRef.current?.focus()
-                                    }}
-                                    style={{
-                                      display: 'block', width: '100%', textAlign: 'left',
-                                      minHeight: 36, padding: '6px 8px', borderRadius: 7, border: 'none',
-                                      background: 'transparent', color: 'var(--text-primary)',
-                                      fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
-                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    /{sk.name}
-                                  </button>
-                                ))}
-                              </div>
-                              <p style={{ margin: '2px 8px 4px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
-                                {pt ? 'Escreve no campo; não envia.' : 'Types into the field; does not send.'}
-                              </p>
-                            </>
-                          )}
-                        </>
-                      )}
+                      {/* THE SKILLS LIST LIVED HERE AND IS GONE. It was the only place to see
+                          them; there is a dedicated view now, and two lists of one thing are two
+                          places for them to disagree about what is installed. What stays is the
+                          `/` picker IN THE FIELD, which is a different gesture — completing what
+                          you are already typing, not browsing. */}
                     </div>
                   )}
                 </div>
