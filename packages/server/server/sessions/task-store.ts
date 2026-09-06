@@ -21,7 +21,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from './file-lock'
-import { migrateStatus } from './task-model'
+import { migrateStatus, subtaskDone } from './task-model'
 import type {
   Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskComment, TaskFile, TaskLink, TaskStatus,
 } from './task-model'
@@ -64,6 +64,7 @@ export interface TaskStore {
   editComment(id: string, body: string): Promise<boolean>
   removeComment(id: string): Promise<boolean>
   upsertSubtask(t: Subtask): Promise<void>
+  removeSubtask(id: string): Promise<boolean>
   addFile(f: TaskFile): Promise<void>
   /** Removes the RECORD. The bytes on disk are the caller's to unlink — see `task-files.ts`. */
   removeFile(id: string): Promise<boolean>
@@ -178,11 +179,22 @@ function sanitizeSubtask(raw: unknown): Subtask | null {
   const t = raw as Record<string, unknown>
   const id = str(t.id); const taskId = str(t.taskId); const title = str(t.title)
   if (!id || !taskId || !title) return null
+  // A row written before subtasks had a status carries only `done`, and that IS its status. Reading
+  // it as `todo` would silently un-tick every completed subtask on the board.
+  const status = migrateStatus(t.status) ?? (t.done === true ? 'done' : 'todo')
   return {
     id, taskId, title,
-    done: t.done === true,
+    status,
+    // Derived, never trusted from the file: two fields for one fact drift, and a row saying
+    // `done: false, status: 'done'` has no correct reading.
+    done: subtaskDone(status),
     createdAt: str(t.createdAt) ?? new Date(0).toISOString(),
     updatedAt: str(t.updatedAt) ?? new Date(0).toISOString(),
+    ...(str(t.assignee) ? { assignee: str(t.assignee)! } : {}),
+    ...(str(t.dueDate) ? { dueDate: str(t.dueDate)! } : {}),
+    ...(str(t.startDate) ? { startDate: str(t.startDate)! } : {}),
+    ...(str(t.sessionId) ? { sessionId: str(t.sessionId)! } : {}),
+    ...(str(t.notes) ? { notes: str(t.notes)! } : {}),
   }
 }
 
@@ -323,6 +335,14 @@ export function createTaskStore(file: string): TaskStore {
       return enqueue(async () => {
         const book = await read()
         await write({ ...book, subtasks: [...book.subtasks.filter(x => x.id !== t.id), t] })
+      })
+    },
+    removeSubtask(id) {
+      return enqueue(async () => {
+        const book = await read()
+        if (!book.subtasks.some(t => t.id === id)) return false
+        await write({ ...book, subtasks: book.subtasks.filter(t => t.id !== id) })
+        return true
       })
     },
     addFile(f) {

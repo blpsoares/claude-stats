@@ -1080,14 +1080,33 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
 
     // The task board. `capability-guard.ts` has already refused these on an exposed profile; the
     // handlers hold no arithmetic of their own (see `task-web.ts`).
+    // The page's own filters, read off the query string. The board is scoped exactly as every other
+    // surface is — see `task-filter.ts`.
+    const taskFilterOf = (u: URL) => {
+      const list = (k: string) => {
+        const v = u.searchParams.get(k)
+        return v ? v.split(',').filter(Boolean) : undefined
+      }
+      return {
+        ...(u.searchParams.get('from') ? { from: u.searchParams.get('from')! } : {}),
+        ...(u.searchParams.get('to') ? { to: u.searchParams.get('to')! } : {}),
+        ...(list('harnesses') ? { harnesses: list('harnesses') } : {}),
+        ...(list('projects') ? { projects: list('projects') } : {}),
+        // `repos` may legitimately name the empty bucket, so an explicit empty member survives.
+        ...(u.searchParams.has('repos')
+          ? { repos: (u.searchParams.get('repos') ?? '').split(',') }
+          : {}),
+      }
+    }
+
     if (url.pathname === '/api/tasks' && req.method === 'GET') {
       const { listTasks } = await import('./sessions/task-web')
-      return json(await listTasks())
+      return json(await listTasks(taskFilterOf(url)))
     }
     if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
       const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
       const { showTask } = await import('./sessions/task-web')
-      const found = await showTask(ref)
+      const found = await showTask(ref, taskFilterOf(url))
       if (!found) return json({ error: 'no_such_task' }, 404)
       return json(found)
     }
@@ -1141,13 +1160,13 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         const form = await req.formData().catch(() => null)
         const file = form?.get('file')
         if (!(file instanceof File)) return json({ error: 'file_required' }, 400)
-        const ok = await mod.attachFile(ref, {
+        const fileId = await mod.attachFile(ref, {
           name: file.name,
           bytes: new Uint8Array(await file.arrayBuffer()),
           ...(typeof form?.get('kind') === 'string' ? { kind: String(form.get('kind')) } : {}),
           ...(typeof form?.get('author') === 'string' ? { author: String(form.get('author')) } : {}),
         })
-        return json({ ok }, ok ? 200 : 400)
+        return json({ ok: fileId !== null, id: fileId }, fileId !== null ? 200 : 400)
       }
 
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
@@ -1185,7 +1204,21 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
       if (verb === 'subtasks') {
         if (typeof body.id === 'string') {
-          return json({ ok: await mod.setSubtaskDone(body.id, body.done === true) })
+          if (body.remove === true) return json({ ok: await mod.removeSubtask(body.id) })
+          // A bare `{id, done}` is the tick; anything else is a column edit. Both land on
+          // `patchSubtask`, which derives `done` from `status` so the two cannot disagree.
+          if (typeof body.done === 'boolean' && Object.keys(body).length === 2) {
+            return json({ ok: await mod.setSubtaskDone(body.id, body.done) })
+          }
+          return json({ ok: await mod.patchSubtask(body.id, {
+            ...(typeof body.title === 'string' ? { title: body.title } : {}),
+            ...(typeof body.status === 'string' ? { status: body.status as never } : {}),
+            ...(typeof body.assignee === 'string' ? { assignee: body.assignee } : {}),
+            ...(typeof body.dueDate === 'string' ? { dueDate: body.dueDate } : {}),
+            ...(typeof body.startDate === 'string' ? { startDate: body.startDate } : {}),
+            ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
+            ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
+          }) })
         }
         const ok = await mod.addSubtask(ref, String(body.title ?? ''))
         return json({ ok }, ok ? 200 : 400)

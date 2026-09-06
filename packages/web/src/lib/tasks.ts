@@ -7,7 +7,9 @@
  * ask and what to do when the answer does not come.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Filters } from '@agentistics/core'
+import { getDateRangeFilter } from '../hooks/useData'
 
 export type LinkProvenance = 'assigned' | 'observed' | 'none'
 export type TaskStatus =
@@ -116,7 +118,18 @@ export interface TaskComment {
   id: string; taskId: string; author: string; body: string; createdAt: string
 }
 export interface Subtask {
-  id: string; taskId: string; title: string; done: boolean; createdAt: string; updatedAt: string
+  id: string
+  taskId: string
+  title: string
+  done: boolean
+  status: TaskStatus
+  createdAt: string
+  updatedAt: string
+  assignee?: string
+  dueDate?: string
+  startDate?: string
+  sessionId?: string
+  notes?: string
 }
 export interface TaskFile {
   id: string; taskId: string; name: string; size: number
@@ -143,38 +156,74 @@ export interface TaskDetail {
  */
 export type TasksError = 'down' | 'refused' | null
 
-export function useTaskList() {
+/**
+ * The page's filters, as `/api/tasks` takes them.
+ *
+ * Built from the SAME `Filters` the rest of the dashboard edits and resolved through the SAME
+ * `getDateRangeFilter`, so "last 7 days" means one thing across the product. The day is the UTC one
+ * (`toISOString().slice(0,10)`), matching `tagSessionDay` and the server's `sessionDay`.
+ *
+ * `all` with no custom dates sends no window at all rather than a window starting at the epoch —
+ * an unbounded range is the absence of a filter, and saying so lets the server skip the walk.
+ */
+export function taskQuery(filters: Filters | undefined): string {
+  if (!filters) return ''
+  const p = new URLSearchParams()
+  const unbounded = filters.dateRange === 'all' && !filters.customStart && !filters.customEnd
+  if (!unbounded) {
+    const { start, end } = getDateRangeFilter(filters.dateRange, filters.customStart, filters.customEnd)
+    if (start.getTime() > 0) p.set('from', start.toISOString().slice(0, 10))
+    p.set('to', end.toISOString().slice(0, 10))
+  }
+  if (filters.harnesses?.length) p.set('harnesses', filters.harnesses.join(','))
+  else if (filters.harness) p.set('harnesses', filters.harness)
+  if (filters.projects?.length) p.set('projects', filters.projects.join(','))
+  // `repos: ['']` deliberately targets the "no linked repository" bucket, so presence matters more
+  // than emptiness here.
+  if (filters.repos !== undefined && filters.repos.length > 0) p.set('repos', filters.repos.join(','))
+  const q = p.toString()
+  return q ? `?${q}` : ''
+}
+
+export function useTaskList(filters?: Filters) {
   const [rows, setRows] = useState<TaskListRow[] | null>(null)
   const [overview, setOverview] = useState<BoardOverview | null>(null)
+  /** Sessions the page's filters kept out of these numbers — stated, never swallowed. */
+  const [excluded, setExcluded] = useState(0)
   const [error, setError] = useState<TasksError>(null)
+
+  const q = useMemo(() => taskQuery(filters), [filters])
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/tasks')
+      const res = await fetch(`/api/tasks${q}`)
       if (res.status === 403 || res.status === 404) { setError('refused'); setRows([]); return }
       if (!res.ok) { setError('down'); setRows([]); return }
-      const body = await res.json() as { tasks: TaskListRow[]; overview: BoardOverview }
+      const body = await res.json() as {
+        tasks: TaskListRow[]; overview: BoardOverview; excludedByFilter?: number
+      }
       setError(null)
       setRows(body.tasks ?? [])
       setOverview(body.overview ?? null)
+      setExcluded(body.excludedByFilter ?? 0)
     } catch {
       setError('down')
       setRows([])
     }
-  }, [])
+  }, [q])
 
   useEffect(() => { void load() }, [load])
-  return { rows, overview, error, reload: load }
+  return { rows, overview, excluded, error, reload: load }
 }
 
-export function useTaskDetail(ref: string | undefined) {
+export function useTaskDetail(ref: string | undefined, filters?: Filters) {
   const [detail, setDetail] = useState<TaskDetail | null>(null)
   const [error, setError] = useState<TasksError | 'missing'>(null)
 
   const load = useCallback(async () => {
     if (!ref) return
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(ref)}`)
+      const res = await fetch(`/api/tasks/${encodeURIComponent(ref)}${taskQuery(filters)}`)
       if (res.status === 404) { setError('missing'); setDetail(null); return }
       if (res.status === 403) { setError('refused'); setDetail(null); return }
       if (!res.ok) { setError('down'); setDetail(null); return }
@@ -185,7 +234,7 @@ export function useTaskDetail(ref: string | undefined) {
       setError('down')
       setDetail(null)
     }
-  }, [ref])
+  }, [ref, JSON.stringify(filters ?? null)])
 
   useEffect(() => { void load() }, [load])
   return { detail, error, reload: load }
@@ -249,15 +298,17 @@ export async function deleteTask(ref: string): Promise<boolean> {
   } catch { return false }
 }
 
-export async function uploadFile(ref: string, file: File, author?: string): Promise<boolean> {
+/** The new file's ID, or `null` — a comment references its attachment by id, never by name. */
+export async function uploadFile(ref: string, file: File, author?: string): Promise<string | null> {
   const form = new FormData()
   form.append('file', file)
   if (author) form.append('author', author)
   try {
-    return (await fetch(`/api/tasks/${encodeURIComponent(ref)}/files`, {
-      method: 'POST', body: form,
-    })).ok
-  } catch { return false }
+    const r = await fetch(`/api/tasks/${encodeURIComponent(ref)}/files`, { method: 'POST', body: form })
+    if (!r.ok) return null
+    const body = await r.json() as { id?: unknown }
+    return typeof body.id === 'string' ? body.id : null
+  } catch { return null }
 }
 
 export async function deleteFile(fileId: string): Promise<boolean> {
@@ -297,3 +348,12 @@ export const editComment = (ref: string, id: string, body: string) =>
 
 export const removeComment = (ref: string, id: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/comments`, { id, remove: true })
+
+export const patchSubtask = (
+  ref: string,
+  id: string,
+  patch: Partial<Pick<Subtask, 'title' | 'status' | 'assignee' | 'dueDate' | 'startDate' | 'sessionId' | 'notes'>>,
+) => post(`/api/tasks/${encodeURIComponent(ref)}/subtasks`, { id, ...patch })
+
+export const removeSubtask = (ref: string, id: string) =>
+  post(`/api/tasks/${encodeURIComponent(ref)}/subtasks`, { id, remove: true })

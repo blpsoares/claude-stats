@@ -15,27 +15,39 @@
  */
 
 import { useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { createPortal } from 'react-dom'
+import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, BarChart3, CheckCircle2, ClipboardList, Download, ExternalLink, FileText, Link2,
-  LayoutGrid, MessageSquare, Paperclip, Pencil, Plus, Rows3, Search, Trash2, XCircle,
+  ArrowLeft, BarChart3, CheckCircle2, ClipboardList, ExternalLink, FileText, Link2,
+  Filter, LayoutGrid, MessageSquare, Pencil, Plus, Rows3, Search, Trash2, X, XCircle,
 } from 'lucide-react'
 import { useIsMobile } from '../hooks/useIsMobile'
+import type { AppContext } from '../lib/app-context'
 import { useFleet } from '../lib/fleet'
 import { sessionPath } from '../lib/sessionRoute'
-import { BoardView, TableView } from '../components/tasks/TaskBoard'
+import {
+  bodyWithAttachments, looksLikeImage, parseCommentBody,
+  type CommentAttachment, type CommentPart,
+} from '../lib/commentBody'
+import { BoardView } from '../components/tasks/TaskBoard'
+import { TaskTable } from '../components/tasks/TaskTable'
+import { SessionPicker } from '../components/tasks/SessionPicker'
+import { SubtaskTable } from '../components/tasks/SubtaskTable'
+import { readBoardPrefs, writeBoardPrefs, type BoardView as ViewId } from '../components/tasks/boardPrefs'
+import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
 import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
 import { NewSessionModal } from '../components/sessions/NewSessionModal'
 import {
-  COLUMN_ORDER, NA, SESSION_STATE, STATUS, button, field, fmtBytes, fmtInt, fmtTokens, fmtUSD,
+  COLUMN_ORDER, NA, SESSION_STATE, STATUS, button, field, fmtInt, fmtTokens, fmtUSD,
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from '../components/tasks/board'
 import {
   addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, editComment, fileUrl,
-  fmtDuration, markTask, removeComment, removeLink,
-  setBlockedBy, setSubtaskDone, uploadFile, useTaskDetail, useTaskList,
-  type AttemptRollup, type AttemptView, type TaskDetail, type TaskListRow, type TasksError,
+  attachSession, fmtDuration, markTask, patchSubtask, removeComment, removeLink, removeSubtask,
+  setBlockedBy, uploadFile, useTaskDetail, useTaskList,
+  type AttemptRollup, type AttemptView, type TaskDetail, type TaskFile, type TaskListRow,
+  type TasksError,
 } from '../lib/tasks'
 
 function EmptyNotice({ error }: { error: TasksError }) {
@@ -102,16 +114,34 @@ function Rollup({ r }: { r: AttemptRollup }) {
 // ------------------------------------------------------------------------------- list
 
 function TaskList() {
-  const { rows, overview, error, reload } = useTaskList()
+  // The SAME filters the rest of the dashboard edits. The board is not a separate world: the date
+  // range and the harness / project / repo chips scope which SESSIONS count toward each task, which
+  // is what makes "what did this cost me last week" answerable.
+  const { filters } = useOutletContext<AppContext>()
+  const { rows, overview, excluded, error, reload } = useTaskList(filters)
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   // Metrics FIRST. The kanban answers "which column is full"; this answers "what is it costing me",
   // which is the question the product exists for.
-  const [view, setView] = useState<'overview' | 'board' | 'table'>('overview')
+  // Restored, not re-decided: opening a task navigates away and unmounts this list, so a view that
+  // resets itself on every back-press is a view nobody can stay in.
+  const [view, setViewState] = useState<ViewId>(() => readBoardPrefs().view)
+  const setView = (v: ViewId) => { setViewState(v); writeBoardPrefs({ view: v }) }
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   /** The task whose session wizard is up — see `onCreateSession`. */
   const [starting, setStarting] = useState<{ taskId: string; title: string } | null>(null)
+  /** Details fetched for the rows the table has expanded — subtasks live there. */
+  const [details, setDetails] = useState<Map<string, TaskDetail>>(new Map())
+  const [linking, setLinking] = useState<string | null>(null)
+
+  const refreshDetail = async (id: string) => {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`)
+    if (!res.ok) return
+    const body = await res.json() as { task: TaskDetail }
+    setDetails(m => new Map(m).set(id, body.task))
+    await reload()
+  }
 
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase()
@@ -131,7 +161,11 @@ function TaskList() {
   })
 
   return (
-    <div style={{ padding: isMobile ? 12 : 18, display: 'grid', gap: 14 }}>
+    <div style={{
+      padding: isMobile ? 12 : 18,
+      paddingBottom: isMobile ? 'calc(var(--mobile-nav-h) + 24px)' : 18,
+      display: 'grid', gap: 14,
+    }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650 }}>Deliveries</h1>
@@ -198,6 +232,19 @@ function TaskList() {
 
       {rows === null && <div style={{ color: 'var(--text-tertiary)', fontSize: 12.5 }}>Loading…</div>}
 
+      {excluded > 0 && (
+        // Said, never swallowed: a rollup that silently shrank is the same defect as a confident
+        // zero — the figure is smaller and nothing on screen explains why.
+        <div style={{
+          ...surface, padding: '8px 12px', fontSize: 11.5, color: 'var(--text-tertiary)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <Filter size={13} />
+          Scoped by the filters above — {excluded} session{excluded === 1 ? '' : 's'} left out of
+          these numbers.
+        </div>
+      )}
+
       {view === 'overview' && overview && <BoardOverviewView o={overview} />}
 
       {view !== 'overview' && rows !== null && shown.length === 0 && (
@@ -206,8 +253,51 @@ function TaskList() {
       {view === 'board' && shown.length > 0 && (
         <BoardView rows={shown} onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)} />
       )}
-      {view === 'table' && shown.length > 0 && (
-        <TableView rows={shown} onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)} />
+      {view === 'table' && (
+        <TaskTable
+          rows={shown}
+          details={details}
+          onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
+          onStatus={async (ref, status) => { await markTask(ref, status); await reload() }}
+          onCreate={async (title, status) => {
+            const made = await createTask(title)
+            // Created straight into the group it was typed in — the "+ Add" row of a status column
+            // is a statement about where the work stands, not just where the row goes.
+            if (made && status !== 'todo') await markTask(made.id, status)
+            await reload()
+          }}
+          onExpand={async id => {
+            if (details.has(id)) return
+            const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`)
+            if (!res.ok) return
+            const body = await res.json() as { task: TaskDetail }
+            setDetails(m => new Map(m).set(id, body.task))
+          }}
+          onAddSubtask={async (ref, title) => { await addSubtask(ref, title); await refreshDetail(ref) }}
+          onPatchSubtask={async (ref, sid, patch) => { await patchSubtask(ref, sid, patch); await refreshDetail(ref) }}
+          onRemoveSubtask={async (ref, sid) => { await removeSubtask(ref, sid); await refreshDetail(ref) }}
+          onBatchStatus={async (ids, status) => {
+            for (const id of ids) await markTask(id, status)
+            await reload()
+          }}
+          onBatchDelete={async ids => {
+            for (const id of ids) await deleteTask(id)
+            await reload()
+          }}
+          onLinkSession={ref => setLinking(ref)}
+        />
+      )}
+
+      {linking && (
+        <SessionPicker
+          onPick={async ids => {
+            // Sequential, not parallel: `attachSession` read-modify-writes the registry, and three
+            // of those in flight is the very race `registry.ts` documents.
+            for (const id of ids) await attachSession(linking, id)
+            await reload()
+          }}
+          onClose={() => setLinking(null)}
+        />
       )}
     </div>
   )
@@ -453,19 +543,107 @@ function SessionsTab({ detail }: { detail: TaskDetail }) {
  * one people stop writing on. The EDIT changes the body only: `author` and `createdAt` are the
  * record of who said it and when, and rewriting either would turn a correction into a forgery.
  */
+/**
+ * A comment's body, with its attachments painted where they were written.
+ *
+ * A reference whose file is GONE renders as its NAME in plain text — never a broken image (which
+ * reads as a failed load) and never silence (which would erase the fact that something was
+ * attached). The same N/A-versus-a-confident-blank rule the dashboard applies to metrics.
+ */
+function CommentBody({ body, files }: { body: string; files: TaskFile[] }) {
+  const parts = parseCommentBody(body)
+  const known = new Set(files.map(f => f.id))
+  const images = parts
+    .filter((p): p is Extract<CommentPart, { kind: 'file' }> => p.kind === 'file')
+    .filter(p => known.has(p.id) && looksLikeImage(p.name))
+  const [lightbox, setLightbox] = useState<string | null>(null)
+
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      <div style={{ fontSize: 12.5, whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+        {parts.map((part, i) => {
+          if (part.kind === 'text') return <span key={i}>{part.text}</span>
+          if (!known.has(part.id)) {
+            return (
+              <span key={i} style={{ ...microLabel, textTransform: 'none', letterSpacing: 0 }}>
+                {part.name} (removed)
+              </span>
+            )
+          }
+          if (looksLikeImage(part.name)) return null
+          return (
+            <a
+              key={i} href={fileUrl(part.id)}
+              style={{ color: 'var(--accent-blue)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            ><FileText size={12} /> {part.name}</a>
+          )
+        })}
+      </div>
+      {images.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {images.map((img, i) => (
+            <img
+              key={i} src={fileUrl(img.id)} alt={img.name}
+              onClick={() => setLightbox(img.id)}
+              style={{
+                maxWidth: 240, maxHeight: 180, objectFit: 'cover', cursor: 'zoom-in',
+                borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+              }}
+            />
+          ))}
+        </div>
+      )}
+      {lightbox && createPortal(
+        <div
+          onClick={() => setLightbox(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.86)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 18,
+          }}
+        >
+          <img src={fileUrl(lightbox)} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
+}
+
 function CommentsTab({ id, detail, onChanged }: {
   id: string
   detail: TaskDetail
   onChanged: () => Promise<void> | void
 }) {
   const isMobile = useIsMobile()
+  const [dropping, setDropping] = useState(false)
   const [draft, setDraft] = useState('')
+  const [attached, setAttached] = useState<CommentAttachment[]>([])
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null)
   const [busy, setBusy] = useState(false)
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true); await fn(); await onChanged(); setBusy(false)
   }
+
+  /**
+   * A pasted or dropped file lands in the task's Files store AND is held as a pending reference on
+   * the comment being written. Uploading without holding the reference is what made a pasted
+   * screenshot disappear into the Files tab with nothing tying it to what was being said.
+   */
+  const take = (files: File[]) => run(async () => {
+    const minted: CommentAttachment[] = []
+    for (const f of files) {
+      // A screenshot on the clipboard has no filename, so one is minted from the moment and the
+      // mime type. Without it the record carries an empty name, which renders as a blank row you
+      // cannot tell from a broken one.
+      const named = f.name && f.name !== 'image.png'
+        ? f
+        : new File([f], `paste-${new Date().toISOString().replace(/[:.]/g, '-')}.${(f.type.split('/')[1] || 'bin')}`, { type: f.type })
+      const fileId = await uploadFile(id, named, 'you')
+      if (fileId) minted.push({ id: fileId, name: named.name })
+    }
+    if (minted.length > 0) setAttached(a => [...a, ...minted])
+  })
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
@@ -521,23 +699,78 @@ function CommentsTab({ id, detail, onChanged }: {
                 </div>
               )
               : (
-                <div style={{ fontSize: 12.5, whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-                  {c.body}
-                </div>
+                <CommentBody body={c.body} files={detail.files} />
               )}
           </div>
         )
       })}
 
-      <div style={{ ...surface, padding: 13, display: 'grid', gap: 9 }}>
+      <div
+        style={{
+          ...surface, padding: 13, display: 'grid', gap: 9,
+          outline: dropping ? '1px dashed var(--anthropic-orange)' : 'none',
+        }}
+        onDragOver={e => { e.preventDefault(); setDropping(true) }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={e => {
+          e.preventDefault(); setDropping(false)
+          const files = Array.from(e.dataTransfer?.files ?? [])
+          if (files.length > 0) void take(files)
+        }}
+      >
         <textarea
           style={{ ...field(isMobile), minHeight: 76, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.6 }}
-          value={draft} placeholder="Write a comment — an assistant can too, over the API"
+          value={draft}
+          placeholder="Write a comment, or paste a file — an assistant can too, over the API"
           onChange={e => setDraft(e.target.value)}
+          onPaste={e => {
+            /*
+             * A pasted file becomes an ATTACHMENT on this comment, not text.
+             *
+             * The paste is only intercepted when the clipboard actually holds a FILE; plain text
+             * falls through untouched, or pasting a paragraph would silently upload nothing and
+             * swallow the keystroke.
+             */
+            // `Array.from`, not spread: this lib target types FileList without an iterator.
+            const files = Array.from(e.clipboardData?.files ?? [])
+            if (files.length === 0) return
+            e.preventDefault()
+            void take(files)
+          }}
         />
+        {attached.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {attached.map(a => (
+              <span
+                key={a.id}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 6px',
+                  ...surface, background: 'var(--bg-base)',
+                }}
+              >
+                {looksLikeImage(a.name)
+                  ? <img src={fileUrl(a.id)} alt={a.name} style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 4 }} />
+                  : <FileText size={14} style={{ color: 'var(--text-tertiary)' }} />}
+                <span style={{ fontSize: 11.5, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.name}
+                </span>
+                <button
+                  // Unpicking the REFERENCE only: the file stays on the task, where the Files tab
+                  // can delete it. Removing bytes because a draft changed its mind is a surprise.
+                  onClick={() => setAttached(v => v.filter(x => x.id !== a.id))} title="Not on this comment"
+                  style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
+                ><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
         <button
-          style={{ ...button(isMobile, 'primary'), justifySelf: 'start' }} disabled={busy || !draft.trim()}
-          onClick={() => void run(async () => { await addComment(id, 'you', draft); setDraft('') })}
+          style={{ ...button(isMobile, 'primary'), justifySelf: 'start' }}
+          disabled={busy || (!draft.trim() && attached.length === 0)}
+          onClick={() => void run(async () => {
+            await addComment(id, 'you', bodyWithAttachments(draft, attached))
+            setDraft(''); setAttached([])
+          })}
         >
           <MessageSquare size={14} /> Comment
         </button>
@@ -549,7 +782,8 @@ function CommentsTab({ id, detail, onChanged }: {
 type Tab = 'overview' | 'sessions' | 'comments' | 'subtasks' | 'files'
 
 function TaskDetailView({ id }: { id: string }) {
-  const { detail, error, reload } = useTaskDetail(id)
+  const { filters } = useOutletContext<AppContext>()
+  const { detail, error, reload } = useTaskDetail(id, filters)
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   const [tab, setTab] = useState<Tab>('overview')
@@ -575,7 +809,15 @@ function TaskDetailView({ id }: { id: string }) {
   ]
 
   return (
-    <div style={{ padding: isMobile ? 12 : 18, display: 'grid', gap: 14 }}>
+    <div style={{
+      padding: isMobile ? 12 : 18,
+      // The mobile bottom nav is FIXED, so the last thing on the page sits underneath it and cannot
+      // be tapped — measured: "Delete task" was intercepted by `nav.mobile-bottom-nav` at every
+      // scroll position. `--mobile-nav-h` is the token that already knows how tall that chrome is,
+      // safe-area inset included.
+      paddingBottom: isMobile ? 'calc(var(--mobile-nav-h) + 24px)' : 18,
+      display: 'grid', gap: 14,
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button onClick={() => navigate('/tasks')} style={{ ...button(isMobile), padding: '0 9px' }}>
           <ArrowLeft size={14} />
@@ -650,57 +892,21 @@ function TaskDetailView({ id }: { id: string }) {
           {tab === 'comments' && <CommentsTab id={id} detail={detail} onChanged={reload} />}
 
           {tab === 'subtasks' && (
-            <div style={{ ...surface, padding: 13, display: 'grid', gap: 8 }}>
-              {detail.subtasks.map(t => (
-                <label key={t.id} style={{ display: 'flex', gap: 10, alignItems: 'center', cursor: 'pointer', minHeight: isMobile ? 44 : 26 }}>
-                  <input type="checkbox" checked={t.done} style={{ width: 16, height: 16, accentColor: 'var(--anthropic-orange)' }}
-                    onChange={() => void run(() => setSubtaskDone(id, t.id, !t.done))} />
-                  <span style={{
-                    fontSize: 12.5,
-                    textDecoration: t.done ? 'line-through' : 'none',
-                    color: t.done ? 'var(--text-tertiary)' : 'var(--text-secondary)',
-                  }}>{t.title}</span>
-                </label>
-              ))}
-              <input
-                style={field(isMobile)} placeholder="Add a subtask and press Enter"
-                onKeyDown={e => {
-                  const v = (e.target as HTMLInputElement).value
-                  if (e.key === 'Enter' && v.trim()) {
-                    void run(() => addSubtask(id, v))
-                    ;(e.target as HTMLInputElement).value = ''
-                  }
-                }}
-              />
-            </div>
+            <SubtaskTable
+              subtasks={detail.subtasks}
+              sessionTitleOf={sid => detail.sessions.find(r => r.id === sid)?.label}
+              onAdd={title => run(() => addSubtask(id, title))}
+              onPatch={(sid, patch) => run(() => patchSubtask(id, sid, patch))}
+              onRemove={sid => run(() => removeSubtask(id, sid))}
+            />
           )}
 
           {tab === 'files' && (
-            <div style={{ ...surface, padding: 13, display: 'grid', gap: 9 }}>
-              {detail.files.length === 0 && (
-                <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-                  No files yet. Specs, plans and notes an assistant writes belong here.
-                </div>
-              )}
-              {detail.files.map(f => (
-                <div key={f.id} style={{ display: 'flex', gap: 10, alignItems: 'center', minHeight: isMobile ? 44 : 26 }}>
-                  <FileText size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-                  <span style={{ fontSize: 12.5, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                  {f.author && <span style={pill('var(--accent-blue)')}>{f.author}</span>}
-                  <span style={{ ...numeric, fontSize: 11.5 }}>{fmtBytes(f.size)}</span>
-                  <a href={fileUrl(f.id)} style={{ color: 'var(--text-tertiary)', display: 'flex' }} title="Download"><Download size={14} /></a>
-                  <button onClick={() => void run(() => deleteFile(f.id))} disabled={busy}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }} title="Remove">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-              <label style={{ ...button(isMobile), justifySelf: 'start', cursor: 'pointer' }}>
-                <Paperclip size={14} /> Attach a file
-                <input type="file" style={{ display: 'none' }}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) void run(() => uploadFile(id, f, 'you')) }} />
-              </label>
-            </div>
+            <TaskFiles
+              files={detail.files}
+              onUpload={f => run(() => uploadFile(id, f, 'you'))}
+              onRemove={fid => run(() => deleteFile(fid))}
+            />
           )}
         </div>
 
@@ -758,7 +964,10 @@ function TaskDetailView({ id }: { id: string }) {
                       background: on ? c.dim : 'transparent',
                       color: on ? c.color : 'var(--text-tertiary)',
                       border: `1px solid ${on ? c.color : 'var(--border)'}`,
-                      minHeight: isMobile ? 34 : 26,
+                      // 44px on mobile, like every other control here. This row was 34px while
+                      // the tab strip beside it was 44 — the rule applied to one group and not the
+                      // other, which is exactly the kind of gap a person only finds with a thumb.
+                      minHeight: isMobile ? 44 : 26,
                     }}
                   >{c.label}</button>
                 )

@@ -10,10 +10,11 @@ import { loadTaskWorld } from './task-source'
 import { buildTaskDetail, buildTaskList, findTask, rowsOfTask } from './task-report'
 import { planDeliveryEvidence, type DeliveryEvidence } from './task-evidence'
 import { buildBoardOverview, type BoardOverview } from './task-overview'
+import { scopeMetas, type TaskFilter } from './task-filter'
 import { getCommitsInWindow } from '../git'
 import { readPreferences, writePreferences } from '../preferences'
 import {
-  legacyTaskId, newCommentId, newFileId, newLinkId, newSubtaskId, newTaskId,
+  legacyTaskId, newCommentId, newFileId, newLinkId, newSubtaskId, newTaskId, subtaskDone,
   type Task, type TaskStatus,
 } from './task-model'
 import { deleteTaskFile, deleteTaskFiles, readTaskFile, writeTaskFile } from './task-files'
@@ -23,43 +24,59 @@ export interface TaskListReply {
   tasks: TaskListRow[]
   /** The board as a whole — what the page shows FIRST, before any kanban. */
   overview: BoardOverview
+  /**
+   * How many sessions the page's filters kept out of these numbers.
+   *
+   * Reported rather than swallowed: a rollup that silently shrank is the same defect as a confident
+   * zero — the figure is smaller and nothing on screen says why.
+   */
+  excludedByFilter: number
 }
 
 export interface TaskDetailReply {
   task: TaskDetail
+  /** See `TaskListReply.excludedByFilter`. */
+  excludedByFilter?: number
   /** Present only once the task has been delivered. */
   evidence?: DeliveryEvidence
 }
 
-export async function listTasks(): Promise<TaskListReply> {
+export async function listTasks(filter?: TaskFilter): Promise<TaskListReply> {
   const w = await loadTaskWorld()
+  const scoped = scopeMetas(w.metas, filter)
   return {
     tasks: buildTaskList({
       tasks: w.book.tasks,
       attempts: w.book.attempts,
       rows: w.rows,
-      metas: w.metas,
+      metas: scoped.metas,
       costOf: w.costOf,
       comments: w.book.comments,
       subtasks: w.book.subtasks,
       files: w.book.files,
     }),
     overview: buildBoardOverview({
-      tasks: w.book.tasks, rows: w.rows, metas: w.metas, costOf: w.costOf,
+      tasks: w.book.tasks, rows: w.rows, metas: scoped.metas, costOf: w.costOf,
     }),
+    excludedByFilter: scoped.excluded,
   }
 }
 
-export async function showTask(ref: string): Promise<TaskDetailReply | null> {
+export async function showTask(
+  ref: string,
+  filter?: TaskFilter,
+): Promise<TaskDetailReply | null> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
   if (!task) return null
+  const scoped = scopeMetas(w.metas, filter)
   return {
+    excludedByFilter: scoped.excluded,
     task: buildTaskDetail({
       task,
       attempts: w.book.attempts,
       rows: w.rows,
-      metas: w.metas,
+      metas: scoped.metas,
       costOf: w.costOf,
       comments: w.book.comments.filter(c => c.taskId === task.id),
       subtasks: w.book.subtasks.filter(t => t.taskId === task.id),
@@ -164,35 +181,85 @@ export async function addSubtask(ref: string, title: string): Promise<boolean> {
   if (!task) return false
   const now = new Date().toISOString()
   await w.store.upsertSubtask({
-    id: newSubtaskId(), taskId: task.id, title: t, done: false, createdAt: now, updatedAt: now,
+    id: newSubtaskId(), taskId: task.id, title: t,
+    status: 'todo', done: false, createdAt: now, updatedAt: now,
   })
   return true
 }
 
-export async function setSubtaskDone(subtaskId: string, done: boolean): Promise<boolean> {
+/**
+ * Change any column of a subtask.
+ *
+ * `done` is never taken from the caller — it is derived from `status`, because two fields for one
+ * fact drift and a row reading `done: false, status: 'done'` has no correct interpretation. A
+ * caller that ticks the box sends `status: 'done'`; one that moves the status gets the tick free.
+ */
+export async function patchSubtask(subtaskId: string, patch: {
+  title?: string
+  status?: TaskStatus
+  assignee?: string
+  dueDate?: string
+  startDate?: string
+  sessionId?: string
+  notes?: string
+}): Promise<boolean> {
   const w = await loadTaskWorld()
   const found = w.book.subtasks.find(t => t.id === subtaskId)
   if (!found) return false
-  await w.store.upsertSubtask({ ...found, done, updatedAt: new Date().toISOString() })
+  const status = patch.status ?? found.status
+  await w.store.upsertSubtask({
+    ...found,
+    ...(patch.title?.trim() ? { title: patch.title.trim() } : {}),
+    status,
+    done: subtaskDone(status),
+    // An empty string CLEARS the column — that is how a date or an assignee is removed, and it is
+    // why these are not filtered out the way an empty title is.
+    ...(patch.assignee !== undefined ? { assignee: patch.assignee } : {}),
+    ...(patch.dueDate !== undefined ? { dueDate: patch.dueDate } : {}),
+    ...(patch.startDate !== undefined ? { startDate: patch.startDate } : {}),
+    ...(patch.sessionId !== undefined ? { sessionId: patch.sessionId } : {}),
+    ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    updatedAt: new Date().toISOString(),
+  })
   return true
 }
 
+export async function removeSubtask(subtaskId: string): Promise<boolean> {
+  const w = await loadTaskWorld()
+  const found = w.book.subtasks.find(t => t.id === subtaskId)
+  if (!found) return false
+  await w.store.removeSubtask(subtaskId)
+  return true
+}
+
+/** The tick, expressed as what it means: a move to `done`, or back to `todo`. */
+export async function setSubtaskDone(subtaskId: string, done: boolean): Promise<boolean> {
+  return await patchSubtask(subtaskId, { status: done ? 'done' : 'todo' })
+}
+
 /** The bytes land FIRST. A failed write must leave no record claiming the file exists. */
+/**
+ * Returns the new file's ID, never a bare `true`.
+ *
+ * A COMMENT can carry an attachment, and it references it by id — so an upload that answered only
+ * "it worked" left the caller having to guess which of the task's files it had just created, which
+ * on two screenshots pasted in the same second is a guess that goes wrong.
+ */
 export async function attachFile(
   ref: string,
   o: { name: string; bytes: Uint8Array; kind?: string; author?: string },
-): Promise<boolean> {
+): Promise<string | null> {
   const name = o.name.trim()
-  if (!name) return false
+  if (!name) return null
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
-  if (!task) return false
+  if (!task) return null
   const id = newFileId()
   let size: number
   try {
     size = await writeTaskFile(task.id, id, o.bytes)
   } catch {
-    return false
+    return null
   }
   await w.store.addFile({
     id, taskId: task.id, name, size,
@@ -200,7 +267,7 @@ export async function attachFile(
     ...(o.author ? { author: o.author } : {}),
     createdAt: new Date().toISOString(),
   })
-  return true
+  return id
 }
 
 export async function fetchFile(fileId: string): Promise<{ name: string; bytes: Uint8Array } | null> {

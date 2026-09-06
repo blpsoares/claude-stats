@@ -109,7 +109,7 @@ describe('the board around a task', () => {
       createdAt: '2026-09-05T10:00:00.000Z',
     })
     await s.upsertSubtask({
-      id: 's-1', taskId: 't-1', title: 'write the spec', done: false,
+      id: 's-1', taskId: 't-1', title: 'write the spec', done: false, status: 'todo',
       createdAt: '2026-09-05T10:00:00.000Z', updatedAt: '2026-09-05T10:00:00.000Z',
     })
     await s.addFile({
@@ -137,8 +137,8 @@ describe('the board around a task', () => {
       id: 's-1', taskId: 't-1', title: 'x',
       createdAt: '2026-09-05T10:00:00.000Z', updatedAt: '2026-09-05T10:00:00.000Z',
     }
-    await s.upsertSubtask({ ...base, done: false })
-    await s.upsertSubtask({ ...base, done: true, updatedAt: '2026-09-05T11:00:00.000Z' })
+    await s.upsertSubtask({ ...base, done: false, status: 'todo' })
+    await s.upsertSubtask({ ...base, done: true, status: 'done', updatedAt: '2026-09-05T11:00:00.000Z' })
     const list = (await s.read()).subtasks
     expect(list).toHaveLength(1)
     expect(list[0]!.done).toBe(true)
@@ -210,5 +210,58 @@ describe('a deleted task stays deleted', () => {
     const { s } = await store()
     await s.clearTombstone('nope')
     expect((await s.read()).tombstones).toEqual([])
+  })
+})
+
+describe('a subtask is a row, not a checkbox', () => {
+  it('reads a pre-status subtask by its tick — `done` IS its status', async () => {
+    // Without this, every completed subtask on an existing board would silently un-tick.
+    const { file, s } = await store()
+    await writeFile(file, JSON.stringify({
+      tasks: [], attempts: [],
+      subtasks: [
+        { id: 's-1', taskId: 't-1', title: 'shipped', done: true },
+        { id: 's-2', taskId: 't-1', title: 'not yet', done: false },
+      ],
+    }), 'utf8')
+    const list = (await s.read()).subtasks
+    expect(list.map(t => [t.id, t.status, t.done]))
+      .toEqual([['s-1', 'done', true], ['s-2', 'todo', false]])
+  })
+
+  it('derives `done` from `status` rather than trusting a file that disagrees', async () => {
+    // Two fields for one fact drift. A row saying done:false + status:'done' has no correct
+    // reading, so the status wins and the tick follows it.
+    const { file, s } = await store()
+    await writeFile(file, JSON.stringify({
+      tasks: [], attempts: [],
+      subtasks: [{ id: 's-1', taskId: 't-1', title: 'x', done: false, status: 'done' }],
+    }), 'utf8')
+    expect((await s.read()).subtasks[0]!.done).toBe(true)
+  })
+
+  it('round-trips the columns a subtask inherits from its parent', async () => {
+    const { s } = await store()
+    await s.upsertSubtask({
+      id: 's-1', taskId: 't-1', title: 'the half that is blocked',
+      status: 'blocked', done: false,
+      assignee: 'claude:3f5f', dueDate: '2026-09-12', startDate: '2026-09-06',
+      sessionId: 'sess-1', notes: 'waiting on the API',
+      createdAt: 'a', updatedAt: 'b',
+    })
+    const t = (await s.read()).subtasks[0]!
+    expect([t.status, t.assignee, t.dueDate, t.sessionId, t.notes])
+      .toEqual(['blocked', 'claude:3f5f', '2026-09-12', 'sess-1', 'waiting on the API'])
+  })
+
+  it('removes one and reports false for an id nobody carries', async () => {
+    const { s } = await store()
+    await s.upsertSubtask({
+      id: 's-1', taskId: 't-1', title: 'x', status: 'todo', done: false,
+      createdAt: 'a', updatedAt: 'b',
+    })
+    expect(await s.removeSubtask('nope')).toBe(false)
+    expect(await s.removeSubtask('s-1')).toBe(true)
+    expect((await s.read()).subtasks).toEqual([])
   })
 })

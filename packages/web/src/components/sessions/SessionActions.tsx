@@ -18,6 +18,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
+import { TaskPicker } from '../tasks/TaskPicker'
+import { attachSession } from '../../lib/tasks'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
 
 export interface SessionActionsProps {
@@ -35,12 +37,22 @@ export interface SessionActionsProps {
 }
 
 /** The verbs that take a line of text before they can run. */
-const TEXT_VERBS = new Set<string>(['rename', 'note', 'task'])
+/**
+ * Verbs that ask for a line of text before they run.
+ *
+ * `task` is NOT one of them any more. It used to open a bare field, which meant filing a session
+ * under existing work required remembering the name and typing it identically — and a name typed
+ * one character differently is a second task with the metrics split between them. It now opens the
+ * same `TaskPicker` the board and the aside use: search, pick, or create.
+ */
+const TEXT_VERBS = new Set<string>(['rename', 'note'])
 
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
 
 export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActionsProps) {
+  /** Open when the `task` verb was picked — see `TEXT_VERBS`. */
+  const [linking, setLinking] = useState(false)
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState<FleetVerb | null>(null)
@@ -78,9 +90,11 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
   function pick(v: FleetVerb) {
     if (!v.enabled) return
     setNotice(null)
+    // Filing under a task is a CHOICE from what exists, not a line of text — see `TEXT_VERBS`.
+    if (v.action === 'task') { setOpen(false); setLinking(true); return }
     if (TEXT_VERBS.has(v.action)) {
       // Seeded with what the row already has, so renaming is an edit rather than a retype.
-      setDraft(v.action === 'rename' ? row.title : v.action === 'note' ? (row.note ?? '') : (row.task ?? ''))
+      setDraft(v.action === 'rename' ? row.title : (row.note ?? ''))
       setAsking(v)
       return
     }
@@ -103,6 +117,19 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
       >
         <MoreHorizontal size={16} />
       </button>
+
+      {linking && (
+        <TaskPicker
+          title={pt ? 'Vincular a uma tarefa' : 'File under a task'}
+          onPick={async taskId => {
+            const ok = await attachSession(taskId, row.id)
+            setNotice(ok
+              ? (pt ? 'Sessão vinculada.' : 'Filed under the task.')
+              : (pt ? 'Não foi possível vincular.' : 'Could not file that session.'))
+          }}
+          onClose={() => setLinking(false)}
+        />
+      )}
 
       {open && (
         <>

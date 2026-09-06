@@ -139,14 +139,40 @@ export interface TaskComment {
   createdAt: string
 }
 
-/** A subtask: a checkbox, not a second Task. It has no attempts, no sessions and no cost. */
+/**
+ * A subtask is a ROW, not a checkbox.
+ *
+ * It carries the same columns its parent does — status, dates, assignee, a linked session — because
+ * the thing people actually break a task into is smaller pieces of the SAME kind of work, and a
+ * checkbox cannot say "this half is blocked and that half shipped on Tuesday".
+ *
+ * What it deliberately does NOT carry is its own attempts or its own rollup. Cost, rounds and
+ * tokens are measured per SESSION and roll up to the task; giving a subtask a second, smaller
+ * rollup would either double-count the same sessions or invent a split nobody recorded. `done`
+ * survives beside `status` because a tick is still the fastest way to close one, and it stays in
+ * step with it: `done` is true exactly when `status` is `done`.
+ */
 export interface Subtask {
   id: string
   taskId: string
   title: string
   done: boolean
+  status: TaskStatus
   createdAt: string
   updatedAt: string
+  /** Free text, like `TaskComment.author` — a person, a session handle, an agent's label. */
+  assignee?: string
+  /** `yyyy-MM-dd`. A date the work is due, not a timestamp: nobody schedules to the second. */
+  dueDate?: string
+  startDate?: string
+  /** One session filed under this specific piece. The task's own sessions stay on the task. */
+  sessionId?: string
+  notes?: string
+}
+
+/** `done` and `status` are one fact written twice; this keeps them from disagreeing. */
+export function subtaskDone(status: TaskStatus): boolean {
+  return status === 'done'
 }
 
 /**
