@@ -79,7 +79,7 @@ import {
   clampSessionPollMs, sessionPollMsOrDefault, SESSION_POLL_DEFAULT_MS,
 } from './preferences'
 import {
-  performBackup, readBackupPrefs, measuredLayerSizes,
+  performBackup, readBackupPrefs, layerSizesNow,
   writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
 } from './cli-backup'
 import { readGithubSection } from './backup-routes'
@@ -2510,7 +2510,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       const p = await readPreferences()
       const prefs = readBackupPrefs(p)
       const [measured, consolidated, entries, github] = await Promise.all([
-        measuredLayerSizes().catch(() => null),
+        Promise.resolve(layerSizesNow()),
         loadConsolidated().catch(() => new Map()),
         loadBackupHistory().catch(() => []),
         // Undefined on a read failure, never `{configured:false}`: "we could not look" and "it is

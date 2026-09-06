@@ -178,3 +178,40 @@ test('connecting through the GitHub CLI stores NO token at all', async () => {
   expect(section.configured && section.auth).toBe('gh')
   rmSync(dir, { recursive: true, force: true })
 })
+
+test('connecting in gh mode does NOT ask for a token — that is the whole point of the mode', async () => {
+  // Shipped broken and caught on screen: the `gh` box was ticked, the form sent no token (there is
+  // no field to type one into in that mode), and the guard against an empty token refused it with
+  // "a GitHub personal access token is required" — asking for exactly the thing the mode exists to
+  // avoid. The guard is right for `token` mode and wrong here: in `gh` mode the credential for the
+  // four checks comes from `gh auth token`, the same place every later upload gets it.
+  const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghmode-'))
+  const file = join(dir, 'github.json')
+  const res = await connectGithub({
+    url: 'https://github.com/me/backups', token: '', auth: 'gh', file,
+    askGh: async () => ({ ok: true, token: 'ghp_from_gh' }),
+    fetchImpl: async () => new Response(
+      JSON.stringify({ private: true, permissions: { push: true } }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    ),
+  })
+  expect(res.ok).toBe(true)
+  expect(readFileSync(file, 'utf-8')).not.toContain('ghp_')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('gh mode with a gh that cannot answer says THAT, not "paste a token"', async () => {
+  // The two failures need different sentences: "gh is logged out" is fixed by `gh auth login`,
+  // "no token" by pasting one. One message covering both sends half the users to the wrong fix.
+  const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghmode-'))
+  const res = await connectGithub({
+    url: 'https://github.com/me/backups', token: '', auth: 'gh',
+    file: join(dir, 'g.json'),
+    askGh: async () => ({ ok: false, reason: 'not-logged-in' }),
+    fetchImpl: async () => new Response('{}', { status: 200 }),
+  })
+  expect(res.ok).toBe(false)
+  if (res.ok) return
+  expect(res.reason).toContain('gh')
+  rmSync(dir, { recursive: true, force: true })
+})

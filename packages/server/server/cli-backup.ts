@@ -33,6 +33,7 @@ import { parseRepoUrl, repoUrlHost } from './backup/github-api'
 import { readGithubConfig } from './backup/github-store'
 import { setupGithubBackup } from './backup/github-setup'
 import { backupNotification } from './backup/backup-notify'
+import { cachedSizes, resetSizeCache, storeSizes } from './backup/size-cache'
 import { syncBackupToGithub } from './backup/github-upload'
 import {
   downloadBackupRelease, groupReleasesByMachine, listBackupReleases, newestForMachine,
@@ -93,6 +94,27 @@ export interface MeasuredLayers {
  * guess. Measured via the same `walkSources` a real backup walks, over `metrics`, `archive` and
  * `raw` — the three layers that are files sitting in $HOME today.
  */
+/**
+ * The cached measurement, refreshing in the background when it is stale.
+ *
+ * This is what every SURFACE calls. It returns instantly — the cached value, or `null` when
+ * nothing has been measured yet — and never blocks a page on a filesystem walk. Measured: walking
+ * every layer takes 7.2s on a real machine (15.341 files in the `raw` layer alone), and Settings →
+ * Backup sat on "Loading" for the whole of it.
+ *
+ * `null` is rendered as "not measured yet" by the surfaces, never as a zero: a confident `0` beside
+ * a layer holding gigabytes is worse than an honest blank.
+ */
+export function layerSizesNow(): MeasuredLayers | null {
+  const hit = cachedSizes()
+  if (hit) return hit
+  // Not awaited: the caller gets `null` now and the next read gets the figures. A second call
+  // while one is in flight simply re-measures — cheap next to the alternative of a lock that can
+  // be left held by a walk that threw.
+  void measuredLayerSizes().then(v => { storeSizes(v) }).catch(() => { /* the surfaces say "unknown" */ })
+  return null
+}
+
 export async function measuredLayerSizes(): Promise<MeasuredLayers> {
   const { sizes } = await walkSources(
     HOME_DIR, planSources({ layers: ['metrics', 'archive', 'raw'], harnesses: HARNESS_ORDER }),
@@ -453,6 +475,9 @@ export async function performBackup(
     // Not configured is a silent no-op — most machines never set this up. Configured, this walks
     // the whole confirmation ladder (`github-upload.ts`) and only deletes the local file once the
     // upload is confirmed byte-for-byte; a failed confirmation logs why and leaves it in place.
+    // The numbers just changed, and a five-minute-old measurement would now be wrong in the one
+    // moment somebody is most likely to look at them.
+    resetSizeCache()
     notify({
       phase: 'done', layers: run.layers, scheduled,
       bytesLabel: formatBytes(result.record.archiveBytes),

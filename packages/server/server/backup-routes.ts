@@ -16,7 +16,7 @@ import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, resolveArchiveMode, type ArchiveMode } from './preferences'
 import {
-  readBackupPrefs, performBackup, measuredLayerSizes,
+  readBackupPrefs, performBackup, layerSizesNow,
   writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
 } from './cli-backup'
 import { BACKUP_LAYERS, omittedSecrets, type BackupLayer } from './backup/backup-plan'
@@ -110,7 +110,7 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
   const p = await readPreferences()
   const prefs = readBackupPrefs(p)
   const [measured, consolidated, entries] = await Promise.all([
-    measuredLayerSizes().catch(() => null),
+    Promise.resolve(layerSizesNow()),
     loadConsolidated().catch(() => new Map()),
     loadBackupHistory().catch(() => []),
   ])
@@ -347,6 +347,8 @@ export interface ConnectGithubInput {
   token: string
   /** `'gh'` uses the GitHub CLI already on this machine and stores nothing. */
   auth?: 'token' | 'gh'
+  /** Test-only: stands in for `gh auth token`. */
+  askGh?: () => Promise<import('./backup/github-cli').GhTokenResult>
   /** Test-only injection points, mirroring `setupGithubBackup`'s own. */
   file?: string
   fetchImpl?: import('./backup/github-api').FetchLike
@@ -369,16 +371,30 @@ export interface ConnectGithubInput {
 export async function connectGithub(
   input: ConnectGithubInput,
 ): Promise<{ ok: true; section: GithubSection } | { ok: false; reason: string }> {
-  // Neither half is worth a request. An empty token in particular: `setupGithubBackup` would ask
-  // GitHub about a repository with no credential and get a 404 for a private one, which reads as
-  // "not found" and sends the user to check a URL that was right.
   if (!input.url.trim()) return { ok: false, reason: 'a repository URL is required.' }
-  if (!input.token.trim()) return { ok: false, reason: 'a GitHub personal access token is required.' }
+
+  // WHERE the credential for the four checks comes from. In `gh` mode there is no token field on
+  // the form at all, so requiring one here refused the very mode that exists to avoid asking —
+  // which is exactly how this shipped, and what the screen said was "a GitHub personal access
+  // token is required".
+  //
+  // An empty token is still refused in `token` mode, and worth refusing: `setupGithubBackup` would
+  // ask GitHub about the repository with no credential and get a 404 for a private one, which
+  // reads as "not found" and sends the user to check a URL that was right.
+  let token = input.token.trim()
+  if (input.auth === 'gh') {
+    const { resolveGithubAuth } = await import('./backup/github-cli')
+    const r = await resolveGithubAuth({ auth: 'gh', token: '' }, input.askGh)
+    if (!r.ok) return { ok: false, reason: r.reason }
+    token = r.token
+  } else if (!token) {
+    return { ok: false, reason: 'a GitHub personal access token is required.' }
+  }
 
   const { setupGithubBackup } = await import('./backup/github-setup')
   const result = await setupGithubBackup({
     url: input.url.trim(),
-    token: input.token.trim(),
+    token,
     auth: input.auth,
     file: input.file,
     fetchImpl: input.fetchImpl,

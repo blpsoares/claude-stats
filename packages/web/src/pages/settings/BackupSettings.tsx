@@ -516,6 +516,13 @@ export default function BackupSettings() {
       } else if (data.gh?.usable) {
         setUseGh(true)
       }
+      // ONE repository, not two. Where this machine sends its backups is where it takes them
+      // back from — asking for the URL a second time, in a second field, on the same screen, is
+      // two questions for one fact and invites them to disagree. It stays EDITABLE: restoring
+      // ANOTHER machine's backup from a different repository is a real thing to want, and the
+      // field says so. Only prefilled when empty, so a URL being typed is never overwritten by a
+      // status poll.
+      if (data.configured) setRestoreUrl(prev => (prev.trim() ? prev : data.url))
     } catch {
       setGithub(null)
     }
@@ -830,6 +837,7 @@ export default function BackupSettings() {
           {restoreSupported === true && (
             <RestoreSection
               pt={pt}
+              configuredUrl={github?.configured ? github.url : null}
               url={restoreUrl}
               token={restoreToken}
               onUrl={setRestoreUrl}
@@ -1758,10 +1766,14 @@ function GithubConnectForm({
  *   enforced there and already written in words.
  */
 function RestoreSection({
-  pt, url, token, onUrl, onToken, onList, listingBusy, listingError, machines,
+  pt, configuredUrl, url, token, onUrl, onToken, onList, listingBusy, listingError, machines,
   job, running, confirming, onConfirming, startBusy, startError, onStart,
 }: {
   pt: boolean
+  /** The repository this machine already versions to, when there is one. The URL field is
+   *  prefilled from it — one repository, asked once — and stays editable, because restoring
+   *  another machine's backup from a different repository is a real thing to want. */
+  configuredUrl: string | null
   url: string
   token: string
   onUrl: (v: string) => void
@@ -1796,9 +1808,15 @@ function RestoreSection({
 
       <RestoreField
         label={pt ? 'URL do repositório' : 'Repository URL'}
-        hint={pt
-          ? 'O repositório privado onde os backups desta (ou de outra) máquina foram versionados.'
-          : 'The private repository this machine’s — or another machine’s — backups were versioned to.'}
+        hint={configuredUrl
+          // Already prefilled from the section above: one repository, asked once. It stays editable
+          // and the hint says why you might change it.
+          ? (pt
+            ? 'Já preenchido com o repositório que esta máquina usa. Troque só se quiser restaurar de outro.'
+            : 'Prefilled with the repository this machine uses. Change it only to restore from a different one.')
+          : (pt
+            ? 'O repositório privado onde os backups desta (ou de outra) máquina foram versionados.'
+            : 'The private repository this machine’s — or another machine’s — backups were versioned to.')}
         value={url}
         placeholder="https://github.com/owner/repo"
         password={false}
