@@ -924,6 +924,82 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // Restoring, from the interface. Three routes because a restore is three moments: see what a
+    // repository holds, start one, watch it. The third exists because the repos phase clones every
+    // repository the backup mapped — holding a request open for that times out in a proxy, in the
+    // browser, or both, and the only thing worse than a slow restore is one whose outcome nobody
+    // learns.
+    if (url.pathname === '/api/backup/restore/list' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { restoreCredential, restoreListing } = await import('./backup/restore-routes')
+        const body = await readJsonLimited<{ url?: unknown; token?: unknown }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const token = typeof body.value.token === 'string' ? body.value.token : undefined
+        const cred = await restoreCredential({ token })
+        if (!cred.ok) {
+          return new Response(JSON.stringify(cred), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await restoreListing({ url: body.value.url, token: cred.token })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // A token may be in this body — non-verbose regardless of profile, like the setup route.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/start' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { startRestore } = await import('./backup-routes')
+        const body = await readJsonLimited<{
+          url?: unknown; tag?: unknown; token?: unknown; withRepos?: unknown
+        }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string' || typeof body.value.tag !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await startRestore({
+          url: body.value.url,
+          tag: body.value.tag,
+          token: typeof body.value.token === 'string' ? body.value.token : undefined,
+          withRepos: body.value.withRepos === true,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/status' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const { readRestoreJob } = await import('./backup-routes')
+      return new Response(JSON.stringify({ job: readRestoreJob() }), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
     // Connecting a repository, from the form in Settings → Backup. It takes a token, which is the
     // whole reason it exists as its own route: `POST /api/backup/github` above deliberately changes
     // only what can be changed WITHOUT one. There is no extra profile gate here — `/api/backup`

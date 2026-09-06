@@ -13,7 +13,7 @@ import { hostname } from 'os'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
-import { AGENTISTICS_DATA_DIR } from './config'
+import { AGENTISTICS_DATA_DIR, HOME_DIR } from './config'
 import { readPreferences, resolveArchiveMode, type ArchiveMode } from './preferences'
 import {
   readBackupPrefs, performBackup, measuredLayerSizes,
@@ -385,4 +385,107 @@ export async function connectGithub(
   })
   if (!result.ok) return { ok: false, reason: result.message }
   return { ok: true, section: await readGithubSection(input.file) }
+}
+
+/* ── Restoring, from the interface ───────────────────────────────────────────────────────────── */
+
+/**
+ * The ONE restore in flight, if any.
+ *
+ * A single slot rather than a map: two restores at once would write the same `$HOME` from two
+ * directions, and the second would be reading files the first is still replacing. A second request
+ * while one runs is REFUSED and told which one is running, rather than queued behind it — a restore
+ * is not something to start by accident twice.
+ */
+let currentRestore: import('./backup/restore-routes').RestoreJob | null = null
+
+export function readRestoreJob(): import('./backup/restore-routes').RestoreJob | null {
+  return currentRestore
+}
+
+/**
+ * Download a release and restore it. Returns as soon as the job EXISTS — the work continues in the
+ * background and the interface follows it through `readRestoreJob`.
+ */
+export async function startRestore(
+  input: { url: string; tag: string; token?: string; withRepos: boolean },
+): Promise<{ ok: true; job: import('./backup/restore-routes').RestoreJob } | { ok: false; reason: string }> {
+  const rr = await import('./backup/restore-routes')
+
+  if (currentRestore && (currentRestore.state === 'queued' || currentRestore.state === 'running')) {
+    return { ok: false, reason: `a restore is already running (${currentRestore.tag}).` }
+  }
+
+  const cred = await rr.restoreCredential({ token: input.token })
+  if (!cred.ok) return { ok: false, reason: cred.reason }
+
+  const { parseRepoUrl } = await import('./backup/github-api')
+  const parsed = parseRepoUrl(input.url)
+  if (!parsed) return { ok: false, reason: `"${input.url}" is not a github.com repository URL.` }
+
+  const job = rr.newRestoreJob({ tag: input.tag, withRepos: input.withRepos })
+  currentRestore = job
+  job.state = 'running'
+
+  // Deliberately NOT awaited. See `RestoreJob`: the repos phase clones every repository the backup
+  // mapped and holding a request open for that times out in a proxy, in the browser, or both.
+  void runRestoreJob(job, { ...input, owner: parsed.owner, repo: parsed.repo, token: cred.token })
+
+  return { ok: true, job }
+}
+
+async function runRestoreJob(
+  job: import('./backup/restore-routes').RestoreJob,
+  input: { owner: string; repo: string; tag: string; token: string; withRepos: boolean },
+): Promise<void> {
+  const rr = await import('./backup/restore-routes')
+  const log = (l: string): void => { rr.restoreJobLine(job, l) }
+  try {
+    const { downloadBackupRelease } = await import('./backup/github-restore')
+    const dl = await downloadBackupRelease(input.owner, input.repo, input.token, input.tag, {
+      onLine: log,
+      // No question is asked here: the person already chose this release from a list that showed
+      // its date, size, layers and session count. A second confirmation with nobody at the terminal
+      // would simply hang.
+      confirmDownload: async () => true,
+    })
+    if (dl.status !== 'downloaded') {
+      rr.finishRestoreJob(job, {
+        ok: false,
+        reason: dl.status === 'cancelled' ? 'the download was cancelled' : dl.reason,
+      })
+      return
+    }
+
+    const { restoreMetrics, restoreRepos, readManifestOf } = await import('./backup/restore')
+    const metrics = await restoreMetrics({ archive: dl.archivePath, homeDir: HOME_DIR, onLine: log })
+    if (!metrics.ok) {
+      rr.finishRestoreJob(job, { ok: false, reason: metrics.reason })
+      return
+    }
+
+    if (!input.withRepos) {
+      rr.finishRestoreJob(job, { ok: true, written: metrics.written, skipped: metrics.skipped })
+      return
+    }
+
+    const decoded = await readManifestOf(dl.archivePath)
+    if (!decoded.ok) {
+      // The metrics ARE restored at this point. Reporting a plain failure would tell the user
+      // nothing came back, when in fact everything except the repositories did.
+      rr.finishRestoreJob(job, {
+        ok: false,
+        reason: `metrics were restored (${metrics.written} files); the repository plan could not be `
+          + `read, so no repository was cloned (${decoded.reason})`,
+      })
+      return
+    }
+    const repos = await restoreRepos({
+      manifest: decoded.manifest, archive: dl.archivePath, homeDir: HOME_DIR, onLine: log,
+    })
+    log(`repositories: ${repos.succeeded}/${repos.attempted} restored`)
+    rr.finishRestoreJob(job, { ok: true, written: metrics.written, skipped: metrics.skipped })
+  } catch (e) {
+    rr.finishRestoreJob(job, { ok: false, reason: e instanceof Error ? e.message : String(e) })
+  }
 }
