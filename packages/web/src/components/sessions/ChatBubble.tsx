@@ -512,8 +512,14 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
 
         {/* Reply to just what is selected. It is the only control that appears ON a selection, so
             it says which of the two replies it is in words — an icon alone here reads as the same
-            button that is already sitting in the bubble's corner. */}
-        {excerpt && onReplyExcerpt && (
+            button that is already sitting in the bubble's corner.
+
+            NOT WHILE THE MENU IS OPEN. The right-click menu offers the very same verb, and both are
+            anchored to the same selection, so they landed on top of each other — two "Reply to
+            excerpt" for one act, one of them half-covered. Reported with a screenshot. The menu
+            wins because it was opened deliberately and carries the other verbs too; the pill is the
+            discoverable route for somebody who never right-clicks. */}
+        {excerpt && onReplyExcerpt && menuAt === null && (
           <button
             onMouseDown={e => {
               // The press must not collapse the selection before the click lands, and must not
