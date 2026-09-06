@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { activeInDays, dayKey, daysBetween, sliceSession } from './sessionDaySlice'
+import { activeInDays, activeInWindow, dayKey, dayKeyOfMs, daysBetween, MAX_RANGE_DAYS, sliceSession } from './sessionDaySlice'
 
 const day = (n: number) => ({
   input_tokens: n, output_tokens: n, cache_read_input_tokens: n,
@@ -94,5 +94,59 @@ describe('dayKey', () => {
     expect(dayKey('2026-09-06T23:59:59.999Z')).toBe('2026-09-06')
     expect(dayKey(undefined)).toBe('')
     expect(dayKey('x')).toBe('')
+  })
+})
+
+
+describe('activeInWindow', () => {
+  const ms = (d: string) => Date.parse(d)
+
+  it('THE REPORTED CASE: the `all` range starts at the EPOCH and still claims today', () => {
+    // `daysBetween` stops at MAX_RANGE_DAYS, so the day set for `all` was 1970-01-01..1971-02-04
+    // and every session with a per-day split was judged against a window it could not fall in.
+    // Measured before the fix: 397 of 662 sessions dropped out of the default view, and the
+    // sessions workspace drew "no activity" over a fleet that was plainly running.
+    const days = new Set(daysBetween(0, ms('2026-09-06T23:59:59Z')))
+    expect(days.size).toBe(MAX_RANGE_DAYS)
+    expect(activeInDays(LONG, days)).toBe(false)          // the set could never have said yes
+    expect(activeInWindow(LONG, 0, ms('2026-09-06T23:59:59Z'))).toBe(true)
+  })
+
+  it('answers the same as the day set wherever the set is usable', () => {
+    // The two must agree, or a range one day either side of the cap would report a different fleet.
+    const from = ms('2026-09-05T00:00:00Z')
+    const to = ms('2026-09-06T23:59:59Z')
+    expect(activeInWindow(LONG, from, to)).toBe(activeInDays(LONG, new Set(daysBetween(from, to))))
+    const outside = [ms('2026-01-01T00:00:00Z'), ms('2026-01-31T23:59:59Z')] as const
+    expect(activeInWindow(LONG, outside[0], outside[1]))
+      .toBe(activeInDays(LONG, new Set(daysBetween(outside[0], outside[1]))))
+  })
+
+  it('a session with no `daily` keeps the START-DAY rule', () => {
+    const plain = { start_time: '2026-09-06T10:00:00Z' }
+    expect(activeInWindow(plain, ms('2026-09-06T00:00:00Z'), ms('2026-09-06T23:59:59Z'))).toBe(true)
+    expect(activeInWindow(plain, ms('2026-09-01T00:00:00Z'), ms('2026-09-05T23:59:59Z'))).toBe(false)
+    expect(activeInWindow({}, 0, ms('2026-09-06T00:00:00Z'))).toBe(false)
+  })
+
+  it('a hollow day is not activity here either', () => {
+    const hollow = {
+      start_time: '2026-01-01T00:00:00Z',
+      daily: { '2026-09-06': { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 0 } },
+    }
+    expect(activeInWindow(hollow, ms('2026-09-06T00:00:00Z'), ms('2026-09-06T23:59:59Z'))).toBe(false)
+  })
+
+  it('a reversed or unreadable window yields nothing, never everything', () => {
+    expect(activeInWindow(LONG, ms('2026-09-06T00:00:00Z'), ms('2026-09-01T00:00:00Z'))).toBe(false)
+    expect(activeInWindow(LONG, Number.NaN, Number.NaN)).toBe(false)
+  })
+})
+
+describe('dayKeyOfMs', () => {
+  it('is the same UTC rule as `dayKey`', () => {
+    expect(dayKeyOfMs(Date.parse('2026-09-06T23:59:59.999Z'))).toBe('2026-09-06')
+    expect(dayKeyOfMs(0)).toBe('1970-01-01')
+    expect(dayKeyOfMs(Number.NaN)).toBe('')
   })
 })

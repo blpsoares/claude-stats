@@ -1689,3 +1689,56 @@ describe('computeDerivedStats — active only', () => {
     expect(d.totalCostUSD).toBe(0)
   })
 })
+
+
+describe('the `all` range claims sessions that record a per-day split', () => {
+  // THE REGRESSION. `all` starts at the EPOCH and `daysBetween` stops at MAX_RANGE_DAYS, so the
+  // range's day set was `1970-01-01 … 1971-02-04`. Every session carrying `daily` was tested for
+  // membership in it and dropped — silently, because the survivors are exactly the older records
+  // written before the field existed. Measured on a real machine: 397 of 662 sessions gone from
+  // the default view, which surfaced as the sessions workspace drawing "no activity in the chosen
+  // window" over a fleet that was plainly running.
+  const day = (n: number) => ({
+    input_tokens: n, output_tokens: n, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, messages: n,
+  })
+  const withDaily: SessionMeta = {
+    session_id: 'conv-live', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-09-03T23:23:46.121Z',
+    input_tokens: 1_500, output_tokens: 1_500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    user_message_count: 10, assistant_message_count: 10,
+    daily: { '2026-09-03': day(500), '2026-09-05': day(1_000) },
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: { version: 1, lastComputedDate: '2026-08-01', dailyActivity: [], dailyModelTokens: [], modelUsage: {}, totalSessions: 0, totalMessages: 0, hourCounts: {} },
+    sessions: [withDaily], allSessions: [], projects: [], harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  const allRange: import('@agentistics/core').Filters =
+    { dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [] } as import('@agentistics/core').Filters
+
+  test('it is kept, and with its LIFETIME totals — `all` slices nothing', () => {
+    const d = computeDerivedStats(data, allRange, [], true, new Set(['conv-live']))!
+    expect(d.filteredSessions.map(s => s.session_id)).toEqual(['conv-live'])
+    expect(totalTokens(d.tokenTotals)).toBe(3_000)
+  })
+
+  test('and it reaches the heatmap, which is what showed the bug', () => {
+    const d = computeDerivedStats(data, allRange, [], true, new Set(['conv-live']))!
+    expect(d.heatmapData.length).toBeGreaterThan(0)
+  })
+
+  test('a BOUNDED range still slices it to the days asked for', () => {
+    // The fix must not cost the measurement it was built for: the two paths have to agree.
+    const oneDay = { ...allRange, dateRange: 'custom', customStart: '2026-09-05', customEnd: '2026-09-05' } as unknown as import('@agentistics/core').Filters
+    const d = computeDerivedStats(data, oneDay, [], true, new Set(['conv-live']))!
+    expect(totalTokens(d.tokenTotals)).toBe(2_000)
+  })
+
+  test('a day it sat out still excludes it', () => {
+    const gap = { ...allRange, dateRange: 'custom', customStart: '2026-09-04', customEnd: '2026-09-04' } as unknown as import('@agentistics/core').Filters
+    const d = computeDerivedStats(data, gap, [], true, new Set(['conv-live']))!
+    expect(d.filteredSessions).toEqual([])
+  })
+})

@@ -50,8 +50,20 @@ export function dayKey(iso: string | undefined): string {
   return iso && iso.length >= 10 ? iso.slice(0, 10) : ''
 }
 
+/**
+ * The most days a range is ever enumerated into.
+ *
+ * `daysBetween` STOPS here rather than refusing, so a set of exactly this size may be a complete
+ * range or the front of a much longer one — and the caller cannot tell them apart. That ambiguity
+ * had a cost: `all` starts at the EPOCH, so the set was 1970-01-01…1971-02-04 and every session
+ * carrying a per-day split was tested for membership in a window it could not possibly fall in.
+ * Use `activeInWindow` whenever a range reaches this size; it asks the SESSION's own days instead
+ * and needs no set at all.
+ */
+export const MAX_RANGE_DAYS = 400
+
 /** Every ISO day from `start` to `end` inclusive. Bounded so a broken range cannot spin. */
-export function daysBetween(startMs: number, endMs: number, max = 400): string[] {
+export function daysBetween(startMs: number, endMs: number, max = MAX_RANGE_DAYS): string[] {
   const out: string[] = []
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return out
   const DAY = 86_400_000
@@ -87,17 +99,50 @@ export function sliceSession(s: SliceableSession, days: ReadonlySet<string>): Da
   return out
 }
 
+/** The ISO day an instant in milliseconds belongs to, UTC. `''` when it is not a real instant. */
+export function dayKeyOfMs(ms: number): string {
+  return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : ''
+}
+
+/** A day entry that records real work. The parser only writes one for a turn; an older writer
+ *  could leave a hollow one, and counting it would put a session in a day it sat out. */
+const worked = (d: DayUsage | undefined): boolean => !!d && (d.messages > 0 || d.input_tokens > 0
+  || d.output_tokens > 0 || d.cache_read_input_tokens > 0 || d.cache_creation_input_tokens > 0)
+
+/**
+ * Did this session do anything between two instants? The same question as `activeInDays`, asked
+ * from the other side — of the SESSION's days rather than of the range's.
+ *
+ * It exists because a range can be too long to enumerate (see `MAX_RANGE_DAYS`) and `all` always
+ * is: it starts at the epoch. A session's own `daily` has a handful of keys whatever the range, so
+ * this answers in a couple of comparisons where the set could not answer at all.
+ *
+ * Day keys are ISO and fixed-width, so comparing them as STRINGS is the same order as comparing
+ * the dates — and it keeps the whole test on the one UTC day rule this module documents, with no
+ * second parse to drift against it.
+ */
+export function activeInWindow(s: SliceableSession, startMs: number, endMs: number): boolean {
+  const from = dayKeyOfMs(startMs)
+  const to = dayKeyOfMs(endMs)
+  if (from === '' || to === '' || to < from) return false
+  if (!s.daily) {
+    const day = dayKey(s.start_time)
+    return day !== '' && day >= from && day <= to
+  }
+  for (const key of Object.keys(s.daily)) {
+    if (key < from || key > to) continue
+    if (worked(s.daily[key])) return true
+  }
+  return false
+}
+
 /** Did this session do anything inside `days`? `false` for a sliceable session that did nothing. */
 export function activeInDays(s: SliceableSession, days: ReadonlySet<string>): boolean {
   if (!s.daily) return days.has(dayKey(s.start_time))
   for (const key of Object.keys(s.daily)) {
     if (!days.has(key)) continue
-    const d = s.daily[key]
-    // A day the session merely EXISTED through, with no turn on it, is not activity. The parser
-    // only ever creates a day entry for a turn, so any entry here is real work — but a zeroed one
-    // could arrive from an older writer, and counting it would put a session in a day it sat out.
-    if (d && (d.messages > 0 || d.input_tokens > 0 || d.output_tokens > 0
-      || d.cache_read_input_tokens > 0 || d.cache_creation_input_tokens > 0)) return true
+    // A day the session merely EXISTED through, with no turn on it, is not activity — see `worked`.
+    if (worked(s.daily[key])) return true
   }
   return false
 }

@@ -96,7 +96,10 @@ export function FleetOverview({
   // holds at every size.
   return (
     <div style={{
-      padding: `28px ${PAGE_INSET}px`,
+      // A PHONE CANNOT AFFORD THE DESKTOP'S MARGIN. 32px each side is a fifth of a 390px screen,
+      // and it is spent twice — this pane already sits inside the tab's own padding. It cost the
+      // stat grid its second column and squeezed the calendar into a strip.
+      padding: isMobile ? '16px 14px' : `28px ${PAGE_INSET}px`,
       maxWidth: PAGE_MAX_WIDTH,
       margin: '0 auto',
       width: '100%',
@@ -134,8 +137,14 @@ export function FleetOverview({
         ? 'A frota agora — as mesmas sessões listadas ao lado. Segue os filtros do topo, menos o período: uma sessão viva está acontecendo agora.'
         : 'The fleet now — the same sessions listed beside it. Follows the filters above, except the date range: a live session is happening now.'} />
 
+      {/* TWO UP ON A PHONE. `minmax(150px, …)` needs 312px for a second column and the pane has
+          ~300 — so four cards stacked into four full-width rows, and the section below them fell
+          off the screen entirely. 138 fits two with room to spare and still holds a 6-figure
+          count; `auto-fit` gives the desktop the same four across it always had. */}
       <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 22,
+        display: 'grid',
+        gridTemplateColumns: `repeat(auto-fit, minmax(${isMobile ? 138 : 150}px, 1fr))`,
+        gap: isMobile ? 8 : 12, marginBottom: isMobile ? 18 : 22,
       }}>
         <Stat
           icon={<Activity size={15} />} tone="var(--accent-green)"
@@ -190,7 +199,10 @@ export function FleetOverview({
         />
       </div>
 
-      <section>
+      {/* The bars stood directly against the next heading — on the desktop the last row is a thin
+          line and the gap read as deliberate, on a phone the bar is full width and `ACTIVITY` sat
+          on top of it. A section ends where the next one begins, so it says so. */}
+      <section style={{ marginBottom: 22 }}>
         <h2 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)' }}>
           {pt ? 'Por assistente' : 'By assistant'}
         </h2>
@@ -218,29 +230,50 @@ export function FleetOverview({
                 ? (pt ? 'assistente não identificado' : 'unidentified assistant')
                 : h.harness)
             const pct = s.total === 0 ? 0 : Math.round((h.count / s.total) * 100)
-            return (
+            const tail = h.running > 0
+              ? (pt ? `${h.count} · ${h.running} viva${h.running > 1 ? 's' : ''}` : `${h.count} · ${h.running} live`)
+              : (pt ? `${h.count} · nenhuma viva` : `${h.count} · none live`)
+            /* The bar is a share of the fleet, 0–100, and the SHARE IS SAID IN A NUMBER beside it.
+               A full bar with no figure is unreadable in the ordinary case where one assistant
+               holds everything: it looks like a progress bar that finished rather than "this is
+               all of them", which is what a reader asked about it. */
+            const bar = (
+              <span
+                role="img"
+                aria-label={`${pct}%`}
+                style={{ flex: 1, height: 8, borderRadius: 4, background: 'var(--bg-elevated)', overflow: 'hidden', minWidth: 60 }}
+              >
+                <span style={{ display: 'block', width: `${pct}%`, height: '100%', background: color, borderRadius: 4 }} />
+              </span>
+            )
+            // TWO LINES ON A PHONE, and it is the fixed widths that force it: 110 for the name, 44
+            // for the share and 120 for the count leave 20px for the bar in a 300px pane. The row
+            // did not fail cleanly — the longest name wrapped into the heading of the section
+            // below it and the count was clipped mid-word to "12 · no". Stacking gives the bar the
+            // whole width, which is also the only place it is worth reading.
+            return isMobile ? (
+              <div key={h.harness} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {label}
+                  </span>
+                  <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                    {pct}% · {tail}
+                  </span>
+                </div>
+                <span style={{ display: 'flex' }}>{bar}</span>
+              </div>
+            ) : (
               <div key={h.harness} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span style={{ width: 110, fontSize: 12.5, fontWeight: 600, color: 'var(--text-secondary)', flexShrink: 0 }}>
                   {label}
                 </span>
-                {/* The bar is a share of the fleet, 0–100, and the SHARE IS SAID IN A NUMBER
-                    beside it. A full bar with no figure is unreadable in the ordinary case where
-                    one assistant holds everything: it looks like a progress bar that finished
-                    rather than "this is all of them", which is what a reader asked about it. */}
-                <span
-                  role="img"
-                  aria-label={`${pct}%`}
-                  style={{ flex: 1, height: 8, borderRadius: 4, background: 'var(--bg-elevated)', overflow: 'hidden', minWidth: 60 }}
-                >
-                  <span style={{ display: 'block', width: `${pct}%`, height: '100%', background: color, borderRadius: 4 }} />
-                </span>
+                {bar}
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)', width: 44, textAlign: 'right', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                   {pct}%
                 </span>
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)', width: 120, textAlign: 'right', flexShrink: 0 }}>
-                  {h.running > 0
-                    ? (pt ? `${h.count} · ${h.running} viva${h.running > 1 ? 's' : ''}` : `${h.count} · ${h.running} live`)
-                    : (pt ? `${h.count} · nenhuma viva` : `${h.count} · none live`)}
+                  {tail}
                 </span>
               </div>
             )
