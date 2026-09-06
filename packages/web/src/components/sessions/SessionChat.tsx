@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, Square, X } from 'lucide-react'
+import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
 import { ApprovalCard } from './ApprovalCard'
@@ -1640,6 +1640,43 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     whether or not the stop is there — a margin on send alone would push the more
                     button off to the right on its own the moment a turn ended. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                {/* THE HARNESS MODE, and the one control that changes it.
+                    Asked for: "nao consigo alternar entre os modos que os harnesses possuem (auto
+                    mode, plan mode etc)", to sit left of the recent-message button.
+
+                    IT CYCLES, and the label says which mode it is IN — not which one it would move
+                    to. The harness offers one keystroke and no way to jump to a named mode, so a
+                    menu of four would reach three of them by luck; `mode-spec.ts` records the key
+                    and the order, driven against a live session.
+
+                    ABSENT when the row carries no mode: a harness nobody has probed, or a frame
+                    whose footer has not been read. A chip naming the wrong mode is worse than no
+                    chip — it is read at a glance and believed. */}
+                {row?.mode && (
+                  <button
+                    onClick={() => void act({ id: session.id, action: 'cycleMode' })
+                      .then(out => setNotice(out.message))}
+                    disabled={!canPrompt}
+                    aria-label={pt ? `Modo: ${row.mode.label}. Trocar para o próximo.` : `Mode: ${row.mode.label}. Switch to the next.`}
+                    title={pt
+                      ? `${row.mode.label} — clique para ir ao próximo modo`
+                      : `${row.mode.label} — click to move to the next mode`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5, height: 30, padding: '0 9px',
+                      borderRadius: 9, flexShrink: 0, maxWidth: 150,
+                      border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+                      color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 11.5,
+                      cursor: canPrompt ? 'pointer' : 'default',
+                      opacity: canPrompt ? 1 : 0.55,
+                    }}
+                  >
+                    <SlidersHorizontal size={13} style={{ flexShrink: 0 }} />
+                    <span style={{
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{row.mode.label}</span>
+                  </button>
+                )}
+
                 {/* THE LAST MESSAGE YOU SENT. ABSENT until there is one — `lastSent` is null on a
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting

@@ -29,6 +29,8 @@ export type FleetActionId =
   | 'openTask' | 'finishTask'
   /** Stop the current turn without ending the session. See the server's own union. */
   | 'interrupt'
+  /** Advance the harness to its NEXT mode. It cycles; there is no key that picks one. */
+  | 'cycleMode'
 
 /** The verbs this page can PERFORM. The rest are shown, dimmed, with their reason. */
 export const PERFORMABLE: ReadonlySet<FleetActionId> = new Set<FleetActionId>([
@@ -63,6 +65,8 @@ export interface FleetRow {
   model?: string
   /** The reasoning effort this session was started with. Absent = the harness's own default. */
   effort?: string
+  /** The harness mode, in its own words. Absent where nobody has driven that harness's modes. */
+  mode?: { id: string; label: string }
   conversationId?: string
   approvalLines?: string[]
   dialogOptions?: { number: number; label: string; selected?: boolean }[]

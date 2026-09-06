@@ -148,6 +148,7 @@ import {
   addSession, newSessionId, patchSession, readRegistry, removeSession, retireFallenSessions, touchSessions,
 } from './sessions/registry'
 import { createSessionsPoller, type SessionsPoller, type SessionSnapshot } from './sessions/sessions-host'
+import { modeSpecFor } from './sessions/mode-spec'
 import { isServerProcess, readServerSnapshot } from './sessions/shared-snapshot'
 import { conversationForProcess, forgetConversations, loadConversations } from './sessions/conversations'
 
@@ -2815,6 +2816,38 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * picker, a dialog, its own transcript view), which is not what "stop" means and is not undone
      * by pressing it again.
      */
+    /**
+     * Advance a session's harness to its next mode — see `mode-spec.ts`.
+     *
+     * The liveness is re-read from the BACKEND rather than from a poll snapshot, exactly as
+     * `interruptSession` and `answerSession` do: this sends a keystroke into a real terminal, and a
+     * five-second-old view of what is running is what would send it into a session that has ended.
+     *
+     * A harness with no probed spec is refused BY NAME. There is no safe fallback key: shift+tab
+     * means something else in most terminals, and sending it blind into an assistant is a keypress
+     * nobody asked for — the same refusal `choiceKey` makes for a numbered dialog.
+     */
+    async cycleSessionMode(id: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      const managed = (await readRegistry()).find(m => m.id === id)
+      if (!managed) return { ok: false, message: s.sessNoRegistryEntry }
+      const spec = modeSpecFor(managed.harness)
+      if (!spec) return { ok: false, message: s.sessModeUnknown(managed.harness) }
+
+      const live = (await backend.list().catch(() => [])).find(b => b.id === id)
+      if (!live?.alive) return { ok: false, message: s.sessNotRunning }
+
+      // The mode AFTER the key is whatever the harness moved to, and only the next poll can say —
+      // so the answer names the act rather than claiming an outcome it has not read.
+      return (await backend.sendKey(id, spec.cycleKey))
+        ? { ok: true, message: s.sessModeCycled }
+        : { ok: false, message: s.sessSendFailed(id) }
+    },
+
     async interruptSession(id: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()

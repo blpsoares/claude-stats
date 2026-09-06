@@ -846,6 +846,14 @@ export interface ControlSession {
    */
   effort?: string
   /**
+   * The MODE the harness is in — its own word for it (`auto mode`, `plan mode`, …).
+   *
+   * Absent for a harness whose modes nobody has driven, and for a session whose footer has not been
+   * read yet. See `mode-spec.ts`: the cycle key is a keystroke, so a guessed one would be a
+   * keypress nobody asked for.
+   */
+  mode?: { id: string; label: string }
+  /**
    * Whether this row can be acted on at all.
    *
    * False for an external session, which is listed because "the fleet in one place" is the point,
@@ -1517,6 +1525,15 @@ export interface ControlHost {
    * pressing it again.
    */
   interruptSession?(id: string): Promise<ActionResult>
+
+  /**
+   * Advance a session's harness to its NEXT mode, without attaching to it.
+   *
+   * One keystroke, and the harness decides which mode comes next — there is no key that picks one
+   * by name, so this is a cycle rather than a chooser. Refused, in words, for a harness whose modes
+   * nobody has driven: a guessed key is a keypress nobody asked for. See `mode-spec.ts`.
+   */
+  cycleSessionMode?(id: string): Promise<ActionResult>
 
   /**
    * Type one line into a session and submit it, WITHOUT attaching to it.

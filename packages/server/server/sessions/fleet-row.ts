@@ -70,6 +70,15 @@ export type FleetActionId =
    */
   | 'interrupt'
   /**
+   * Advance the harness to its NEXT mode — `auto` → `manual` → `accept edits` → `plan` → back.
+   *
+   * It CYCLES rather than picking, because that is all the harness offers: one keystroke, no way to
+   * jump to a named mode. Offering a menu of four would be a control that reaches three of them by
+   * luck. See `mode-spec.ts`, which was driven against a live session to learn both the key and the
+   * order.
+   */
+  | 'cycleMode'
+  /**
    * The two that act on something other than one row, and carry no `id`.
    *
    * `reopenFell` takes back the group of sessions that fell together — a reboot, a laptop closed —
@@ -121,6 +130,8 @@ export interface FleetRow {
   model?: string
   /** The reasoning effort this session was started with — see `ControlSession.effort`. */
   effort?: string
+  /** The harness mode, in the harness's own words — see `mode-spec.ts`. */
+  mode?: { id: string; label: string }
   conversationId?: string
   /** The dialog this session is blocked on, verbatim, and the options read off it. */
   approvalLines?: string[]
@@ -197,6 +208,7 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
     ...(row.note ? { note: row.note } : {}),
     ...(row.model ? { model: row.model } : {}),
     ...(row.effort ? { effort: row.effort } : {}),
+    ...(row.mode ? { mode: row.mode } : {}),
     ...(row.conversationId ? { conversationId: row.conversationId } : {}),
     ...(row.approvalLines?.length ? { approvalLines: row.approvalLines } : {}),
     ...(row.dialogOptions?.length ? { dialogOptions: [...row.dialogOptions] } : {}),

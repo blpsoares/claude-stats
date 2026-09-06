@@ -15,6 +15,7 @@ import { createLimiter } from '../utils'
 import type { HarnessProcess } from '../live-sessions'
 import { rulesFor } from './attention-rules'
 import { approvalTail, attentionOf, digestFrame, frameTail } from './attention'
+import { modeOf, modeSpecFor } from './mode-spec'
 import { EMPTY_CONFIRM_MEMORY, confirmActivities, type ConfirmMemory } from './attention-confirm'
 import type { ChatTurn } from './chat-turn'
 import { transcriptReaderFor } from './harness-transcript'
@@ -250,6 +251,8 @@ export function createSessionsPoller(o: {
       const background = new Set<string>()
       const tails = new Map<string, string[]>()
       const approvals = new Map<string, string[]>()
+      /** The harness mode each running session is in — see `mode-spec.ts`. */
+      const modes = new Map<string, { id: string; label: string }>()
       const dialogOptions = new Map<string, DialogOption[]>()
       const chatTails = new Map<string, ChatTurn[]>()
 
@@ -260,6 +263,13 @@ export function createSessionsPoller(o: {
         if (!b.alive) { activity.set(r.id, 'exited'); return }
 
         const frame = await o.backend.capture(r.id, lines).catch(() => [] as string[])
+        // WHICH MODE the harness is in, read off the same frame the state came from — see
+        // `mode-spec.ts`. `null` for a harness nobody has probed and for a frame with no footer yet,
+        // and the row then simply carries none.
+        {
+          const m = modeOf(frame, modeSpecFor(r.managed?.harness))
+          if (m) modes.set(r.id, { id: m.id, label: m.label })
+        }
         const frameDigest = digestFrame(frame)
         nextDigest.set(r.id, frameDigest)
         tails.set(r.id, frameTail(frame, TAIL_LINES))
@@ -419,6 +429,7 @@ export function createSessionsPoller(o: {
         tails,
         chatTails,
         approvals,
+        modes,
         dialogOptions,
         processes,
         conversations,

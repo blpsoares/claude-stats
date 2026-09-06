@@ -201,6 +201,9 @@ export async function runFleetAction(
     case 'prompt':
       if (!host.promptSession) return { ok: false, message: s.sessionsNoHost }
       return await host.promptSession(req.id, text)
+    case 'cycleMode':
+      if (!host.cycleSessionMode) return { ok: false, message: s.sessionsNoHost }
+      return await host.cycleSessionMode(req.id)
     case 'rename':
       if (!host.renameSession) return { ok: false, message: s.sessionsNoHost }
       return await host.renameSession(req.id, text)
