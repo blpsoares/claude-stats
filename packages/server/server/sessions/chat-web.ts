@@ -29,6 +29,7 @@ import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ChatTurn } from './chat-turn'
 import { transcriptReaderFor } from './harness-transcript'
+import { conversationOfRow } from './row-conversation'
 
 export interface ChatPayload {
   /** The turns, oldest first. Empty with no `unavailable` means a conversation with nothing in it. */
@@ -81,7 +82,13 @@ export async function readSessionChat(
   // The EXACT link, or nothing. `conversationBlind` is the row's own sentence for a harness that
   // can never report which conversation it is writing — reused rather than reworded, so the chat
   // view and the row give one answer.
-  if (!row.conversationId) {
+  //
+  // A CLOSED row names its conversation in its ID, not in `conversationId` — it is a conversation
+  // you can reopen rather than a session that recorded a link. Reading only the field, this refused
+  // every finished conversation with "no linked conversation yet", which is the one row people open
+  // precisely to read one. `conversationOfRow` is the single place both shapes are known.
+  const conversationId = conversationOfRow(row)
+  if (!conversationId) {
     return {
       turns: [],
       unavailable: row.conversationBlind ?? (lang === 'pt'
@@ -119,7 +126,10 @@ export async function readSessionChat(
   }
 
   const path = await reader
-    .resolve({ conversationId: row.conversationId, ...(row.cwd ? { cwd: row.cwd } : {}) })
+    // `conversationId` and NOT `row.conversationId`: a CLOSED row names its conversation in its
+    // id and carries no field, and reading only the field refused every finished conversation —
+    // the row people open precisely to read one. See `row-conversation.ts`.
+    .resolve({ conversationId, ...(row.cwd ? { cwd: row.cwd } : {}) })
     .catch(() => null)
   if (!path) {
     // A LIVE session whose transcript is not on disk YET is an EMPTY conversation, not a missing
@@ -145,11 +155,12 @@ export async function readSessionChat(
     }
   }
 
-  // The reader routes by harness; only some of them can say whether the cap cut a longer
-  // conversation short, and one that cannot makes NO claim — see `HarnessTranscript.readWindow`.
-  const read = reader.readWindow
-    ? await reader.readWindow(path, MAX_TURNS).catch(() => ({ turns: [] as ChatTurn[], older: false }))
-    : { turns: await reader.read(path, MAX_TURNS).catch(() => [] as ChatTurn[]), older: false }
+  // `older` is asked of the READER, and EVERY reader answers it — see `TranscriptRead`. It was
+  // briefly an optional `readWindow` that only Claude implemented, which gives the other four the
+  // silent version of the bug the notice exists to fix: the antigravity transcript this reader was
+  // written against holds 1239 turns, so a 400-turn window cuts it and says nothing.
+  const read = await reader.read(path, MAX_TURNS)
+    .catch(() => ({ turns: [] as ChatTurn[], older: false }))
   return {
     turns: read.turns,
     live,

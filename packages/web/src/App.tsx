@@ -66,7 +66,7 @@ import { TeamLogin } from './components/TeamLogin'
 import { Login } from './components/Login'
 import { ModeSwitch } from './components/nav/ModeSwitch'
 import { TopBar } from './components/nav/TopBar'
-import { headerFit } from './lib/headerFit'
+import { COST_BASIS_W, FULL_BAR_W, headerFit, stripPadding } from './lib/headerFit'
 import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
@@ -1622,7 +1622,6 @@ export default function AppLayout() {
   /** The artifacts panel's open flag and count — see `artifactsStore` for why it is not a prop. */
   const artifacts = useArtifacts()
 
-  const stripFit = headerFit(Math.max(0, filterSlotW - actionsW))
   /**
    * Active sessions only — the fleet's own dimension (see `FiltersBar`'s doc comment on
    * `onActiveOnlyChange`), not part of `Filters`. Defaults to ON the moment you land in the
@@ -2032,6 +2031,26 @@ export default function AppLayout() {
   // cannot support falls back rather than rendering a page of N/A.
   const costBasis: CostBasis =
     isCentral || !billingReady.ready || planBasis.basis === null ? 'api' : costBasisState
+  /**
+   * The centring padding the strip can AFFORD, and what the bar therefore has to draw in.
+   *
+   * The action cluster used to be charged twice — once for being a sibling that takes room, and
+   * again as the padding that pulls the filters onto the strip's own centre line. On a 1273px
+   * window with a 258px cluster that is 516px gone, and the bar compacted with most of the header
+   * empty beside it. `stripPadding` takes the centring out of the SLACK instead: centring is a
+   * nicety, a date control collapsed into a popover is something somebody has to go looking for.
+   *
+   * The cost-basis toggle is budgeted only where it is actually drawn — it is absent on a central
+   * and on a machine with no billing set up, and reserving room for a control that is not on screen
+   * compacts a bar that would have fitted.
+   */
+  const stripExtra = (!isCentral && billingReady.ready && planBasis.basis !== null) ? COST_BASIS_W : 0
+  // The SESSIONS strip does not centre its filters at all — its slot carries no padding — so it
+  // is charged none. It was being charged `actionsW` for a padding that is not there, which is
+  // the same double-subtraction seen from its other side.
+  const stripPad = inSessionsWorkspace ? 0 : stripPadding(filterSlotW, actionsW, FULL_BAR_W + stripExtra)
+  const stripFit = headerFit(Math.max(0, filterSlotW - stripPad), stripExtra)
+
   const setCostBasis = useCallback((b: CostBasis) => {
     setCostBasisState(b)
     void saveBilling({ ...billing, costBasis: b })
@@ -2968,7 +2987,7 @@ export default function AppLayout() {
           on the STRIP's centre line rather than the centre of what is left beside them. */}
       <div ref={setFilterSlotEl} style={{
         flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center',
-        paddingLeft: actionsW, boxSizing: 'border-box',
+        paddingLeft: stripPad, boxSizing: 'border-box',
       }}>
         <FiltersBar
           inline

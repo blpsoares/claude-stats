@@ -82,9 +82,11 @@ describe('the antigravity reader', () => {
 
     const reader = HARNESS_TRANSCRIPTS.antigravity!
     const all = await reader.read(path, 400)
-    expect(all).toHaveLength(300)
-    expect(all[0]!.text).toBe('m0')
-    expect(all[299]!.text).toBe('m299')
+    expect(all.turns).toHaveLength(300)
+    expect(all.turns[0]!.text).toBe('m0')
+    expect(all.turns[299]!.text).toBe('m299')
+    // Shorter than the window: nothing was hidden, so nothing is claimed.
+    expect(all.older).toBe(false)
 
     // The 5s poll's budget: the last few turns, off the end of the file.
     const tail = await reader.readRecent(path, 6)
@@ -108,7 +110,7 @@ describe('the antigravity reader', () => {
 
   it('an unreadable file is an empty conversation, never a throw', async () => {
     const reader = HARNESS_TRANSCRIPTS.antigravity!
-    expect(await reader.read(join(logs, 'nope.jsonl'), 10)).toEqual([])
+    expect(await reader.read(join(logs, 'nope.jsonl'), 10)).toEqual({ turns: [], older: false })
     expect(await reader.readRecent(join(logs, 'nope.jsonl'), 10)).toEqual([])
   })
 })
@@ -158,11 +160,12 @@ describe('the codex reader', () => {
 
   it('reads the conversation, taking exactly one copy of the duplicated message', async () => {
     const path = join(root, '2026', '07', '07', `rollout-2026-07-07T19-02-05-${ID}.jsonl`)
-    const turns = await HARNESS_TRANSCRIPTS.codex!.read(path, 400)
-    expect(turns).toEqual([
-      { role: 'user', text: 'Salve', at: '2026-07-07T22:02:40Z' },
-    ])
-    expect(await HARNESS_TRANSCRIPTS.codex!.readRecent(path, 6)).toEqual(turns)
+    const read = await HARNESS_TRANSCRIPTS.codex!.read(path, 400)
+    expect(read).toEqual({
+      turns: [{ role: 'user', text: 'Salve', at: '2026-07-07T22:02:40Z' }],
+      older: false,
+    })
+    expect(await HARNESS_TRANSCRIPTS.codex!.readRecent(path, 6)).toEqual(read.turns)
   })
 })
 
@@ -194,9 +197,9 @@ describe('the copilot reader', () => {
 
   it('reads the person’s own text, not the transformed copy', async () => {
     const path = join(root, ID, 'events.jsonl')
-    const turns = await HARNESS_TRANSCRIPTS.copilot!.read(path, 400)
-    expect(turns).toEqual([{ role: 'user', text: 'salve mano', at: '2026-06-30T14:53:11Z' }])
-    expect(await HARNESS_TRANSCRIPTS.copilot!.readRecent(path, 6)).toEqual(turns)
+    const read = await HARNESS_TRANSCRIPTS.copilot!.read(path, 400)
+    expect(read.turns).toEqual([{ role: 'user', text: 'salve mano', at: '2026-06-30T14:53:11Z' }])
+    expect(await HARNESS_TRANSCRIPTS.copilot!.readRecent(path, 6)).toEqual(read.turns)
   })
 })
 
@@ -232,9 +235,63 @@ describe('the kimi reader', () => {
   })
 
   it('reads the conversation, taking exactly one copy of the duplicated prompt', async () => {
-    const turns = await HARNESS_TRANSCRIPTS.kimi!.read(wire, 400)
-    expect(turns).toHaveLength(1)
-    expect(turns[0]).toMatchObject({ role: 'user', text: 'salve' })
-    expect(await HARNESS_TRANSCRIPTS.kimi!.readRecent(wire, 6)).toEqual(turns)
+    const read = await HARNESS_TRANSCRIPTS.kimi!.read(wire, 400)
+    expect(read.turns).toHaveLength(1)
+    expect(read.turns[0]).toMatchObject({ role: 'user', text: 'salve' })
+    expect(await HARNESS_TRANSCRIPTS.kimi!.readRecent(wire, 6)).toEqual(read.turns)
+  })
+})
+
+describe('the window says it is a window, on every harness', () => {
+  /**
+   * `older` was introduced for Claude (`readChatWindow`) because the gallery, built on whatever
+   * turns it was handed, emptied itself on a long transcript with nothing saying why. Every reader
+   * owes the same answer, or four harnesses inherit the silent version of that bug.
+   */
+  let dir: string
+
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'older-'))
+  })
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  it('reports `older` when the cap cut the conversation, and the LAST turns are the ones kept', async () => {
+    const path = join(dir, 'agy.jsonl')
+    await writeFile(path, Array.from({ length: 30 }, (_, i) => JSON.stringify({
+      step_index: i, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: `m${i}`,
+    })).join('\n'))
+
+    const cut = await HARNESS_TRANSCRIPTS.antigravity!.read(path, 5)
+    expect(cut.older).toBe(true)
+    expect(cut.turns).toHaveLength(5)
+    // The END of the conversation, not its beginning — the window is a tail.
+    expect(cut.turns.map(t => t.text)).toEqual(['m25', 'm26', 'm27', 'm28', 'm29'])
+
+    // Exactly the cap is NOT `older`: nothing was hidden.
+    expect((await HARNESS_TRANSCRIPTS.antigravity!.read(path, 30)).older).toBe(false)
+  })
+
+  it('every reader answers it, not only the one it was written for', async () => {
+    const files: Array<[keyof typeof HARNESS_TRANSCRIPTS, string, string[]]> = [
+      ['codex', 'codex.jsonl', Array.from({ length: 12 }, (_, i) => JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ text: `m${i}` }] },
+      }))],
+      ['copilot', 'copilot.jsonl', Array.from({ length: 12 }, (_, i) => JSON.stringify({
+        type: 'user.message', data: { content: `m${i}` },
+      }))],
+      ['kimi', 'kimi.jsonl', Array.from({ length: 12 }, (_, i) => JSON.stringify({
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: `m${i}` }], origin: { kind: 'user' } },
+      }))],
+    ]
+    for (const [harness, name, lines] of files) {
+      const path = join(dir, name)
+      await writeFile(path, lines.join('\n'))
+      const cut = await HARNESS_TRANSCRIPTS[harness]!.read(path, 4)
+      expect(cut.older).toBe(true)
+      expect(cut.turns.map(t => t.text)).toEqual(['m8', 'm9', 'm10', 'm11'])
+      expect((await HARNESS_TRANSCRIPTS[harness]!.read(path, 50)).older).toBe(false)
+    }
   })
 })

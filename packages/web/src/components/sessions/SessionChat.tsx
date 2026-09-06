@@ -39,7 +39,7 @@ import { isImagePath } from '../../lib/attachmentPreview'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
-import { sessionScratch, type CachedChat } from '../../lib/sessionScratch'
+import { scratchKey, sessionScratch, type CachedChat } from '../../lib/sessionScratch'
 import { composerMaxHeight } from '../../lib/composerHeight'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
@@ -138,8 +138,18 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * The draft starts from the person's own words. Losing typed text to a click is the one thing
    * here that cannot be recovered from anywhere — a conversation re-fetches, a paragraph does not.
    */
-  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(session.id) as ChatPayload | null)
-  const [draft, setDraft] = useState(() => sessionScratch.readDraft(session.id))
+  /**
+   * WHAT THE SCRATCH BELONGS TO — the conversation, never this row.
+   *
+   * One conversation is reachable through several rows: an `exited` managed row deliberately does
+   * not cover its conversation, so the same conversation is also listed as a `closed:<id>` row you
+   * can reopen, and every reopen mints a new managedId for it. Keyed on the row, closing a session
+   * threw away its cached turns and the paragraph somebody had typed into it. See `scratchKey`.
+   */
+  const scratchId = scratchKey(session)
+
+  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(scratchId) as ChatPayload | null)
+  const [draft, setDraft] = useState(() => sessionScratch.readDraft(scratchId))
 
   /**
    * Every change to the draft, PERSISTED against the session it belongs to.
@@ -152,20 +162,20 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editDraft = useCallback((next: string | ((prev: string) => string)) => {
     setDraft(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeDraft(session.id, v)
+      sessionScratch.writeDraft(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
 
-  const shownId = useRef(session.id)
+  const shownId = useRef(scratchId)
   useEffect(() => {
-    if (shownId.current === session.id) return
-    shownId.current = session.id
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setReplyTo(sessionScratch.readReply(session.id))
-  }, [session.id])
+    if (shownId.current === scratchId) return
+    shownId.current = scratchId
+    setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
+    setDraft(sessionScratch.readDraft(scratchId))
+    setReplyTo(sessionScratch.readReply(scratchId))
+  }, [scratchId])
   const [sending, setSending] = useState(false)
   /** Dictation. `recognitionRef` holds the live recogniser so a second click stops it. */
   const [listening, setListening] = useState(false)
@@ -397,7 +407,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     return () => document.removeEventListener('keydown', onKey)
   }, [recall])
   /** Messages sent from here and not yet seen in the transcript. See the header. */
-  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(session.id))
+  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(scratchId))
 
   /**
    * Every change to the echo list, persisted against the session it belongs to.
@@ -409,10 +419,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editEcho = useCallback((next: string[] | ((prev: string[]) => string[])) => {
     setEcho(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeEchoes(session.id, v)
+      sessionScratch.writeEchoes(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
   /**
    * The message being replied to.
@@ -423,7 +433,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * mail has always done. Saying it plainly beats a UI that implies threading the session cannot do.
    */
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(
-    () => sessionScratch.readReply(session.id),
+    () => sessionScratch.readReply(scratchId),
   )
 
   /**
@@ -438,9 +448,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * write one conversation's reply into another's slot.
    */
   const editReply = useCallback((next: ReplyTarget | null) => {
-    sessionScratch.writeReply(session.id, next)
+    sessionScratch.writeReply(scratchId, next)
     setReplyTo(next)
-  }, [session.id])
+  }, [scratchId])
   /**
    * Files written to THIS MACHINE, whose paths go into the message.
    *
@@ -448,7 +458,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * no channel a byte array could travel down — but every one of these CLIs reads a file it is
    * pointed at. The chip says the name; the message carries the path.
    */
-  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(session.id))
+  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(scratchId))
 
   /**
    * Every change to the attachment list, persisted against the session it belongs to — the same
@@ -458,10 +468,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editAttached = useCallback((next: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
     setAttached(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeAttachments(session.id, v)
+      sessionScratch.writeAttachments(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -508,12 +518,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   useEffect(() => {
     landedRef.current = false
     setAtTail(true)
-    setReplyTo(sessionScratch.readReply(session.id))
-    setEcho(sessionScratch.readEchoes(session.id))
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setAttached(sessionScratch.readAttachments(session.id))
-  }, [session.id])
+    setReplyTo(sessionScratch.readReply(scratchId))
+    setEcho(sessionScratch.readEchoes(scratchId))
+    setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
+    setDraft(sessionScratch.readDraft(scratchId))
+    setAttached(sessionScratch.readAttachments(scratchId))
+  }, [scratchId])
 
   /** The ceiling, re-measured when the window changes size. */
   const [maxComposerH, setMaxComposerH] = useState(() => composerMaxHeight(
@@ -551,7 +561,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
         const next = await res.json() as ChatPayload
         setPayload(next)
         // Write through, so the NEXT visit starts where this one ended.
-        sessionScratch.writeChat(session.id, next as unknown as CachedChat)
+        sessionScratch.writeChat(scratchId, next as unknown as CachedChat)
       } catch { /* transient — keep the last conversation rather than blanking it */ }
     }
     void poll()
@@ -900,9 +910,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       // two, and this is what makes pressing enter visibly do something.
       editEcho(list => [...list, full])
       setDraft('')
-      sessionScratch.clearDraft(session.id)
+      sessionScratch.clearDraft(scratchId)
       setAttached([])
-      sessionScratch.writeAttachments(session.id, [])
+      sessionScratch.writeAttachments(scratchId, [])
       editReply(null)
       setAtTail(true)
       toTail()
