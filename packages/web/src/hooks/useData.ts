@@ -355,6 +355,10 @@ function utcDateFromDayStr(dayStr: string): Date {
  */
 export function getDateRangeFilter(dateRange: DateRange, customStart?: string, customEnd?: string) {
   const now = utcEndOfDay(new Date())
+  // TODAY is the current day alone, in progress. It ends at the end of the day rather than at this
+  // instant: a range that stopped at `now` would exclude a session whose only recorded activity is
+  // a few seconds ahead of the browser's clock, and the ranges below already end there.
+  if (dateRange === 'today') return { start: utcStartOfDay(new Date()), end: now }
   if (dateRange === '7d') return { start: utcStartOfDay(subDays(now, 7)), end: now }
   if (dateRange === '30d') return { start: utcStartOfDay(subDays(now, 30)), end: now }
   if (dateRange === '90d') return { start: utcStartOfDay(subDays(now, 90)), end: now }
