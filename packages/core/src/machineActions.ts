@@ -41,16 +41,23 @@ export const REMOTE_SCREEN_ACTIONS = ['approve', 'prompt'] as const
  * upstream must be listed here on purpose before it can be driven from a central — the same
  * allowlist reasoning `reduceMachineFleetRow` uses for fields, applied to verbs.
  *
- * `screens` is accepted and currently narrows nothing, because the screen actions are not
- * implemented yet. It is a parameter rather than an afterthought so that turning them on is a
- * change in ONE predicate rather than a new gate scattered across the member and the central.
+ * `screens` is what turns the second list on, and it was designed as a parameter precisely so that
+ * enabling it would be a change in ONE predicate rather than a new gate scattered across the member
+ * and the central. It is that change.
+ *
+ * The gate is `screens`, never `sessions`: answering a dialog needs the dialog to be READABLE,
+ * because the keystroke that answers it cannot know which option it is taking — a claude permission
+ * prompt is `1. Yes / 2. Yes, always / 3. No`, and a blind "approve" chooses for the person. So a
+ * central that has the verbs but not the screen must not be able to press them, which is exactly
+ * what `resolveRemoteConsent` already guarantees by refusing `screens` without `sessions`.
  */
 export function remoteActionAllowed(
   action: string,
   consent: { sessions: boolean; screens: boolean },
 ): boolean {
   if (!consent.sessions) return false
-  return (REMOTE_SCREENLESS_ACTIONS as readonly string[]).includes(action)
+  if ((REMOTE_SCREENLESS_ACTIONS as readonly string[]).includes(action)) return true
+  return consent.screens && (REMOTE_SCREEN_ACTIONS as readonly string[]).includes(action)
 }
 
 /** Why an action is not offered, as a code the UI turns into a sentence. `null` = it is offered. */
@@ -60,6 +67,12 @@ export function remoteActionRefusal(
 ): 'no-consent' | 'needs-screen' | 'unknown' | null {
   if (!consent.sessions) return 'no-consent'
   if ((REMOTE_SCREENLESS_ACTIONS as readonly string[]).includes(action)) return null
-  if ((REMOTE_SCREEN_ACTIONS as readonly string[]).includes(action)) return 'needs-screen'
+  // `needs-screen` is the reason only while the screen is actually withheld. Once the machine has
+  // granted it, these verbs are offered like any other and this must agree with
+  // `remoteActionAllowed` — a refusal code for an action that IS allowed would put a sentence
+  // under a button that works.
+  if ((REMOTE_SCREEN_ACTIONS as readonly string[]).includes(action)) {
+    return consent.screens ? null : 'needs-screen'
+  }
   return 'unknown'
 }
