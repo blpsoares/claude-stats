@@ -129,6 +129,29 @@ const SYSTEM_NOTE_PT: Record<string, string> = {
   'command output': 'saída de comando',
   'slash command': 'comando de barra',
   'shell command': 'comando de shell',
+  // The notes the FIVE non-claude readers produce (`antigravity-chat.ts`, `codex-chat.ts`,
+  // `copilot-chat.ts`, `kimi-chat.ts`). They arrived with their readers and this table did not grow
+  // with them, so a conversation in any of those harnesses printed English chrome in the middle of
+  // a Portuguese screen. The fall-through above is what kept that a cosmetic gap rather than a
+  // missing line, which is why it survived unnoticed — it is still the right fall-through.
+  'a system message': 'uma mensagem do sistema',
+  'the conversation was truncated': 'a conversa foi truncada',
+  'the harness reported an error': 'o assistente reportou um erro',
+  'instructions from the harness': 'instruções do assistente',
+  'project instructions were loaded': 'instruções do projeto foram carregadas',
+  'the environment was described to the assistant': 'o ambiente foi descrito ao assistente',
+  'the system prompt was set': 'o prompt de sistema foi definido',
+  'the model was changed': 'o modelo foi trocado',
+  'the model was switched': 'o modelo foi trocado',
+  'the session ended': 'a sessão terminou',
+  'the session reported an error': 'a sessão reportou um erro',
+  'the turn was aborted': 'o turno foi interrompido',
+  'context from the editor': 'contexto vindo do editor',
+  'the collaboration mode changed': 'o modo de colaboração mudou',
+  'a reminder about the task list': 'um lembrete sobre a lista de tarefas',
+  'the harness stated its permissions': 'o assistente informou suas permissões',
+  'the permission mode was announced': 'o modo de permissão foi anunciado',
+
   // The untagged `isMeta` entries — see `chat-envelope.ts`'s second measurement.
   'a skill was loaded': 'uma skill foi carregada',
   'a skill was re-invoked': 'uma skill foi reinvocada',

@@ -1433,8 +1433,9 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
-    // One hosted session's conversation, for the workspace's chat view. Claude only in practice —
-    // the module refuses in words wherever the live-session -> conversation link is not exact.
+    // One hosted session's conversation, for the workspace's chat view. Which harnesses can be read
+    // is `harness-transcript.ts`; the module refuses IN WORDS wherever the conversation link is not
+    // exact or nothing here parses that harness's transcript format.
     if (url.pathname === '/api/fleet/chat' && req.method === 'GET') {
       const id = url.searchParams.get('id')
       if (!id) {

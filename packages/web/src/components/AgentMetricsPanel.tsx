@@ -7,6 +7,7 @@ import { MetricNote } from './MetricNote'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { capable } from '../lib/harness'
 import { NAtag } from './NAtag'
+import { unmeasuredNote } from '../lib/agentMeasured'
 
 interface AgentMetricsPanelProps {
   invocations: AgentInvocation[]
@@ -26,6 +27,11 @@ interface AgentMetricsPanelProps {
 }
 
 
+
+/** No figure, and never a zero — see `agentMeasured.ts`. */
+function Absent() {
+  return <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+}
 
 function fmtDuration(ms: number): string {
   if (ms === 0) return '—'
@@ -125,6 +131,10 @@ export function AgentMetricsPanel({
   const maxCount = sortedTypes[0]?.[1].count ?? 1
 
   const displayInvocations = showAll ? invocations : invocations.slice(0, 10)
+  // Derived from the rows ON SCREEN rather than taken as a prop, so the sentence always describes
+  // the list the reader is looking at.
+  const unmeasuredShown = displayInvocations.filter(i => i.unmeasured).length
+  const note = unmeasuredNote(unmeasuredShown, displayInvocations.length, lang)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -212,6 +222,11 @@ export function AgentMetricsPanel({
             ({pt ? `exibindo ${displayInvocations.length} de ${totalInvocations}` : `showing ${displayInvocations.length} of ${totalInvocations}`})
           </span>
         </div>
+        {note && (
+          <div style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-tertiary)', marginBottom: 8 }}>
+            {note}
+          </div>
+        )}
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, overflow: isMobile ? 'auto' : 'hidden', width: '100%' }}>
           <div style={{ minWidth: isMobile ? 480 : undefined }}>
           {/* Table header */}
@@ -265,17 +280,21 @@ export function AgentMetricsPanel({
                   {inv.description || <em style={{ color: 'var(--text-tertiary)' }}>—</em>}
                 </span>
               </div>
+              {/* An invocation whose subagent transcript is gone carries zeros because the type has
+                  no other value to carry. Rendering them would price real work at nothing — the
+                  confident 0 this product refuses everywhere else — so the cell says nothing
+                  instead, and the note under the heading says why. */}
               <span style={{ fontSize: 11, color: 'var(--text-primary)', textAlign: 'right' }}>
-                {fmt(inv.totalTokens)}
+                {inv.unmeasured ? <Absent /> : fmt(inv.totalTokens)}
               </span>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>
-                {inv.totalToolUseCount}
+                {inv.unmeasured ? <Absent /> : inv.totalToolUseCount}
               </span>
               <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>
-                {fmtDuration(inv.totalDurationMs)}
+                {inv.unmeasured ? <Absent /> : fmtDuration(inv.totalDurationMs)}
               </span>
               <span style={{ fontSize: 11, color: 'var(--anthropic-orange)', textAlign: 'right' }}>
-                {fmtCost(inv.costUSD, currency, brlRate)}
+                {inv.unmeasured ? <Absent /> : fmtCost(inv.costUSD, currency, brlRate)}
               </span>
             </div>
           ))}

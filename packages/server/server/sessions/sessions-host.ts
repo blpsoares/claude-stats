@@ -16,7 +16,8 @@ import type { HarnessProcess } from '../live-sessions'
 import { rulesFor } from './attention-rules'
 import { approvalTail, attentionOf, digestFrame, frameTail } from './attention'
 import { EMPTY_CONFIRM_MEMORY, confirmActivities, type ConfirmMemory } from './attention-confirm'
-import { readRecentChatTurns, resolveChatTranscriptPath, type ChatTurn } from './chat-tail'
+import type { ChatTurn } from './chat-turn'
+import { transcriptReaderFor } from './harness-transcript'
 import { markFleetPhase } from './fleet-profile'
 import { parseDialogOptions, type DialogOption } from './dialog-choice'
 // Taking a running session back when its registry record is gone. See `session-adopt.ts`.
@@ -51,7 +52,7 @@ const CAPTURE_CONCURRENCY = 4
  *  with; the pane cuts from the bottom to whatever it can actually draw. */
 const TAIL_LINES = 8
 
-/** How many role-tagged chat turns to carry for a Claude session — see `chat-tail.ts`. */
+/** How many role-tagged chat turns to carry for a readable session — see `harness-transcript.ts`. */
 const TAIL_CHAT_TURNS = 6
 
 /**
@@ -265,15 +266,26 @@ export function createSessionsPoller(o: {
 
         const harness = harnessOf.get(r.id)
 
-        // Claude only: the one harness with an EXACT live-session -> conversation-id link
-        // (`harness-sessions.ts`), which is what makes reading its own transcript safe rather than
-        // a guess. Every other harness keeps the raw screen tail above as its only detail content.
+        // Read the harness's own transcript instead of the screen, wherever BOTH halves hold: the
+        // conversation id is EXACT and somebody has written a reader for that harness's format
+        // (`harness-transcript.ts`). Either missing and the raw screen tail above stays the row's
+        // only detail content — never a conversation guessed from harness-and-directory.
+        //
+        // TWO exact sources, and they are not interchangeable. Claude's own
+        // `~/.claude/sessions/<pid>.json` names our tmux session, which is the link for a session
+        // we did not start; `ManagedSession.conversationId` is the id agentop handed the CLI
+        // itself, which is the only one the other harnesses can ever have. Claude's own record is
+        // preferred where both exist — it is the LIVE one, while the registry's was recorded once.
         const cwd = r.managed?.cwd
         const conversationId = harnessSessions.byManagedId.get(r.id)?.sessionId
-        if (harness === 'claude' && cwd && conversationId) {
-          const path = await resolveChatTranscriptPath(cwd, conversationId).catch(() => null)
+          ?? r.managed?.conversationId
+        const transcript = transcriptReaderFor(harness)
+        if (transcript && conversationId) {
+          const path = await transcript
+            .resolve({ conversationId, ...(cwd ? { cwd } : {}) })
+            .catch(() => null)
           if (path) {
-            const turns = await readRecentChatTurns(path, TAIL_CHAT_TURNS).catch(() => [] as ChatTurn[])
+            const turns = await transcript.readRecent(path, TAIL_CHAT_TURNS).catch(() => [] as ChatTurn[])
             if (turns.length > 0) chatTails.set(r.id, turns)
           }
         }

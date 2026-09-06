@@ -325,7 +325,80 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          guessed directory, and a `derived` name is never adopted as a label. The
   │                          takeover additionally READS ITS WRITE BACK and retries once, saying so
   │                          when the record still cannot be kept — the loss is otherwise invisible
-  │                          at the moment it happens. See docs/session-manager.md
+  │                          at the moment it happens.
+  │                          **WHOSE CONVERSATION CAN BE READ** is `harness-transcript.ts`, a
+  │                          `Record<HarnessId, HarnessTranscript | null>` behind the workspace's
+  │                          chat view and the fleet poll's six-row tail. There are TWO limits and
+  │                          they were one thing for as long as Claude was the only readable
+  │                          harness: the LINK (is this row's `conversationId` exact?) and the
+  │                          FORMAT (has anybody written a reader?). Collapsing them cost the
+  │                          feature its honesty — measured 2026-09-05 on a live antigravity session
+  │                          whose `/proc/<pid>/cmdline` was `agy --conversation 01d0814f-…` for the
+  │                          very id the registry held, `GET /api/fleet/chat` ran into the
+  │                          CLAUDE-only path resolver, found nothing, took the live branch and
+  │                          answered `{turns: [], live: true}`: a blank pane with no sentence on
+  │                          it, because `SessionChat.tsx` draws "no messages yet" only when
+  │                          `live === null`. A `null` reader is now REFUSED IN WORDS and NAMES the
+  │                          harness. The link rule is untouched: only `ManagedSession.conversationId`
+  │                          reaches a reader, never the harness-and-directory guess, or some other
+  │                          conversation from the same folder appears under this session's name.
+  │                          `antigravity-chat.ts` is the first non-Claude reader and is PURE. agy
+  │                          writes the REQUEST and the EXECUTION as two steps — a `PLANNER_RESPONSE`
+  │                          carrying prose, `thinking` and `tool_calls`, then a `RUN_COMMAND` /
+  │                          `VIEW_FILE` / … step whose `content` is the result (1094 against 909 on
+  │                          the measured file; the executions carry no `tool_calls` at all). The
+  │                          chat keeps the REQUESTS and drops the executions, which is the INVERSE
+  │                          of `harness-activity.ts`'s choice for the same transcript and for the
+  │                          same reason — counting both is counting twice; a count wants the thing
+  │                          that happened, a bubble wants the one with the command in it. Tool names
+  │                          go through `canonicalTool`, so `sessionArtifacts.ts` — which selects by
+  │                          Claude's names — works on an agy session without knowing agy exists.
+  │                          `CONVERSATION_HISTORY` is a replay and is skipped; `SYSTEM_MESSAGE`,
+  │                          `CHECKPOINT` and `ERROR_MESSAGE` become unattributed notes that NAME the
+  │                          kind and never carry the body (agy's checkpoint is the whole truncated
+  │                          conversation, and its error paragraph runs 206–633 characters across all
+  │                          77 measured) — the same rule `chat-envelope.ts` applies to Claude's
+  │                          injected entries. `transcript-window.ts` is the shared byte-tail reader
+  │                          every harness polls through: a poll that reads whole transcripts is what
+  │                          made `/api/fleet` answer in 36 s cold.
+  │                          **FIVE READERS, and the sixth null is a FINDING.** `codex-chat.ts`,
+  │                          `copilot-chat.ts` and `kimi-chat.ts` joined `antigravity-chat.ts`, all
+  │                          pure, each written against a fresh measurement of that harness's own
+  │                          files. Three rules recur and every one of them was a real defect first:
+  │                          **(1) THE SAME TURN IS WRITTEN TWICE**, in a different pair of places
+  │                          each time — codex writes `event_msg/{user,agent}_message` beside
+  │                          `response_item/message`, kimi writes `turn.prompt` beside
+  │                          `context.append_message`, agy writes the tool REQUEST beside its
+  │                          EXECUTION, and kimi's metrics parser records the same trap for its usage
+  │                          records. In each case ONE family is chosen and the other is ignored
+  │                          outright, and the chosen one is the SUPERSET, measured: codex's
+  │                          `event_msg` covers 21 of 42 user messages, kimi's `turn.prompt` 15 of 22.
+  │                          **(2) WHAT NOBODY SAID IS NEVER DRAWN AS A MESSAGE**, and each harness
+  │                          declares it differently — kimi stamps `message.origin.kind`
+  │                          (`user` against `injection`, its own `isMeta`), copilot separates
+  │                          `data.content` from `data.transformedContent` (the second is the same
+  │                          text wrapped in `<current_datetime>`/`<system_reminder>` and is NEVER
+  │                          read), codex has a `developer` ROLE plus `<…>` envelopes, and codex ALSO
+  │                          has entries with no marker at all: measured over its 40 largest
+  │                          rollouts, 11 of 32 untagged user messages were the harness loading a
+  │                          file (`# AGENTS.md instructions for …`), so `INJECTED` is
+  │                          `chat-envelope.ts`'s `META_KINDS` applied there. Everywhere, an
+  │                          unrecognised entry stays the PERSON's — hiding a real message is the
+  │                          expensive direction. **(3) A SHELL DETAIL GOES THROUGH
+  │                          `commandSummary`**, never a first-line truncation: on a real codex
+  │                          rollout five consecutive chips read `cd /home/…/embark`, saying where
+  │                          the work happened and never what it was.
+  │                          **GEMINI HAS NO READER AND MAY NOT GET ONE**, and that is a LINK fact,
+  │                          not a format one. A reader is only ever offered a `conversationId`, and
+  │                          only a harness with `assignId` or an id-taking `resume` can ever have
+  │                          one — claude and copilot have `assignId`; codex, kimi and agy have
+  │                          `resume`; **gemini has neither** (`-r, --resume` takes "latest" or an
+  │                          index, and `--session-id` is excluded because gemini's id here is
+  │                          synthetic). So an entry for it would be unreachable code plus a claim
+  │                          the product cannot honour; `conversationBlind` already says so on the
+  │                          row and `SessionsPage` hides the chat tab. Its format WAS measured and
+  │                          the finding is recorded in `harness-transcript.ts` so nobody spends it
+  │                          twice: a patch log, not one message per line. See docs/session-manager.md
   ├── cli-start.ts         → the control center's HOST (`ControlHost`): service detection, start/stop/restart, connect/disconnect, boot service, archive consent, language — every action returns an already-localized `ActionResult` instead of printing
   ├── cli-stream.ts        → the control center's OUTPUT CHANNEL: subscribers + `streamCommand` (both pipes captured, never `inherit`) → lines via the pure `@agentistics/tui/control/stream`
   ├── cli-ui.ts            → dependency-free arrow-key select/confirm/input/pause + clearScreen (bundles clean into the binary; no node_modules to resolve)
@@ -1185,19 +1258,48 @@ Only active when `SERVE_STATIC=1` (set by `cli.ts` for the `server` subcommand).
 
 Agent metrics are extracted from raw JSONL files by `server/agent-metrics.ts`. They are available in the `agentMetrics` field of each `SessionMeta`.
 
-### Data available per Agent invocation
+### The numbers are in the SUBAGENT'S OWN transcript, not in the parent's result
+
+**Claude Code made the `Agent` tool asynchronous on 2026-08-14 and the parent's `toolUseResult`
+stopped carrying any numbers.** It is now `{ agentId, description, isAsync, outputFile,
+resolvedModel, status: 'async_launched' }` — no `usage`, no `totalTokens`, no `toolStats`, no
+duration. Every `?? 0` in the old reader fired at once and each invocation was published **priced at
+nothing**: measured on one machine, 391 of 391 invocations from 08-14 onward reported 0 tokens while
+the panel kept drawing rows for all of them. That is the whole failure mode worth remembering — a
+PARTIALLY working reader. `agentType` and `description` come from the parent's `tool_use` input, so
+the rows kept their names and only the values were gone, and it went unnoticed for three weeks.
+
+The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-<agentId>.jsonl`
+(+ an `agent-<agentId>.meta.json` naming the parent's `toolUseId`). `subagent-parse.ts` is **pure**
+— it sums one such transcript — and `subagent-metrics.ts` does the I/O: find, recurse, memoize.
+
+- **`outputFile` is NOT the file to read.** It is the agent's text answer in the run's `/tmp` scratch
+  directory, cleared on reboot and already gone for every invocation measured here. The durable one
+  is under `subagents/`.
+- **Price each model at ITS OWN rate.** A subagent commonly runs `haiku` under an `opus` parent (four
+  distinct models across 440 transcripts here), so one `modelId` for the whole invocation bills a
+  cheap agent as an expensive one — which is exactly what the old reader did with the parent's model.
+- **A nested subagent counts inside the invocation that spawned it.** Only a top-level `Agent`
+  `tool_use` becomes an `AgentInvocation`, so a subtree left out is left out of the session's totals
+  entirely. Cycle-safe by a visited set.
+- **The DURATION is the root's own span** — a nested agent runs inside its parent, and adding the two
+  counts the same wall time twice.
+- **An invocation whose transcript is gone is `unmeasured: true`, never a zero.** Read that flag
+  BEFORE any figure on the record: it carries zeros only because the type has no other value to
+  carry. `SessionAgentMetrics` totals exclude them and `unmeasuredInvocations` counts them, so a
+  surface can say the totals cover fewer rows than it is showing (`web/src/lib/agentMeasured.ts`).
+  Same rule as `HARNESS_CAPABILITIES`, applied to one row instead of a whole harness.
 
 | Field | Source |
 |---|---|
-| `agentType` | `toolUseResult.agentType` in the JSONL message envelope |
+| `agentType` | `toolUseResult.agentType`, else the `tool_use` input's `subagent_type` |
 | `description` | `tool_use.input.description` |
-| `totalTokens` | `toolUseResult.totalTokens` |
-| `totalDurationMs` | `toolUseResult.totalDurationMs` |
-| `totalToolUseCount` | `toolUseResult.totalToolUseCount` |
-| `inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens` | `toolUseResult.usage.*` |
-| `toolStats` (reads, searches, bash, edits, lines changed) | `toolUseResult.toolStats` |
-| `costUSD` | Calculated via `calcCost()` |
-| `status` | `toolUseResult.status` (`completed` / `failed`) |
+| `agentId` | `toolUseResult.agentId` — names the subagent transcript |
+| `totalTokens` (all four counters) / `inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` | the subagent transcript's `message.usage`, per model; legacy: `toolUseResult.usage.*` |
+| `totalDurationMs` | the subagent transcript's first→last timestamp; legacy: `toolUseResult.totalDurationMs` |
+| `totalToolUseCount` / `toolStats` | the subagent transcript's `tool_use` items and `structuredPatch` hunks; legacy: `toolUseResult.toolStats` |
+| `costUSD` | `calcCost()` per model of the subagent's own turns |
+| `status` | `toolUseResult.status` (`failed` → `failed`, anything else → `completed`) |
 
 ### What is NOT available for Skills and Tasks
 

@@ -1,5 +1,8 @@
 import { readFile } from 'fs/promises'
+import { basename } from 'path'
 import { calcCost } from '@agentistics/core'
+import { totalsOf } from './subagent-parse'
+import { enrichFromSubagentTranscripts } from './subagent-metrics'
 import type { AgentInvocation, SessionAgentMetrics } from '@agentistics/core'
 
 interface ToolUseRecord {
@@ -100,6 +103,27 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
         // We have a match — build the AgentInvocation
         pendingAgents.delete(toolUseId)
 
+        /**
+         * Did this result carry NUMBERS at all?
+         *
+         * Since Claude Code made the `Agent` tool asynchronous (measured: the shape changed on
+         * 2026-08-14) the result is only `{ agentId, description, isAsync, outputFile,
+         * resolvedModel, status: 'async_launched' }` — no `usage`, no totals, no `toolStats`. Every
+         * `?? 0` below then fired at once and the invocation was published priced at nothing, which
+         * is exactly the confident zero this repository forbids: the panel kept rendering rows and
+         * only the values were gone, which is why it went unnoticed for three weeks.
+         *
+         * So a result with no numbers is marked UNMEASURED here and enriched from the subagent's own
+         * transcript by `subagent-metrics.ts`. What cannot be found there stays unmeasured, and the
+         * surface renders N/A.
+         */
+        const measured =
+          toolUseResult.usage !== undefined ||
+          toolUseResult.totalTokens !== undefined ||
+          toolUseResult.totalDurationMs !== undefined ||
+          toolUseResult.totalToolUseCount !== undefined ||
+          toolUseResult.toolStats !== undefined
+
         const usage = toolUseResult.usage ?? {}
         const toolStats = toolUseResult.toolStats ?? {}
 
@@ -122,6 +146,8 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
 
         invocations.push({
           toolUseId,
+          ...(toolUseResult.agentId ? { agentId: toolUseResult.agentId } : {}),
+          ...(measured ? {} : { unmeasured: true as const }),
           agentType: toolUseResult.agentType ?? pending.input.subagent_type ?? 'unknown',
           description: pending.input.description ?? '',
           status: (toolUseResult.status === 'failed') ? 'failed' : 'completed',
@@ -147,18 +173,7 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
     }
   }
 
-  const totalInvocations = invocations.length
-  const totalTokens = invocations.reduce((s, i) => s + i.totalTokens, 0)
-  const totalDurationMs = invocations.reduce((s, i) => s + i.totalDurationMs, 0)
-  const totalCostUSD = invocations.reduce((s, i) => s + i.costUSD, 0)
-
-  return {
-    invocations,
-    totalInvocations,
-    totalTokens,
-    totalDurationMs,
-    totalCostUSD,
-  }
+  return totalsOf(invocations)
 }
 
 /**
@@ -166,7 +181,7 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
  * Used for meta-sourced sessions that have agent tool usage.
  */
 export async function extractAgentMetricsFromFile(filePath: string): Promise<SessionAgentMetrics> {
-  const empty: SessionAgentMetrics = { invocations: [], totalInvocations: 0, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0 }
+  const empty: SessionAgentMetrics = { invocations: [], totalInvocations: 0, unmeasuredInvocations: 0, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0 }
   let content: string
   try {
     content = await readFile(filePath, 'utf-8')
@@ -190,5 +205,8 @@ export async function extractAgentMetricsFromFile(filePath: string): Promise<Ses
     } catch { continue }
   }
 
-  return extractAgentMetrics(lines, modelId)
+  // The session id is the file's own name — which is exactly what names the `subagents/` directory
+  // holding each subagent's transcript.
+  const sessionId = basename(filePath).replace(/\.jsonl$/, '')
+  return enrichFromSubagentTranscripts(extractAgentMetrics(lines, modelId), filePath, sessionId)
 }

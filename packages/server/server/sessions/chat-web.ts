@@ -6,18 +6,29 @@
  * already seen — so this reads the transcript with an explicit turn budget and reports how many
  * turns exist, letting the browser hold what it already has.
  *
- * THE HARNESS LIMIT IS THE POINT. A live session can only be tied to its transcript where the link
- * is EXACT — Claude Code's own `~/.claude/sessions/<pid>.json` naming our tmux session. Everywhere
- * else the honest answer is that this view cannot exist, and the caller says so in words. Guessing
- * by harness-and-directory would put SOME OTHER conversation from the same folder on screen under
- * this session's name, which is worse than showing nothing: it is a confident wrong answer, and the
- * reader has no way to tell.
+ * THE HARNESS LIMIT IS THE POINT, and it is TWO limits that were one thing for as long as Claude
+ * was the only readable harness.
+ *
+ * The first is the LINK: a session can only be tied to its transcript where the id is EXACT — the
+ * one agentop handed the CLI, or Claude Code's own `~/.claude/sessions/<pid>.json` naming our tmux
+ * session. Guessing by harness-and-directory would put SOME OTHER conversation from the same folder
+ * on screen under this session's name, which is worse than showing nothing: a confident wrong
+ * answer the reader has no way to tell. `SessionView.conversationId` already enforces this, and
+ * nothing here relaxes it.
+ *
+ * The second is the FORMAT: whether anybody has written a reader for it (`harness-transcript.ts`).
+ * Collapsing the two cost the feature its honesty. Measured 2026-09-05 on a live antigravity
+ * session holding a perfectly exact link — `/proc/<pid>/cmdline` was `agy --conversation
+ * 01d0814f-…`, the very id the registry held — the request ran into the CLAUDE path resolver, came
+ * back with no file, and answered `{turns: [], live: true}`: a completely blank pane with nothing
+ * on it saying why. The link was never the problem; there was no reader.
  */
 
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
-import { readChatWindow, resolveChatTranscriptPath, type ChatTurn } from './chat-tail'
+import type { ChatTurn } from './chat-turn'
+import { transcriptReaderFor } from './harness-transcript'
 
 export interface ChatPayload {
   /** The turns, oldest first. Empty with no `unavailable` means a conversation with nothing in it. */
@@ -80,7 +91,36 @@ export async function readSessionChat(
     }
   }
 
-  const path = await resolveChatTranscriptPath(row.cwd, row.conversationId).catch(() => null)
+  // No reader for this harness's transcript FORMAT — see `harness-transcript.ts`. It is said in
+  // words and it NAMES the harness, because "nothing here parses this yet" and "this conversation
+  // has said nothing yet" are different facts, and only the second one changes on its own.
+  // A row whose harness the registry has forgotten (`ControlSession.harness` is `''`) cannot be
+  // routed to any reader, and saying "we cannot read ''" would be worse than saying nothing.
+  if (!row.harness) {
+    return {
+      turns: [],
+      unavailable: lang === 'pt'
+        ? 'O registro não guarda mais qual assistente escreveu esta sessão, então não há como saber que transcrição ler.'
+        : 'The registry no longer records which assistant wrote this session, so there is no way to know which transcript to read.',
+      live,
+    }
+  }
+
+  const reader = transcriptReaderFor(row.harness)
+  if (!reader) {
+    const name = row.harness
+    return {
+      turns: [],
+      unavailable: lang === 'pt'
+        ? `Ainda não sabemos ler a transcrição do ${name}. A conversa desta sessão está gravada no disco desta máquina — o que falta é um leitor para o formato dela.`
+        : `We cannot read ${name}'s transcript format yet. This session's conversation is recorded on this machine — what is missing is a reader for it.`,
+      live,
+    }
+  }
+
+  const path = await reader
+    .resolve({ conversationId: row.conversationId, ...(row.cwd ? { cwd: row.cwd } : {}) })
+    .catch(() => null)
   if (!path) {
     // A LIVE session whose transcript is not on disk YET is an EMPTY conversation, not a missing
     // one — and the difference is the whole usability of a new session. A harness writes its
@@ -105,8 +145,11 @@ export async function readSessionChat(
     }
   }
 
-  const read = await readChatWindow(path, MAX_TURNS)
-    .catch(() => ({ turns: [] as ChatTurn[], older: false }))
+  // The reader routes by harness; only some of them can say whether the cap cut a longer
+  // conversation short, and one that cannot makes NO claim — see `HarnessTranscript.readWindow`.
+  const read = reader.readWindow
+    ? await reader.readWindow(path, MAX_TURNS).catch(() => ({ turns: [] as ChatTurn[], older: false }))
+    : { turns: await reader.read(path, MAX_TURNS).catch(() => [] as ChatTurn[]), older: false }
   return {
     turns: read.turns,
     live,
