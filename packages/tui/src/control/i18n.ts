@@ -9,7 +9,7 @@
 
 import type { CliLang } from './lang'
 import { dimensionWordBook, type DimensionWordBook, type SessionDimensionId, type SessionGroupingId } from './session-dimensions'
-import type { TabId, TeamMode } from './types'
+import type { BackupLayer, BackupScheduleId, TabId, TeamMode } from './types'
 
 export interface ControlStrings {
   tagline: string
@@ -605,6 +605,153 @@ export interface ControlStrings {
   copyHint: string
   /** The same reminder while the mouse reports, when a plain drag no longer selects. */
   copyHintShift: string
+
+  /** The `backup` tab. See `control/backup.ts` — this file holds only the words, never the
+   *  arithmetic or which harness rides the next backup. */
+  paneHarnesses: string
+  /** This build's host cannot read backup status at all — `ControlHost.backupStatus` is optional,
+   *  same treatment `sessions?()` gets. */
+  backupHostMissing: string
+  keyBackupToggle: string
+  keyBackupRun: string
+  keyBackupSchedule: string
+  /** The layers editor's own keys, while it has the keyboard — see `Backup.tsx`'s `editingLayers`. */
+  keyLayerToggle: string
+  keyLayerSave: string
+  keyLayerCancel: string
+  /** The verb the streaming output pane wears while a backup is running. */
+  actBackupRun: string
+  /** The verb the schedule row's action wears, and the outcome the config action's status line
+   *  shows — the schedule change itself is host-localized (`cli-i18n.ts`'s `backupScheduleSet`). */
+  actBackupSchedule: string
+  /** The verbs the `layers` and `scheduleLayers` config rows wear — `enter` opens the layers
+   *  editor in the detail pane, exactly like the setup wizard is a question drawn there. */
+  actBackupEditLayers: string
+  actBackupEditScheduleLayers: string
+  backupLayersLabel: string
+  /** The config row summarizing what a SCHEDULED run writes — deliberately a separate row from
+   *  `backupLayersLabel`, right under `backupScheduleLabel`. */
+  backupScheduleLayersLabel: string
+  /**
+   * The four layers, under the names a person thinks in rather than the CLI's own vocabulary
+   * (`metrics`/`repos`/`archive`/`raw`) — the layers EDITOR's own row labels. `backupLayersLabel`'s
+   * summary value stays untranslated CLI vocabulary on purpose; this is the only place the friendly
+   * names are used.
+   */
+  backupLayerName: Record<BackupLayer, string>
+  /** The metrics row's own sentence in the editor — it renders always-on and non-interactive, and
+   *  says why rather than merely disabling a control silently. */
+  backupLayerAlwaysOn: string
+  /** A layer's size when it cannot be measured ahead of a run — `repos` only, whose bundles and
+   *  patches do not exist anywhere until a backup actually builds them. Never a guessed number. */
+  backupLayerSizeUnknown: string
+  /**
+   * One line per layer saying what it ACTUALLY saves — the truth about the code, shown under its
+   * row in the layers editor. `HISTORY_LABEL` never explains itself from its name alone (does
+   * "conversations" mean the transcript, or the metrics ABOUT it?), so this is stated rather than
+   * left to be inferred. The same words the web's format picker uses.
+   */
+  backupLayerDescription: Record<BackupLayer, string>
+  /** `metrics` alone cannot resume a session — the one fact its own name does not carry, stated on
+   *  its row rather than left to be discovered on the far side of a restore. */
+  backupMetricsNoResume: string
+  /** `archive` only grows while this machine's history-preservation mode is `full` — named on the
+   *  row when it is anything else, so a frozen layer does not look live. `mode` is the CLI's own
+   *  untranslated word (`consolidate`/`off`/`archiveUnset`), same convention as `native`/`docker`. */
+  backupArchiveFrozen: (mode: string) => string
+  /** The GitHub-fit indicator beside the format picker — NOT the upload feature itself, which does
+   *  not exist yet. Reasoned only from the measured UNCOMPRESSED total; see `githubFitVerdict`. */
+  backupGithubFits: string
+  backupGithubMayNotFit: string
+  /** Shown under the SCHEDULE layers editor only, when `repos` is checked there — a schedule never
+   *  actually carries it (see `schedule.ts` and `daemon.ts`), so the editor says so plainly rather
+   *  than silently dropping the box's own state. */
+  backupScheduleReposNote: string
+  backupDestLabel: string
+  backupScheduleLabel: string
+  backupKeepLabel: string
+  backupKeepValue: (keep: number, retainedLabel: string) => string
+  backupSecretsLabel: string
+  backupSecretsValue: (n: number) => string
+  backupLastLabel: string
+  /** The harness detail pane's own two rows — absent from the list, which shows only `last`. */
+  backupSessionsLabel: string
+  backupSizeLabel: string
+  /** `off` / `daily` / `weekly`, said in words — the closed enum `s` cycles through. */
+  backupScheduleWord: Record<BackupScheduleId, string>
+  /** Appended to the schedule word when `ControlBackupConfig.scheduleActive` is false — never a
+   *  "next at…" that will not arrive; see `schedule.ts`'s `inactive-no-server`. */
+  backupScheduleInactive: string
+  /** A harness that has never been backed up at all. */
+  backupNever: string
+  /** A harness (or the machine) that WAS covered by a backup whose file is now gone — never a
+   *  reassuring date. See `backup-store.ts`'s `markPresence`. */
+  backupLastGone: string
+  /** The SAME fact, short — the harnesses list's own column. See `harnessLastShort`. */
+  backupLastGoneShort: string
+  /** There has never been a backup on this machine at all — the config/detail `last` row. */
+  backupNoneOnDisk: string
+  /** `${elapsed} ago` in EN, `há ${elapsed}` in PT — composed rather than concatenated because the
+   *  word order differs between the two languages. */
+  backupAgo: (elapsed: string) => string
+  /** The last backup's outcome word — mirrors `agentop backup status`'s own three sentences. */
+  backupLastOk: string
+  backupLastUnknown: string
+  backupLastSkipped: (n: number) => string
+
+  /**
+   * GitHub VERSIONING — the repository that holds this machine's backups as Releases. Not
+   * `backupGithubFits`, which is only the 2 GB-per-file indicator beside the format picker.
+   *
+   * Every string here is read-only on the cockpit: there is no verb this tab can honestly offer
+   * (setup needs a token; the label and retention are changed from Settings -> Backup), so the
+   * words carry the instruction instead of a control that would refuse.
+   */
+  backupGithubLabel: string
+  /** The config pane's summary when versioning is off, and the block's own row label for it. */
+  backupGithubOff: string
+  backupGithubVersioningLabel: string
+  /** The unconfigured block's ONE row — it names the command that turns versioning on, because a
+   *  section that renders nothing reads as broken. */
+  backupGithubOffValue: string
+  /** `owner/repo` — the repository holding the releases. */
+  backupGithubRepoLabel: string
+  /** What THIS machine is called in its release tags. */
+  backupGithubMachineLabel: string
+  /** The one fact the name cannot carry on its own: several machines can share one repository, and
+   *  this is what tells their backups apart. Also names where it is changed, since the cockpit
+   *  cannot change it. */
+  backupGithubMachineNote: string
+  /** How many of this machine's releases are kept. `0` is "all of them", never a bare zero — a
+   *  confident `0` there reads as "none are kept", the exact opposite of what it means. */
+  backupGithubKeepLabel: string
+  backupGithubKeepValue: (n: number) => string
+  /** Whether the local archive survives a CONFIRMED upload — both directions said in words. */
+  backupGithubLocalLabel: string
+  backupGithubLocalDeleted: string
+  backupGithubLocalKept: string
+  /** The config pane's one-line summary: the repository and this machine's name. Composed here
+   *  rather than concatenated at the call site, same as `backupKeepValue`. */
+  backupGithubSummary: (repo: string, label: string) => string
+
+  /**
+   * The history viewer — every recorded backup, paginated, newest first. Opened from the config
+   * pane's `history` row; see `control/backup.ts`'s `historyRows`/`paginateHistory`.
+   */
+  paneHistory: string
+  /** The config row's own value — "N backups" — and the verb that opens the viewer. */
+  backupHistoryCount: (n: number) => string
+  actBackupViewHistory: string
+  backupHistoryEmpty: string
+  /** The three states `backup-store.ts`'s `markPresence` computes — never re-derived here.
+   *  `pruned` is neutral wording on purpose: it is the normal, expected outcome of retention, and
+   *  reads nothing like a warning. `missing` is the one that does. */
+  backupHistoryPresent: string
+  backupHistoryPruned: string
+  backupHistoryMissing: string
+  /** `12–21 / 42` style position, composed with `windowLabel`, plus which keys move the page. */
+  keyHistoryPage: string
+  keyHistoryClose: string
 }
 
 const EN: ControlStrings = {
@@ -613,6 +760,7 @@ const EN: ControlStrings = {
   tabs: {
     services: 'Services',
     sessions: 'Sessions',
+    backup: 'Backup',
     dashboard: 'Dashboard',
     hardware: 'Hardware',
     logs: 'Logs',
@@ -624,6 +772,7 @@ const EN: ControlStrings = {
   tabsShort: {
     services: 'services',
     sessions: 'sessions',
+    backup: 'backup',
     dashboard: 'dashboard',
     hardware: 'hardware',
     logs: 'logs',
@@ -1091,6 +1240,91 @@ const EN: ControlStrings = {
   dashUnknown: 'The agentistics server\u2019s state could not be read, so there are no metrics to show. The services screen says why.',
   copyHint: 'select with the mouse to copy',
   copyHintShift: 'hold shift and drag to select and copy',
+
+  paneHarnesses: 'harnesses',
+  backupHostMissing: 'this build cannot read backup status.',
+  keyBackupToggle: 'space toggle',
+  keyBackupRun: 'b run backup',
+  keyBackupSchedule: 's schedule',
+  keyLayerToggle: 'space toggle',
+  keyLayerSave: 'enter save',
+  keyLayerCancel: 'esc cancel',
+  actBackupRun: 'Run backup',
+  actBackupSchedule: 'Change schedule',
+  actBackupEditLayers: 'Edit layers',
+  actBackupEditScheduleLayers: 'Edit schedule layers',
+  backupLayersLabel: 'layers',
+  backupScheduleLayersLabel: 'on schedule',
+  backupLayerName: {
+    metrics: 'Metrics',
+    repos: 'Repositories',
+    archive: 'Mirrored transcripts',
+    raw: 'Conversations',
+  },
+  backupLayerAlwaysOn: 'always on — a backup with no metrics restores nothing',
+  backupLayerSizeUnknown: 'known after running',
+  backupLayerDescription: {
+    metrics: 'Your agentistics settings, plus the computed record of every session — cost, tokens, '
+      + 'model, duration, files touched — the deep Claude aggregate, tags, workflows, attachments '
+      + 'and your event subscriptions.',
+    repos: 'A map of every project directory, plus a bundle of each repository\'s commits that are '
+      + 'not on its remote, and a patch of the uncommitted changes in each working tree. Restores '
+      + 'your repository layout and unpushed work.',
+    archive: 'Transcripts already mirrored into ~/.agentistics/archive.',
+    raw: 'The harness directories themselves — the conversation text. Lets a session be resumed '
+      + 'after a restore. Gigabytes.',
+  },
+  backupMetricsNoResume: 'This alone does not let you resume a session — it holds no conversation text.',
+  backupArchiveFrozen: mode => `frozen on this machine — history preservation is set to \`${mode}\`, not \`full\``,
+  backupGithubFits: 'fits a GitHub Release, for certain',
+  backupGithubMayNotFit: 'might not fit a GitHub Release (2 GB per file) — the real size is only known after compressing',
+  backupScheduleReposNote: 'a scheduled run never carries this — it is built by `agentop backup`, not on a schedule',
+  backupDestLabel: 'destination',
+  backupScheduleLabel: 'schedule',
+  backupKeepLabel: 'keep',
+  backupKeepValue: (keep, retainedLabel) => `${keep} backup${keep === 1 ? '' : 's'} (${retainedLabel})`,
+  backupSecretsLabel: 'secrets',
+  backupSecretsValue: n => `excluded (${n} item${n === 1 ? '' : 's'})`,
+  backupLastLabel: 'last',
+  backupSessionsLabel: 'sessions',
+  backupSizeLabel: 'size',
+  backupScheduleWord: { off: 'off', daily: 'daily', weekly: 'weekly', custom: 'custom' },
+  backupScheduleInactive: '\u2014 inactive (server not running)',
+  backupNever: 'never',
+  backupLastGone: 'none (no recorded backup whose file is still on disk)',
+  backupLastGoneShort: 'gone',
+  backupNoneOnDisk: 'no backup on disk yet',
+  backupAgo: elapsed => `${elapsed} ago`,
+  backupLastOk: 'ok',
+  backupLastUnknown: '(unknown whether anything was skipped)',
+  backupLastSkipped: n => `${n} skipped`,
+
+  backupGithubLabel: 'github',
+  backupGithubOff: 'off',
+  backupGithubVersioningLabel: 'versioning',
+  backupGithubOffValue: 'off \u2014 `agentop backup github setup <url>` turns it on',
+  backupGithubRepoLabel: 'repository',
+  backupGithubMachineLabel: 'this machine',
+  backupGithubMachineNote: 'Several machines can back up to one repository \u2014 this name is what '
+    + 'tells their backups apart. Change it in Settings \u2192 Backup on this machine\u2019s dashboard.',
+  backupGithubKeepLabel: 'releases kept',
+  backupGithubKeepValue: n => (n === 0
+    ? 'every release of this machine'
+    : `${n} release${n === 1 ? '' : 's'} of this machine`),
+  backupGithubLocalLabel: 'local archive',
+  backupGithubLocalDeleted: 'deleted once the upload is confirmed',
+  backupGithubLocalKept: 'kept after the upload',
+  backupGithubSummary: (repo, label) => `${repo} \u00b7 ${label}`,
+
+  paneHistory: 'history',
+  backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
+  actBackupViewHistory: 'View history',
+  backupHistoryEmpty: 'no backups recorded yet',
+  backupHistoryPresent: 'on disk',
+  backupHistoryPruned: 'pruned by retention',
+  backupHistoryMissing: 'file missing',
+  keyHistoryPage: 'pgup/pgdn page',
+  keyHistoryClose: 'esc close',
 }
 
 const PT: ControlStrings = {
@@ -1099,6 +1333,7 @@ const PT: ControlStrings = {
   tabs: {
     services: 'Serviços',
     sessions: 'Sessões',
+    backup: 'Backup',
     dashboard: 'Dashboard',
     hardware: 'Hardware',
     logs: 'Logs',
@@ -1110,6 +1345,7 @@ const PT: ControlStrings = {
   tabsShort: {
     services: 'serviços',
     sessions: 'sessões',
+    backup: 'backup',
     dashboard: 'dashboard',
     hardware: 'hardware',
     logs: 'logs',
@@ -1559,6 +1795,92 @@ const PT: ControlStrings = {
   dashUnknown: 'Não foi possível ler o estado do servidor agentistics, então não há métricas para mostrar. A tela de serviços diz por quê.',
   copyHint: 'selecione com o mouse para copiar',
   copyHintShift: 'segure shift e arraste para selecionar e copiar',
+
+  paneHarnesses: 'harnesses',
+  backupHostMissing: 'esta build não consegue ler o estado do backup.',
+  keyBackupToggle: 'espaço alternar',
+  keyBackupRun: 'b rodar backup',
+  keyBackupSchedule: 's agenda',
+  keyLayerToggle: 'espaço alternar',
+  keyLayerSave: 'enter salvar',
+  keyLayerCancel: 'esc cancelar',
+  actBackupRun: 'Rodar backup',
+  actBackupSchedule: 'Mudar agenda',
+  actBackupEditLayers: 'Editar camadas',
+  actBackupEditScheduleLayers: 'Editar camadas da agenda',
+  backupLayersLabel: 'camadas',
+  backupScheduleLayersLabel: 'na agenda',
+  backupLayerName: {
+    metrics: 'Métricas',
+    repos: 'Repositórios',
+    archive: 'Transcripts espelhados',
+    raw: 'Conversas',
+  },
+  backupLayerAlwaysOn: 'sempre ativo — um backup sem métricas não restaura nada',
+  backupLayerSizeUnknown: 'conhecido só depois de rodar',
+  backupLayerDescription: {
+    metrics: 'Suas configurações do agentistics, mais o registro calculado de cada sessão — custo, '
+      + 'tokens, modelo, duração, arquivos tocados — o agregado profundo do Claude, tags, '
+      + 'workflows, anexos e as assinaturas de evento.',
+    repos: 'Um mapa de cada diretório de projeto, mais um bundle dos commits de cada repositório '
+      + 'que não estão no remoto, e um patch das mudanças não commitadas de cada working tree. '
+      + 'Restaura a estrutura dos seus repositórios e o trabalho não enviado.',
+    archive: 'Transcripts que já foram espelhados em ~/.agentistics/archive.',
+    raw: 'Os diretórios dos harnesses em si — o texto das conversas. Permite retomar uma sessão '
+      + 'depois de um restore. Gigabytes.',
+  },
+  backupMetricsNoResume: 'Isto sozinho não permite retomar uma sessão — não guarda texto de conversa.',
+  backupArchiveFrozen: mode => `congelado nesta máquina — a preservação de histórico está em \`${mode}\`, não em \`full\``,
+  backupGithubFits: 'cabe num release do GitHub, com certeza',
+  backupGithubMayNotFit: 'pode não caber num release do GitHub (limite de 2 GB por arquivo) — o tamanho real só é conhecido depois de comprimir',
+  backupScheduleReposNote: 'uma execução agendada nunca carrega isto — é construído por `agentop backup`, não numa agenda',
+  backupDestLabel: 'destino',
+  backupScheduleLabel: 'agenda',
+  backupKeepLabel: 'manter',
+  backupKeepValue: (keep, retainedLabel) => `${keep} backup${keep === 1 ? '' : 's'} (${retainedLabel})`,
+  backupSecretsLabel: 'segredos',
+  backupSecretsValue: n => `excluídos (${n} ${n === 1 ? 'item' : 'itens'})`,
+  backupLastLabel: 'último',
+  backupSessionsLabel: 'sessões',
+  backupSizeLabel: 'tamanho',
+  backupScheduleWord: { off: 'desligada', daily: 'diária', weekly: 'semanal', custom: 'personalizada' },
+  backupScheduleInactive: '— inativa (servidor parado)',
+  backupNever: 'nunca',
+  backupLastGone: 'nenhum (nenhum backup gravado cujo arquivo ainda esteja no disco)',
+  backupLastGoneShort: 'sumiu',
+  backupNoneOnDisk: 'ainda não há backup no disco',
+  backupAgo: elapsed => `há ${elapsed}`,
+  backupLastOk: 'ok',
+  backupLastUnknown: '(desconhecido se algo foi pulado)',
+  backupLastSkipped: n => `${n} pulado${n === 1 ? '' : 's'}`,
+
+  backupGithubLabel: 'github',
+  backupGithubOff: 'desligado',
+  backupGithubVersioningLabel: 'versionamento',
+  backupGithubOffValue: 'desligado \u2014 `agentop backup github setup <url>` liga',
+  backupGithubRepoLabel: 'reposit\u00f3rio',
+  backupGithubMachineLabel: 'esta m\u00e1quina',
+  backupGithubMachineNote: 'V\u00e1rias m\u00e1quinas podem fazer backup no mesmo reposit\u00f3rio \u2014 '
+    + 'este nome \u00e9 o que distingue os backups de cada uma. Mude em Configura\u00e7\u00f5es \u2192 Backup '
+    + 'no dashboard desta m\u00e1quina.',
+  backupGithubKeepLabel: 'releases mantidas',
+  backupGithubKeepValue: n => (n === 0
+    ? 'todas as releases desta m\u00e1quina'
+    : `${n} release${n === 1 ? '' : 's'} desta m\u00e1quina`),
+  backupGithubLocalLabel: 'arquivo local',
+  backupGithubLocalDeleted: 'apagado assim que o envio \u00e9 confirmado',
+  backupGithubLocalKept: 'mantido depois do envio',
+  backupGithubSummary: (repo, label) => `${repo} \u00b7 ${label}`,
+
+  paneHistory: 'histórico',
+  backupHistoryCount: n => `${n} backup${n === 1 ? '' : 's'}`,
+  actBackupViewHistory: 'Ver histórico',
+  backupHistoryEmpty: 'nenhum backup registrado ainda',
+  backupHistoryPresent: 'no disco',
+  backupHistoryPruned: 'removido pela retenção',
+  backupHistoryMissing: 'arquivo ausente',
+  keyHistoryPage: 'pgup/pgdn página',
+  keyHistoryClose: 'esc fechar',
 }
 
 const TABLE: Record<CliLang, ControlStrings> = { en: EN, pt: PT }

@@ -865,6 +865,263 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    if (url.pathname === '/api/backup/status' && req.method === 'GET') {
+      // A central aggregates other machines and has no local harness directories of its own to
+      // back up — the same reason Settings hides the `billing` and `live` sections there. The
+      // capability guard (localShell) has already run by here; this is the second gate.
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readBackupStatus } = await import('./backup-routes')
+        const status = await readBackupStatus()
+        return new Response(JSON.stringify(status), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/run' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { runBackupNow } = await import('./backup-routes')
+        const result = await runBackupNow()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // GitHub versioning. The GET never carries the token (`GithubSection` has no field for one),
+    // and the POST changes only what can be changed WITHOUT one — the label and retention. Setting
+    // the repository up genuinely needs a token and stays with `agentop backup github setup`,
+    // which verifies it against the API and refuses a public repository.
+    if (url.pathname === '/api/backup/github' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readGithubSection } = await import('./backup-routes')
+        return new Response(JSON.stringify(await readGithubSection()), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // Restoring, from the interface. Three routes because a restore is three moments: see what a
+    // repository holds, start one, watch it. The third exists because the repos phase clones every
+    // repository the backup mapped — holding a request open for that times out in a proxy, in the
+    // browser, or both, and the only thing worse than a slow restore is one whose outcome nobody
+    // learns.
+    if (url.pathname === '/api/backup/restore/list' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { restoreCredential, restoreListing } = await import('./backup/restore-routes')
+        const body = await readJsonLimited<{ url?: unknown; token?: unknown }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const token = typeof body.value.token === 'string' ? body.value.token : undefined
+        const cred = await restoreCredential({ token })
+        if (!cred.ok) {
+          return new Response(JSON.stringify(cred), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        // This machine's own label, so the reply can mark which group is ours. Read from the
+        // stored config rather than taken from the body: what this machine is CALLED is not
+        // something a request gets to assert.
+        const { readGithubConfig } = await import('./backup/github-store')
+        const stored = await readGithubConfig().catch(() => null)
+        const result = await restoreListing({
+          url: body.value.url, token: cred.token, label: stored?.label,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // A token may be in this body — non-verbose regardless of profile, like the setup route.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/start' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { startRestore } = await import('./backup-routes')
+        const body = await readJsonLimited<{
+          url?: unknown; tag?: unknown; token?: unknown; withRepos?: unknown
+        }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string' || typeof body.value.tag !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await startRestore({
+          url: body.value.url,
+          tag: body.value.tag,
+          token: typeof body.value.token === 'string' ? body.value.token : undefined,
+          withRepos: body.value.withRepos === true,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/status' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const { readRestoreJob } = await import('./backup-routes')
+      return new Response(JSON.stringify({ job: readRestoreJob() }), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Connecting a repository, from the form in Settings → Backup. It takes a token, which is the
+    // whole reason it exists as its own route: `POST /api/backup/github` above deliberately changes
+    // only what can be changed WITHOUT one. There is no extra profile gate here — `/api/backup`
+    // already requires `localShell`, which is false on `public` and opt-in on `lan`, so on a
+    // dashboard someone else can open this route does not exist at all.
+    if (url.pathname === '/api/backup/github/setup' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { connectGithub } = await import('./backup-routes')
+        const body = await readJsonLimited<{
+          url?: unknown; token?: unknown; auth?: unknown
+        }>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const { url: repoUrl, token } = body.value
+        if (typeof repoUrl !== 'string' || typeof token !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        // `auth` is what selects the gh mode. Dropping it here made the fixed `connectGithub`
+        // unreachable: the function authenticated through gh perfectly and was never told to.
+        // Anything but the literal 'gh' reads as the token mode — the same allowlist rule
+        // `github-store.ts` applies when reading the field back off disk.
+        const result = await connectGithub({
+          url: repoUrl, token, auth: body.value.auth === 'gh' ? 'gh' : undefined,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // The token is in this request's body, so the usual `verbose` echo of an error is not safe
+        // here: `safeError` is given the non-verbose shape regardless of profile.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // Forgetting the repository. DELETE and not a POST with a flag, because it is the one
+    // irreversible-looking action here and the method should say so — though it only removes the
+    // LOCAL config: the releases on GitHub are untouched, and the interface says that before asking.
+    if (url.pathname === '/api/backup/github' && req.method === 'DELETE') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { disconnectGithub } = await import('./backup-routes')
+        const result = await disconnectGithub()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/github' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateGithubSection } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateGithubSection>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateGithubSection(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // The format/recurrence pickers — see `BackupSettings.tsx`. Same decisions as
+    // `agentop backup config` and the cockpit's layer editor, through the same three writers.
+    if (url.pathname === '/api/backup/config' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateBackupConfig } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateBackupConfig>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateBackupConfig(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/projects-list' && req.method === 'GET') {
       try {
         const dirs = await safeReadDir(PROJECTS_DIR)

@@ -644,12 +644,18 @@ async function main() {
   const { startEventProducer } = await import('./events/daemon')
   const events = await startEventProducer()
 
+  // The scheduled backup rides along for the same reason the event producer does — see
+  // backup/daemon.ts. Never fatal to this daemon.
+  const { startScheduledBackup } = await import('./backup/daemon')
+  const backups = startScheduledBackup()
+
   console.log('[watcher] Running — use `bun run dev` in a separate terminal for the dashboard UI')
 
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\n[watcher] Shutting down...')
     await events?.stop()
+    backups?.stop()
     if (otel) await otel.shutdown()
     process.exit(0)
   }
