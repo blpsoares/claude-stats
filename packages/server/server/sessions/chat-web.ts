@@ -145,11 +145,12 @@ export async function readSessionChat(
     }
   }
 
-  // The reader routes by harness; only some of them can say whether the cap cut a longer
-  // conversation short, and one that cannot makes NO claim — see `HarnessTranscript.readWindow`.
-  const read = reader.readWindow
-    ? await reader.readWindow(path, MAX_TURNS).catch(() => ({ turns: [] as ChatTurn[], older: false }))
-    : { turns: await reader.read(path, MAX_TURNS).catch(() => [] as ChatTurn[]), older: false }
+  // `older` is asked of the READER, and EVERY reader answers it — see `TranscriptRead`. It was
+  // briefly an optional `readWindow` that only Claude implemented, which gives the other four the
+  // silent version of the bug the notice exists to fix: the antigravity transcript this reader was
+  // written against holds 1239 turns, so a 400-turn window cuts it and says nothing.
+  const read = await reader.read(path, MAX_TURNS)
+    .catch(() => ({ turns: [] as ChatTurn[], older: false }))
   return {
     turns: read.turns,
     live,
