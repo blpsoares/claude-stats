@@ -1009,7 +1009,9 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
       try {
         const { connectGithub } = await import('./backup-routes')
-        const body = await readJsonLimited<{ url?: unknown; token?: unknown }>(req, LIMITS.bodyBytes)
+        const body = await readJsonLimited<{
+          url?: unknown; token?: unknown; auth?: unknown
+        }>(req, LIMITS.bodyBytes)
         if (!body.ok) {
           return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
             status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
@@ -1021,7 +1023,13 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
             status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           })
         }
-        const result = await connectGithub({ url: repoUrl, token })
+        // `auth` is what selects the gh mode. Dropping it here made the fixed `connectGithub`
+        // unreachable: the function authenticated through gh perfectly and was never told to.
+        // Anything but the literal 'gh' reads as the token mode — the same allowlist rule
+        // `github-store.ts` applies when reading the field back off disk.
+        const result = await connectGithub({
+          url: repoUrl, token, auth: body.value.auth === 'gh' ? 'gh' : undefined,
+        })
         return new Response(JSON.stringify(result), {
           status: result.ok ? 200 : 400,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
