@@ -39,18 +39,35 @@ interface ToolUseResult {
 }
 
 /**
- * Parse JSONL lines from a session file and extract Agent tool invocation metrics.
+ * Parse JSONL lines from a session file and extract agent invocation metrics.
  *
  * Key JSONL structure:
  * - Assistant messages have `content` items with `type: "tool_use"` and `name: "Agent"`
  * - The input has: `{ description, subagent_type, prompt }`
  * - Correlating user messages have `toolUseResult` at the message level with usage/timing info
  * - Correlation: match by `tool_use_id` in the tool_result content array
+ *
+ * **An agent is not defined by the tool that launched it.** Three shapes reach this reader, and for
+ * a release only the first of them produced a row (measured 2026-09-06, one machine, 541 subagent
+ * transcripts on disk):
+ *
+ * 1. An `Agent` tool_use answered by a `tool_result` — 528 of them, and all this used to read.
+ * 2. A `tool_result` naming an agent with NO `Agent` call before it. A skill run in the BACKGROUND
+ *    is a `Skill` tool_use whose result is `{status:'forked', background:true, agentId}` — the
+ *    parent names the agent perfectly well, and keying on the tool name made the whole run vanish.
+ * 3. An `Agent` tool_use the parent NEVER answered — launched and left running. It used to sit in
+ *    the pending map to the end of the file and be dropped, although it had a full transcript.
+ *
+ * Shapes 2 and 3 are recorded UNMEASURED here and measured from the subagent's own transcript by
+ * `subagent-metrics.ts`, which joins the two sides through `subagent-join.ts`. An agent already
+ * recorded never opens a second row: a later tool reporting ON an agent is not another launch.
  */
 export function extractAgentMetrics(lines: Iterable<string>, modelId: string): SessionAgentMetrics {
   // Map of tool_use_id → ToolUseRecord for pending Agent invocations
   const pendingAgents = new Map<string, ToolUseRecord>()
   const invocations: AgentInvocation[] = []
+  /** Every agent already given a row, so a later report ON one cannot open a second. */
+  const recordedAgentIds = new Set<string>()
 
   for (const raw of lines) {
     const line = raw.trim()
@@ -98,10 +115,16 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
         if (!toolUseId) continue
 
         const pending = pendingAgents.get(toolUseId)
-        if (!pending) continue
+        // A result that NAMES an agent is a launch whatever tool produced it — that is the
+        // background forked skill, whose `Skill` call left nothing pending here. It is not a launch
+        // when the agent already has a row: a later tool reporting on one is a report, not a spawn.
+        const named = typeof toolUseResult.agentId === 'string' ? toolUseResult.agentId : ''
+        if (!pending && (!named || recordedAgentIds.has(named))) continue
 
         // We have a match — build the AgentInvocation
         pendingAgents.delete(toolUseId)
+        if (named) recordedAgentIds.add(named)
+        const input = pending?.input ?? {}
 
         /**
          * Did this result carry NUMBERS at all?
@@ -148,8 +171,8 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
           toolUseId,
           ...(toolUseResult.agentId ? { agentId: toolUseResult.agentId } : {}),
           ...(measured ? {} : { unmeasured: true as const }),
-          agentType: toolUseResult.agentType ?? pending.input.subagent_type ?? 'unknown',
-          description: pending.input.description ?? '',
+          agentType: toolUseResult.agentType ?? input.subagent_type ?? 'unknown',
+          description: input.description ?? '',
           status: (toolUseResult.status === 'failed') ? 'failed' : 'completed',
           totalTokens: toolUseResult.totalTokens ?? (inputTokens + outputTokens),
           totalDurationMs: toolUseResult.totalDurationMs ?? 0,
@@ -171,6 +194,35 @@ export function extractAgentMetrics(lines: Iterable<string>, modelId: string): S
         })
       }
     }
+  }
+
+  /**
+   * Every launch the parent never answered — the plain background agent.
+   *
+   * Appended after the answered ones rather than woven back into their place: the transcript gives
+   * no moment at which they finished, and any position chosen for them would be invented. They
+   * carry no numbers here; the transcript beside the session does.
+   */
+  for (const [toolUseId, pending] of pendingAgents) {
+    invocations.push({
+      toolUseId,
+      unmeasured: true as const,
+      agentType: pending.input.subagent_type ?? 'unknown',
+      description: pending.input.description ?? '',
+      status: 'completed',
+      totalTokens: 0,
+      totalDurationMs: 0,
+      totalToolUseCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      toolStats: {
+        readCount: 0, searchCount: 0, bashCount: 0, editFileCount: 0,
+        linesAdded: 0, linesRemoved: 0, otherToolCount: 0,
+      },
+      costUSD: 0,
+    })
   }
 
   return totalsOf(invocations)
