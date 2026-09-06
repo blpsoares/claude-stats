@@ -155,11 +155,20 @@ function RunningDot() {
  * vertical icon rail: a rail costs 46px in the one dimension this panel is poor in (440px on
  * desktop, ~343px on a phone), while this costs nothing while it is closed.
  */
-function TabGrid({ tabs, active, pt, isMobile, onPick, onClose }: {
+function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
   tabs: readonly { id: TabId; label: string; icon: React.ReactNode; count: number | null }[]
   active: TabId
   pt: boolean
   isMobile: boolean
+  /**
+   * The control that opened this.
+   *
+   * It has to be excluded from the outside-click, and NOT because of tidiness: a `mousedown` on it
+   * is outside this element, so the dismiss fired, and then the same gesture's `click` toggled the
+   * grid straight back open. Pressing the button to close it made it BLINK and stay — reported as
+   * exactly that. A popover has to know what opened it.
+   */
+  anchor: React.RefObject<HTMLButtonElement | null>
   onPick: (id: TabId) => void
   onClose: () => void
 }) {
@@ -170,14 +179,16 @@ function TabGrid({ tabs, active, pt, isMobile, onPick, onClose }: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      const t = e.target as Node
+      if (anchor.current?.contains(t)) return   // the toggle answers for itself
+      if (ref.current && !ref.current.contains(t)) onClose()
     }
     document.addEventListener('keydown', onKey)
     // `mousedown` and not `click`: the control that opened this would otherwise reopen it on the
     // same gesture that closed it.
     document.addEventListener('mousedown', onDown)
     return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown) }
-  }, [onClose])
+  }, [onClose, anchor])
 
   return (
     <div
@@ -406,8 +417,23 @@ export function ArtifactsAside({
     () => groupSkills(skills ?? [], skillQuery, pt ? 'pt' : 'en'),
     [skills, skillQuery, pt],
   )
+  const [gridOpen, setGridOpen] = useState(false)
+  /**
+   * OPENING THE GRID IS ASKING WHAT IS IN THESE TABS.
+   *
+   * Skills, PRs, Subagents and MCPs each fetch for themselves, so before anybody opened them the
+   * grid could only draw a dash — honest, and not what somebody who just opened a list of every tab
+   * wants to read. Reported as exactly that: the numbers appeared only after entering each card.
+   *
+   * They are NOT fetched on mount, which is what the laziness is for: the subagents list costs a
+   * full read of the parent transcript and MCPs scans `/proc`. They are fetched on the GESTURE —
+   * the one moment somebody has said "show me what is behind all of these" — and each one still
+   * loads at most once, through `asideCache`.
+   */
+  const wantsCounts = (id: TabId) => tab === id || gridOpen
+
   useEffect(() => {
-    if (tab !== 'skills') return
+    if (!wantsCounts('skills')) return
     // The cached list is already on screen; this refreshes BEHIND it and only when it has aged out.
     // A fetch on every mount is the reload being fixed; never fetching would pin the list forever.
     const key = asideKey(sessionId, 'skills')
@@ -425,7 +451,7 @@ export function ArtifactsAside({
       })
       .catch(() => { if (alive) setSkills(s => s ?? []) })
     return () => { alive = false }
-  }, [tab, skills, sessionId, pt])
+  }, [tab, gridOpen, skills, sessionId, pt])
 
   /** The repository's pull requests. Read when the tab opens, then cached — see `github-prs.ts`. */
   type PrAnswer = {
@@ -437,7 +463,7 @@ export function ArtifactsAside({
   }
   const [prs, setPrs] = useState<PrAnswer | null>(() => asideCache.read<PrAnswer>(asideKey(sessionId, 'prs')).value ?? null)
   useEffect(() => {
-    if (tab !== 'prs') return
+    if (!wantsCounts('prs')) return
     const key = asideKey(sessionId, 'prs')
     const hit = asideCache.read<PrAnswer>(key)
     if (hit.value && !hit.stale) return
@@ -447,7 +473,7 @@ export function ArtifactsAside({
       .then((d: PrAnswer) => { asideCache.write(key, d); if (alive) setPrs(d) })
       .catch(() => { if (alive) setPrs(p => p ?? { pulls: [], unavailable: 'failed' }) })
     return () => { alive = false }
-  }, [tab, prs, sessionId, pt])
+  }, [tab, gridOpen, prs, sessionId, pt])
 
   const feedRef = useRef<HTMLDivElement>(null)
   /** A clock, so "3m ago" ages while the panel is open rather than freezing at its first render. */
@@ -556,7 +582,6 @@ export function ArtifactsAside({
   const [tabWidths, setTabWidths] = useState<Record<string, number>>({})
   const [barWidth, setBarWidth] = useState(0)
   const [overflowWidth, setOverflowWidth] = useState(0)
-  const [gridOpen, setGridOpen] = useState(false)
   const gridBtnRef = useRef<HTMLButtonElement | null>(null)
 
   // Re-measured when the LABELS can change (language) or the set does — not on every render.
@@ -694,6 +719,7 @@ export function ArtifactsAside({
           active={tab}
           pt={pt}
           isMobile={isMobile}
+          anchor={gridBtnRef}
           onPick={id => { setTab(id); setGridOpen(false); gridBtnRef.current?.focus() }}
           onClose={() => { setGridOpen(false); gridBtnRef.current?.focus() }}
         />
@@ -710,7 +736,7 @@ export function ArtifactsAside({
    */
   useEffect(() => {
     // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
-    if (tab !== 'agents') return
+    if (!wantsCounts('agents')) return
     const key = asideKey(sessionId, 'subagents')
     const hit = asideCache.read<SubagentsState>(key)
     // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
@@ -749,7 +775,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [tab, sessionId, pt])
+  }, [tab, gridOpen, sessionId, pt])
 
   /**
    * A different session is a different fleet of subagents — but it may be one this panel already
@@ -851,7 +877,7 @@ export function ArtifactsAside({
    * harness's own command produced, not the one this panel guessed it would produce.
    */
   useEffect(() => {
-    if (tab !== 'mcps') return
+    if (!wantsCounts('mcps')) return
     // The DIRECTORY is part of the key: the `local` and `project` scopes are read against it, so
     // two sessions in different repositories have genuinely different answers.
     const key = asideKey(sessionId, 'mcps', cwd ?? '')
@@ -884,7 +910,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false }
-  }, [tab, sessionId, cwd, pt, mcpNonce])
+  }, [tab, gridOpen, sessionId, cwd, pt, mcpNonce])
 
   const mcpBody = (): React.ReactNode => (
     <McpTab
