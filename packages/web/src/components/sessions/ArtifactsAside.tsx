@@ -419,21 +419,25 @@ export function ArtifactsAside({
   )
   const [gridOpen, setGridOpen] = useState(false)
   /**
-   * OPENING THE GRID IS ASKING WHAT IS IN THESE TABS.
+   * OPENING THE ASIDE ASKS EVERY TAB FOR ITS NUMBER.
    *
-   * Skills, PRs, Subagents and MCPs each fetch for themselves, so before anybody opened them the
-   * grid could only draw a dash — honest, and not what somebody who just opened a list of every tab
-   * wants to read. Reported as exactly that: the numbers appeared only after entering each card.
+   * Skills, PRs, Subagents and MCPs each fetch for themselves, and each used to wait for its own
+   * tab to be opened — so the bar and the grid could only draw a dash until somebody had walked
+   * into all four, one at a time. Asked for directly: "abrir a sessao ja deve disparar a busca".
    *
-   * They are NOT fetched on mount, which is what the laziness is for: the subagents list costs a
-   * full read of the parent transcript and MCPs scans `/proc`. They are fetched on the GESTURE —
-   * the one moment somebody has said "show me what is behind all of these" — and each one still
-   * loads at most once, through `asideCache`.
+   * THE MOUNT IS THE RIGHT MOMENT, and it is the aside's OWN open rather than the session's: this
+   * component is unmounted while the panel is shut (`SessionsPage` drops it once the closing
+   * animation ends), so mounting IS the panel appearing. With it shut there is no bar and no grid,
+   * so a count nobody can see would be a multi-MB transcript read, a `/proc` scan and a GitHub call
+   * spent on every session somebody clicks past.
+   *
+   * What stays lazy is the RE-READ, not the first one. A finished tab's answer cannot change, and
+   * `asideCache` serves the second open of the same session for free — so this costs one request
+   * per tab per session, once. Only the tab actually on screen keeps polling; see the subagents
+   * effect, where the poll is scheduled against `tab` and not against this.
    */
-  const wantsCounts = (id: TabId) => tab === id || gridOpen
 
   useEffect(() => {
-    if (!wantsCounts('skills')) return
     // The cached list is already on screen; this refreshes BEHIND it and only when it has aged out.
     // A fetch on every mount is the reload being fixed; never fetching would pin the list forever.
     const key = asideKey(sessionId, 'skills')
@@ -451,7 +455,7 @@ export function ArtifactsAside({
       })
       .catch(() => { if (alive) setSkills(s => s ?? []) })
     return () => { alive = false }
-  }, [tab, gridOpen, skills, sessionId, pt])
+  }, [skills, sessionId, pt])
 
   /** The repository's pull requests. Read when the tab opens, then cached — see `github-prs.ts`. */
   type PrAnswer = {
@@ -463,7 +467,6 @@ export function ArtifactsAside({
   }
   const [prs, setPrs] = useState<PrAnswer | null>(() => asideCache.read<PrAnswer>(asideKey(sessionId, 'prs')).value ?? null)
   useEffect(() => {
-    if (!wantsCounts('prs')) return
     const key = asideKey(sessionId, 'prs')
     const hit = asideCache.read<PrAnswer>(key)
     if (hit.value && !hit.stale) return
@@ -473,7 +476,7 @@ export function ArtifactsAside({
       .then((d: PrAnswer) => { asideCache.write(key, d); if (alive) setPrs(d) })
       .catch(() => { if (alive) setPrs(p => p ?? { pulls: [], unavailable: 'failed' }) })
     return () => { alive = false }
-  }, [tab, gridOpen, prs, sessionId, pt])
+  }, [prs, sessionId, pt])
 
   const feedRef = useRef<HTMLDivElement>(null)
   /** A clock, so "3m ago" ages while the panel is open rather than freezing at its first render. */
@@ -736,7 +739,6 @@ export function ArtifactsAside({
    */
   useEffect(() => {
     // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
-    if (!wantsCounts('agents')) return
     const key = asideKey(sessionId, 'subagents')
     const hit = asideCache.read<SubagentsState>(key)
     // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
@@ -767,7 +769,10 @@ export function ArtifactsAside({
         asideCache.write(key, next)
         if (!alive) return
         setAgentsState(next)
-        const wait = subagentsPollMs(next)
+        // POLLED ONLY WHILE THE TAB IS ON SCREEN. The list costs a full read of the parent
+        // transcript, and re-reading it every five seconds for a count in a corner of a bar is the
+        // disk-burner `chat-tail.ts` documents, moved one panel over.
+        const wait = tab === 'agents' ? subagentsPollMs(next) : null
         if (wait !== null) timer = setTimeout(read, wait)
       } catch {
         if (alive) setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
@@ -775,7 +780,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [tab, gridOpen, sessionId, pt])
+  }, [tab, sessionId, pt])
 
   /**
    * A different session is a different fleet of subagents — but it may be one this panel already
@@ -877,7 +882,6 @@ export function ArtifactsAside({
    * harness's own command produced, not the one this panel guessed it would produce.
    */
   useEffect(() => {
-    if (!wantsCounts('mcps')) return
     // The DIRECTORY is part of the key: the `local` and `project` scopes are read against it, so
     // two sessions in different repositories have genuinely different answers.
     const key = asideKey(sessionId, 'mcps', cwd ?? '')
@@ -910,7 +914,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false }
-  }, [tab, gridOpen, sessionId, cwd, pt, mcpNonce])
+  }, [sessionId, cwd, pt, mcpNonce])
 
   const mcpBody = (): React.ReactNode => (
     <McpTab
