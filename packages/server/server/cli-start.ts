@@ -132,7 +132,8 @@ import type { ManagedSession, SpawnPlanError } from './sessions/types'
 import {
   addSession, newSessionId, patchSession, readRegistry, removeSession, retireFallenSessions, touchSessions,
 } from './sessions/registry'
-import { createSessionsPoller, type SessionsPoller } from './sessions/sessions-host'
+import { createSessionsPoller, type SessionsPoller, type SessionSnapshot } from './sessions/sessions-host'
+import { isServerProcess, readServerSnapshot } from './sessions/shared-snapshot'
 import { conversationForProcess, forgetConversations, loadConversations } from './sessions/conversations'
 
 export type StartResult = number | 'foreground'
@@ -2540,8 +2541,31 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       // `loadConversations`/`loadHarnessSessions`/`backend.list` (individually measured and ruled
       // out — they run inside `poller.poll()`'s own `Promise.all`). Every phase below is a candidate
       // that has not yet been measured; run with `AGENTISTICS_PROFILE_FLEET=1` on the slow machine.
-      const poller = await timeFleetPhase('sessions: ensureSessionsPoller', ensureSessionsPoller)
-      const snap = await timeFleetPhase('sessions: poller.poll', () => poller.poll())
+      /*
+       * ASK THE SERVER'S POLLER BEFORE BUILDING A SECOND ONE.
+       *
+       * `working` is MOVEMENT — the frame changed since the LAST poll of that poller — and a state
+       * must additionally be seen twice before it is believed. Both live in the poller's own
+       * memory, so a poller that has just started reads a producing session as `waiting`, and a
+       * `running only` filter then hides it. Measured at one instant: the long-lived server said
+       * all four sessions were `working` while a freshly built host said all four were `waiting`.
+       * That is "aqui aparecem 4 e no agentop só 3".
+       *
+       * `null` means there is no server to ask — an ordinary answer, since the cockpit's whole
+       * purpose includes a machine whose server is stopped — and the local poller answers as it
+       * always did. The server never asks itself. See `shared-snapshot.ts`.
+       */
+      const shared = isServerProcess()
+        ? null
+        : await timeFleetPhase(
+          'sessions: readServerSnapshot',
+          () => readServerSnapshot<SessionSnapshot>(lang),
+        )
+      const poller = shared
+        ? null
+        : await timeFleetPhase('sessions: ensureSessionsPoller', ensureSessionsPoller)
+      const snap = shared
+        ?? await timeFleetPhase('sessions: poller.poll', () => poller!.poll())
       // Carried on every snapshot so the cockpit can state it permanently: a user who cannot get
       // out of a session is stranded in a buffer that hides their shell, and a line printed once
       // before the handover scrolls away the moment anything else happens.
@@ -3109,6 +3133,22 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
  * Without an interactive stdin nothing is drawn at all: the caller runs the server, exactly as a
  * systemd unit or a pipe has always done.
  */
+/**
+ * The poller's RAW snapshot, for `/api/fleet/snapshot`.
+ *
+ * `createControlHost().sessions()` answers `ControlSessions` — already mapped, already localized,
+ * shaped for drawing a row. The other agentop processes need what came BEFORE that mapping, because
+ * each of them maps it its own way (`toControlSession` for the cockpit, `fleetJson` for
+ * `session ls`, a hand-built summary for the hook). Serving the mapped shape and typing it as the
+ * raw one is a silent field mismatch: it was written that way first, and `session ls --json` came
+ * back with `activity: null` on every row.
+ *
+ * It is the SAME poller `sessions()` uses, so the server still holds exactly one.
+ */
+export async function readRawFleetSnapshot(): Promise<SessionSnapshot> {
+  return (await ensureSessionsPoller()).poll()
+}
+
 export async function runStart(): Promise<StartResult> {
   if (!process.stdin.isTTY) return 'foreground'
 

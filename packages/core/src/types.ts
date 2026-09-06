@@ -586,7 +586,13 @@ export function mergeStatsCaches(caches: StatsCache[]): StatsCache {
   return out
 }
 
-export type DateRange = '7d' | '30d' | '90d' | 'all'
+/**
+ * `today` is the CURRENT day, in progress, and it is its own preset rather than a custom range of
+ * one day. Asked for: "ao lado do botão all deve ter um botão today pq o today do calendário pode
+ * funcionar tipo, today até dia X. já o today do lado do all significa que só quero ver hoje."
+ * They answer two different questions, so they are two different controls.
+ */
+export type DateRange = 'today' | '7d' | '30d' | '90d' | 'all'
 
 export interface Filters {
   dateRange: DateRange

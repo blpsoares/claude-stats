@@ -403,8 +403,14 @@ async function readFleet(): Promise<ContextSession[] | null> {
     ])
     const backend = await resolveBackend()
     if (await backend.unavailable()) return null
-    const poller = createSessionsPoller({ backend, readRegistry, scanProcesses })
-    const snap = await poller.poll()
+    // The running server's poller first — it is the one with movement memory, and a hook that
+    // reports a producing session as waiting injects a wrong fact into every new conversation. See
+    // `shared-snapshot.ts`; `null` simply means there is no server and the local poll answers.
+    const { isServerProcess, readServerSnapshot } = await import('./sessions/shared-snapshot')
+    const shared = isServerProcess()
+      ? null
+      : await readServerSnapshot<Awaited<ReturnType<ReturnType<typeof createSessionsPoller>['poll']>>>('en')
+    const snap = shared ?? await createSessionsPoller({ backend, readRegistry, scanProcesses }).poll()
     return snap.sessions.map(v => ({
       id: v.id,
       status: v.status,
