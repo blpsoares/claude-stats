@@ -301,7 +301,47 @@ export function collapseSupersededSessions(managed: readonly SessionView[]): Ses
  * index it does not change when an unrelated process appears or exits.
  */
 export function externalId(p: HarnessProcess): string {
+  // A stated session id is the identity, and it is stable in a way the start time is not: a shim
+  // chain's parent can exit while a child keeps running, and keying on the clock would rename the
+  // row underneath the user at that moment. Falls back to the old key exactly when there is no id.
+  if (p.sessionId) return `external:${p.harness}:${p.sessionId}`
   return `external:${p.harness}:${p.cwd}:${p.startedMs ?? 0}`
+}
+
+/**
+ * ONE ROW PER SESSION, not per process — PURE.
+ *
+ * A CLI installed through a version manager is a CHAIN of processes, and every one of them is a
+ * live assistant as far as `/proc` is concerned. Measured on this machine: `copilot` at `/tmp` ran
+ * as three pids — the volta shim, `node …/bin/copilot`, and the native binary — all three carrying
+ * `--session-id dbd94500-…`. The fleet drew three identical `copilot em tmp` rows for one session,
+ * reported as "direto aparece essas externals".
+ *
+ * The merge key is the STATED session id, never the directory: two assistants of one harness open
+ * in the same folder are two sessions, and collapsing them by `harness + cwd` is exactly the bug
+ * `externalId`'s start time was added to avoid. A process that states NO id is never merged — it
+ * cannot be proven a duplicate, and this errs toward keeping a row (a spurious row is visible and
+ * dismissible; a real session missing from the fleet is not).
+ *
+ * The survivor is the OLDEST, tie-broken by the lowest pid, so the answer is the same on every poll
+ * — a representative that flipped between polls would change the row's pid, and with it what
+ * `harnessSessions.byPid` can say about its name.
+ */
+export function dedupeExternalProcesses(procs: readonly HarnessProcess[]): HarnessProcess[] {
+  const best = new Map<string, HarnessProcess>()
+  const out: HarnessProcess[] = []
+  for (const p of procs) {
+    if (!p.sessionId) { out.push(p); continue }
+    const key = `${p.harness}\u0000${p.sessionId}`
+    const held = best.get(key)
+    if (!held || rankProcess(p) < rankProcess(held)) best.set(key, p)
+  }
+  return [...out, ...best.values()]
+}
+
+/** Lower wins: oldest first, then the lowest pid. Total, so the choice cannot depend on input order. */
+function rankProcess(p: HarnessProcess): number {
+  return (p.startedMs ?? 0) * 1e7 + (p.pid ?? 0)
 }
 
 /**
@@ -673,7 +713,9 @@ export function buildSessionViews(o: {
       ...(f.sessionId ? { sessionId: f.sessionId } : {}),
     }))
 
-  const external: SessionView[] = [...o.processes, ...fromRecords].filter(p => !covered(p)).map(p => {
+  const external: SessionView[] = dedupeExternalProcesses(
+    [...o.processes, ...fromRecords].filter(p => !covered(p)),
+  ).map(p => {
     // What the harness says about ITSELF, keyed on the pid `/proc` reported. Exact where every other
     // reading of an external process is an inference from its directory.
     // By pid first — that is the key a SCANNED process arrives with. Falling back to the
