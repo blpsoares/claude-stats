@@ -20,7 +20,8 @@ agentistics reads data exclusively from local files written by Claude Code. No d
   └── projects/**/*.jsonl
          ↓
     server/data.ts  (buildApiResponse — main orchestrator)
-    server/agent-metrics.ts  (extractAgentMetrics — parses Agent tool_use)
+    server/agent-metrics.ts  (extractAgentMetrics — every agent launch the parent records)
+    server/subagent-join.ts  (pure — which transcript belongs to which invocation)
          ↓
     /api/data  →  useData()  →  useDerivedStats()  →  React components
 ```
@@ -134,7 +135,9 @@ The numbers moved into the subagent's **own transcript**, at
 `~/.claude/projects/<project>/<session-id>/subagents/agent-<agentId>.jsonl`, with an
 `agent-<agentId>.meta.json` beside it carrying `agentType`, `description` and the parent's
 `toolUseId`. `server/subagent-parse.ts` (pure) sums one such transcript and
-`server/subagent-metrics.ts` finds it, follows nested subagents and memoizes the result.
+`server/subagent-metrics.ts` finds it, follows nested subagents and memoizes the result — keyed on
+each subagent file's OWN mtime and size, never the parent's, because those files go on changing while
+the conversation sits idle.
 
 Three rules that fall out of the new shape:
 
@@ -147,6 +150,40 @@ Three rules that fall out of the new shape:
 - **A nested subagent counts inside the invocation that spawned it.** Only a top-level `Agent`
   `tool_use` becomes an `AgentInvocation`, so a subtree left out here is left out of the session's
   agent totals entirely. The walk is cycle-safe.
+
+### Which agents exist is the DIRECTORY's answer, not the parent's
+
+`extractAgentMetrics` used to build the invocation list from one shape only — an `Agent` `tool_use`
+paired with the `tool_result` that answers it. The `subagents/` directory is the authoritative record
+of which agents actually ran; the parent is authoritative for how each was launched. Measured on one
+machine on 2026-09-06 — 408 conversations, 541 subagent transcripts — three shapes fell through:
+
+| shape | what the parent holds | what happened |
+|---|---|---|
+| the user interrupted the call | `toolUseResult` is the STRING `"Error: [Request interrupted by user for tool use]"` — no `agentId` | the row existed and was permanently `unmeasured` |
+| a **background agent** | the `Agent` `tool_use`, and **no `tool_result` at all** | no row: the launch sat in the pending map to the end of the file and was dropped |
+| a **background forked skill** | a **`Skill`** `tool_use` whose result is `{"status":"forked","background":true,"agentId":"…"}` | no row: nothing keyed on `Agent` could see it |
+
+Four top-level transcripts (1,6 MB) on that machine, including a 24-million-token agent worth
+US$ 15,76 and two `/code-review` runs worth US$ 6,24 together. `server/subagent-join.ts` (pure) is the
+join: an invocation is paired with a transcript by the exact `agentId` first, then by the meta's own
+`toolUseId`, one transcript to at most one invocation. A `toolUseId` naming two transcripts is
+ambiguous and pairs neither — a half-read link gets published as a measurement, which is worse than
+an absence rendered N/A.
+
+Two rules the join exists to keep:
+
+- **A nested transcript never becomes its own row.** It is already counted inside the invocation
+  that spawned it, so a second row would report the same tokens twice. Nested entries are excluded
+  from the candidate pool outright rather than relying on no invocation happening to match them.
+- **A top-level transcript nobody claims adds no row, and is reported rather than swallowed.** Those
+  are conversation forks today (5 transcripts, 11,4 MB on the same machine): they belong to no
+  `tool_use` anywhere, and whether they are invocations of the conversation they are filed under is a
+  separate question.
+
+The gates that decide whether the reader runs at all follow the same rule: a conversation whose only
+agent was a background forked skill has no `Agent` in `toolCounts`, so both `uses_task_agent` and the
+`agentMetrics` call now also accept "some tool result named an agent".
 
 ### An invocation whose transcript is gone reports N/A, never zero
 
