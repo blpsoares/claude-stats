@@ -241,6 +241,16 @@ export async function parseSessionJsonl(
   let gitCommits = 0, gitPushes = 0
   let toolErrors = 0, userInterruptions = 0
   let hasMcp = false
+  /**
+   * Did any tool result NAME an agent?
+   *
+   * The gate below used to be `toolCounts['Agent']` alone, which is a statement about the tool that
+   * launched an agent rather than about whether one ran. A skill run in the BACKGROUND is a `Skill`
+   * tool_use whose result carries `{status:'forked', background:true, agentId}` — measured
+   * 2026-09-06, two such runs on this machine, and neither reached the reader at all because this
+   * conversation had no `Agent` call in it.
+   */
+  let sawAgentLaunch = false
   const claudeFilesModified = new Set<string>()
   /** Lines this session's OWN edits changed — see `edit-lines.ts`. */
   let editLines: EditDelta = { added: 0, removed: 0 }
@@ -310,6 +320,10 @@ export async function parseSessionJsonl(
     }
 
     if (e.type === 'user') {
+      const result = e.toolUseResult as Record<string, unknown> | undefined
+      if (result && typeof result === 'object' && typeof result.agentId === 'string' && result.agentId) {
+        sawAgentLaunch = true
+      }
       const msgContent = (e.message as Record<string, unknown> | undefined)?.content
       const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
 
@@ -455,7 +469,7 @@ export async function parseSessionJsonl(
   // asynchronous the parent transcript names the subagent and nothing else, so the invocations come
   // back marked `unmeasured` and are filled in from each subagent's own transcript, which sits
   // beside this file. See `subagent-metrics.ts`.
-  const agentMetrics = toolCounts['Agent']
+  const agentMetrics = (toolCounts['Agent'] || sawAgentLaunch)
     ? await enrichFromSubagentTranscripts(extractAgentMetrics(iterLines(content), modelId), filePath, sessionId)
     : undefined
 
@@ -488,7 +502,7 @@ export async function parseSessionJsonl(
     user_response_times: userResponseTimes,
     tool_errors: toolErrors,
     tool_error_categories: toolErrorCategories,
-    uses_task_agent: 'Task' in toolCounts || 'Agent' in toolCounts,
+    uses_task_agent: 'Task' in toolCounts || 'Agent' in toolCounts || sawAgentLaunch,
     uses_mcp: hasMcp,
     uses_web_search: 'WebSearch' in toolCounts,
     uses_web_fetch: 'WebFetch' in toolCounts,

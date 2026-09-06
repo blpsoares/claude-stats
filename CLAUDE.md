@@ -80,7 +80,12 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   ├── archive.ts           → mirrorFile, fullSync, snapshotStatsCache ('full' mode: raw transcript mirror → ~/.agentistics/archive)
   ├── consolidate.ts       → writeConsolidated, loadConsolidated ('consolidate' mode: per-session metrics → ~/.agentistics/sessions/<harness>/<id>.json; legacy flat files load as claude)
   ├── data.ts              → loadSessionMetas, scanProjects, buildApiResponse (main orchestrator)
-  ├── agent-metrics.ts     → extractAgentMetrics (parses Agent tool_use from JSONL)
+  ├── agent-metrics.ts     → extractAgentMetrics (every agent launch the parent records — an `Agent`
+  │                          tool_use, a result that NAMES an agent whatever tool produced it, and a
+  │                          launch the parent never answered)
+  ├── subagent-join.ts     → **pure**: which transcript belongs to which invocation. The `subagents/`
+  │                          DIRECTORY is authoritative for which agents existed; the parent only for
+  │                          how each was launched — and it does not always say even that
   ├── otel-watcher.ts      → chokidar file watcher + OTLP metrics export daemon
   ├── preferences.ts       → ~/.agentistics prefs incl. team config (mode/endpoint/token/user)
   ├── version.ts           → getVersionInfo (current vs latest); drives update banners/notifications
@@ -1284,6 +1289,35 @@ The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-
   entirely. Cycle-safe by a visited set.
 - **The DURATION is the root's own span** — a nested agent runs inside its parent, and adding the two
   counts the same wall time twice.
+- **THE LIST OF INVOCATIONS IS THE DIRECTORY'S, NOT THE PARENT'S.** Keying on `Agent` tool_use +
+  matching `tool_result` was a statement about the TOOL that launched an agent, not about whether one
+  ran. Measured 2026-09-06 (408 conversations, 541 subagent transcripts) — three shapes fell through:
+  a call the user INTERRUPTED (`toolUseResult` is the STRING `"Error: [Request interrupted by user
+  for tool use]"`, so no `agentId`: the row existed and was permanently unmeasured); a **background
+  agent** (the `Agent` tool_use is there and NO `tool_result` ever arrives — the launch sat in the
+  pending map to the end of the file and was dropped); and a **background forked skill** (`/code-
+  review` is a **`Skill`** tool_use whose result is `{status:'forked', background:true, agentId}` —
+  the parent names the agent perfectly well, only the tool differs). Four top-level transcripts,
+  1,6 MB, including a 24-million-token agent at US$ 15,76. `subagent-join.ts` pairs by the EXACT
+  `agentId` first and only then by the meta's own `toolUseId` — a single pass would let the fallback
+  consume a transcript some other invocation names outright — one transcript to at most one
+  invocation, and a `toolUseId` naming TWO transcripts is ambiguous and pairs NEITHER (a half-read
+  link is published as a measurement; an absence is rendered N/A). A NESTED transcript is excluded
+  from the candidate pool OUTRIGHT rather than by relying on no invocation happening to match it: its
+  meta carries a `toolUseId` too, and a second row would report the same tokens twice. A top-level
+  transcript nobody claims adds NO row and is REPORTED (`AgentJoinPlan.unclaimed`) — today those are
+  conversation FORKS (5 transcripts, 11,4 MB here), which belong to no `tool_use` anywhere.
+- **The gate must not be `toolCounts['Agent']` either.** A conversation whose only agent was a
+  background forked skill has no `Agent` in `toolCounts` at all, so `jsonl.ts` never called the
+  reader and `uses_task_agent` was false. Both now also accept "some `toolUseResult` named an agent"
+  (`sawAgentLaunch`).
+- **`cachedEnrich` enriches OUTSIDE its memo.** That path serves the meta-sourced sessions — MOST
+  Claude sessions — and was written before #373; it called `extractAgentMetrics` and never
+  `enrichFromSubagentTranscripts`, so every invocation it published stayed unmeasured. Caching the
+  enriched result would be the smaller diff and the wrong one: that memo is keyed on the PARENT's
+  stamp and a subagent's file goes on changing while the conversation sits idle, so the numbers would
+  freeze at the first read. `subagent-metrics.ts` keeps its own memo on each subagent file's own
+  mtime and size, which is the only stamp that answers this question.
 - **An invocation whose transcript is gone is `unmeasured: true`, never a zero.** Read that flag
   BEFORE any figure on the record: it carries zeros only because the type has no other value to
   carry. `SessionAgentMetrics` totals exclude them and `unmeasuredInvocations` counts them, so a
@@ -1294,7 +1328,7 @@ The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-
 |---|---|
 | `agentType` | `toolUseResult.agentType`, else the `tool_use` input's `subagent_type` |
 | `description` | `tool_use.input.description` |
-| `agentId` | `toolUseResult.agentId` — names the subagent transcript |
+| `agentId` | `toolUseResult.agentId` — names the subagent transcript; absent when the call was interrupted or never answered, and then the join recovers it from `agent-<id>.meta.json`'s `toolUseId` |
 | `totalTokens` (all four counters) / `inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` | the subagent transcript's `message.usage`, per model; legacy: `toolUseResult.usage.*` |
 | `totalDurationMs` | the subagent transcript's first→last timestamp; legacy: `toolUseResult.totalDurationMs` |
 | `totalToolUseCount` / `toolStats` | the subagent transcript's `tool_use` items and `structuredPatch` hunks; legacy: `toolUseResult.toolStats` |
