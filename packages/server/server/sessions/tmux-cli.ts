@@ -288,6 +288,32 @@ export function attachArgs(id: string): string[] {
   return ['tmux', '-L', TMUX_SOCKET, 'attach-session', '-t', tmuxName(id)]
 }
 
+/**
+ * Is a non-zero `list-sessions` the ORDINARY EMPTY STATE, or a failure?
+ *
+ * tmux exits 1 with no sessions when no server is running, which is what a machine looks like
+ * before anything has been started — a legitimate empty answer. Every OTHER non-zero exit is a
+ * failure, and for one release they were the same thing: `list()` ignored the exit code entirely
+ * and handed whatever came out to `parseTmuxList`, which yields `[]` for anything it cannot parse.
+ *
+ * So a tmux that could not be reached AT ALL reported every managed session as gone, silently and
+ * with confidence. Measured on this machine: `PATH=/nonexistent tmux list-sessions` exits **127**
+ * printing `command not found` — parsed as zero sessions. The cockpit then said "nothing running ·
+ * 326 sessions withheld" while four assistants were live in tmux, and the whole fleet reconciled to
+ * `lost`. Reported exactly that way.
+ *
+ * The distinction is the MESSAGE, because that is the only thing tmux gives us. Both forms it uses
+ * are matched (`error connecting to <socket>` on 3.x, `no server running on <socket>` on older
+ * builds), and anything else is a failure the caller must THROW on — `createSessionsPoller` already
+ * keeps its previous list and says the refresh failed, which is the honest answer and was
+ * unreachable while this returned `[]`.
+ */
+export function tmuxListIsEmptyState(code: number, out: string): boolean {
+  if (code === 0) return true
+  const text = out.toLowerCase()
+  return text.includes('no server running on') || text.includes('error connecting to')
+}
+
 export function parseTmuxList(stdout: string): BackendSession[] {
   const out: BackendSession[] = []
   for (const raw of stdout.split('\n')) {

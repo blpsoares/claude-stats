@@ -6,6 +6,7 @@
 import {
   attachArgs, capturePaneArgs, capturePaneAnsiArgs, idFromTmuxName, isSessionGoneError,
   killSessionArgs, listSessionsArgs, paneInfoArgs, parsePaneInfo, parsePrefix, parseTmuxList,
+  tmuxListIsEmptyState,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs, sendKeysNamedArgs, sendKeysLiteralArgs,
   showPrefixArgs, trimCapture,
   type TerminalProfile,
@@ -262,8 +263,14 @@ export const tmuxBackend: SessionBackend = {
 
   async list(): Promise<BackendSession[]> {
     // "no server running on …" is the ordinary empty state, not an error: exit code 1 with no
-    // sessions is what tmux reports before anything has been started.
-    const { out } = await tmux(listSessionsArgs())
+    // sessions is what tmux reports before anything has been started. EVERY OTHER non-zero exit is
+    // a failure and THROWS — see `tmuxListIsEmptyState`. Swallowing them made a tmux that could not
+    // be reached report every session as gone, which is the one answer a fleet monitor must never
+    // give by accident.
+    const { code, out } = await tmux(listSessionsArgs())
+    if (!tmuxListIsEmptyState(code, out)) {
+      throw new Error(out.trim().split('\n')[0] || `tmux list-sessions failed (code ${code})`)
+    }
     return parseTmuxList(out)
   },
 
