@@ -378,6 +378,9 @@ export default function SessionsPage() {
       theme={theme === 'light' ? 'light' : 'dark'}
       act={act}
       onGone={() => navigate('/sessions')}
+      // Follow a reopen to the row it created. Without it the panel keeps an id the fleet no longer
+      // carries — see `SessionPanel`'s own `onOpened`.
+      onOpened={id => navigate(sessionPath(id))}
       // CONTROLLED on both layouts now. Passing `onViewChange` is what suppresses SessionPanel's
       // own header, and mobile draws the same three things in the row that already holds the back
       // button — one bar instead of two stacked ones saying overlapping things.
