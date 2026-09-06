@@ -453,6 +453,92 @@ SESSIONS' `git_remote`, never through a field somebody typed: that is the same r
 dimension already follows (`normalizeGitRemote` is the only key), and it is what makes a task that
 spans two repositories appear correctly under both.
 
+## 10f. Ordering, and the fields a board needs to be operable
+
+Researched against Jira, Linear and monday.com (Sep 2026) and taken selectively — the useful half of
+each, and none of the ceremony.
+
+**Sorting is one rule, `@agentistics/core/taskSort.ts`.** The table's headers and the kanban's
+picker write the same stored field. A board that ranks its cards one way in the grid and another in
+the columns is two boards, and the reader has to hold both. Three properties it must keep:
+
+- **`null` sorts LAST in both directions.** A task nobody could price is not the cheapest task;
+  putting it at the top of an ascending cost sort is the confident zero this product refuses
+  everywhere else. Reversing the arrow moves the measured rows and leaves the unmeasurable ones at
+  the bottom, where they read as "no answer" rather than "least".
+- **Every sort is TOTAL** — rank, then creation, then id. A board whose rows shuffle when nothing
+  changed is one people stop trusting to have shown them everything.
+- **The header cycle is asc → desc → the board's own order.** Three states, because "I did not
+  choose a sort" has to be reachable without remembering what the default key was, and here the
+  default IS a key (`manual`).
+
+**Manual order is a STRING** (`task-rank.ts`), the LexoRank / fractional-indexing trick: a drop is
+one write instead of renumbering the column. That matters twice over on this store — the book is a
+JSON file several processes read-modify-write, so an integer position would make every drag a race
+as well as a fan of writes. Ranks that cannot be split trigger a rebalance rather than a failure:
+leaving the card the user just dropped where it was is not an option.
+
+**A drop between columns is a STATUS change; inside one it is a reorder.** One gesture, one write.
+Doing both would leave a card in a column its status does not name if the second failed.
+
+**Fields**: `priority` (`urgent | high | medium | low | none`), `assignee`, `startDate` / `dueDate`,
+`labels`. **Absent priority is `none`, never `medium`** — "nobody has said" is a real answer and a
+board full of a default nobody chose is a board where priority means nothing. An overdue date is
+red, and **never on a closed task**: finished work cannot be late, and saying so is a false alarm
+about something nobody can act on.
+
+**Swimlanes** (repo / owner / harness / priority) are rows of the whole pipeline — how you see that
+three agents are all inside one repository. **WIP limits WARN and never block**: the limit is an
+agreement a team makes with itself, and a board that refuses a drop teaches people to route around
+it rather than to look at it. Linear ships no WIP limit at all and Jira enforces one; the warning is
+the honest middle.
+
+---
+
+## 10g. Orchestration — the board as a work queue for agents
+
+The three questions a person or an assistant running a fleet asks, which a kanban does not answer.
+Grounded in the swarm/supervisor patterns the 2026 multi-agent literature converged on: atomic
+claiming, lease recovery, dependency-aware readiness, convergence detection.
+
+**1. What can be picked up?** `planNext` returns the open, unblocked, unclaimed tasks in the order
+an agent would take them, numbered from 1 — plus **`withheld`: every task that is NOT available,
+with the reason** (closed / blocked / claimed / not pickable in this status). An agent told
+"nothing" learns nothing; the difference between "it is all done" and "it is all blocked" is the
+difference between stopping and going to unblock something.
+
+**2. Is this mine?** `claimTask` is an atomic take decided INSIDE the store's lock, so two agents
+asking in the same millisecond cannot both be told yes. It is a **LEASE, not a lock** — the naive
+boolean has a worse failure behind it: an agent that dies holding a task removes it from the board
+forever with nothing on screen saying why. So:
+
+- a claim expires (30 min default) and is refreshed by re-claiming;
+- an unparseable expiry reads as EXPIRED, never as forever;
+- a refusal NAMES the holder and the moment their lease runs out;
+- `takeover` / `force` exist for a person overriding on purpose — an agent that sends them has
+  defeated the point;
+- an expired lease is stated in words ("lease expired") rather than blanked: the task is available
+  again, and a card that simply stopped naming a holder reads as one nobody ever took.
+
+**3. What happened while I was away?** A board-wide activity log — status moves, claims, releases,
+priority and assignee changes, sessions filed — capped at 2000 events, oldest dropped. One list
+rather than an array per task: the question is asked across the board, and a per-task cap would let
+a hundred tasks hold a hundred caps' worth of history in a file read on every poll.
+
+**Convergence** is `boardProgress`, and it is deliberately TWO facts: nothing to hand out AND
+nothing in flight. A coordinator that reads "no work available" while three agents are mid-task will
+re-dispatch forever.
+
+**The Agents view** is where all of it is drawn, and a CLAIM and a LIVE SESSION are two different
+things on it: a claim is a statement somebody made, a session is something observed on this machine
+this second. Conflating them lets "an agent said it would" read as "an agent is". The only write on
+that screen is clearing a lease that has visibly lapsed — a correction, not an instruction.
+
+**MCP**: `task_next`, `task_claim` (claim / release / refresh), `task_activity`, `task_edit`,
+`task_session`, plus `actor` on `task_status` so every move is recorded against whoever made it.
+
+---
+
 ## 11. Testing
 
 Pure modules, tested without spawning anything, following the repo's existing shape:
@@ -484,42 +570,59 @@ Pure modules, tested without spawning anything, following the repo's existing sh
 Every line is a thing that must be true of the shipped feature, in the order it was asked for.
 
 **The measurement spine**
-- [ ] Task → Attempt → Session(s), with the attempt carrying the configuration asked for at spawn
-- [ ] Attribution stamped at spawn and inherited by resume / attach / takeover / reopen
-- [ ] First-sighting claim for the harnesses with no `assignId`, refusing on any ambiguity
-- [ ] Rollup: cost, rounds, sessions used, sessions linked, tokens, active time
-- [ ] Provenance stated: how many sessions a cost covers, measured vs estimated
-- [ ] Copilot credits kept out of the money, `mixedCurrency` refusing a single total
-- [ ] `N/A` everywhere a harness reported nothing — never a `0`
-- [ ] Delivery marker: manual, with git evidence attached; `abandoned` first-class and evidence-free
+- [x] Task → Attempt → Session(s), with the attempt carrying the configuration asked for at spawn
+- [x] Attribution stamped at spawn and inherited by resume / attach / takeover / reopen
+- [x] First-sighting claim for the harnesses with no `assignId`, refusing on any ambiguity
+- [x] Rollup: cost, rounds, sessions used, sessions linked, tokens, active time
+- [x] Provenance stated: how many sessions a cost covers, measured vs estimated
+- [x] Copilot credits kept out of the money, `mixedCurrency` refusing a single total
+- [x] `N/A` everywhere a harness reported nothing — never a `0`
+- [x] Delivery marker: manual, with git evidence attached; `abandoned` first-class and evidence-free
 
 **The board**
-- [ ] Task has title + optional description
-- [ ] Comments, with a free-text author
-- [ ] Subtasks, as checkboxes
-- [ ] Files: upload, list, download, delete — bytes on disk, index in the book
-- [ ] The task's sessions listed on its screen
-- [ ] Deleting a task removes its board and leaves its sessions alone
+- [x] Task has title + optional description
+- [x] Comments, with a free-text author, editable and deletable, taking pasted files and images
+- [x] Subtasks as RECORDS — status, owner, start, due, session — in the same columns the table
+      expands inside a row
+- [x] Files: upload, list, download, delete — bytes on disk, index in the book; list AND grid, with
+      a lightbox that walks the images only
+- [x] The task's sessions listed on its screen
+- [x] Deleting a task removes its board and leaves its sessions alone
+- [x] Table split into one minimizable component per GROUP, with a chooser for which groups show
+- [x] Column chooser, sortable headers, and the arrangement restored on returning from a task
+- [x] Kanban: one horizontal row, hand ordering by drag, swimlanes, WIP warnings
+- [x] Priority / owner / start / due / labels, `none` meaning "nobody has said"
 
 **The metrics**
-- [ ] Models ranked, with tokens
-- [ ] Harnesses ranked, with tokens
-- [ ] Agent runs
-- [ ] Tokens as the four counters
-- [ ] Files / lines / commits / tool errors
-- [ ] Delivery time in hours and days, null while open
+- [x] Models ranked, with tokens
+- [x] Harnesses ranked, with tokens
+- [x] Agent runs
+- [x] Tokens as the four counters
+- [x] Files / lines / commits / tool errors
+- [x] Delivery time in hours and days, null while open
+- [x] Metrics are the DEFAULT view, not the kanban
+
+**Orchestration**
+- [x] `task_next`: ready queue + withheld with reasons + convergence
+- [x] Atomic claim with an expiring LEASE, refusable, refreshable, takeover-able by a person
+- [x] Board-wide activity log, capped, and a per-task Activity tab
+- [x] Agents view: queue, who is on what, activity — claim and live session drawn apart
 
 **The surfaces**
-- [ ] `agentop task` — ls / show / deliver / abandon
-- [ ] `GET`/`POST` `/api/tasks`, guarded in `capability-guard.ts`
-- [ ] Web: task list, task detail with comments / subtasks / files / sessions, attempt comparison
-- [ ] Web mobile: nav entry in BOTH arrays, 44px touch targets, no horizontal scroll at 390px
-- [ ] Session creation: task dropdown with search + create-new
-- [ ] MCP: tools for the board AND for session management
+- [x] `agentop task` — ls / show / deliver / abandon
+- [x] `GET`/`POST` `/api/tasks`, guarded in `capability-guard.ts`
+- [x] Web: task list, task detail with comments / subtasks / files / sessions, attempt comparison
+- [x] Web mobile: nav entry in BOTH arrays, 44px touch targets, no horizontal scroll at 390px
+- [x] Session creation: task dropdown with search + create-new
+- [x] Session linking: multi-select, paginated, offline reachable, live/offline toggle
+- [x] MCP: tools for the board (list / show / create / status / comment / subtask / link /
+      blocked-by / delete / edit / session) AND for orchestration (next / claim / activity)
+- [ ] MCP: session management tools (start / attach / kill) — deliberately still the CLI, see
+      `cli-hooks.ts`'s note on Bash's permission prompt being the consent gate
 
 **Storage and the central**
-- [ ] Board in `tasks.json`, never in the parse cache (`cache.db` is derived state only)
-- [ ] File bytes under `task-files/<taskId>/<fileId>`, paths built from minted ids only
+- [x] Board in `tasks.json`, never in the parse cache (`cache.db` is derived state only)
+- [x] File bytes under `task-files/<taskId>/<fileId>`, paths built from minted ids only
 - [ ] `Task.shared`, absent reading as NOT shared
 - [ ] Repository sharing rules still bind a shared task's sessions; the shortfall is stated
 - [ ] Title / description / comments redacted at both boundaries
@@ -528,5 +631,6 @@ Every line is a thing that must be true of the shipped feature, in the order it 
 - [ ] Repositories → Tasks tab, keyed by the sessions' `git_remote`
 
 **The rules that must still hold**
-- [ ] One resolution shared by CLI, HTTP, web and MCP — no surface computes its own rollup
-- [ ] `bun test` green, `tsc --noEmit` clean, `build:binary` compiles
+- [x] One resolution shared by CLI, HTTP, web and MCP — no surface computes its own rollup
+- [x] One SORT shared by the table and the kanban, in `@agentistics/core`
+- [x] `bun test` green, `tsc --noEmit` clean, `build:binary` compiles

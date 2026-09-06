@@ -1752,6 +1752,72 @@ packages/vscode/src/
   uses, so the two can never disagree about one day. No rate means DOLLARS, never a converted figure
   invented from a guess.
 
+## The task board (ALM) — `/tasks`, and the orchestration surface on top of it
+
+What each piece of work COST, in how many rounds and across how many sessions — and, once several
+agents are driving it, which of them may pick up what. Full write-up in
+`docs/superpowers/specs/2026-09-05-task-measurement-design.md`; these are the invariants.
+
+```
+packages/server/server/sessions/
+  task-model.ts     Task / Attempt / Subtask / TaskFile / TaskClaim / TaskEvent + the legacy migration
+  task-store.ts     the JSON book, one writer per process + the cross-process file lock
+  task-attribution.ts  first-sighting claim (refuses on ambiguity)
+  task-rollup.ts    cost / rounds / tokens with PROVENANCE — never a confident 0
+  task-next.ts      PURE: readiness, the lease, convergence
+  task-rank.ts      PURE: hand order as a fractional-index string
+  task-report.ts / task-overview.ts / task-stats.ts / task-evidence.ts / task-filter.ts
+  task-web.ts       the ONE door /api/tasks, the CLI and the MCP all come through
+packages/core/src/taskSort.ts   PURE: the ordering BOTH the table and the kanban use
+packages/web/src/components/tasks/   board.ts (vocabulary) · TaskTable · TaskBoard · AgentsView ·
+                                     BoardArrange · SubtaskTable · TaskFiles · SessionPicker ·
+                                     TaskPicker · NewTaskWizard · boardPrefs (localStorage)
+```
+
+- **A TASK is measured through its SESSIONS, never on its own.** Cost, rounds, tokens and harness
+  all come from the sessions filed under it; a subtask carries status/owner/dates/session and
+  deliberately NO rollup, because a second smaller one would double-count the same sessions or
+  invent a split nobody recorded.
+- **`null` is not zero, anywhere.** A task nobody could price sorts LAST in both directions — an
+  ascending "cost" sort that puts unpriced work at the top is the confident zero this repo refuses
+  for harness capabilities, applied to a board.
+- **ONE ordering** (`@agentistics/core/taskSort.ts`), read by the table's headers and the kanban's
+  picker. Every sort is TOTAL (rank → creation → id) so nothing reshuffles on a re-render. Manual
+  order is a STRING (`task-rank.ts`): a drop is one write, not a renumbering of the column, which on
+  a JSON book several processes read-modify-write is also the difference between a race and none.
+- **A drop between columns is a STATUS change; inside one it is a reorder.** One gesture, one write
+  — the other order leaves a card in a column its status does not name when the second write fails.
+- **A CLAIM is a LEASE, not a lock**, and it is decided inside the store's lock so two agents asking
+  in the same millisecond cannot both be told yes. It EXPIRES (30 min, refreshed by re-claiming), an
+  unparseable expiry reads as EXPIRED rather than as forever, and a refusal NAMES the holder and the
+  moment their lease ends. `takeover`/`force` are for a PERSON overriding on purpose. An expired
+  lease is said in words — the task is available again, and a card that merely stopped naming a
+  holder reads as one nobody ever took.
+- **`task_next` answers with the WITHHELD tasks too, and why.** An agent told "nothing" cannot tell
+  "it is all done" from "it is all blocked", and re-dispatches forever. `boardProgress.settled` is
+  deliberately two facts: nothing to hand out AND nothing in flight.
+- **A claim and a live session are different things and are drawn apart.** A claim is a statement
+  somebody made; a session is something `/proc` and tmux observed this second. Conflating them lets
+  "an agent said it would" read as "an agent is".
+- **Absent priority is `none`** — "nobody has said" — never `medium`. A board full of a default
+  nobody chose is a board where priority means nothing. An overdue date is red and NEVER on a closed
+  task: finished work cannot be late.
+- **A WIP limit WARNS, it never blocks.** A board that refuses a drop teaches people to route around
+  it instead of looking at it.
+- **The board's arrangement is `localStorage`, not `/api/preferences`** (`boardPrefs.ts`): on a
+  central that file is shared by everyone signed in, and one person's folded groups would fold them
+  for the whole team. Every read and write is guarded — a private window makes the accessor itself
+  throw.
+- **A comment's pasted image becomes a real task FILE plus a REFERENCE** (`commentBody.ts`,
+  `![name](file:<id>)`, by id — two screenshots pasted in the same second share a minted name). A
+  reference whose file was deleted renders as its NAME in plain text: never a broken image, never
+  silence.
+- **The activity log is board-wide and capped** (2000, oldest dropped). Per-task arrays would put
+  the cap per task in a file read on every poll.
+- **New `/api/tasks` sub-routes ride the existing `capability-guard.ts` entries** (`/api/tasks`,
+  `/api/task-files` → `localShell`). `GET /api/tasks/next` and `/api/tasks/activity` are matched
+  BEFORE the generic `<ref>` GET, or they resolve as task references and 404.
+
 ## What each surface is CALLED
 
 Four front doors, and a person saying "the sessions screen" has to land on exactly one of them.
