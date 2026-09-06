@@ -237,10 +237,15 @@ function TabGrid({ tabs, active, pt, isMobile, onPick, onClose }: {
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{t.label}</span>
               {/* The count travels to the grid too — a tile that dropped it would say less than the
-                  bar cell it replaces. `—` where a count would be a claim (see `subagentCount`). */}
-              <span style={{
-                fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
-              }}>{t.count === null ? '—' : t.count}</span>
+                  bar cell it replaces. A tab NOBODY HAS OPENED has no count, and says so with a
+                  dash and a reason on hover: "not asked yet" and "there are none" are different
+                  facts, and a `0` would claim the second one. */}
+              <span
+                title={t.count === null
+                  ? (pt ? 'Ainda não lido — abra a aba para contar.' : 'Not read yet — open the tab to count.')
+                  : undefined}
+                style={{ fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}
+              >{t.count === null ? '—' : t.count}</span>
             </button>
           )
         })}
@@ -496,30 +501,41 @@ export function ArtifactsAside({
   )
 
   /** The three tabs. A count rides each one, so the panel says what is behind a tab unopened. */
+  /**
+   * EVERY COUNT IS `null` UNTIL SOMEBODY HAS ASKED. It is never a `0`.
+   *
+   * On the BAR a zero was invisible — `count > 0` hid it — so the lie sat in the data for as long
+   * as the bar was the only reader. The grid shows every tile's number, including a zero, and the
+   * moment it did, `Skills 0` and `Subagents 0` appeared on tabs nobody had opened. Reported
+   * exactly that way: "mostra os itens zerados, mas quando eu entro dai ele mostra o numero real".
+   *
+   * The comment that used to sit on the Skills line called `?? 0` "honest rather than lazy" and
+   * then, one clause later, stated the rule it was breaking — a number the panel has not measured
+   * is the thing this codebase refuses to print everywhere else. A control that has not asked and
+   * a thing that is empty are different facts, and only the second one is about the session.
+   *
+   * `loading` is the conversation's own signal, so the four counts derived from its turns wait on
+   * it; the three tabs that fetch for themselves wait on their own answer.
+   */
   const tabs: { id: TabId; label: string; icon: React.ReactNode; count: number | null }[] = [
-    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: artifacts.length },
-    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: docs.length },
-    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: feed.length },
+    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: loading ? null : artifacts.length },
+    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: loading ? null : docs.length },
+    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: loading ? null : feed.length },
     {
       id: 'gallery',
       label: pt ? 'Galeria' : 'Gallery',
       icon: <Image size={12} />,
-      count: galleryFiles,
+      count: loading ? null : galleryFiles,
     },
-    // The count is 0 until the tab is opened, and that is honest rather than lazy: the panel has
-    // not asked the host yet, and a number it has not measured is the thing this codebase refuses
-    // to print everywhere else.
-    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills?.length ?? 0 },
-    // `null`, not 0, wherever a count would be a claim: only Claude Code records subagents at all,
-    // and until the tab is opened this panel has not asked. See `subagentCount`.
+    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills === null ? null : skills.length },
     {
       id: 'agents',
       label: pt ? 'Subagentes' : 'Subagents',
       icon: <Bot size={12} />,
       count: subagentCount(agentsState),
     },
-    { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp?.servers.length ?? null },
-    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs?.pulls.length ?? 0 },
+    { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp === null ? null : mcp.servers.length },
+    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs === null ? null : prs.pulls.length },
   ]
 
   /**
@@ -631,16 +647,22 @@ export function ArtifactsAside({
               padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
               fontSize: 11.5, fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap',
               minHeight: isMobile ? 44 : undefined,
-              border: gridOpen ? '1px solid var(--anthropic-orange)' : '1px dashed var(--border)',
-              background: 'transparent',
-              color: gridOpen ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+              // A real control, not a placeholder. It was a dashed outline in the tertiary colour
+              // and read as the disabled remains of something — the same thing that made the MCP
+              // tab's add button disappear into the cards under it.
+              border: '1px solid var(--anthropic-orange)',
+              background: gridOpen ? 'var(--anthropic-orange)' : 'rgba(232,105,11,0.10)',
+              color: gridOpen ? '#fff' : 'var(--anthropic-orange)',
             }}
           >
             <LayoutGrid size={12} />
             <span>{pt ? 'Todas' : 'All'}</span>
+            {/* `+5`, never `5`. A bare number here sits beside tiles and tabs whose numbers count
+                ITEMS — `MCPs 5` and `All 5` on one row meant two different things. The `+` says
+                "five more of these", which is what it is. */}
             {split.hidden.length > 0 && (
-              <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>
-                {split.hidden.length}
+              <span style={{ fontSize: 10, opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>
+                +{split.hidden.length}
               </span>
             )}
           </button>
@@ -662,7 +684,7 @@ export function ArtifactsAside({
           display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px',
           fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0,
         }}>
-          <LayoutGrid size={12} />{pt ? 'Todas' : 'All'}<span style={{ fontSize: 10 }}>88</span>
+          <LayoutGrid size={12} />{pt ? 'Todas' : 'All'}<span style={{ fontSize: 10 }}>+88</span>
         </span>
       </div>
 
