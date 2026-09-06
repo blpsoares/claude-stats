@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { sessionInRange } from '../lib/sessionSpan'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -1159,15 +1158,25 @@ export function computeDerivedStats(
     /**
      * Shared date predicate — reused for filteredSessions and nonClaudeInRange.
      *
-     * A SESSION IS A SPAN, NOT AN INSTANT, and this used to test only its start. Measured: the
-     * session doing all of today's work started three days earlier and was still running, so every
-     * hour of it counted on the day it BEGAN and "today" was empty while four assistants were live.
-     * `sessionInRange` claims a session for a range its activity OVERLAPS — see `sessionSpan.ts`.
+     * A SESSION IS FILED ON THE DAY IT STARTED, and an OVERLAP rule was tried here and REVERTED.
+     *
+     * The intent was right — a session running across three days is worked on for all three, and
+     * filing it only on the first made "today" nearly empty. The arithmetic is not: a session
+     * carries LIFETIME totals and nothing per-day, so claiming it for every day it touches
+     * attributes all of it to each of them. Measured with `Today` selected on a real machine: the
+     * repository page reported **4.446.955.424 tokens** where Claude's own per-day accounting
+     * (`dailyModelTokens['2026-09-06']`) says **51.465.608** — 86 times too much, from seven
+     * sessions that merely reached into today. The session COUNT went the same way, 8 against the
+     * 1 that actually started.
+     *
+     * Per-session per-day figures do not exist anywhere in this data. `stats-cache.json` has the
+     * true day series and no repository or project granularity (see CLAUDE.md), and a session has
+     * granularity and no days. Neither can be derived from the other, so the aggregate keeps the
+     * only attribution the data supports — and a wrong number stated confidently is worse than a
+     * small one.
      */
-    const startMs = start.getTime()
-    const endMs = end.getTime()
-    const inDateRange = (s: { start_time?: string; end_time?: string }) =>
-      sessionInRange(s, startMs, endMs)
+    const inDateRange = (s: { start_time?: string }) =>
+      isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
 
     // Filter sessions (date + projects + model + active-only)
     const filteredSessions = harnessSessions.filter(s => {
