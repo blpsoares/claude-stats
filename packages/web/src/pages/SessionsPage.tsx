@@ -352,6 +352,9 @@ export default function SessionsPage() {
   const artifactsPane = selected === undefined ? null : (
     <ArtifactsAside
       sessionId={selected.id}
+      // The MCP tab's per-directory scopes are resolved against this; with no directory they are
+      // absent from the picker rather than silently widened to "this machine".
+      {...(selected.cwd ? { cwd: selected.cwd } : {})}
       lang={pt ? 'pt' : 'en'}
       // Only what the server confirmed is still a file with content. Until it has answered the
       // list is shown as recorded, so the panel is never empty for the length of a request.

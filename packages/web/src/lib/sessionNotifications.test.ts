@@ -156,3 +156,80 @@ describe('the caller that was missing — the live fleet', () => {
     expect(captured[0]?.body).toContain('agentistics')
   })
 })
+
+describe('a row nobody watched arrive is not an event that happened', () => {
+  /**
+   * The report: "notificações de sessões FECHADAS estão disparando para sessões que já fecharam."
+   *
+   * A SECOND rule, composed with the two-poll confirmation above rather than replacing it. That one
+   * settles WHEN a state is believed; this one settles whether believing it is NEWS. Rows join and
+   * leave this list for reasons that are not the session changing state — a short-lived session
+   * born and finished inside one poll interval, a retired predecessor `collapseSupersededSessions`
+   * hides and shows again, a row reading `lost` for one poll (which has no words here, so it leaves
+   * the map) and returning as `exited` on the next. Each arrives with no previous state, and the
+   * confirmation alone only DELAYS the announcement by one poll.
+   *
+   * Every test here polls the same fleet TWICE, because that is what confirmation costs.
+   */
+  /** Poll the same rows twice — one state, confirmed. Returns the snapshot to carry forward. */
+  const settle = (
+    prev: Record<string, SessionActivity> | null,
+    rows: { id: string; state: string }[],
+  ): Record<string, SessionActivity> => {
+    const once = notifyFleetTransitions(prev, rows, 'en')
+    return notifyFleetTransitions(once, rows, 'en')
+  }
+
+  it('does not announce a session first seen already finished', () => {
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'exited' }])
+    expect(captured).toHaveLength(0)
+  })
+
+  it('still announces a session it watched finish', () => {
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Session Closed')
+  })
+
+  it('does not re-announce a finished row that left the list and came back', () => {
+    // `lost` carries no words here, so the row drops out of the activity map and returns with no
+    // previous state — which is exactly the flapping case, and it rang every time it came back.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    const ended = settle(alive, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+    const gone = settle(ended, [{ id: 'a', state: 'lost' }])
+    settle(gone, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+  })
+
+  it('records a first-sighted row so its NEXT change is news', () => {
+    // Withholding the announcement must not withhold the BASELINE, or a row first seen as
+    // `working` could never announce anything it did afterwards.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    const both = settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'working' }])
+    expect(captured).toHaveLength(0)
+    expect(both).toEqual({ a: 'working', b: 'working' })
+    settle(both, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Waiting Input')
+  })
+
+  it('makes the ONE exception for a session blocked on a person', () => {
+    // Silence on `waiting-approval` costs the session itself: it stays blocked until somebody
+    // answers, and there may never be another transition to ring on.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting-approval' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Needs Approval')
+  })
+
+  it('still waits for the confirmation before making that exception', () => {
+    // The exception is about whether a state is NEWS, never about whether it is real — a
+    // `waiting-approval` seen for a single poll is exactly the flicker the rule above exists for.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    notifyFleetTransitions(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting-approval' }], 'en')
+    expect(captured).toHaveLength(0)
+  })
+})

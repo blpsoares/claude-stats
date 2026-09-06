@@ -9,6 +9,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
+import { closedRowId } from './row-conversation'
 import { capClosedConversations } from './closed-cap'
 import { matchesQuery, type SearchFields } from '@agentistics/tui/control/search-scope'
 import { type HarnessProcess, sessionAtCwd } from '../live-sessions'
@@ -791,7 +792,7 @@ export function buildSessionViews(o: {
       const own = o.harnessSessions?.byConversation.get(c.sessionId)
       const named = chosenName(own)
       return {
-      id: `closed:${c.sessionId}`,
+      id: closedRowId(c.sessionId),
       harness: c.harness,
       cwd: c.cwd,
       status: 'closed' as const,

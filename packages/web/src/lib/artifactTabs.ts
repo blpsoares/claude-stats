@@ -44,6 +44,21 @@ export interface LiveEvent {
   text: string
   /** True while the turn that produced it has not finished. */
   live: boolean
+  /**
+   * The harness's own `tool_use` id, so this row can be OPENED — `/api/fleet/step` pairs it with the
+   * `tool_result` that names the same id and returns the whole call and its output.
+   *
+   * Absent on a transcript that carries no id, and a row with no `ref` and no `full` simply does not
+   * open: a control whose only outcome is a refusal is worse than no control.
+   */
+  ref?: string
+  /**
+   * The whole text, when it is ALREADY HERE and no request is needed.
+   *
+   * Reasoning is the case: the transcript hands over the complete thinking and the row shows its
+   * first line, so opening it costs nothing and must not pretend to be a fetch.
+   */
+  full?: string
 }
 
 export interface LiveTurn {
@@ -52,7 +67,8 @@ export interface LiveTurn {
   text?: string
   thinking?: string
   pending?: boolean
-  tools?: { name: string; detail?: string; writes?: string[] }[]
+  /** `ref` is the harness's `tool_use` id — the exact key `/api/fleet/step` opens the call with. */
+  tools?: { name: string; detail?: string; writes?: string[]; ref?: string }[]
 }
 
 /** Tools that READ rather than change anything. */
@@ -83,20 +99,26 @@ export function liveEvents(turns: readonly LiveTurn[]): LiveEvent[] {
   for (const t of turns) {
     const live = t?.pending === true
     const at = t?.at
-    const ev = (kind: LiveEvent['kind'], text: string): LiveEvent =>
-      at ? { kind, text, live, at } : { kind, text, live }
-    if (t?.thinking) out.push(ev('thought', firstLine(t.thinking)))
+    const ev = (kind: LiveEvent['kind'], text: string, more?: Partial<LiveEvent>): LiveEvent => ({
+      kind, text, live, ...(at ? { at } : {}), ...(more ?? {}),
+    })
+    // Reasoning opens with no request: the whole text is already here. Everything else is a `ref`
+    // the step reader resolves — see `LiveEvent.ref`.
+    if (t?.thinking) out.push(ev('thought', firstLine(t.thinking), { full: t.thinking }))
     for (const c of t?.tools ?? []) {
+      // Every event a call produces carries THAT call's id, so opening the `wrote` row of a shell
+      // command shows the command that wrote it — the two rows are one step seen from both ends.
+      const ref = c.ref ? { ref: c.ref } : undefined
       // A command that writes is BOTH events, in the order they happen: it ran, and then the file
       // appeared. Collapsing them would lose either what was run or what it produced, and the feed
       // is asked for both.
-      if (c.name === 'Bash' && c.detail) out.push(ev('ran', c.detail))
-      for (const w of c.writes ?? []) out.push(ev('wrote', w))
-      if (WRITE_TOOLS.has(c.name) && c.detail) out.push(ev('wrote', c.detail))
-      else if (READ_TOOLS.has(c.name) && c.detail) out.push(ev('read', c.detail))
+      if (c.name === 'Bash' && c.detail) out.push(ev('ran', c.detail, ref))
+      for (const w of c.writes ?? []) out.push(ev('wrote', w, ref))
+      if (WRITE_TOOLS.has(c.name) && c.detail) out.push(ev('wrote', c.detail, ref))
+      else if (READ_TOOLS.has(c.name) && c.detail) out.push(ev('read', c.detail, ref))
       // A subagent is a delegation, not a command — it is the one tool call that starts more work
       // somewhere else, and reading it as "ran" hides that.
-      else if (c.name === 'Agent' || c.name === 'Task') out.push(ev('delegated', c.detail ?? c.name))
+      else if (c.name === 'Agent' || c.name === 'Task') out.push(ev('delegated', c.detail ?? c.name, ref))
     }
   }
   return out

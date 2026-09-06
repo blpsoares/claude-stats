@@ -410,13 +410,39 @@ export function notifyFleetTransitions(
    * The cost is stated: a state that lasts less than one poll interval is never announced. That is
    * the right trade for a channel whose whole job is to interrupt a person.
    */
+  /*
+   * …AND A ROW THIS PAGE HAS NEVER SEEN IN ANOTHER STATE IS A LEVEL, NOT A TRANSITION.
+   *
+   * The rule above settles WHEN a state is believed; this one settles whether believing it is
+   * NEWS. They are different bugs and both were live: the flicker announced a state that was never
+   * really there, and this one announced a state that was there all along before anyone looked.
+   *
+   * Rows join and leave the fleet for reasons that are not a session changing state — a short-lived
+   * session born and finished inside one poll interval, a retired predecessor
+   * `collapseSupersededSessions` hides and shows again, a row reading `lost` for one poll (which
+   * has no words here, so it leaves the map) and returning as `exited` on the next. Each arrived
+   * with no previous state and each rang "[Session Closed]" for a session nobody had watched close:
+   * "notificações de sessões FECHADAS estão disparando para sessões que já fecharam". The
+   * two-poll confirmation alone only DELAYS that by one poll.
+   *
+   * It is the same rule the FIRST SNAPSHOT already applies, at the scale of one session instead of
+   * a whole page. The one exception is stated rather than inferred: `waiting-approval`. Every other
+   * sentence here reports a CHANGE ("it finished its turn", "it was closed", "it started working")
+   * and is only true if the state before it was seen; that one reports a session BLOCKED ON A
+   * PERSON, stays true until they answer, and may have no later transition to ring on — so silence
+   * there costs the session itself rather than one notification.
+   *
+   * The state is RECORDED either way. Withholding the announcement must not withhold the baseline,
+   * or a row first seen as `working` could never announce anything it did afterwards.
+   */
   const next: Record<string, SessionActivity> = { ...prev }
   const announce: Record<string, SessionActivity> = {}
   for (const [id, state] of Object.entries(seen)) {
     if (prev[id] === state) continue          // already announced, nothing new
     if (unconfirmed[id] !== state) continue   // first sighting — wait for the next poll
+    const firstSight = prev[id] === undefined
     next[id] = state
-    announce[id] = state
+    if (!firstSight || state === 'waiting-approval') announce[id] = state
   }
   // A row that vanished from the fleet stops being tracked, or its last state would be re-announced
   // if it came back to the same one.
@@ -431,8 +457,10 @@ export function notifyFleetTransitions(
       ...(r.harness ? { harness: r.harness } : {}),
     })
   }
-  // Only what was CONFIRMED this poll — `prev` is passed as the baseline so the handler's own
-  // "has it changed" check still holds for each of them.
+  // Only what was CONFIRMED this poll AND is a transition — `prev` is passed as the baseline so the
+  // handler's own "has it changed" check still holds for each of them. `next` is what the caller
+  // keeps, withheld rows included: a row seen for the first time now is not news, and must be a
+  // baseline the moment it changes.
   handleSessionStateTransitions(prev, announce, map, lang)
   return next
 }

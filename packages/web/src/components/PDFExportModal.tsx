@@ -1379,9 +1379,12 @@ export function PDFContent({ pdfTheme, sectionOrder, derived, pdfFilters, lang, 
                       <div key={inv.toolUseId || i} style={{ display: 'grid', gridTemplateColumns: '130px 1fr 55px 55px 70px', gap: 8, padding: '5px 10px', borderTop: `1px solid ${c.border}`, background: i % 2 === 0 ? 'transparent' : c.bgCard }}>
                         <span style={{ fontSize: 8, fontWeight: 600, color: c.purple, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.agentType}</span>
                         <span style={{ fontSize: 8, color: c.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.description || '—'}</span>
-                        <span style={{ fontSize: 8, color: c.text, textAlign: 'right' }}>{fmt(inv.totalTokens)}</span>
-                        <span style={{ fontSize: 8, color: c.textSec, textAlign: 'right' }}>{(() => { const s = Math.round(inv.totalDurationMs/1000); return s < 60 ? `${s}s` : `${Math.floor(s/60)}m` })()} </span>
-                        <span style={{ fontSize: 8, color: c.orange, textAlign: 'right' }}>{fmtCost(inv.costUSD, currency, brlRate)}</span>
+                        {/* An invocation nothing could measure prints a dash. A PDF is read away
+                            from the app, so a zero here is a wrong number with nothing beside it to
+                            question. */}
+                        <span style={{ fontSize: 8, color: c.text, textAlign: 'right' }}>{inv.totalTokens === null ? '—' : fmt(inv.totalTokens)}</span>
+                        <span style={{ fontSize: 8, color: c.textSec, textAlign: 'right' }}>{inv.totalDurationMs === null ? '—' : (() => { const s = Math.round(inv.totalDurationMs/1000); return s < 60 ? `${s}s` : `${Math.floor(s/60)}m` })()} </span>
+                        <span style={{ fontSize: 8, color: c.orange, textAlign: 'right' }}>{inv.costUSD === null ? '—' : fmtCost(inv.costUSD, currency, brlRate)}</span>
                       </div>
                     ))}
                   </div>

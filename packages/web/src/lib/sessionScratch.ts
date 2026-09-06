@@ -58,6 +58,34 @@ export interface ScratchStore {
  */
 export const MAX_CACHED_CHATS = 10
 
+/**
+ * WHAT A PIECE OF SCRATCH BELONGS TO — the conversation, never the row.
+ *
+ * The reported symptom was "mal fechei uma conversa e ao voltar pra ela literalmente ela volta a
+ * carregar", with an empty column and "Carregando a conversa…". The cache was working; it was
+ * filed under the wrong name.
+ *
+ * ONE CONVERSATION IS REACHABLE THROUGH SEVERAL ROWS, by design. `session-view.ts` deliberately
+ * lets an `exited` managed row NOT cover its conversation, so the conversation appears a second
+ * time as a `closed:<conversationId>` row you can reopen — measured on this machine: 9 of the 12
+ * exited rows had exactly that twin. And every attach / reopen / restart mints a NEW managedId for
+ * the SAME conversation. So the row id is not an identity that survives a session's life, and
+ * keying scratch on it means closing a session throws away its cached turns AND the paragraph
+ * somebody had typed into it — which is the one thing here that exists nowhere else.
+ *
+ * The key is therefore the conversation where there is one (`closed:` rows carry it in their id and
+ * nowhere else), and the row id only where there is not — a harness that cannot report a
+ * conversation has nothing better, and `conversationBlind` is the row's own sentence for that.
+ * The two are PREFIXED apart so a conversation key and a row id can never collide.
+ */
+export function scratchKey(row: { id: string; conversationId?: string }): string {
+  if (row.conversationId) return `conv:${row.conversationId}`
+  // A closed row's id IS `closed:<conversationId>` (session-view.ts) and it carries no
+  // `conversationId` field of its own, so this is the same conversation said the other way.
+  if (row.id.startsWith('closed:')) return `conv:${row.id.slice('closed:'.length)}`
+  return `row:${row.id}`
+}
+
 /** `sessionStorage` key for one session's draft. Namespaced so nothing else can collide with it. */
 export function draftKey(id: string): string {
   return `agentistics:draft:${id}`
