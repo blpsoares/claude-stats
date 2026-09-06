@@ -9,7 +9,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { readGithubConfig, writeGithubConfig } from './backup/github-store'
-import { connectGithub, readGithubSection, updateGithubSection } from './backup-routes'
+import {
+  connectGithub, disconnectGithub, readGithubSection, updateGithubSection,
+} from './backup-routes'
 
 
 describe('the GitHub versioning section — the token never leaves the machine', () => {
@@ -217,4 +219,30 @@ test('gh mode with a gh that cannot answer says THAT, not "paste a token"', asyn
   if (res.ok) return
   expect(res.reason).toContain('gh')
   rmSync(dir, { recursive: true, force: true })
+})
+
+describe('disconnecting the repository', () => {
+  test('removes the config and reports the machine as unconfigured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghdisc-'))
+    const file = join(dir, 'github.json')
+    await writeGithubConfig({
+      url: 'https://github.com/me/backups', owner: 'me', repo: 'backups',
+      token: 'ghp_x', keepRemote: 5, deleteLocalAfterUpload: true, label: 'notebook',
+    }, file)
+
+    const res = await disconnectGithub(file)
+    expect(res.ok).toBe(true)
+    expect(existsSync(file)).toBe(false)
+    expect((await readGithubSection(file)).configured).toBe(false)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('disconnecting a machine that has no config is fine, not an error', async () => {
+    // Idempotent on purpose. The button's job is "this machine is not connected any more", and it
+    // is already true — reporting a failure would send somebody looking for a problem that is not
+    // there.
+    const dir = mkdtempSync(join(tmpdir(), 'agentistics-ghdisc-'))
+    expect((await disconnectGithub(join(dir, 'nothing.json'))).ok).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

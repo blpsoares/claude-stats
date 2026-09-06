@@ -542,3 +542,27 @@ async function runRestoreJob(
     rr.finishRestoreJob(job, { ok: false, reason: e instanceof Error ? e.message : String(e) })
   }
 }
+
+/**
+ * Forget the repository this machine versions to.
+ *
+ * Deletes only the LOCAL configuration. The releases already on GitHub are NOT touched, and saying
+ * so is the whole reason this is not called "delete": a person pressing it wants to stop sending
+ * from this machine, not to destroy the copies that are the point of having sent them. Reconnecting
+ * the same repository later finds them, and the "already uploaded?" check recognises them.
+ *
+ * Idempotent: a machine with no config is already disconnected, and reporting that as a failure
+ * would send somebody looking for a problem that is not there.
+ */
+export async function disconnectGithub(
+  file?: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { GITHUB_BACKUP_CONFIG_FILE } = await import('./backup/github-store')
+  const { rm } = await import('fs/promises')
+  try {
+    await rm(file ?? GITHUB_BACKUP_CONFIG_FILE, { force: true })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+  }
+}

@@ -1045,6 +1045,27 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // Forgetting the repository. DELETE and not a POST with a flag, because it is the one
+    // irreversible-looking action here and the method should say so — though it only removes the
+    // LOCAL config: the releases on GitHub are untouched, and the interface says that before asking.
+    if (url.pathname === '/api/backup/github' && req.method === 'DELETE') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { disconnectGithub } = await import('./backup-routes')
+        const result = await disconnectGithub()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/backup/github' && req.method === 'POST') {
       if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
       try {

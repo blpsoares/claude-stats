@@ -10,10 +10,11 @@
  */
 import React, { useCallback, useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-// `RotateCcw` is the restore verb's glyph. There is deliberately no `Github` here: lucide-react v1
+// `RotateCcw` is the restore verb's glyph; `Pencil` and `Trash2` are the repository row's two
+// verbs. There is deliberately no `Github` here: lucide-react v1
 // — the version this repo installs — carries no brand icons, so the GitHub mark is the local
 // `GithubMark` SVG below rather than a new dependency for one glyph.
-import { PlayCircle, Loader2, AlertTriangle, CheckCircle2, Clock, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { PlayCircle, Loader2, AlertTriangle, CheckCircle2, Clock, ChevronLeft, ChevronRight, RotateCcw, Pencil, Trash2 } from 'lucide-react'
 import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
 import type { AppContext } from '../../lib/app-context'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../../lib/harness'
@@ -570,6 +571,17 @@ export default function BackupSettings() {
    * that needs no credential is the one being asked for one.
    */
   const [useGh, setUseGh] = useState(false)
+  /**
+   * The pencil. `true` puts the SAME `GithubConnectForm` on screen with the current URL prefilled,
+   * so pointing this machine at a different repository is the very flow that connected it in the
+   * first place — a second, smaller "change the URL" form would be a second set of checks and a
+   * second place for the two to disagree about what a valid repository is.
+   */
+  const [editingRepo, setEditingRepo] = useState(false)
+  /** The trash's modal. A destructive action never fires from the click that asks for it. */
+  const [disconnectAsk, setDisconnectAsk] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [disconnectError, setDisconnectError] = useState<string | null>(null)
 
   /**
    * Connect the repository. The five checks live on the server (`connectGithub` calls the same
@@ -595,12 +607,13 @@ export default function BackupSettings() {
           setLabelDraft(data.section.label)
           setKeepDraft(String(data.section.keepRemote))
         }
-        // Also here, not only on load: connecting fills `github`, and without this the restore
-        // field below stayed empty until a reload while its own hint said it was prefilled.
-        const connected = data.section.configured ? data.section.url : ''
-        setRestoreUrl(prev => (prev.trim() ? prev : connected))
+        // ONE repository. The restore section reads the SAME URL rather than asking for it again,
+        // so a re-point through the pencil moves both halves at once — a stale restore URL left
+        // behind would send "take it back from" at a repository this machine no longer writes to.
+        if (data.section.configured) setRestoreUrl(data.section.url)
         setConnectToken('')
         setConnectUrl('')
+        setEditingRepo(false)
       } else {
         setConnectError(data.reason ?? (pt ? 'não foi possível conectar' : 'could not connect'))
       }
@@ -624,19 +637,74 @@ export default function BackupSettings() {
       } else if (data.gh?.usable) {
         setUseGh(true)
       }
-      // ONE repository, not two. Where this machine sends its backups is where it takes them
-      // back from — asking for the URL a second time, in a second field, on the same screen, is
-      // two questions for one fact and invites them to disagree. It stays EDITABLE: restoring
-      // ANOTHER machine's backup from a different repository is a real thing to want, and the
-      // field says so. Only prefilled when empty, so a URL being typed is never overwritten by a
-      // status poll.
-      if (data.configured) setRestoreUrl(prev => (prev.trim() ? prev : data.url))
+      // ONE repository, not two. Where this machine sends its backups is where it takes them back
+      // from — asking for the URL a second time, in a second editable field on the same screen, was
+      // two questions for one fact and invited them to disagree (reported verbatim: "eh 1 pra
+      // destino e recuperação. apenas"). So a CONFIGURED machine's restore section shows this URL
+      // read-only and the pencil above is the one place it changes; the editable field survives
+      // only for the machine that has nothing connected, which has no other way to name a
+      // repository. Set unconditionally for the same reason: there is nothing being typed to
+      // overwrite.
+      if (data.configured) setRestoreUrl(data.url)
     } catch {
       setGithub(null)
     }
   }, [])
 
   useEffect(() => { void loadGithub() }, [loadGithub])
+
+  /**
+   * The pencil. Prefills the connect form with what is stored — the URL, and which credential this
+   * machine already uses — so "point me at a different repository" starts from the answer that is
+   * true now rather than from an empty box. The token is deliberately NOT prefilled: it is never
+   * returned by a route, so there is nothing to prefill it with.
+   */
+  const startEditRepo = useCallback(() => {
+    if (!github?.configured) return
+    setConnectUrl(github.url)
+    setConnectToken('')
+    setConnectError(null)
+    setUseGh(github.auth === 'gh')
+    setEditingRepo(true)
+  }, [github])
+
+  /** Cancel — back to the row, with nothing changed and nothing typed kept. */
+  const cancelEditRepo = useCallback(() => {
+    setEditingRepo(false)
+    setConnectError(null)
+    setConnectUrl('')
+    setConnectToken('')
+  }, [])
+
+  /**
+   * The trash's ONLY caller is the modal's confirm button. `DELETE /api/backup/github` removes the
+   * LOCAL config and nothing else — the releases already on GitHub are untouched, which is the one
+   * thing the modal says before asking. The refetch is what returns the page to its unconfigured
+   * shape (the connect form); the server's own `reason` is passed through untouched on failure.
+   */
+  const disconnectGithubRepo = useCallback(async () => {
+    setDisconnecting(true)
+    setDisconnectError(null)
+    try {
+      const r = await fetch('/api/backup/github', { method: 'DELETE' })
+      const data = (await r.json()) as { ok: true } | { ok: false; reason: string }
+      if (data.ok) {
+        setDisconnectAsk(false)
+        setEditingRepo(false)
+        setGithubResult(null)
+        setConnectUrl('')
+        setConnectToken('')
+        setConnectError(null)
+        await loadGithub()
+      } else {
+        setDisconnectError(data.reason || (pt ? 'não foi possível desconectar' : 'could not disconnect'))
+      }
+    } catch {
+      setDisconnectError(pt ? 'a requisição falhou' : 'the request failed')
+    } finally {
+      setDisconnecting(false)
+    }
+  }, [loadGithub, pt])
 
   /** The one write path. Every control is disabled while a write is in flight (`githubSaving`),
    *  and every outcome — success or the server's own reason — lands under the control that asked
@@ -960,7 +1028,26 @@ export default function BackupSettings() {
                 onSaveLabel={saveLabelName}
                 onSaveKeep={saveKeepRemote}
                 onToggleDeleteLocal={checked => void saveGithub('deleteLocalAfterUpload', { deleteLocalAfterUpload: checked })}
+                editing={editingRepo}
+                onEdit={startEditRepo}
+                onCancelEdit={cancelEditRepo}
+                onAskDisconnect={() => { setDisconnectError(null); setDisconnectAsk(true) }}
+                disconnecting={disconnecting}
               />
+              {/* The trash's confirmation. Rendered from the page rather than from inside
+                  `GithubVersioning` so it survives that section swapping into its connect form —
+                  and so the one API call it can make has the page's own refetch behind it. */}
+              {disconnectAsk && github.configured && (
+                <GithubDisconnectModal
+                  repo={github.repo}
+                  url={github.url}
+                  pt={pt}
+                  busy={disconnecting}
+                  error={disconnectError}
+                  onCancel={() => { if (!disconnecting) { setDisconnectAsk(false); setDisconnectError(null) } }}
+                  onConfirm={() => { void disconnectGithubRepo() }}
+                />
+              )}
               <Divider />
             </>
           )}
@@ -974,6 +1061,7 @@ export default function BackupSettings() {
               <RestoreSection
                 pt={pt}
                 configuredUrl={github?.configured ? github.url : null}
+                configuredRepo={github?.configured ? github.repo : null}
                 // A configured machine on `auth: 'gh'` has a working gh by construction — it is
                 // how the repository was verified. An unconfigured one is told by the probe.
                 ghUsable={github === null ? false
@@ -1565,22 +1653,31 @@ function SchedulePicker({ value, active, pt, disabled, customHours, onChange }: 
 /**
  * GITHUB VERSIONING — each backup becomes a Release on a private GitHub repository the user owns.
  *
- * Two shapes, and the unconfigured one is deliberately NOT a form. Connecting a repository needs a
- * GitHub token, which `agentop backup github setup` verifies against the API and refuses on a
- * public repository; a token box on a settings page is exactly the habit that flow avoids teaching.
- * So an unconfigured machine gets the explanation plus the command to run, and nothing to type.
+ * Two shapes. The unconfigured one is `GithubConnectForm`; the configured one is the repository
+ * row plus the settings that can be changed WITHOUT a token — the machine name, how many of this
+ * machine's releases to keep, and whether the local archive goes after a confirmed upload.
  *
- * The configured shape changes only what can be changed WITHOUT a token — the machine name, how
- * many of this machine's releases to keep, and whether the local archive goes after a confirmed
- * upload. Nothing on this page is, or could be, a credential.
+ * The row carries the two verbs the repository itself has: a PENCIL, which puts the very same
+ * connect form back on screen with the current URL prefilled (a second, smaller "edit the URL"
+ * form would be a second set of checks and a second place for the two to disagree about what a
+ * valid repository is), and a TRASH, which opens a modal and nothing else. Nothing on this page
+ * is, or could be, a credential that is read back: a token is written and never returned.
  */
 function GithubVersioning({
   section, labelDraft, keepDraft, saving, result, pt,
   onLabelDraft, onKeepDraft, onSaveLabel, onSaveKeep, onToggleDeleteLocal,
   connectUrl, connectToken, connecting, connectError, onConnectUrl, onConnectToken, onConnect,
-  useGh, onUseGh,
+  useGh, onUseGh, editing, onEdit, onCancelEdit, onAskDisconnect, disconnecting,
 }: {
   section: GithubSectionJson
+  /** The pencil is pressed: the connect form takes the row's place, prefilled. */
+  editing: boolean
+  onEdit: () => void
+  onCancelEdit: () => void
+  /** The trash. It only ever OPENS the modal — the page owns the call. */
+  onAskDisconnect: () => void
+  /** A disconnect is in flight: both icon buttons stand down rather than queueing a second one. */
+  disconnecting: boolean
   labelDraft: string
   keepDraft: string
   /** The connect form's two fields, held by the page so a failed attempt keeps what was typed. */
@@ -1614,14 +1711,19 @@ function GithubVersioning({
         label={pt ? 'Versionamento no GitHub' : 'GitHub versioning'}
       />
 
-      {!section.configured ? (
+      {!section.configured || editing ? (
         <GithubConnectForm
           pt={pt}
           urlDraft={connectUrl}
           tokenDraft={connectToken}
           busy={connecting}
           error={connectError}
-          gh={section.gh}
+          // The `gh` probe only exists on the UNCONFIGURED read (`readGithubSection` does not spawn
+          // it for a machine that is already set up), so a re-point is told which credential is
+          // STORED instead — a fact, where an invented account name would not be.
+          gh={section.configured ? undefined : section.gh}
+          reconnect={section.configured ? { repo: section.repo, auth: section.auth } : undefined}
+          onCancel={section.configured ? onCancelEdit : undefined}
           useGh={useGh}
           onUrl={onConnectUrl}
           onToken={onConnectToken}
@@ -1630,21 +1732,44 @@ function GithubVersioning({
         />
       ) : (
         <>
+          {/* The repository, and its two verbs. It used to be the link alone, with nothing on the
+              page that could change or remove it — reported verbatim: "eu n consigo editar o repo
+              pra onde eu estou mandando". The pencil re-opens the connect form; the trash opens a
+              modal, and only the modal's confirm calls the API. */}
           <ConfigRow
             label={pt ? 'Repositório' : 'Repository'}
             value={
-              <a
-                href={section.url}
-                target="_blank"
-                rel="noreferrer"
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word',
-                }}
-              >
-                <GithubMark size={13} />
-                {section.repo}
-              </a>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end',
+                gap: 8, flexWrap: 'wrap',
+              }}>
+                <a
+                  href={section.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    minWidth: 0, maxWidth: '100%',
+                    color: 'var(--anthropic-orange)', textDecoration: 'none', wordBreak: 'break-word',
+                  }}
+                >
+                  <GithubMark size={13} />
+                  {section.repo}
+                </a>
+                <IconButton
+                  icon={<Pencil size={14} />}
+                  label={pt ? 'Trocar o repositório' : 'Change the repository'}
+                  disabled={busy || disconnecting}
+                  onClick={onEdit}
+                />
+                <IconButton
+                  icon={<Trash2 size={14} />}
+                  label={pt ? 'Desconectar o repositório' : 'Disconnect the repository'}
+                  danger
+                  disabled={busy || disconnecting}
+                  onClick={onAskDisconnect}
+                />
+              </span>
             }
           />
 
@@ -1711,6 +1836,208 @@ function GithubVersioning({
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * A square icon button — the repository row's pencil and trash.
+ *
+ * An icon carries no name, so BOTH `aria-label` and `title` are required rather than optional: the
+ * first is what a screen reader reads, the second is what a pointer user gets on hover, and a glyph
+ * with neither is a control nobody can identify. It is a REAL touch target on mobile (≥44px) — a
+ * 20px tall button beside a wrapping link is one that gets missed and then mis-hit, and the one
+ * next to it here removes a configuration.
+ */
+function IconButton({ icon, label, danger, disabled, onClick }: {
+  icon: React.ReactNode
+  /** The accessible name, in the reader's own language. Used for `aria-label` AND `title`. */
+  label: string
+  /** The destructive one, in the same red every warning on this page uses. */
+  danger?: boolean
+  disabled?: boolean
+  onClick: () => void
+}) {
+  const isMobile = useIsMobile()
+  const side = isMobile ? 44 : 30
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: side, height: side, minHeight: isMobile ? 44 : undefined,
+        flexShrink: 0, boxSizing: 'border-box', padding: 0,
+        borderRadius: 7, border: '1px solid var(--border)', background: 'transparent',
+        color: danger ? '#ef4444' : 'var(--text-secondary)',
+        fontFamily: 'inherit',
+        cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {icon}
+    </button>
+  )
+}
+
+/**
+ * The TRASH's confirmation.
+ *
+ * Built to the same shape as `RestoreConfirmModal` below — Escape and a backdrop click cancel,
+ * full-screen on mobile through `OVERLAY_TOP` (a bare `0` puts the dialog's header under the iOS
+ * clock, and `mobileOverlay.test.ts` fails the build on one), no hand-rolled focus trap. Not
+ * `window.confirm`: it blocks the whole tab, and this page polls a restore job.
+ *
+ * What it must say is the half people get wrong about a "remove": disconnecting forgets the LOCAL
+ * configuration, and the backups already on GitHub are NOT touched. `disconnectGithub` (server)
+ * removes one 0600 file and makes no API call at all — so "your backups are gone" would be a false
+ * sentence in the frightening direction, and "we cleaned up for you" a false one in the reassuring
+ * direction. Both are stated, and the repository is NAMED: a machine can be pointed at any
+ * repository, and the last screen before it is forgotten is the one that can still say which.
+ */
+function GithubDisconnectModal({ repo, url, pt, busy, error, onCancel, onConfirm }: {
+  repo: string
+  url: string
+  pt: boolean
+  busy: boolean
+  /** The server's own reason, untouched. The modal stays open on failure — closing it would drop
+   *  the answer the click asked for. */
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const isMobile = useIsMobile()
+  const cancelRef = React.useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [onCancel])
+
+  // CANCEL takes the focus, not the confirm — this dialog's confirm is the destructive one, and a
+  // stray Enter on open must not be the thing that fires it. (`RestoreConfirmModal` focuses its
+  // confirm because that one still has a choice to make first.)
+  useEffect(() => { cancelRef.current?.focus() }, [])
+
+  return (
+    <div
+      onClick={onCancel}
+      role="presentation"
+      style={{
+        position: 'fixed', inset: 0, zIndex: 2000,
+        display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center',
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(3px)',
+        padding: isMobile ? OVERLAY_TOP : 16,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={pt ? 'Desconectar o repositório' : 'Disconnect the repository'}
+        style={{
+          width: '100%', maxWidth: isMobile ? '100%' : 520,
+          height: isMobile ? '100%' : undefined,
+          maxHeight: isMobile ? '100%' : '90vh',
+          overflowY: 'auto', boxSizing: 'border-box',
+          background: 'var(--bg-card)', border: isMobile ? 'none' : '1px solid var(--border)',
+          borderRadius: isMobile ? 0 : 12, padding: isMobile ? 16 : 22,
+          boxShadow: isMobile ? 'none' : '0 12px 48px rgba(0,0,0,0.5)',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{
+            display: 'inline-flex', padding: 8, borderRadius: 9,
+            background: 'color-mix(in srgb, #ef4444 12%, transparent)', color: '#ef4444',
+          }}>
+            <Trash2 size={17} />
+          </span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {pt ? 'Desconectar este repositório?' : 'Disconnect this repository?'}
+          </span>
+        </div>
+
+        {/* WHICH repository. Named, and linked, before anything is forgotten. */}
+        <div style={{
+          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12,
+          padding: '5px 0', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', flexShrink: 0 }}>
+            {pt ? 'Repositório' : 'Repository'}
+          </span>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%',
+              fontSize: 12, color: 'var(--anthropic-orange)', textDecoration: 'none',
+              wordBreak: 'break-word', textAlign: 'right',
+            }}
+          >
+            <GithubMark size={12} />
+            {repo}
+          </a>
+        </div>
+
+        <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.55, margin: 0 }}>
+          {pt
+            ? 'Esta máquina para de enviar backups para esse repositório e esquece a configuração guardada aqui — a URL, o nome da máquina e a credencial. Os backups locais em disco continuam onde estão.'
+            : 'This machine stops sending backups to that repository and forgets the configuration stored here — the URL, the machine name and the credential. The local backups on disk stay where they are.'}
+        </p>
+
+        {/* What it does NOT do. Stated as loudly as what it does: a "remove" that reads as
+            "delete my backups" is one nobody presses, and one that quietly did would be worse. */}
+        <div style={{
+          padding: '10px 12px', borderRadius: 8,
+          background: 'color-mix(in srgb, var(--accent-green) 10%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--accent-green) 30%, transparent)',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6,
+            fontSize: 12, fontWeight: 700, color: 'var(--text-primary)',
+          }}>
+            <CheckCircle2 size={14} style={{ color: 'var(--accent-green)', flexShrink: 0 }} />
+            {pt ? 'O que NÃO acontece' : 'What does NOT happen'}
+          </div>
+          <p style={{
+            margin: 0, fontSize: 11.5, lineHeight: 1.55, color: 'var(--text-secondary)',
+          }}>
+            {pt
+              ? 'Os backups que já estão no GitHub NÃO são apagados. Eles continuam no repositório, e conectá-lo de novo mais tarde encontra todos eles — inclusive pela seção “Restaurar” abaixo.'
+              : 'The backups already on GitHub are NOT deleted. They stay in the repository, and connecting it again later finds every one of them — including from the “Restore” section below.'}
+          </p>
+        </div>
+
+        <GithubFeedback feedback={error === null ? null : { ok: false, text: error }} />
+
+        <div style={{
+          display: 'flex', gap: 8, marginTop: 2, justifyContent: 'flex-end',
+          flexDirection: isMobile ? 'column-reverse' : 'row',
+        }}>
+          <RestoreButton
+            buttonRef={cancelRef}
+            text={pt ? 'Cancelar' : 'Cancel'}
+            primary={false}
+            disabled={busy}
+            onClick={onCancel}
+          />
+          <RestoreButton
+            text={busy
+              ? (pt ? 'Desconectando…' : 'Disconnecting…')
+              : (pt ? 'Desconectar' : 'Disconnect')}
+            busy={busy}
+            primary
+            danger
+            disabled={busy}
+            onClick={onConfirm}
+          />
+        </div>
+      </div>
     </div>
   )
 }
@@ -1860,6 +2187,7 @@ function GithubFeedback({ feedback }: { feedback: { ok: boolean; text: string } 
  */
 function GithubConnectForm({
   pt, urlDraft, tokenDraft, busy, error, gh, useGh, onUrl, onToken, onUseGh, onSubmit,
+  reconnect, onCancel,
 }: {
   pt: boolean
   urlDraft: string
@@ -1868,6 +2196,17 @@ function GithubConnectForm({
   error: string | null
   /** Whether the GitHub CLI on this machine can be used instead of a token. */
   gh?: { usable: true; account: string } | { usable: false; reason: 'not-installed' | 'logged-out' }
+  /**
+   * Present when the pencil opened this form on an ALREADY CONNECTED machine: the repository it is
+   * connected to now, and which credential it uses. `readGithubSection` does not run the `gh` probe
+   * for a configured machine (it spawns a process and makes a network call to answer a question
+   * that machine no longer has), so `gh` is absent here and this stored fact takes its place. It is
+   * a fact, not a probe — the credential block below says so rather than promising `gh` will work.
+   */
+  reconnect?: { repo: string; auth: 'token' | 'gh' }
+  /** Back out with nothing changed. Only ever passed on the reconnect path — an unconfigured
+   *  machine has nothing to go back TO. */
+  onCancel?: () => void
   useGh: boolean
   onUrl: (v: string) => void
   onToken: (v: string) => void
@@ -1881,6 +2220,9 @@ function GithubConnectForm({
   const canSubmit = urlDraft.trim().length > 0
     && (useGh || tokenDraft.trim().length > 0)
     && !busy
+  // Whether the "generate a token" step still applies. On a fresh machine that is decided by the
+  // probe; on a re-point it is decided by the switch, since nothing probed anything.
+  const tokenNeeded = reconnect ? !useGh : !ghUsable
 
   const field = (
     label: string, hint: string, value: string, set: (v: string) => void, password: boolean,
@@ -1917,9 +2259,15 @@ function GithubConnectForm({
   return (
     <div>
       <p style={{ fontSize: 12.5, color: 'var(--text-tertiary)', lineHeight: 1.55, margin: '-6px 0 12px' }}>
-        {pt
-          ? 'Cada backup vira um Release num repositório privado do GitHub que é seu — o histórico desta máquina passa a viver fora dela, e o arquivo local pode ser apagado assim que o envio é conferido byte a byte.'
-          : 'Each backup becomes a Release on a private GitHub repository you own — this machine’s history then lives off the machine, and the local archive can be deleted once the upload is confirmed byte for byte.'}
+        {reconnect
+          ? (pt
+            // The re-point. It names the repository being left, because that is the fact the user
+            // is about to replace and the only screen that can still state it.
+            ? `Aponte esta máquina para outro repositório. Hoje ela usa ${reconnect.repo}. É UM repositório só: para onde os backups vão e de onde eles voltam — trocar aqui troca os dois. Os backups que já estão no repositório atual não são apagados.`
+            : `Point this machine at a different repository. Today it uses ${reconnect.repo}. There is only ONE repository: where the backups go and where they come back from — changing it here changes both. The backups already in the current repository are not deleted.`)
+          : (pt
+            ? 'Cada backup vira um Release num repositório privado do GitHub que é seu — o histórico desta máquina passa a viver fora dela, e o arquivo local pode ser apagado assim que o envio é conferido byte a byte.'
+            : 'Each backup becomes a Release on a private GitHub repository you own — this machine’s history then lives off the machine, and the local archive can be deleted once the upload is confirmed byte for byte.')}
       </p>
       <ol style={{
         fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.6, margin: '0 0 14px',
@@ -1929,12 +2277,50 @@ function GithubConnectForm({
           ? 'Crie um repositório no GitHub e marque PRIVADO. Um público é recusado aqui — o backup carrega suas métricas, os primeiros prompts e um mapa dos seus diretórios.'
           : 'Create a repository on GitHub and mark it PRIVATE. A public one is refused here — a backup carries your metrics, your first prompts and a map of your directories.'}</li>
         <li>{pt ? 'Cole a URL abaixo.' : 'Paste the URL below.'}</li>
-        {!ghUsable && (
+        {tokenNeeded && (
           <li>{pt
             ? 'Gere um token: fine-grained com acesso só a esse repositório e "Contents: Read and write", ou um clássico com o escopo repo.'
             : 'Generate a token: fine-grained with access to that repository only and "Contents: Read and write", or a classic one with the repo scope.'}</li>
         )}
       </ol>
+
+      {/* The RE-POINT's credential block. It states what is STORED — the one thing that is known
+          here without a probe — and offers the other option with its caveat said out loud: nothing
+          on this path has checked whether `gh` works, so the sentence promises a refusal in words
+          rather than a success. The server performs the same five checks either way. */}
+      {reconnect && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        }}>
+          <p style={{ fontSize: 11.5, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '0 0 8px' }}>
+            {reconnect.auth === 'gh'
+              ? (pt
+                ? 'Hoje esta máquina autentica pelo GitHub CLI (gh) — nenhum token fica guardado aqui.'
+                : 'Today this machine authenticates through the GitHub CLI (gh) — no token is stored here.')
+              : (pt
+                ? 'Hoje esta máquina autentica por um token guardado nela.'
+                : 'Today this machine authenticates with a token stored on it.')}
+          </p>
+          <Checkbox
+            checked={useGh}
+            onChange={onUseGh}
+            disabled={busy}
+            label={pt
+              ? 'Usar o GitHub CLI desta máquina (gh)'
+              : 'Use this machine’s GitHub CLI (gh)'}
+          />
+          <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5, margin: '6px 0 0 24px' }}>
+            {useGh
+              ? (pt
+                ? 'Nenhum token é guardado aqui: o agentop pede um ao gh no momento de cada envio. Se o gh não estiver logado nesta máquina, a conexão é recusada e diz o motivo.'
+                : 'No token is stored here: agentop asks gh for one at the moment of each upload. If gh is not logged in on this machine, the connection is refused and says why.')
+              : (pt
+                ? 'Desmarcado, você cola um token — ele substitui a credencial guardada hoje. Fica em ~/.agentistics/github-backup.json com permissão 0600, nunca é devolvido por uma rota e está na lista de exclusão do próprio backup.'
+                : 'Unchecked, you paste a token — it replaces the credential stored today. It lives in ~/.agentistics/github-backup.json at mode 0600, is never returned by a route, and is on the backup’s own exclusion list.')}
+          </p>
+        </div>
+      )}
 
       {/* Which credential. The gh option is offered FIRST and pre-selected when it works, because
           it is the better answer: nothing is stored on this machine at all. The trade is stated
@@ -1993,25 +2379,52 @@ function GithubConnectForm({
         tokenDraft, onToken, true, pt ? 'ghp_… (não é exibido)' : 'ghp_… (never shown back)',
       )}
 
-      <button
-        type="button"
-        onClick={onSubmit}
-        disabled={!canSubmit}
-        style={{
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-          padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
-          width: isMobile ? '100%' : undefined,
-          borderRadius: 7, border: `1px solid ${canSubmit ? 'var(--anthropic-orange)' : 'var(--border)'}`,
-          background: canSubmit ? 'var(--anthropic-orange-dim)' : 'transparent',
-          color: canSubmit ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
-          fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
-          cursor: canSubmit ? 'pointer' : 'not-allowed', opacity: canSubmit ? 1 : 0.6,
-        }}
-      >
-        {busy
-          ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> {pt ? 'Conectando…' : 'Connecting…'}</>
-          : (pt ? 'Conectar repositório' : 'Connect repository')}
-      </button>
+      {/* The pair. Cancel exists only on the re-point path and is FIRST in the DOM on mobile's
+          reversed column, so the destructive-adjacent one is not the thumb's default. */}
+      <div style={{
+        display: 'flex', gap: 8, flexWrap: 'wrap',
+        flexDirection: isMobile ? 'column-reverse' : 'row',
+      }}>
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={!canSubmit}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+            padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+            width: isMobile ? '100%' : undefined, boxSizing: 'border-box',
+            borderRadius: 7, border: `1px solid ${canSubmit ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+            background: canSubmit ? 'var(--anthropic-orange-dim)' : 'transparent',
+            color: canSubmit ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+            fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+            cursor: canSubmit ? 'pointer' : 'not-allowed', opacity: canSubmit ? 1 : 0.6,
+          }}
+        >
+          {busy
+            ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> {pt ? 'Conectando…' : 'Connecting…'}</>
+            : reconnect
+              ? (pt ? 'Salvar repositório' : 'Save repository')
+              : (pt ? 'Conectar repositório' : 'Connect repository')}
+        </button>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+              width: isMobile ? '100%' : undefined, boxSizing: 'border-box',
+              borderRadius: 7, border: '1px solid var(--border)', background: 'transparent',
+              color: 'var(--text-secondary)',
+              fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+              cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
+            }}
+          >
+            {pt ? 'Cancelar' : 'Cancel'}
+          </button>
+        )}
+      </div>
 
       <GithubFeedback feedback={error === null ? null : { ok: false, text: error }} />
 
@@ -2030,9 +2443,12 @@ function GithubConnectForm({
  *
  * The scenario every decision here is written against is the one `restore-routes.ts` states: a
  * machine that has just been REFORMATTED. It has the repository URL and nothing else — no stored
- * config, no token, no local history, no expected hash. So this section asks for a URL, offers a
- * token field only for the machine that has no `gh` login (the server tries `gh` first), and every
- * fact it shows about a release comes from the repository rather than from anything local.
+ * config, no token, no local history, no expected hash. So an UNCONFIGURED machine gets an editable
+ * URL field, which is the only way it can name a repository; a CONFIGURED one is shown the
+ * repository it already has, read-only, because there is exactly one and the pencil above is where
+ * it changes. The token field appears only for the machine with no `gh` login (the server tries
+ * `gh` first), and every fact shown about a release comes from the repository, never from anything
+ * local.
  *
  * Three rules it must not break:
  *
@@ -2049,8 +2465,8 @@ function GithubConnectForm({
  *   enforced there and already written in words.
  */
 function RestoreSection({
-  pt, configuredUrl, ghUsable, url, token, onUrl, onToken, onList, listingBusy, listingError,
-  machines, job, running, ask, onAsk, startBusy, startError, onStart,
+  pt, configuredUrl, configuredRepo, ghUsable, url, token, onUrl, onToken, onList, listingBusy,
+  listingError, machines, job, running, ask, onAsk, startBusy, startError, onStart,
 }: {
   pt: boolean
   /**
@@ -2062,10 +2478,20 @@ function RestoreSection({
    * question the gh path answers.
    */
   ghUsable: boolean
-  /** The repository this machine already versions to, when there is one. The URL field is
-   *  prefilled from it — one repository, asked once — and stays editable, because restoring
-   *  another machine's backup from a different repository is a real thing to want. */
+  /**
+   * The repository this machine already versions to, when there is one — and `owner/repo` for
+   * display beside it.
+   *
+   * When it is there, this section shows it READ-ONLY and asks for no URL at all: it is the same
+   * repository the versioning block above names, and the machine has exactly one. An editable box
+   * here was a second question for one fact, and the two could disagree — reported verbatim: "no
+   * repository url nao deveria permitir a edicao dessa forma … eh 1 pra destino e recuperação.
+   * apenas". Changing it is the PENCIL above, which is also the only place that re-verifies a
+   * repository. The editable field survives for `null` — a freshly reformatted machine has nothing
+   * configured and no other way to name a repository, which is the whole reason it exists.
+   */
   configuredUrl: string | null
+  configuredRepo: string | null
   url: string
   token: string
   onUrl: (v: string) => void
@@ -2103,25 +2529,54 @@ function RestoreSection({
           : 'Brings a machine’s history back from the repository its backups were versioned to. Built for the machine that has just been reformatted: the repository URL is all it needs. A restore writes inside your home directory.'}
       </p>
 
-      <RestoreField
-        label={pt ? 'URL do repositório' : 'Repository URL'}
-        hint={configuredUrl
-          // Already prefilled from the section above: one repository, asked once. It stays editable
-          // and the hint says why you might change it.
-          ? (pt
-            ? 'Já preenchido com o repositório que esta máquina usa. Troque só se quiser restaurar de outro.'
-            : 'Prefilled with the repository this machine uses. Change it only to restore from a different one.')
-          : (pt
+      {configuredUrl && configuredRepo ? (
+        // ONE repository, stated once. Drawn exactly like the versioning block's own row — the
+        // mark, `owner/repo`, the link — so the two places that name it cannot look like two
+        // different things.
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>
+            {pt ? 'Repositório' : 'Repository'}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>
+            {pt
+              ? 'É o repositório que esta máquina usa — para onde os backups vão e de onde eles voltam. Para trocar, use o lápis em “Versionamento no GitHub”, acima.'
+              : 'The repository this machine uses — where its backups go and where they come back from. To change it, use the pencil in “GitHub versioning”, above.'}
+          </p>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            padding: '9px 10px', minHeight: isMobile ? 44 : undefined, boxSizing: 'border-box',
+            background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+          }}>
+            <a
+              href={configuredUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, maxWidth: '100%',
+                fontSize: 12.5, color: 'var(--anthropic-orange)', textDecoration: 'none',
+                wordBreak: 'break-word',
+              }}
+            >
+              <GithubMark size={13} />
+              {configuredRepo}
+            </a>
+          </div>
+        </div>
+      ) : (
+        <RestoreField
+          label={pt ? 'URL do repositório' : 'Repository URL'}
+          hint={pt
             ? 'O repositório privado onde os backups desta (ou de outra) máquina foram versionados.'
-            : 'The private repository this machine’s — or another machine’s — backups were versioned to.')}
-        value={url}
-        placeholder="https://github.com/owner/repo"
-        password={false}
-        busy={listingBusy}
-        canSubmit={canList}
-        onChange={onUrl}
-        onSubmit={onList}
-      />
+            : 'The private repository this machine’s — or another machine’s — backups were versioned to.'}
+          value={url}
+          placeholder="https://github.com/owner/repo"
+          password={false}
+          busy={listingBusy}
+          canSubmit={canList}
+          onChange={onUrl}
+          onSubmit={onList}
+        />
+      )}
       {/* Only when `gh` cannot serve. See `ghUsable`. */}
       {!ghUsable && <RestoreField
         label={pt ? 'Token do GitHub' : 'GitHub token'}
@@ -2591,11 +3046,15 @@ function RestoreChoice({ selected, disabled, onSelect, title, description }: {
   )
 }
 
-/** The row's own button shape — the same box the rest of this page uses, sized as a real touch
- *  target and full-width on mobile. */
-function RestoreButton({ text, primary, disabled, busy, icon, buttonRef, onClick }: {
+/** This page's shared button shape — the same box every other control here uses, sized as a real
+ *  touch target and full-width on mobile. Used by the restore rows and by both modals. */
+function RestoreButton({ text, primary, danger, disabled, busy, icon, buttonRef, onClick }: {
   text: string
   primary: boolean
+  /** The destructive confirm — the same red as every warning on this page, so a button that
+   *  removes something is never dressed in the accent colour that Save wears. Only meaningful
+   *  together with `primary`. */
+  danger?: boolean
   disabled: boolean
   busy?: boolean
   /** A glyph before the label — the row's `Restaurar` carries one so the verb is recognisable
@@ -2607,6 +3066,10 @@ function RestoreButton({ text, primary, disabled, busy, icon, buttonRef, onClick
 }) {
   const isMobile = useIsMobile()
   const live = !disabled
+  const accent = danger ? '#ef4444' : 'var(--anthropic-orange)'
+  const accentDim = danger
+    ? 'color-mix(in srgb, #ef4444 12%, transparent)'
+    : 'var(--anthropic-orange-dim)'
   return (
     <button
       type="button"
@@ -2618,9 +3081,9 @@ function RestoreButton({ text, primary, disabled, busy, icon, buttonRef, onClick
         padding: isMobile ? '0 14px' : '7px 14px', minHeight: isMobile ? 44 : undefined,
         width: isMobile ? '100%' : undefined, boxSizing: 'border-box',
         borderRadius: 7,
-        border: `1px solid ${live && primary ? 'var(--anthropic-orange)' : 'var(--border)'}`,
-        background: live && primary ? 'var(--anthropic-orange-dim)' : 'transparent',
-        color: live ? (primary ? 'var(--anthropic-orange)' : 'var(--text-secondary)') : 'var(--text-tertiary)',
+        border: `1px solid ${live && primary ? accent : 'var(--border)'}`,
+        background: live && primary ? accentDim : 'transparent',
+        color: live ? (primary ? accent : 'var(--text-secondary)') : 'var(--text-tertiary)',
         fontSize: 12.5, fontWeight: primary ? 700 : 500, fontFamily: 'inherit',
         cursor: live ? 'pointer' : 'not-allowed', opacity: live ? 1 : 0.6,
         textAlign: 'center',
