@@ -1117,6 +1117,22 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    /**
+     * The RAW fleet snapshot, in the cockpit's own shape.
+     *
+     * `/api/fleet` answers the browser's `FleetRow`, which is deliberately narrower. This is for the
+     * other agentop processes — the cockpit and the one-shot commands — so they can read the
+     * snapshot of the poller that has MEMORY instead of building a second one that disagrees with
+     * it. See `shared-snapshot.ts`. Guarded by the `/api/fleet` prefix already registered in
+     * `capability-guard.ts`, like every other route here.
+     */
+    if (url.pathname === '/api/fleet/snapshot' && req.method === 'GET') {
+      const { readRawFleetSnapshot } = await import('./cli-start')
+      return new Response(JSON.stringify(await readRawFleetSnapshot()), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
     if (url.pathname === '/api/fleet' && req.method === 'GET') {
       const { readFleet, fleetLang } = await import('./sessions/fleet-web')
       // The ARRANGEMENT is opt-in: a caller that sends `view=1` gets the fleet grouped, ordered and
