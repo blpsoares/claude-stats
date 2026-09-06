@@ -69,7 +69,8 @@ export interface FleetRow {
   mode?: { id: string; label: string }
   conversationId?: string
   approvalLines?: string[]
-  dialogOptions?: { number: number; label: string; selected?: boolean }[]
+  /** `freeText` marks the option that is a FIELD — picking it opens one. See `approval-spec.ts`. */
+  dialogOptions?: { number: number; label: string; selected?: boolean; freeText?: boolean }[]
   approvalBlind?: string
   approveBlind?: string
   chooseBlind?: string

@@ -204,6 +204,8 @@ export interface CliStrings {
   sessModeUnknown: (harness: string) => string
   /** Said after the cycle key lands. It names the ACT — only the next poll knows the new mode. */
   sessModeCycled: string
+  /** The free-text option was picked with nothing written. Enter on an empty field DECLINES. */
+  sessAnswerNeedsText: string
   sessKilled: (id: string) => string
   /** The turn was handed back. Deliberately distinct from `sessKilled` — the session is still up. */
   sessInterrupted: (id: string) => string
@@ -574,6 +576,7 @@ const EN: CliStrings = {
   sessModeUnknown: (harness: string) =>
     `nobody has driven ${harness}'s modes, so agentop does not know which key changes them — switch it inside the session.`,
   sessModeCycled: 'moved to the next mode.',
+  sessAnswerNeedsText: 'this option is a field to write in — send it with your answer, because an empty one reads as declining the question.',
   sessKilled: (id: string) => `stopped ${id}.`,
   sessInterrupted: (id: string) => `asked ${id} to stop what it was doing — the session is still up.`,
   sessInterruptIdle: (id: string) => `${id} is not working right now, so there is nothing to stop.`,
@@ -871,6 +874,7 @@ const PT: CliStrings = {
   sessModeUnknown: (harness: string) =>
     `ninguém dirigiu os modos do ${harness}, então o agentop não sabe qual tecla os altera — troque dentro da própria sessão.`,
   sessModeCycled: 'passou para o próximo modo.',
+  sessAnswerNeedsText: 'esta opção é um campo para escrever — envie junto com a sua resposta, porque vazia ela é lida como recusar a pergunta.',
   sessKilled: (id: string) => `${id} encerrada.`,
   sessInterrupted: (id: string) => `pedi para ${id} parar o que estava fazendo — a sessão continua de pé.`,
   sessInterruptIdle: (id: string) => `${id} não está trabalhando agora, então não há o que parar.`,

@@ -197,7 +197,9 @@ export async function runFleetAction(
   switch (req.action) {
     case 'approve':
       if (!host.answerSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.answerSession(req.id, req.choice)
+      // `text` rides along for the FREE-TEXT option, where picking is only the first of three
+      // steps — see `answerSession`. Every other option ignores it.
+      return await host.answerSession(req.id, req.choice, text)
     case 'prompt':
       if (!host.promptSession) return { ok: false, message: s.sessionsNoHost }
       return await host.promptSession(req.id, text)

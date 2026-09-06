@@ -135,7 +135,7 @@ export interface FleetRow {
   conversationId?: string
   /** The dialog this session is blocked on, verbatim, and the options read off it. */
   approvalLines?: string[]
-  dialogOptions?: { number: number; label: string; selected: boolean }[]
+  dialogOptions?: { number: number; label: string; selected: boolean; freeText?: boolean }[]
   /** The row's own sentences for what cannot be done to it. Already localized. */
   approvalBlind?: string
   approveBlind?: string

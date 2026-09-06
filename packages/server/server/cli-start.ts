@@ -126,7 +126,7 @@ import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey } from './sessions/approval-spec'
+import { approvalFor, choiceKey, isFreeTextOption} from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
@@ -3216,7 +3216,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * a verified way to select the one they picked. A snapshot is up to five seconds old, and an
      * answer sent to a question that has changed underneath it is both wrong and silent.
      */
-    async answerSession(id: string, choice?: number): Promise<ActionResult> {
+    async answerSession(id: string, choice?: number, text?: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
       const blocked = await backend.unavailable()
@@ -3252,6 +3252,30 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         if (!picked) return { ok: false, message: s.sessChoiceGone }
         const key = choiceKey(spec, choice)
         if (!key) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+
+        /*
+         * THE FREE-TEXT OPTION IS NOT ANSWERED BY PICKING IT.
+         *
+         * Measured on a live dialog: the digit moves the cursor onto `Type something.` and turns
+         * the row into a FIELD — it does not submit. Every further digit is then typed INTO that
+         * field, which is how a card that kept being pressed produced `33333333333333333`.
+         *
+         * So the three steps the person would take by hand are taken here: the digit, the words,
+         * the return. Reproduced exactly before it was written — `3`, then the literal `capivara`,
+         * then Enter, and the session answered "você respondeu capivara".
+         *
+         * WITH NO TEXT it is refused rather than confirmed. Pressing Enter on an empty field reads
+         * as declining the question outright — measured, the session logged "User declined to
+         * answer questions" — which is a different answer from the one anybody meant to give.
+         */
+        if (isFreeTextOption(managed.harness, picked.label)) {
+          const answer = (text ?? '').trim()
+          if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
+          if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+          return (await backend.sendChoiceText(id, key, answer))
+            ? { ok: true, message: s.sessAnswered(answer) }
+            : { ok: false, message: s.sessSendFailed(id) }
+        }
         return (await backend.sendKey(id, key))
           ? { ok: true, message: s.sessAnswered(picked.label) }
           : { ok: false, message: s.sessSendFailed(id) }

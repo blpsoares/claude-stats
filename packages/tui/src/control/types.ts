@@ -762,7 +762,7 @@ export interface ControlSession {
    * prod?" with four different answers, in front of a key called `approve` that would have silently
    * taken whichever was highlighted.
    */
-  dialogOptions?: Array<{ number: number; label: string; selected: boolean }>
+  dialogOptions?: Array<{ number: number; label: string; selected: boolean; freeText?: boolean }>
   /**
    * Whether the user may pick one of `dialogOptions` from here.
    *
@@ -1561,7 +1561,7 @@ export interface ControlHost {
    * asking, or when the options on screen no longer match what the user was shown. A snapshot is up
    * to five seconds old, and an answer to a question that has changed is worse than no answer.
    */
-  answerSession?(id: string, choice?: number): Promise<ActionResult>
+  answerSession?(id: string, choice?: number, text?: string): Promise<ActionResult>
 
   /**
    * Reopen every session of the last fall, in the background.
