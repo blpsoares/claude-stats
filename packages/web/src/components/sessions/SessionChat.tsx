@@ -31,6 +31,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
+import { modeStyle } from '../../lib/modeStyle'
 import { ApprovalCard } from './ApprovalCard'
 import { ChatBubble, type ChatTurn } from './ChatBubble'
 import { WorkingNote } from './WorkingNote'
@@ -1664,8 +1665,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     style={{
                       display: 'flex', alignItems: 'center', gap: 5, height: 30, padding: '0 9px',
                       borderRadius: 9, flexShrink: 0, maxWidth: 150,
-                      border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-                      color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 11.5,
+                      // The colour IS the mode — see `modeStyle.ts`. Ordered by how much the
+                      // session proceeds without asking, and never the fault colour: `auto` is how
+                      // this product is normally used, and a red ordinary state is the cry-wolf
+                      // this codebase avoids everywhere else.
+                      border: `1px solid ${modeStyle(row.mode.id).border}`,
+                      background: modeStyle(row.mode.id).bg,
+                      color: modeStyle(row.mode.id).fg,
+                      fontFamily: 'inherit', fontSize: 11.5,
                       cursor: canPrompt ? 'pointer' : 'default',
                       opacity: canPrompt ? 1 : 0.55,
                     }}
