@@ -8,7 +8,7 @@ import type { Task } from './task-model'
 const task = (id: string, over: Partial<Task> = {}): Task => ({
   id,
   title: id,
-  status: 'open',
+  status: 'todo',
   createdAt: '2026-09-05T10:00:00.000Z',
   updatedAt: '2026-09-05T10:00:00.000Z',
   ...over,
@@ -23,7 +23,7 @@ async function store() {
 describe('createTaskStore', () => {
   it('reads an empty book when the file does not exist', async () => {
     const { s } = await store()
-    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [] })
+    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
   })
 
   it('round-trips a task', async () => {
@@ -43,22 +43,22 @@ describe('createTaskStore', () => {
 
   it('patch reports false for an id nobody carries, never a silent success', async () => {
     const { s } = await store()
-    expect(await s.patchTask('nope', { status: 'delivered' })).toBe(false)
+    expect(await s.patchTask('nope', { status: 'done' })).toBe(false)
   })
 
   it('patch stamps updatedAt so a later sync can order writes', async () => {
     const { s } = await store()
     await s.upsertTask(task('t-1'))
-    await s.patchTask('t-1', { status: 'delivered', updatedAt: '2026-09-05T11:00:00.000Z' })
+    await s.patchTask('t-1', { status: 'done', updatedAt: '2026-09-05T11:00:00.000Z' })
     const [t] = (await s.read()).tasks
-    expect(t!.status).toBe('delivered')
+    expect(t!.status).toBe('done')
     expect(t!.updatedAt).toBe('2026-09-05T11:00:00.000Z')
   })
 
   it('reads an empty book from corrupt bytes instead of throwing', async () => {
     const { file, s } = await store()
     await writeFile(file, '{ this is not json', 'utf8')
-    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [] })
+    expect(await s.read()).toEqual({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
   })
 
   it('moves corrupt bytes aside rather than overwriting them', async () => {
@@ -161,5 +161,54 @@ describe('the board around a task', () => {
     const book = await s.read()
     expect(book.tasks).toHaveLength(1)
     expect([book.comments, book.subtasks, book.files]).toEqual([[], [], []])
+  })
+})
+
+describe('the legacy migration and a task that was marked done', () => {
+  it('does not mint a duplicate for a title the book already carries', async () => {
+    // The bug this pins: `markTask` mirrors a delivered title into `preferences.finishedTasks`, the
+    // migration reads it back as a legacy name, and — checking only the DERIVED id — minted a second
+    // task beside the real one. Two rows, one delivery, metrics split between them.
+    const { s } = await store()
+    await s.upsertTask({
+      id: 't-real', title: 'ship it', status: 'done',
+      createdAt: '2026-09-05T10:00:00.000Z', updatedAt: '2026-09-05T10:00:00.000Z',
+    })
+    const { legacyTaskId, migrateLegacyTasks } = await import('./task-model')
+    const book = await s.read()
+    const knownIds = new Set(book.tasks.map(t => t.id))
+    const knownTitles = new Set(book.tasks.map(t => t.title))
+    const minted = migrateLegacyTasks({ names: [], finished: ['ship it'], now: 'x' })
+      .filter(t => !knownIds.has(t.id) && !knownTitles.has(t.title))
+    expect(minted).toEqual([])
+    // And the derived id really is different from the real one — the check had to be on the title.
+    expect(legacyTaskId('ship it')).not.toBe('t-real')
+  })
+})
+
+describe('a deleted task stays deleted', () => {
+  it('records a tombstone so the legacy migration cannot mint it again', async () => {
+    // The reported bug: deleting the task the migration had created did nothing visible, because
+    // `ensureLegacyTasks` runs on every read and re-created it from the same name.
+    const { s } = await store()
+    await s.upsertTask(task('legacy-abc'))
+    await s.removeTask('legacy-abc')
+    const book = await s.read()
+    expect(book.tasks).toEqual([])
+    expect(book.tombstones).toEqual(['legacy-abc'])
+  })
+
+  it('creating the name again lifts the tombstone — it was a delete, not a ban', async () => {
+    const { s } = await store()
+    await s.upsertTask(task('legacy-abc'))
+    await s.removeTask('legacy-abc')
+    await s.clearTombstone('legacy-abc')
+    expect((await s.read()).tombstones).toEqual([])
+  })
+
+  it('clearing a tombstone that is not there writes nothing', async () => {
+    const { s } = await store()
+    await s.clearTombstone('nope')
+    expect((await s.read()).tombstones).toEqual([])
   })
 })

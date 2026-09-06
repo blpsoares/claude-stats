@@ -39,10 +39,18 @@ async function ensureLegacyTasks(store: TaskStore, rows: readonly ManagedSession
   if (names.length === 0 && finished.length === 0) return
 
   const book = await store.read()
-  const known = new Set(book.tasks.map(t => t.id))
+  const knownIds = new Set(book.tasks.map(t => t.id))
+  // A name that already exists as a TITLE is already this task, whatever its id. Checking only the
+  // derived id created a duplicate the moment a task was marked done: `markTask` mirrors the title
+  // into `preferences.finishedTasks`, the migration read it back as a legacy name, and minted a
+  // second task under `legacyTaskId(title)` beside the real one. Seen on a live board.
+  const knownTitles = new Set(book.tasks.map(t => t.title))
+  // A task the user DELETED is not re-minted. Without this the migration resurrected it on the very
+  // next read and the delete button read as broken.
+  const buried = new Set(book.tombstones)
   const now = new Date().toISOString()
   for (const t of migrateLegacyTasks({ names, finished, now })) {
-    if (known.has(t.id)) continue
+    if (knownIds.has(t.id) || knownTitles.has(t.title) || buried.has(t.id)) continue
     await store.upsertTask(t)
   }
 }

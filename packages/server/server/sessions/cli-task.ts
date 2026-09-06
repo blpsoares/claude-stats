@@ -15,6 +15,7 @@ import { loadTaskWorld } from './task-source'
 import { buildTaskDetail, buildTaskList, findTask, type AttemptView } from './task-report'
 import { markTask } from './task-web'
 import { parseTaskArgs, type TaskCommand } from './task-parse'
+import type { TaskStatus } from './task-model'
 import type { AttemptRollup } from './task-rollup'
 
 const NA = 'N/A'
@@ -109,7 +110,7 @@ function attemptBlock(v: AttemptView): string[] {
   ]
 }
 
-async function runMark(ref: string, to: 'delivered' | 'abandoned', json: boolean): Promise<number> {
+async function runMark(ref: string, to: TaskStatus, json: boolean): Promise<number> {
   const out = await markTask(ref, to)
   if (!out.ok) {
     console.error(`No task matches "${ref}". \`agentop task ls\` lists them.`)
@@ -119,8 +120,8 @@ async function runMark(ref: string, to: 'delivered' | 'abandoned', json: boolean
     console.log(JSON.stringify(out, null, 2))
     return 0
   }
-  if (to === 'abandoned') {
-    console.log(`"${ref}" marked abandoned.`)
+  if (to !== 'done') {
+    console.log(`"${ref}" is now ${to}.`)
     return 0
   }
   console.log(`"${ref}" marked delivered.`)
@@ -157,7 +158,7 @@ export async function runTask(argv: string[]): Promise<number> {
     case 'error': console.error(cmd.message); return 1
     case 'ls': return await runLs(cmd.json === true)
     case 'show': return await runShow(cmd.ref, cmd.json === true)
-    case 'deliver': return await runMark(cmd.ref, 'delivered', cmd.json === true)
+    case 'deliver': return await runMark(cmd.ref, 'done', cmd.json === true)
     case 'abandon': return await runMark(cmd.ref, 'abandoned', cmd.json === true)
   }
 }

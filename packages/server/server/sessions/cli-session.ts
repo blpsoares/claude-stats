@@ -38,7 +38,7 @@ import { needsAttention, type SessionView } from './session-view'
 import { planTaskReopen, taskReopenSucceeded } from './task-reopen'
 import { TASKS_FILE } from '../config'
 import { createTaskStore } from './task-store'
-import { newAttemptId, newTaskId, type Attempt } from './task-model'
+import { newAttemptId, newTaskId, type Attempt, type Task } from './task-model'
 import { liveConversationHolders } from './live-claims'
 import { POLL_MS, SETTLE_MS, spawnOutcome } from './spawn-outcome'
 import { parseHarnessAgents } from './harness-agents'
@@ -309,19 +309,21 @@ async function resolveTaskAndAttempts(
 
   let task = book.tasks.find(t => t.title === cmd.task)
   if (!task) {
-    task = { id: newTaskId(), title: cmd.task, status: 'open', createdAt: now, updatedAt: now }
+    // A task a batch is starting is `in_progress` by construction: sessions are about to run.
+    task = { id: newTaskId(), title: cmd.task, status: 'in_progress', createdAt: now, updatedAt: now }
     await store.upsertTask(task)
   }
+  const created: Task = task
 
   const attempts = new Map<string, string>()
   for (const spec of cmd.specs) {
     const label = spec.attempt
     if (!label || attempts.has(label)) continue
-    const existing = book.attempts.find(a => a.taskId === task!.id && a.label === label)
+    const existing = book.attempts.find(a => a.taskId === created.id && a.label === label)
     if (existing) { attempts.set(label, existing.id); continue }
     const attempt: Attempt = {
       id: newAttemptId(),
-      taskId: task.id,
+      taskId: created.id,
       label,
       config: {
         harness: spec.harness,
@@ -335,7 +337,7 @@ async function resolveTaskAndAttempts(
     await store.upsertAttempt(attempt)
     attempts.set(label, attempt.id)
   }
-  return { taskId: task.id, attempts }
+  return { taskId: created.id, attempts }
 }
 
 /**

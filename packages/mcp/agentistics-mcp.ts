@@ -76,6 +76,18 @@ async function getPrefs() {
   return apiGet("/api/preferences");
 }
 
+async function apiSend(method: string, path: string, body?: unknown) {
+  const res = await fetch(`${API}${path}`, {
+    method,
+    ...(body === undefined ? {} : {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  });
+  if (!res.ok) throw new Error(`${method} ${path} → HTTP ${res.status}`);
+  return res.json().catch(() => ({}));
+}
+
 async function putPrefs(patch: Record<string, unknown>) {
   const res = await fetch(`${API}/api/preferences`, {
     method: "PUT",
@@ -154,6 +166,111 @@ const server = new Server(
 );
 
 const TOOLS: Tool[] = [
+  // ---------------------------------------------------------------- the ALM (task board)
+  //
+  // These let an assistant read and drive the board the way a person does: see what everyone is
+  // working on, file its own work under a task, leave a note for the next one, attach the spec it
+  // just wrote. Every one of them is a thin call to `/api/tasks` — the arithmetic and the rules
+  // live on the server, so the MCP, the CLI and the dashboard can never disagree about a delivery.
+  {
+    name: "agentistics_tasks",
+    description:
+      "List every task on the ALM board with its rollup (cost, rounds, sessions used, tokens) plus a board-wide overview: tasks in flight, delivered, average cost per task and per delivery, top models and harnesses. START HERE to see what work exists and what the other assistants are on.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "agentistics_task",
+    description:
+      "Open ONE task: its attempts (one per configuration tried), the sessions filed under it with their live state, its comments, subtasks, files, links and full metrics (models, harnesses, agent runs, tokens, delivery time). `ref` is the task id or its exact title.",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string", description: "Task id or exact title." } },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_create",
+    description:
+      "Create a task. A title is required; a description is optional. Creating a title that already exists returns the existing task rather than a duplicate, so this is safe to call before filing work under a name you are not sure exists.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, detail: { type: "string" } },
+      required: ["title"],
+    },
+  },
+  {
+    name: "agentistics_task_status",
+    description:
+      "Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        status: {
+          type: "string",
+          enum: ["backlog", "todo", "in_progress", "blocked", "in_review", "done", "abandoned"],
+        },
+      },
+      required: ["ref", "status"],
+    },
+  },
+  {
+    name: "agentistics_task_comment",
+    description:
+      "Leave a comment on a task. Use it to tell the person and the other assistants what you did, what you found, or what you are blocked on. `author` is free text — say who you are (e.g. 'claude:3f5f').",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string" }, body: { type: "string" }, author: { type: "string" } },
+      required: ["ref", "body"],
+    },
+  },
+  {
+    name: "agentistics_task_subtask",
+    description:
+      "Add a subtask, or tick one off. Pass `title` to add; pass `id` and `done` to change one. A subtask is a checkbox — it has no sessions and no cost of its own.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        title: { type: "string" },
+        id: { type: "string" },
+        done: { type: "boolean" },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_link",
+    description:
+      "Attach a link to a task — a pull request, an issue, a document. Pass `url` (http/https only) with an optional `label` and `kind` ('pr', 'issue', …). Pass `remove` with a link id to detach one.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        url: { type: "string" },
+        label: { type: "string" },
+        kind: { type: "string" },
+        remove: { type: "string", description: "Link id to remove instead of adding." },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_blocked_by",
+    description:
+      "Set which tasks must finish before this one can proceed. Pass the full list of blocker task ids (it replaces, it does not append). A task cannot block itself.",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string" }, blockedBy: { type: "array", items: { type: "string" } } },
+      required: ["ref", "blockedBy"],
+    },
+  },
+  {
+    name: "agentistics_task_delete",
+    description:
+      "Delete a task and its comments, subtasks, files and links. The SESSIONS filed under it are kept — deleting a board entry never deletes work.",
+    inputSchema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
+  },
   {
     name: "agentistics_summary",
     description:
@@ -385,6 +502,61 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   try {
     switch (name) {
+      // ------------------------------------------------------------ the ALM (task board)
+      case "agentistics_tasks": {
+        const body = await apiGet("/api/tasks");
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task": {
+        const ref = String((args as any)?.ref ?? "");
+        const body = await apiGet(`/api/tasks/${encodeURIComponent(ref)}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_create": {
+        const a = args as any;
+        const body = await apiSend("POST", "/api/tasks", { title: a?.title, detail: a?.detail });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_status": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}`, { status: a?.status });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_comment": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/comments`, {
+          body: a?.body, author: a?.author ?? "assistant",
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_subtask": {
+        const a = args as any;
+        const payload = a?.id !== undefined
+          ? { id: a.id, done: a.done === true }
+          : { title: a?.title };
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/subtasks`, payload);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_link": {
+        const a = args as any;
+        const payload = a?.remove
+          ? { remove: a.remove }
+          : { url: a?.url, label: a?.label, kind: a?.kind };
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/links`, payload);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_blocked_by": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}`, {
+          blockedBy: a?.blockedBy ?? [],
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_delete": {
+        const ref = String((args as any)?.ref ?? "");
+        const body = await apiSend("DELETE", `/api/tasks/${encodeURIComponent(ref)}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
       case "agentistics_summary": {
         const harness = (args as any)?.harness as string | undefined;
         const unified = !harness || harness === "all";

@@ -51,6 +51,14 @@ export interface TaskListRow {
   task: Task
   attempts: number
   rollup: AttemptRollup
+  /**
+   * What the card shows WITHOUT opening the task: how much board hangs off it, and which harnesses
+   * touched it. Counted here rather than in the browser so the list and the detail can never
+   * disagree about how many comments a task has.
+   */
+  counts: { comments: number; subtasks: number; subtasksDone: number; files: number }
+  /** Distinct harnesses of this task's sessions, in first-seen order. */
+  harnesses: string[]
 }
 
 export interface TaskDetail {
@@ -140,13 +148,24 @@ export function buildTaskList(o: {
   rows: readonly ManagedSession[]
   metas: ReadonlyMap<string, SessionMeta>
   costOf: (m: SessionMeta) => number
+  comments?: readonly TaskComment[]
+  subtasks?: readonly Subtask[]
+  files?: readonly TaskFile[]
 }): TaskListRow[] {
   return o.tasks.map(task => {
     const mine = rowsOfTask(task, o.rows)
+    const subs = (o.subtasks ?? []).filter(t => t.taskId === task.id)
     return {
       task,
       attempts: o.attempts.filter(a => a.taskId === task.id).length,
       rollup: rollupAttempt({ sessions: rollupSessionsFor(mine, o.metas, o.costOf) }),
+      counts: {
+        comments: (o.comments ?? []).filter(c => c.taskId === task.id).length,
+        subtasks: subs.length,
+        subtasksDone: subs.filter(t => t.done).length,
+        files: (o.files ?? []).filter(f => f.taskId === task.id).length,
+      },
+      harnesses: [...new Set(mine.map(r => r.harness))],
     }
   })
 }

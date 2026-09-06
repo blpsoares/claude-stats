@@ -21,8 +21,9 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { withFileLock } from './file-lock'
+import { migrateStatus } from './task-model'
 import type {
-  Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskComment, TaskFile, TaskStatus,
+  Attempt, AttemptStatus, Subtask, Task, TaskBook, TaskComment, TaskFile, TaskLink, TaskStatus,
 } from './task-model'
 
 export interface TaskPatch {
@@ -32,6 +33,8 @@ export interface TaskPatch {
   deliveredAt?: string
   repo?: string
   updatedAt?: string
+  blockedBy?: string[]
+  links?: TaskLink[]
 }
 
 export interface AttemptPatch {
@@ -42,7 +45,7 @@ export interface AttemptPatch {
 }
 
 const EMPTY_BOOK = (): TaskBook =>
-  ({ tasks: [], attempts: [], comments: [], subtasks: [], files: [] })
+  ({ tasks: [], attempts: [], comments: [], subtasks: [], files: [], tombstones: [] })
 
 export interface TaskStore {
   read(): Promise<TaskBook>
@@ -63,6 +66,27 @@ export interface TaskStore {
    * "no attempt named" rather than vanishing. Deleting a board entry must never delete work.
    */
   removeTask(id: string): Promise<boolean>
+  /** Forget a tombstone, so a name the user deleted can be created again. */
+  clearTombstone(id: string): Promise<void>
+}
+
+/**
+ * A link with no usable URL is dropped.
+ *
+ * Only http(s): a `javascript:` URL rendered into an anchor is a script somebody else wrote running
+ * on this page, and the board takes text from assistants.
+ */
+function sanitizeLink(raw: unknown): TaskLink | null {
+  if (!raw || typeof raw !== 'object') return null
+  const l = raw as Record<string, unknown>
+  const id = typeof l.id === 'string' && l.id ? l.id : null
+  const url = typeof l.url === 'string' ? l.url.trim() : ''
+  if (!id || !/^https?:\/\//i.test(url)) return null
+  return {
+    id, url,
+    ...(typeof l.label === 'string' && l.label ? { label: l.label } : {}),
+    ...(typeof l.kind === 'string' && l.kind ? { kind: l.kind } : {}),
+  }
 }
 
 /** Keep only records shaped enough to be used safely downstream. */
@@ -71,16 +95,24 @@ function sanitizeTask(raw: unknown): Task | null {
   const t = raw as Record<string, unknown>
   if (typeof t.id !== 'string' || !t.id) return null
   if (typeof t.title !== 'string' || !t.title) return null
-  const status = t.status
   return {
     id: t.id,
     title: t.title,
-    status: status === 'delivered' || status === 'abandoned' ? status : 'open',
+    // An unknown word is not a status. `todo` is the safe read: it claims the least.
+    status: migrateStatus(t.status) ?? 'todo',
     createdAt: typeof t.createdAt === 'string' ? t.createdAt : new Date(0).toISOString(),
     updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : new Date(0).toISOString(),
     ...(typeof t.detail === 'string' ? { detail: t.detail } : {}),
     ...(typeof t.deliveredAt === 'string' ? { deliveredAt: t.deliveredAt } : {}),
     ...(typeof t.repo === 'string' ? { repo: t.repo } : {}),
+    ...(Array.isArray(t.links)
+      ? {
+        links: t.links.map(sanitizeLink).filter((l): l is TaskLink => l !== null),
+      }
+      : {}),
+    ...(Array.isArray(t.blockedBy)
+      ? { blockedBy: t.blockedBy.filter((v): v is string => typeof v === 'string' && v !== t.id) }
+      : {}),
   }
 }
 
@@ -191,6 +223,7 @@ export function createTaskStore(file: string): TaskStore {
         comments: arr(raw.comments).map(sanitizeComment).filter((c): c is TaskComment => c !== null),
         subtasks: arr(raw.subtasks).map(sanitizeSubtask).filter((t): t is Subtask => t !== null),
         files: arr(raw.files).map(sanitizeFile).filter((f): f is TaskFile => f !== null),
+        tombstones: arr(raw.tombstones).filter((v): v is string => typeof v === 'string'),
       }
     } catch {
       corrupt = true
@@ -290,8 +323,17 @@ export function createTaskStore(file: string): TaskStore {
           comments: book.comments.filter(c => c.taskId !== id),
           subtasks: book.subtasks.filter(t => t.taskId !== id),
           files: book.files.filter(f => f.taskId !== id),
+          // Remembered as DELETED, or the legacy migration mints it again on the next read.
+          tombstones: [...new Set([...book.tombstones, id])],
         })
         return true
+      })
+    },
+    clearTombstone(id) {
+      return enqueue(async () => {
+        const book = await read()
+        if (!book.tombstones.includes(id)) return
+        await write({ ...book, tombstones: book.tombstones.filter(t => t !== id) })
       })
     },
     patchAttempt(id, patch) {

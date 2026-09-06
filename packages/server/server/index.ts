@@ -1091,13 +1091,116 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       if (!found) return json({ error: 'no_such_task' }, 404)
       return json(found)
     }
-    if (url.pathname.startsWith('/api/tasks/') && req.method === 'POST') {
+    if (url.pathname === '/api/tasks' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as { title?: string; detail?: string }
+      const { createTask } = await import('./sessions/task-web')
+      const made = await createTask({ title: body.title ?? '', ...(body.detail !== undefined ? { detail: body.detail } : {}) })
+      if (!made) return json({ error: 'title_required' }, 400)
+      return json({ task: made })
+    }
+
+    // A task file, by its own id. Separate from the task routes because a download is addressed by
+    // the FILE and a caller holding a file id has no reason to know which task it hangs off.
+    if (url.pathname.startsWith('/api/task-files/')) {
+      const fileId = decodeURIComponent(url.pathname.slice('/api/task-files/'.length))
+      const mod = await import('./sessions/task-web')
+      if (req.method === 'DELETE') {
+        return json({ ok: await mod.removeFile(fileId) }, 200)
+      }
+      const got = await mod.fetchFile(fileId)
+      if (!got) return json({ error: 'no_such_file' }, 404)
+      // `.buffer` rather than the view: a Uint8Array is not a BodyInit in this lib target.
+      return new Response(got.bytes.buffer as ArrayBuffer, {
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': 'application/octet-stream',
+          // The name is the one the user gave, quoted — it never reached the filesystem.
+          'Content-Disposition': `attachment; filename="${got.name.replace(/"/g, '')}"`,
+        },
+      })
+    }
+
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'DELETE') {
       const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
-      const body = await req.json().catch(() => ({})) as { status?: string }
-      const to = body.status === 'delivered' || body.status === 'abandoned' ? body.status : null
+      const { deleteTask } = await import('./sessions/task-web')
+      return json({ ok: await deleteTask(ref) })
+    }
+
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'POST') {
+      const rest = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      // `<ref>/comments`, `<ref>/subtasks`, `<ref>/files`, `<ref>` (status/edit). The ref may itself
+      // contain slashes only if someone named a task that way, so the VERB is taken from the tail.
+      const slash = rest.lastIndexOf('/')
+      const verb = slash === -1 ? '' : rest.slice(slash + 1)
+      const known = verb === 'comments' || verb === 'subtasks' || verb === 'files'
+        || verb === 'links' || verb === 'sessions'
+      const ref = known ? rest.slice(0, slash) : rest
+      const mod = await import('./sessions/task-web')
+
+      if (verb === 'files') {
+        const form = await req.formData().catch(() => null)
+        const file = form?.get('file')
+        if (!(file instanceof File)) return json({ error: 'file_required' }, 400)
+        const ok = await mod.attachFile(ref, {
+          name: file.name,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+          ...(typeof form?.get('kind') === 'string' ? { kind: String(form.get('kind')) } : {}),
+          ...(typeof form?.get('author') === 'string' ? { author: String(form.get('author')) } : {}),
+        })
+        return json({ ok }, ok ? 200 : 400)
+      }
+
+      const body = await req.json().catch(() => ({})) as Record<string, unknown>
+      if (verb === 'comments') {
+        const ok = await mod.addComment(ref, {
+          author: String(body.author ?? 'unknown'),
+          body: String(body.body ?? ''),
+        })
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (verb === 'sessions') {
+        if (typeof body.detach === 'string') {
+          return json({ ok: await mod.detachSession(body.detach) })
+        }
+        const ok = await mod.attachSession(ref, String(body.sessionId ?? ''))
+        return json({ ok }, ok ? 200 : 404)
+      }
+      if (verb === 'links') {
+        if (typeof body.remove === 'string') {
+          return json({ ok: await mod.removeLink(ref, body.remove) })
+        }
+        const ok = await mod.addLink(ref, {
+          url: String(body.url ?? ''),
+          ...(typeof body.label === 'string' ? { label: body.label } : {}),
+          ...(typeof body.kind === 'string' ? { kind: body.kind } : {}),
+        })
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (verb === 'subtasks') {
+        if (typeof body.id === 'string') {
+          return json({ ok: await mod.setSubtaskDone(body.id, body.done === true) })
+        }
+        const ok = await mod.addSubtask(ref, String(body.title ?? ''))
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (typeof body.title === 'string' || typeof body.detail === 'string') {
+        const ok = await mod.editTask(ref, {
+          ...(typeof body.title === 'string' ? { title: body.title } : {}),
+          ...(typeof body.detail === 'string' ? { detail: body.detail } : {}),
+        })
+        return json({ ok }, ok ? 200 : 404)
+      }
+      if (Array.isArray(body.blockedBy)) {
+        const ok = await mod.setBlockedBy(ref, body.blockedBy.filter((v): v is string => typeof v === 'string'))
+        return json({ ok }, ok ? 200 : 404)
+      }
+      const { TASK_STATUSES } = await import('./sessions/task-model')
+      const to = typeof body.status === 'string'
+        && (TASK_STATUSES as readonly string[]).includes(body.status)
+        ? body.status as import('./sessions/task-model').TaskStatus
+        : null
       if (!to) return json({ error: 'bad_status' }, 400)
-      const { markTask } = await import('./sessions/task-web')
-      const out = await markTask(ref, to)
+      const out = await mod.markTask(ref, to)
       return json(out, out.ok ? 200 : 404)
     }
 
