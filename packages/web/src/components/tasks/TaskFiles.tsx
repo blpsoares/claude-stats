@@ -136,8 +136,8 @@ export function TaskFiles({ files, onUpload, onRemove }: {
         <span style={microLabel}>{files.length} file{files.length === 1 ? '' : 's'}</span>
         <span style={{ flex: 1 }} />
         <div style={{ ...surface, display: 'flex', padding: 3, gap: 2 }}>
-          <button style={seg(view === 'grid')} onClick={() => setView('grid')}><Grid3x3 size={13} /></button>
-          <button style={seg(view === 'list')} onClick={() => setView('list')}><List size={13} /></button>
+          <button style={seg(view === 'grid')} onClick={() => setView('grid')} title="Grid" aria-label="Grid"><Grid3x3 size={13} /></button>
+          <button style={seg(view === 'list')} onClick={() => setView('list')} title="List" aria-label="List"><List size={13} /></button>
         </div>
         <label style={{ ...button(isMobile), cursor: 'pointer' }}>
           <Paperclip size={13} /> Attach

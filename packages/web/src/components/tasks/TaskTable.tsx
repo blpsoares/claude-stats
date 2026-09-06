@@ -76,11 +76,22 @@ export const DEFAULT_COLUMNS: ColumnId[] =
 
 const cellPad = '7px 10px'
 
+/**
+ * A phone's thumb over a table cell.
+ *
+ * The glyph stays the size the table needs; the PADDING is what makes it 44px, so a dense row is
+ * still dense and still tappable. Growing the icon instead would make the table unreadable to buy
+ * the same hit area.
+ */
+const tap = (mobile: boolean): React.CSSProperties =>
+  mobile ? { minHeight: 44, minWidth: 44, justifyContent: 'center' } : {}
+
 function StatusCell({ value, onPick, compact }: {
   value: TaskStatus
   onPick: (s: TaskStatus) => void
   compact?: boolean
 }) {
+  const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const s = STATUS[value as BoardStatus] ?? STATUS.todo
   return (
@@ -93,6 +104,8 @@ function StatusCell({ value, onPick, compact }: {
           padding: compact ? '3px 8px' : '5px 9px', borderRadius: 5,
           background: s.dim, color: s.color, fontSize: 11, fontWeight: 600,
           outline: `1px solid ${s.color}`,
+          // The status is the cell people CHANGE from the table; on a phone it owes a thumb 44px.
+          minHeight: isMobile ? 44 : undefined,
         }}
       >{s.label}</button>
       {open && (
@@ -113,6 +126,7 @@ function StatusCell({ value, onPick, compact }: {
                   style={{
                     border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
                     borderRadius: 5, background: c.dim, color: c.color, fontSize: 11, fontWeight: 600,
+                    minHeight: isMobile ? 44 : undefined,
                   }}
                 >{c.label}</button>
               )
@@ -208,9 +222,11 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
   onRemove: (id: string) => void
   onLinkSession: (subtaskId: string) => void
 }) {
+  const isMobile = useIsMobile()
   const bare: React.CSSProperties = {
     width: '100%', background: 'transparent', border: 'none', outline: 'none',
     color: 'var(--text-secondary)', fontSize: 12, fontFamily: 'inherit',
+    minHeight: isMobile ? 44 : undefined,
   }
   // 1 (checkbox) + 6 named cells + filler + 1 (remove) must equal cols + 3.
   const filler = Math.max(0, cols - 5)
@@ -266,7 +282,10 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
                 <span style={pill()}>{sessionLabelOf?.(t.sessionId) ?? t.sessionId.slice(0, 8)}</span>
                 <button
                   onClick={() => onPatch(t.id, { sessionId: '' })} title="Unlink"
-                  style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex' }}
+                  style={{
+                    background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', ...tap(isMobile),
+                  }}
                 ><X size={11} /></button>
               </span>
             ) : (
@@ -275,6 +294,7 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
                 style={{
                   background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
                   display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5,
+                  ...tap(isMobile),
                 }}
               ><Terminal size={12} /> link</button>
             )}
@@ -283,7 +303,10 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
           <td style={{ padding: cellPad, textAlign: 'right' }}>
             <button
               onClick={() => onRemove(t.id)} title="Remove"
-              style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex' }}
+              style={{
+                background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', ...tap(isMobile),
+              }}
             ><Trash2 size={12} /></button>
           </td>
         </tr>
@@ -381,7 +404,7 @@ export function TaskTable(p: TaskTableProps) {
         <span style={{ flex: 1 }} />
         <div style={{ position: 'relative' }}>
           <button
-            style={{ ...button(isMobile), height: isMobile ? 40 : 28 }}
+            style={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
             onClick={() => setMenu(m => (m === 'groups' ? null : 'groups'))}
           ><Rows3 size={13} /> Groups</button>
           {menu === 'groups' && (
@@ -417,7 +440,7 @@ export function TaskTable(p: TaskTableProps) {
         </div>
         <div style={{ position: 'relative' }}>
           <button
-            style={{ ...button(isMobile), height: isMobile ? 40 : 28 }}
+            style={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
             onClick={() => setMenu(m => (m === 'columns' ? null : 'columns'))}
           ><Columns3 size={13} /> Columns</button>
           {menu === 'columns' && (
@@ -471,27 +494,24 @@ export function TaskTable(p: TaskTableProps) {
 
             {!isFolded && (
               <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...th, width: 34 }} />
-                      <th style={{ ...th, minWidth: 240 }}>Task</th>
-                      {cols.map(c => (
-                        <th key={c.id} style={{ ...th, width: c.width, textAlign: c.numeric ? 'right' : 'left' }}>
-                          {c.label}
-                        </th>
-                      ))}
-                      <th style={{ ...th, width: 40 }} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.rows.length === 0 && (
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: g.rows.length === 0 ? 0 : 760 }}>
+                  {/* No heading row over an EMPTY group: eight column names above nothing is eight
+                      names for a table that is not there, repeated once per empty status. */}
+                  {g.rows.length > 0 && (
+                    <thead>
                       <tr>
-                        <td colSpan={cols.length + 3} style={{ padding: '9px 11px', fontSize: 12, color: 'var(--text-tertiary)' }}>
-                          Nothing here yet.
-                        </td>
+                        <th style={{ ...th, width: 34 }} />
+                        <th style={{ ...th, minWidth: 240 }}>Task</th>
+                        {cols.map(c => (
+                          <th key={c.id} style={{ ...th, width: c.width, textAlign: c.numeric ? 'right' : 'left' }}>
+                            {c.label}
+                          </th>
+                        ))}
+                        <th style={{ ...th, width: 40 }} />
                       </tr>
-                    )}
+                    </thead>
+                  )}
+                  <tbody>
                     {g.rows.map(row => {
                       const open = expanded.has(row.task.id)
                       const detail = p.details.get(row.task.id)
@@ -508,7 +528,10 @@ export function TaskTable(p: TaskTableProps) {
                               <input
                                 type="checkbox" checked={selected.has(row.task.id)}
                                 onChange={() => toggleIn(selected, row.task.id, setSelected)}
-                                style={{ width: 14, height: 14, accentColor: 'var(--anthropic-orange)' }}
+                                style={{
+                                  width: isMobile ? 20 : 14, height: isMobile ? 20 : 14,
+                                  accentColor: 'var(--anthropic-orange)',
+                                }}
                               />
                             </td>
                             <td style={{ padding: cellPad }}>
@@ -521,7 +544,8 @@ export function TaskTable(p: TaskTableProps) {
                                   }}
                                   style={{
                                     background: 'none', border: 'none', cursor: 'pointer', display: 'inline-flex',
-                                    color: 'var(--text-tertiary)', padding: 0,
+                                    alignItems: 'center', color: 'var(--text-tertiary)', padding: 0,
+                                    ...tap(isMobile),
                                   }}
                                 >{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>
                                 <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -541,7 +565,11 @@ export function TaskTable(p: TaskTableProps) {
                             <td style={{ padding: cellPad, textAlign: 'right' }} onClick={e => e.stopPropagation()}>
                               <button
                                 onClick={() => p.onLinkSession(row.task.id)} title="Link a session"
-                                style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex' }}
+                                style={{
+                                  background: 'none', border: 'none', color: 'var(--text-tertiary)',
+                                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                                  ...tap(isMobile),
+                                }}
                               ><Terminal size={13} /></button>
                             </td>
                           </tr>

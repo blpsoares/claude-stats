@@ -19,6 +19,7 @@ import { SessionPicker } from './SessionPicker'
 import type { Subtask, TaskStatus } from '../../lib/tasks'
 
 function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStatus) => void }) {
+  const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const s = STATUS[value as BoardStatus] ?? STATUS.todo
   return (
@@ -28,6 +29,7 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
         style={{
           border: `1px solid ${s.color}`, cursor: 'pointer', padding: '3px 9px', borderRadius: 5,
           background: s.dim, color: s.color, fontSize: 10.5, fontWeight: 600, whiteSpace: 'nowrap',
+          minHeight: isMobile ? 44 : undefined,
         }}
       >{s.label}</button>
       {open && (
@@ -46,6 +48,7 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
                   style={{
                     border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
                     borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5, fontWeight: 600,
+                    minHeight: isMobile ? 44 : undefined,
                   }}
                 >{c.label}</button>
               )

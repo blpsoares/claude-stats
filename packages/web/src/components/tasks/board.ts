@@ -108,6 +108,9 @@ export const field = (mobile: boolean): CSSProperties => ({
   color: 'var(--text-primary)',
   // 16px on mobile or iOS Safari zooms the viewport and breaks the sticky header.
   fontSize: mobile ? 16 : 13,
+  // …and 44px tall, the touch target every control on a phone owes a thumb. The padding alone gave
+  // 38px, which is a miss you feel rather than see.
+  minHeight: mobile ? 44 : undefined,
   outline: 'none',
 })
 
