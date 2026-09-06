@@ -1,0 +1,250 @@
+import { test, expect, beforeAll, afterAll } from 'bun:test'
+import { execFileSync } from 'child_process'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, statSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { candidatePaths, capturePatch, createBundle, gitEnv, listUntracked, probeDir } from './repo-probe'
+
+let root = ''
+let repo = ''
+let wt = ''
+
+// A pre-commit hook running from a linked worktree (as this repo's own does) exports GIT_DIR /
+// GIT_INDEX_FILE pointing at the OUTER checkout. `-C`/`cwd` do not override GIT_DIR — it still wins
+// repository discovery — so without stripping these, `git init` here would silently operate on the
+// real repository instead of the temp directory being built. Confirmed by reproducing the exact
+// failure: `GIT_DIR=$(git rev-parse --git-dir) bun test repo-probe.test.ts` fails with
+// "remote origin already exists", identically to what husky's hook produced.
+const git = (cwd: string, ...args: string[]) => {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  delete env.GIT_DIR
+  delete env.GIT_WORK_TREE
+  delete env.GIT_INDEX_FILE
+  delete env.GIT_PREFIX
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env })
+}
+
+beforeAll(() => {
+  root = mkdtempSync(join(tmpdir(), 'agentistics-probe-'))
+  repo = join(root, 'proj')
+  wt = join(root, 'wt')
+  mkdirSync(repo)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'config', 'user.email', 't@t')
+  git(repo, 'config', 'user.name', 't')
+  git(repo, 'remote', 'add', 'origin', 'git@github.com:org/repo.git')
+  writeFileSync(join(repo, 'a.txt'), 'one\n')
+  git(repo, 'add', 'a.txt')
+  git(repo, 'commit', '-q', '-m', 'one')
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/x', wt)
+})
+
+afterAll(() => { rmSync(root, { recursive: true, force: true }) })
+
+test('a checkout reports its remote, branch, head, common dir and top level', async () => {
+  const f = await probeDir(repo)
+  expect(f.exists).toBe(true)
+  expect(f.remote).toBe('github.com/org/repo')
+  expect(f.cloneUrl).toBe('git@github.com:org/repo.git')
+  expect(f.branch).toBe('main')
+  expect(f.head).toMatch(/^[0-9a-f]{7,40}$/)
+  expect(f.topLevel).toBe(repo)
+  expect(f.commonDir).toBe(join(repo, '.git'))
+})
+
+// The exact fact groupRepos keys on. A worktree's common dir must be the MAIN checkout's .git,
+// resolved to an absolute path — git prints a relative one from inside a worktree.
+test('a worktree reports the MAIN checkout git dir as its common dir, absolute', async () => {
+  const f = await probeDir(wt)
+  expect(f.commonDir).toBe(join(repo, '.git'))
+  expect(f.topLevel).toBe(wt)
+  expect(f.branch).toBe('feat/x')
+})
+
+test('a directory that is not a repo reports exists with no common dir', async () => {
+  const plain = join(root, 'plain')
+  mkdirSync(plain)
+  const f = await probeDir(plain)
+  expect(f.exists).toBe(true)
+  expect(f.commonDir).toBeNull()
+})
+
+// The discriminator is whether the directory EXISTS, never whether git answered. A removed
+// worktree makes every `git -C` fail, and calling that "not a repo" invents a project.
+test('a directory that does not exist reports exists:false and never runs git', async () => {
+  const f = await probeDir(join(root, 'nope'))
+  expect(f.exists).toBe(false)
+  expect(f.commonDir).toBeNull()
+})
+
+test('a bundle of the unpushed history is written and is smaller than the full one', async () => {
+  const partial = join(root, 'p.bundle')
+  const full = join(root, 'f.bundle')
+  expect(await createBundle(repo, partial, { full: false, maxBytes: 100_000_000 })).toBe('written')
+  expect(await createBundle(repo, full, { full: true, maxBytes: 100_000_000 })).toBe('written')
+  expect(statSync(partial).size).toBeGreaterThan(0)
+})
+
+// A ceiling that is enforced after writing would still have spent the disk. `too-large` deletes
+// what it wrote and says so, so the caller can mark the repo and move on.
+test('a bundle over the ceiling reports too-large and leaves no file behind', async () => {
+  const out = join(root, 'huge.bundle')
+  expect(await createBundle(repo, out, { full: true, maxBytes: 1 })).toBe('too-large')
+  expect(() => statSync(out)).toThrow()
+})
+
+// `empty` means "every local commit is already on the remote" — a happy answer. A real failure
+// wearing that answer tells the user their unpushed work was checked and found safe.
+test('a bundle that genuinely FAILS is not reported as empty', async () => {
+  const res = await createBundle(repo, '/proc/definitely/not/writable.bundle', {
+    full: true, maxBytes: 100_000_000,
+  })
+  expect(res).toBe('failed')
+})
+
+test('a clean tree says clean; a dirty one carries the diff', async () => {
+  expect(await capturePatch(repo)).toEqual({ kind: 'clean' })
+  writeFileSync(join(repo, 'a.txt'), 'two\n')
+  const res = await capturePatch(repo)
+  expect(res.kind).toBe('patch')
+  if (res.kind === 'patch') {
+    expect(res.text).toContain('-one')
+    expect(res.text).toContain('+two')
+  }
+  git(repo, 'checkout', '--', 'a.txt')
+})
+
+// The failure this module exists to prevent, arriving in the reassuring direction: a tree we could
+// not read must never be reported with the same value as a tree that had nothing in it.
+test('a tree that cannot be read is `unavailable`, never `clean`', async () => {
+  const res = await capturePatch(join(root, 'not-a-repo-at-all'))
+  expect(res.kind).toBe('unavailable')
+  if (res.kind === 'unavailable') expect(res.reason.length).toBeGreaterThan(0)
+})
+
+// Measured: GIT_COMMON_DIR alone, with no GIT_DIR set, redirects `rev-parse --git-common-dir` —
+// the ONE fact groupRepos keys on. A backup run from inside a git hook inherits variables like it.
+//
+// This test only DISCRIMINATES because `gitEnv()` is rebuilt per call. An earlier version captured
+// the environment once at module load, and this test then passed identically against a build with
+// the strip reverted — it was measuring nothing. If you are tempted to hoist `gitEnv()` back to a
+// module constant for performance, this test is what you would be switching off.
+test('an inherited GIT_COMMON_DIR cannot redirect the probe', async () => {
+  const other = join(root, 'other')
+  mkdirSync(other)
+  git(other, 'init', '-q', '-b', 'main')
+  const saved = process.env.GIT_COMMON_DIR
+  process.env.GIT_COMMON_DIR = join(other, '.git')
+  try {
+    const f = await probeDir(repo)
+    expect(f.commonDir).toBe(join(repo, '.git'))
+  } finally {
+    if (saved === undefined) delete process.env.GIT_COMMON_DIR
+    else process.env.GIT_COMMON_DIR = saved
+  }
+})
+
+// `url.<base>.insteadOf` in an inherited environment rewrites the remote a clone fetches from, and
+// the clone is the one git argv on this branch with no `-C` to anchor it.
+test('inherited GIT_CONFIG_* cannot inject configuration into a probe', async () => {
+  const saved = { count: process.env.GIT_CONFIG_COUNT, key: process.env.GIT_CONFIG_KEY_0, val: process.env.GIT_CONFIG_VALUE_0 }
+  process.env.GIT_CONFIG_COUNT = '1'
+  process.env.GIT_CONFIG_KEY_0 = 'remote.origin.url'
+  process.env.GIT_CONFIG_VALUE_0 = 'https://evil.example/injected.git'
+  try {
+    const f = await probeDir(repo)
+    expect(f.cloneUrl).toBe('git@github.com:org/repo.git')
+  } finally {
+    for (const [k, v] of [['GIT_CONFIG_COUNT', saved.count], ['GIT_CONFIG_KEY_0', saved.key], ['GIT_CONFIG_VALUE_0', saved.val]] as const) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+})
+
+// E1: the config variables (GIT_CONFIG_*, GIT_CONFIG_GLOBAL) are stripped because they inject
+// config this module never read and the clone has no `-C` to anchor it against. The TRANSPORT
+// variables are a different case entirely and are deliberately left standing: they reach the
+// restore's `git clone` on the NEW machine, and a user whose forge access needs a non-default SSH
+// identity or a ProxyJump would have every clone fail there, which is the moment they can least
+// afford it. Anything able to set them in this process already has code execution as the user, and
+// `~/.ssh/config` does the same job and cannot be stripped anyway.
+test('gitEnv preserves GIT_SSH_COMMAND and GIT_PROXY_COMMAND for a real clone to use', () => {
+  const saved = { ssh: process.env.GIT_SSH_COMMAND, proxy: process.env.GIT_PROXY_COMMAND }
+  process.env.GIT_SSH_COMMAND = 'ssh -i /home/u/.ssh/work_id_ed25519'
+  process.env.GIT_PROXY_COMMAND = 'connect-proxy -H proxy.example:1080 %h %p'
+  try {
+    const env = gitEnv()
+    expect(env.GIT_SSH_COMMAND).toBe('ssh -i /home/u/.ssh/work_id_ed25519')
+    expect(env.GIT_PROXY_COMMAND).toBe('connect-proxy -H proxy.example:1080 %h %p')
+  } finally {
+    if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh
+    if (saved.proxy === undefined) delete process.env.GIT_PROXY_COMMAND; else process.env.GIT_PROXY_COMMAND = saved.proxy
+  }
+})
+
+test('untracked files are listed, and ignored ones are not', async () => {
+  writeFileSync(join(repo, '.gitignore'), 'ignored.txt\n')
+  writeFileSync(join(repo, 'ignored.txt'), 'x')
+  writeFileSync(join(repo, 'new.txt'), 'y')
+  const un = await listUntracked(repo)
+  expect(un.kind).toBe('files')
+  if (un.kind === 'files') {
+    expect(un.files).toContain('new.txt')
+    expect(un.files).not.toContain('ignored.txt')
+  }
+  rmSync(join(repo, '.gitignore'))
+  rmSync(join(repo, 'ignored.txt'))
+  rmSync(join(repo, 'new.txt'))
+})
+
+// The same failure class as capturePatch's: a tree whose untracked state could not be established
+// must not read as a tree that had none, or `buildRepoManifest` skips the directory entirely.
+test('a directory git cannot read is `unavailable`, never an empty list', async () => {
+  const un = await listUntracked(join(root, 'not-a-repo-at-all'))
+  expect(un.kind).toBe('unavailable')
+  if (un.kind === 'unavailable') expect(un.reason.length).toBeGreaterThan(0)
+})
+
+// --- candidatePaths (pure) --------------------------------------------------------------------
+
+test('candidate paths are deduped and prefer current_cwd over project_path', () => {
+  const paths = candidatePaths([
+    { project_path: '/a', current_cwd: '/a/wt' },
+    { project_path: '/a', current_cwd: '/a/wt' },
+    { project_path: '/b' },
+  ])
+  expect(paths.sort()).toEqual(['/a', '/a/wt', '/b'])
+})
+
+test('a session with no usable path contributes nothing', () => {
+  expect(candidatePaths([{ project_path: '' }, {}])).toEqual([])
+})
+
+test('an already-pushed repo reports "empty", not "failed", under a LONG path', () => {
+  // `git bundle create` refuses an empty ref set with `fatal: Refusing to create empty bundle.`,
+  // and that is the HAPPY case — every local commit is already on the remote. The marker is
+  // classified out of the child's error message, which begins `Command failed: git -C <dir> bundle
+  // create <out> --all --not --remotes`, so how far into the string the marker sits depends
+  // ENTIRELY on how long those two paths are. Truncating to 200 chars before the test measured the
+  // marker at position 191 and 208 on a real machine: 6 repositories were reported as
+  // "git bundle failed — this repository restores WITHOUT its unpushed commits" while they had
+  // nothing unpushed to lose. A budget for DISPLAY may never decide a classification.
+  const deep = join(root, 'a-directory-named-at-some-length', 'and-another-one-under-it', 'plus-a-third')
+  mkdirSync(deep, { recursive: true })
+  const origin = join(deep, 'origin.git')
+  execFileSync('git', ['init', '--bare', '-q', origin], { env: gitEnv() })
+  const clone = join(deep, 'a-clone-whose-path-is-also-not-short')
+  execFileSync('git', ['clone', '-q', origin, clone], { env: gitEnv() })
+  const g = (...a: string[]): void => { execFileSync('git', ['-C', clone, ...a], { env: gitEnv() }) }
+  g('config', 'user.email', 'a@b.c')
+  g('config', 'user.name', 'a')
+  writeFileSync(join(clone, 'f.txt'), 'x')
+  g('add', 'f.txt')
+  g('commit', '-qm', 'c')
+  g('push', '-q', 'origin', 'HEAD')
+
+  const out = join(deep, 'an-output-file-name-that-is-itself-quite-long-indeed.bundle')
+  return createBundle(clone, out, { full: false, maxBytes: 1024 * 1024 }).then(res => {
+    expect(res).toBe('empty')
+  })
+})

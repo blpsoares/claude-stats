@@ -16,10 +16,11 @@
  * fact nobody can recover, and reporting it as zero would be the very defect this fixes.
  */
 
-import { readFile, stat } from 'fs/promises'
+import { readFile, readdir, stat } from 'fs/promises'
 import { dirname, join } from 'path'
 import type { AgentInvocation, SessionAgentMetrics } from '@agentistics/core'
 import { agentNumbers, summarizeSubagentTranscript, totalsOf, type SubagentSummary } from './subagent-parse'
+import { describedFrom, parseAgentMeta, planAgentJoin, type AgentEntry } from './subagent-join'
 
 /**
  * Parsed subagent transcripts, keyed by path + mtime + size.
@@ -71,31 +72,65 @@ async function descendantsOf(
 }
 
 /**
- * Fill in every UNMEASURED invocation that names a transcript this machine still has.
+ * Every transcript in one `subagents/` directory, with the meta that names it.
  *
- * Total: a session with no `subagents/` directory, an unreadable file or an invocation with no
- * `agentId` comes back exactly as it went in.
+ * The directory is the authoritative record of which agents EXISTED — the parent transcript only
+ * says how each was launched, and it does not always say even that. A meta that is missing or
+ * unreadable yields `null` rather than dropping the transcript: a file we cannot describe is still
+ * a file, and `planAgentJoin` can still pair it by `agentId`.
+ */
+async function entriesIn(dir: string): Promise<AgentEntry[]> {
+  let names: string[]
+  try { names = await readdir(dir) } catch { return [] }
+
+  const entries: AgentEntry[] = []
+  for (const name of names) {
+    const agentId = /^agent-(.+)\.jsonl$/.exec(name)?.[1]
+    if (!agentId) continue
+    const text = await readFile(join(dir, `agent-${agentId}.meta.json`), 'utf-8').catch(() => '')
+    entries.push({ agentId, meta: text ? parseAgentMeta(text) : null })
+  }
+  return entries
+}
+
+/**
+ * Fill in every UNMEASURED invocation whose transcript this machine still has.
+ *
+ * The pairing is `subagent-join.ts`'s, and it is the whole point: keying only on
+ * `toolUseResult.agentId` left an interrupted call, a launch the parent never answered and a
+ * background forked skill permanently unmeasured, although all three had a full transcript beside
+ * the session. The meta's own `toolUseId` is the link back in exactly those cases.
+ *
+ * Total: a session with no `subagents/` directory, an unreadable file or an invocation nothing on
+ * disk can serve comes back exactly as it went in — `unmeasured`, which a surface renders N/A,
+ * never a zero. A transcript the join leaves UNCLAIMED adds no row: the invocation list is the
+ * parent's, and a conversation fork is not an agent this conversation dispatched (issue #384).
  */
 export async function enrichFromSubagentTranscripts(
   metrics: SessionAgentMetrics,
   transcriptPath: string,
   sessionId: string,
 ): Promise<SessionAgentMetrics> {
-  if (!metrics.invocations.some(i => i.unmeasured && i.agentId)) return metrics
+  if (!metrics.invocations.some(i => i.unmeasured)) return metrics
 
   const dir = join(dirname(transcriptPath), sessionId, 'subagents')
+  const entries = await entriesIn(dir)
+  if (entries.length === 0) return metrics
+
+  const plan = planAgentJoin(metrics.invocations, entries)
+  const metaOf = new Map(entries.map(e => [e.agentId, e.meta]))
   const invocations: AgentInvocation[] = []
   let changed = false
 
-  for (const inv of metrics.invocations) {
-    if (!inv.unmeasured || !inv.agentId) { invocations.push(inv); continue }
+  for (const { invocation, agentId } of plan.reads) {
+    if (!invocation.unmeasured || !agentId) { invocations.push(invocation); continue }
 
-    const root = await summaryFor(join(dir, `agent-${inv.agentId}.jsonl`))
-    if (!root) { invocations.push(inv); continue }
+    const root = await summaryFor(join(dir, `agent-${agentId}.jsonl`))
+    if (!root) { invocations.push(invocation); continue }
 
-    const descendants = await descendantsOf(dir, root, new Set([inv.agentId]))
-    const { unmeasured: _dropped, ...rest } = inv
-    invocations.push({ ...rest, ...agentNumbers(root, descendants) })
+    const descendants = await descendantsOf(dir, root, new Set([agentId]))
+    const { unmeasured: _dropped, ...rest } = describedFrom(invocation, metaOf.get(agentId) ?? null)
+    invocations.push({ ...rest, agentId, ...agentNumbers(root, descendants) })
     changed = true
   }
 
