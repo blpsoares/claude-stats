@@ -14,21 +14,53 @@
  * `HARNESS_CAPABILITIES` applies to metrics, applied to a promise.
  */
 
-export type ScheduleId = 'off' | 'daily' | 'weekly'
+export type ScheduleId = 'off' | 'daily' | 'weekly' | 'custom'
 
-export const SCHEDULE_IDS: ScheduleId[] = ['off', 'daily', 'weekly']
+export const SCHEDULE_IDS: ScheduleId[] = ['off', 'daily', 'weekly', 'custom']
 
 const DAY_MS = 86_400_000
+const HOUR_MS = 3_600_000
 
-/** null = never fires. A Record so a new id cannot be added without giving it an interval. */
+/**
+ * The floor for a custom interval, in hours.
+ *
+ * A backup here is 112 MB and confirming its upload RE-DOWNLOADS the whole file to hash it. Hourly
+ * is already a lot; anything under that is a machine that spends its day backing itself up. The
+ * value is CLAMPED rather than refused — a number typed into a field is an intent, and rejecting
+ * it outright would leave the schedule on whatever it was.
+ */
+export const MIN_CUSTOM_HOURS = 1
+
+/** null = never fires. A Record so a new id cannot be added without giving it an interval.
+ *  `custom` is null HERE because its interval is not a constant — see `intervalMs`. */
 export const SCHEDULE_MS: Record<ScheduleId, number | null> = {
   off: null,
   daily: DAY_MS,
   weekly: 7 * DAY_MS,
+  custom: null,
+}
+
+/**
+ * How long between runs, for a schedule that may carry its own number.
+ *
+ * In HOURS, which is the one unit that serves both ends of what people actually ask for: "every 6
+ * hours" and "every 3 days" are then the same field. Days alone cannot express the first, and
+ * minutes would invite a value that runs a 112 MB backup every five of them.
+ *
+ * An absent or unusable `customHours` falls back to DAILY, never to "never": a schedule the user
+ * deliberately switched on must not silently become one that never fires — that breaks the promise
+ * in the direction where nobody notices until they need the backup.
+ */
+export function intervalMs(schedule: ScheduleId, customHours?: number): number | null {
+  if (schedule !== 'custom') return SCHEDULE_MS[schedule]
+  if (customHours === undefined || !Number.isFinite(customHours)) return DAY_MS
+  return Math.max(MIN_CUSTOM_HOURS, customHours) * HOUR_MS
 }
 
 export interface ScheduleInput {
   schedule: ScheduleId
+  /** Only read when `schedule` is `'custom'`. See `intervalMs`. */
+  customHours?: number
   /** ISO of the last run, or null. Unparseable reads as never — a corrupt timestamp must not
    *  suppress backups forever, which is what treating it as "now" would do. */
   lastAt: string | null
@@ -52,7 +84,7 @@ function lastMs(lastAt: string | null): number | null {
 }
 
 export function isDue(input: ScheduleInput): ScheduleVerdict {
-  const every = SCHEDULE_MS[input.schedule]
+  const every = intervalMs(input.schedule, input.customHours)
   if (every === null) return { due: false, reason: 'off' }
   if (!input.serverRunning) return { due: false, reason: 'no-server' }
   const last = lastMs(input.lastAt)
@@ -61,7 +93,7 @@ export function isDue(input: ScheduleInput): ScheduleVerdict {
 }
 
 export function scheduleStatus(input: ScheduleInput): ScheduleStatus {
-  const every = SCHEDULE_MS[input.schedule]
+  const every = intervalMs(input.schedule, input.customHours)
   if (every === null) return { kind: 'off', nextAtMs: null }
   if (!input.serverRunning) return { kind: 'inactive-no-server', nextAtMs: null }
   const last = lastMs(input.lastAt)

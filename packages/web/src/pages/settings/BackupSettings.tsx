@@ -22,8 +22,8 @@ import { SectionHeader, Divider, RecordCard, Checkbox } from './primitives'
 // `BACKUP_LAYERS` order matters: metrics leads, and every layer row below is drawn in this order.
 type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
 const BACKUP_LAYERS: BackupLayer[] = ['metrics', 'repos', 'archive', 'raw']
-type BackupScheduleId = 'off' | 'daily' | 'weekly'
-const SCHEDULE_IDS: BackupScheduleId[] = ['off', 'daily', 'weekly']
+type BackupScheduleId = 'off' | 'daily' | 'weekly' | 'custom'
+const SCHEDULE_IDS: BackupScheduleId[] = ['off', 'daily', 'weekly', 'custom']
 
 // ---------------------------------------------------------------------------
 // wire shapes — mirrors packages/server/server/backup-routes.ts's BackupStatusJson. Redeclared
@@ -69,6 +69,8 @@ interface BackupStatusJson {
     destDir: string
     schedule: string
     scheduleActive: boolean
+    /** Hours between runs when `schedule` is `'custom'`; null when never set. */
+    customHours: number | null
     keep: number
     retainedLabel: string
     secretsCount: number
@@ -94,6 +96,8 @@ interface BackupConfigPatch {
   layers?: BackupLayer[]
   scheduleLayers?: BackupLayer[]
   schedule?: BackupScheduleId
+  /** Hours between runs, when `schedule` is `'custom'`. */
+  customHours?: number
 }
 
 type RunOutcome = { ok: true; bytesLabel: string; skipped?: number } | { ok: false; reason: string }
@@ -229,7 +233,12 @@ const SCHEDULE_WORD: Record<string, { en: string; pt: string }> = {
   off: { en: 'off', pt: 'desligado' },
   daily: { en: 'daily', pt: 'diário' },
   weekly: { en: 'weekly', pt: 'semanal' },
+  custom: { en: 'custom', pt: 'personalizado' },
 }
+
+/** The floor the server clamps to (`MIN_CUSTOM_HOURS`). Mirrored, never imported — the web bundle
+ *  may not import from `packages/server`. */
+const MIN_CUSTOM_HOURS = 1
 
 /**
  * The four layers, under the names a person thinks in — never the CLI's own `metrics`/`repos`/
@@ -916,7 +925,8 @@ export default function BackupSettings() {
             active={status.config.scheduleActive}
             pt={pt}
             disabled={savingConfig}
-            onChange={schedule => void patchConfig({ schedule })}
+            customHours={status.config.customHours ?? null}
+            onChange={(schedule, customHours) => void patchConfig({ schedule, customHours })}
           />
           <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', margin: '18px 0 4px' }}>
             {pt ? 'O que uma execução agendada grava' : 'What a scheduled run carries'}
@@ -1276,14 +1286,22 @@ function LayerPicker({ layers, sizes, archiveMode, pt, disabled, onToggle }: {
  * `active` mirrors `ControlBackupConfig.scheduleActive` — with the server stopped, a schedule other
  * than `off` reads INACTIVE rather than a "next at…" that will not arrive.
  */
-function SchedulePicker({ value, active, pt, disabled, onChange }: {
+function SchedulePicker({ value, active, pt, disabled, customHours, onChange }: {
   value: BackupScheduleId
   active: boolean
   pt: boolean
   disabled: boolean
-  onChange: (schedule: BackupScheduleId) => void
+  /** The hours last chosen, or null when never set. */
+  customHours: number | null
+  onChange: (schedule: BackupScheduleId, customHours?: number) => void
 }) {
   const isMobile = useIsMobile()
+  // Local, so typing a two-digit number does not fire a save on the first digit — `6` would be a
+  // legitimate schedule, and saving it on the way to `64` would run a backup six times a day.
+  const [draft, setDraft] = useState(String(customHours ?? 24))
+  const parsed = Number(draft)
+  const canSave = Number.isFinite(parsed) && parsed >= MIN_CUSTOM_HOURS
+    && parsed !== customHours && !disabled
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1311,6 +1329,59 @@ function SchedulePicker({ value, active, pt, disabled, onChange }: {
           )
         })}
       </div>
+      {value === 'custom' && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>
+            {pt ? 'A cada quantas horas' : 'Every how many hours'}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>
+            {pt
+              // Hours, because it is the one unit that covers both ends of what people ask for.
+              ? `Em horas — 6 roda quatro vezes ao dia, 72 roda de três em três dias. Mínimo ${MIN_CUSTOM_HOURS}h: cada backup é grande e o envio confere o arquivo baixando ele de volta inteiro.`
+              : `In hours — 6 runs four times a day, 72 runs every three days. Minimum ${MIN_CUSTOM_HOURS}h: each backup is large, and confirming its upload re-downloads the whole file.`}
+          </p>
+          <div style={{
+            display: 'flex', flexDirection: isMobile ? 'column' : 'row',
+            alignItems: isMobile ? 'stretch' : 'center', gap: 8,
+          }}>
+            <input
+              type="number"
+              min={MIN_CUSTOM_HOURS}
+              step={1}
+              inputMode="numeric"
+              value={draft}
+              disabled={disabled}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && canSave) { e.preventDefault(); onChange('custom', parsed) } }}
+              style={{
+                flex: isMobile ? undefined : 1, width: isMobile ? '100%' : undefined,
+                minWidth: 0, boxSizing: 'border-box',
+                padding: '7px 10px', minHeight: isMobile ? 44 : undefined,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+                fontFamily: 'inherit', color: 'var(--text-primary)', outline: 'none',
+                ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onChange('custom', parsed)}
+              disabled={!canSave}
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                padding: isMobile ? '0 16px' : '8px 16px', minHeight: isMobile ? 44 : undefined,
+                width: isMobile ? '100%' : undefined, flexShrink: 0,
+                borderRadius: 7, border: `1px solid ${canSave ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+                background: canSave ? 'var(--anthropic-orange-dim)' : 'transparent',
+                color: canSave ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit',
+                cursor: canSave ? 'pointer' : 'not-allowed', opacity: canSave ? 1 : 0.6,
+              }}
+            >
+              {pt ? 'Salvar' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
       {value !== 'off' && !active && (
         <p style={{ fontSize: 11.5, color: 'var(--anthropic-orange)', margin: '8px 0 0' }}>
           {pt
@@ -1420,10 +1491,13 @@ function GithubVersioning({
           </div>
 
           <GithubTextField
-            label={pt ? 'Manter no GitHub' : 'Keep on GitHub'}
+            label={pt ? 'Quantos backups guardar no GitHub' : 'How many backups to keep on GitHub'}
+            // The old copy said "how many releases to keep", which assumed the reader knew that
+            // one backup is one GitHub release. Reported as not understood, and fairly: the number
+            // decides when your OLDEST backup is deleted, and nothing on screen said so.
             hint={pt
-              ? 'Quantos releases DESTA máquina manter. 0 mantém todos. A retenção conta só os releases desta máquina e nunca toca nos de outra.'
-              : 'How many of THIS machine’s releases to keep. 0 keeps every one. Retention counts only this machine’s releases and never touches another machine’s.'}
+              ? 'Cada backup é um release. Ao passar desse número, o mais ANTIGO desta máquina é apagado do GitHub — ex.: 7 guarda a última semana de backups diários. Deixe 0 para nunca apagar nada. Só conta os desta máquina: os de outra nunca são tocados.'
+              : 'Each backup is one release. Past this number, the OLDEST of this machine is deleted from GitHub — e.g. 7 keeps the last week of daily backups. Leave it at 0 to never delete anything. It counts only this machine’s: another machine’s are never touched.'}
             value={keepDraft}
             onChange={onKeepDraft}
             onSave={onSaveKeep}

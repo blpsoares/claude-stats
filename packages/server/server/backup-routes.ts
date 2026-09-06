@@ -66,6 +66,8 @@ export interface BackupStatusJson {
     /** False while the server is stopped — see `schedule.ts`'s `inactive-no-server`. The row
      *  must say so rather than a "next at…" that will not arrive. */
     scheduleActive: boolean
+    /** Hours between runs when `schedule` is `'custom'`; null when it has never been set. */
+    customHours: number | null
     keep: number
     /** What EVERY retained backup occupies together, already formatted. */
     retainedLabel: string
@@ -100,6 +102,8 @@ export interface BackupConfigPatch {
   layers?: BackupLayer[]
   scheduleLayers?: BackupLayer[]
   schedule?: ScheduleId
+  /** Hours between runs, when `schedule` is `'custom'`. */
+  customHours?: number
 }
 
 /**
@@ -153,6 +157,7 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
   const last = lastBackup(entries)
   const st = scheduleStatus({
     schedule: prefs.schedule,
+    customHours: prefs.customHours,
     lastAt: last?.at ?? null,
     nowMs: Date.now(),
     serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
@@ -165,6 +170,9 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
       scheduleLayers: prefs.scheduleLayers,
       destDir: prefs.destDir,
       schedule: prefs.schedule,
+      // Sent even when the schedule is not `custom`, so switching to it in the interface shows the
+      // number the user last chose rather than an empty field.
+      customHours: prefs.customHours ?? null,
       scheduleActive: st.kind === 'next',
       keep: prefs.keep,
       retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
@@ -238,7 +246,13 @@ export async function updateBackupConfig(
   }
   if (patch.schedule) {
     if (!SCHEDULE_IDS.includes(patch.schedule)) return { ok: false, reason: `unknown schedule: ${patch.schedule}` }
-    await writeBackupSchedule(patch.schedule)
+    // The number is validated for SHAPE here and clamped by `intervalMs` — the one place that
+    // decides both, so a hand-edited preferences file cannot get past a check that lives in a route.
+    if (patch.customHours !== undefined
+      && (!Number.isFinite(patch.customHours) || patch.customHours <= 0)) {
+      return { ok: false, reason: 'custom schedule takes a positive number of hours' }
+    }
+    await writeBackupSchedule(patch.schedule, patch.customHours)
   }
   return { ok: true, status: await readBackupStatus() }
 }

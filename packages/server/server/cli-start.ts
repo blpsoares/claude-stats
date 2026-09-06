@@ -2558,7 +2558,8 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
 
       const last = lastBackup(entries)
       const st = scheduleStatus({
-        schedule: prefs.schedule, lastAt: last?.at ?? null, nowMs: Date.now(),
+        schedule: prefs.schedule, customHours: prefs.customHours,
+        lastAt: last?.at ?? null, nowMs: Date.now(),
         serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
       })
 

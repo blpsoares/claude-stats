@@ -1,7 +1,7 @@
-import { test, expect } from 'bun:test'
+import { describe, test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { isDue, scheduleStatus, SCHEDULE_IDS } from './schedule'
+import { MIN_CUSTOM_HOURS, intervalMs, isDue, scheduleStatus, SCHEDULE_IDS } from './schedule'
 
 const DAY = 86_400_000
 const now = Date.parse('2026-09-04T12:00:00.000Z')
@@ -73,4 +73,48 @@ test('the control center\'s BackupScheduleId union matches SCHEDULE_IDS, member 
   expect(decl).toBeDefined()
   const members = [...decl!.matchAll(/'([a-z-]+)'/g)].map(m => m[1]!)
   expect(members.sort()).toEqual([...SCHEDULE_IDS].sort())
+})
+
+describe('custom — an interval the user picks', () => {
+  const base = { lastAt: null as string | null, nowMs: 1_000_000, serverRunning: true }
+
+  test('custom uses customHours, and off/daily/weekly ignore it', () => {
+    // In HOURS, which is the one unit that serves both ends of what people ask for: "every 6
+    // hours" and "every 3 days" are the same field. Days alone cannot express the first; minutes
+    // would invite a value that runs a 112 MB backup every five minutes.
+    expect(intervalMs('custom', 6)).toBe(6 * 3_600_000)
+    expect(intervalMs('custom', 72)).toBe(72 * 3_600_000)
+    expect(intervalMs('daily', 6)).toBe(86_400_000)
+    expect(intervalMs('off', 6)).toBe(null)
+  })
+
+  test('a custom interval below the floor is CLAMPED, never honoured', () => {
+    // A backup here is 112 MB and its upload re-downloads the whole file to verify it. An hourly
+    // one is already a lot; anything under that is a machine spending its day backing itself up.
+    expect(intervalMs('custom', 0)).toBe(MIN_CUSTOM_HOURS * 3_600_000)
+    expect(intervalMs('custom', -5)).toBe(MIN_CUSTOM_HOURS * 3_600_000)
+    expect(intervalMs('custom', 0.25)).toBe(MIN_CUSTOM_HOURS * 3_600_000)
+  })
+
+  test('a missing or unusable customHours falls back to daily, never to "never"', () => {
+    // A schedule the user switched ON must not silently become one that never fires. Falling back
+    // to daily keeps the promise; falling back to `null` breaks it in the direction where nobody
+    // notices until they need the backup.
+    expect(intervalMs('custom', undefined)).toBe(86_400_000)
+    expect(intervalMs('custom', Number.NaN)).toBe(86_400_000)
+  })
+
+  test('isDue and scheduleStatus both honour it', () => {
+    const six = { ...base, schedule: 'custom' as const, customHours: 6 }
+    expect(isDue({ ...six, lastAt: new Date(six.nowMs - 5 * 3_600_000).toISOString() }).due).toBe(false)
+    expect(isDue({ ...six, lastAt: new Date(six.nowMs - 7 * 3_600_000).toISOString() }).due).toBe(true)
+    const st = scheduleStatus({ ...six, lastAt: new Date(six.nowMs).toISOString() })
+    expect(st.kind).toBe('next')
+    if (st.kind !== 'next') return
+    expect(st.nextAtMs).toBe(six.nowMs + 6 * 3_600_000)
+  })
+
+  test('custom is in SCHEDULE_IDS, so every surface offering the list offers it', () => {
+    expect(SCHEDULE_IDS).toContain('custom')
+  })
 })

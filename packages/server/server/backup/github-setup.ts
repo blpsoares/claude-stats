@@ -18,6 +18,7 @@
  * code — `runBackupCli` prints `result.message` as-is.
  */
 import { hostname } from 'os'
+import { defaultMachineLabel } from './machine-label'
 import type { FetchLike } from './github-api'
 import { gh, parseRepoUrl, repoUrlHost } from './github-api'
 import type { GithubBackupConfig } from './github-store'
@@ -43,6 +44,24 @@ export interface GithubSetupInput {
    *  `file` parameter — a test never has to touch the network or the real `~/.agentistics`. */
   fetchImpl?: FetchLike
   file?: string
+}
+
+/**
+ * This machine's default label, read from the team config when it has one.
+ *
+ * Impure and kept here rather than in the pure module: reading preferences is IO, and the DECISION
+ * — which of several names wins, and what happens when there is none — is what `defaultMachineLabel`
+ * owns and tests. A preferences read that fails falls back to the hostname rather than failing the
+ * setup: a label is a display name, and refusing to connect a repository over one would be absurd.
+ */
+async function machineLabelDefault(): Promise<string> {
+  try {
+    const { readPreferences } = await import('../preferences')
+    const prefs = await readPreferences() as { team?: { connections?: { id: string; machineName?: string }[] } }
+    return defaultMachineLabel(hostname(), prefs.team?.connections ?? [])
+  } catch {
+    return hostname()
+  }
 }
 
 export type GithubSetupResult =
@@ -124,7 +143,8 @@ export async function setupGithubBackup(input: GithubSetupInput): Promise<Github
     token: input.auth === 'gh' ? '' : input.token,
     keepRemote: input.keepRemote ?? 0,
     deleteLocalAfterUpload: input.deleteLocalAfterUpload ?? false,
-    label: input.label ?? hostname(),
+    // The name a central already gave this machine beats the hostname — see `machine-label.ts`.
+    label: input.label ?? await machineLabelDefault(),
   }
   await writeGithubConfig(config, input.file)
   return { ok: true, config }

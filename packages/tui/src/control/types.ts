@@ -429,7 +429,7 @@ export type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
 
 /** Redeclared from `server/backup/schedule.ts`'s `ScheduleId` — same cross-check discipline,
  *  asserted in `schedule.test.ts`. */
-export type BackupScheduleId = 'off' | 'daily' | 'weekly'
+export type BackupScheduleId = 'off' | 'daily' | 'weekly' | 'custom'
 
 /**
  * One harness's own coverage — see the backup tab's rule: last-backup is PER HARNESS, never a

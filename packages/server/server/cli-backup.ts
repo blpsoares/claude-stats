@@ -26,7 +26,7 @@ import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } f
 import { groupRepos, expandHome, assetRel, type RepoEntry } from './backup/repo-manifest'
 import { planRepos } from './backup/restore-plan'
 import { readManifestOf, restoreMetrics, restoreRepos, readRestoreState, restoreStateFile } from './backup/restore'
-import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
+import { MIN_CUSTOM_HOURS, SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 import { confirm, maskedInput } from './cli-ui'
 import { parseRepoUrl, repoUrlHost } from './backup/github-api'
@@ -48,6 +48,8 @@ const DEFAULT_MAX_BUNDLE = 200 * 1024 * 1024
 
 export interface BackupPrefs {
   schedule: ScheduleId
+  /** Hours between runs when `schedule` is `'custom'`. Undefined otherwise. */
+  customHours?: number
   layers: BackupLayer[]
   scheduleLayers: BackupLayer[]
   harnesses: HarnessId[]
@@ -63,6 +65,9 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
   const layers = (b.layers as BackupLayer[] | undefined) ?? DEFAULT_LAYERS
   return {
     schedule: SCHEDULE_IDS.includes(b.schedule as ScheduleId) ? (b.schedule as ScheduleId) : 'off',
+    // Carried raw. `intervalMs` is the ONE place that clamps and defaults it, so a hand-edited
+    // preferences file cannot smuggle a five-minute backup past a validation that lives elsewhere.
+    customHours: typeof b.customHours === 'number' ? b.customHours : undefined,
     layers,
     scheduleLayers: (b.scheduleLayers as BackupLayer[] | undefined) ?? DEFAULT_LAYERS,
     harnesses: (b.harnesses as HarnessId[] | undefined)?.filter(h => HARNESS_ORDER.includes(h)) ?? [...HARNESS_ORDER],
@@ -151,9 +156,18 @@ export async function writeBackupScheduleLayers(layers: BackupLayer[]): Promise<
   return normalized
 }
 
-export async function writeBackupSchedule(schedule: ScheduleId): Promise<void> {
+export async function writeBackupSchedule(schedule: ScheduleId, customHours?: number): Promise<void> {
   const p = await readPreferences()
-  await writePreferences({ ...p, backup: { ...(p.backup ?? {}), schedule } })
+  // `customHours` is written only when it was given, so switching to `weekly` and back to `custom`
+  // returns to the number the user had chosen rather than to a default they never picked.
+  await writePreferences({
+    ...p,
+    backup: {
+      ...(p.backup ?? {}),
+      schedule,
+      ...(customHours === undefined ? null : { customHours }),
+    },
+  })
 }
 
 export type BackupArgs =
@@ -167,7 +181,7 @@ export type BackupArgs =
       maxBundleBytes?: number
       planOnly: boolean
     }
-  | { kind: 'schedule'; schedule: ScheduleId }
+  | { kind: 'schedule'; schedule: ScheduleId; customHours?: number }
   | {
       kind: 'config'
       /** Each field present only when the matching flag was given. All absent means "print the
@@ -218,6 +232,17 @@ export function parseBackupArgs(argv: string[]): BackupArgs {
     const id = rest[0]
     if (!id || !SCHEDULE_IDS.includes(id as ScheduleId)) {
       return { kind: 'error', message: `schedule takes one of: ${SCHEDULE_IDS.join(', ')}` }
+    }
+    if (id === 'custom') {
+      // `schedule custom` with no number is not an error — `intervalMs` defaults it to daily and
+      // says so. Refusing here would make the CLI stricter than the rule it is enforcing.
+      const raw = rest[1]
+      if (raw === undefined) return { kind: 'schedule', schedule: 'custom' }
+      const hours = Number(raw)
+      if (!Number.isFinite(hours) || hours <= 0) {
+        return { kind: 'error', message: 'schedule custom takes a number of hours, e.g. `schedule custom 6`' }
+      }
+      return { kind: 'schedule', schedule: 'custom', customHours: hours }
     }
     return { kind: 'schedule', schedule: id as ScheduleId }
   }
@@ -512,8 +537,10 @@ export async function runBackupCli(argv: string[]): Promise<number> {
   const prefs = readBackupPrefs(await readPreferences())
 
   if (parsed.kind === 'schedule') {
-    await writeBackupSchedule(parsed.schedule)
-    log(`schedule: ${parsed.schedule}`)
+    await writeBackupSchedule(parsed.schedule, parsed.customHours)
+    log(parsed.schedule === 'custom'
+      ? `schedule: every ${Math.max(MIN_CUSTOM_HOURS, parsed.customHours ?? 24)}h`
+      : `schedule: ${parsed.schedule}`)
     if (parsed.schedule !== 'off') {
       log('Scheduled backups run inside `agentop server`. With the server stopped, none run.')
     }
@@ -628,7 +655,8 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     const per = lastPerHarness(entries)
     for (const h of HARNESS_ORDER) log(`  ${h.padEnd(12)} ${per[h] ?? 'never'}`)
     const st = scheduleStatus({
-      schedule: prefs.schedule, lastAt: last?.at ?? null, nowMs: Date.now(),
+      schedule: prefs.schedule, customHours: prefs.customHours,
+      lastAt: last?.at ?? null, nowMs: Date.now(),
       serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
     })
     log(st.kind === 'inactive-no-server'

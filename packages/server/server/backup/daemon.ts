@@ -33,7 +33,8 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
       const last = lastBackup(entries)
       // serverRunning is true by construction: this code only runs inside the daemon.
       const verdict = isDue({
-        schedule: prefs.schedule, lastAt: last?.at ?? null, nowMs: Date.now(), serverRunning: true,
+        schedule: prefs.schedule, customHours: prefs.customHours,
+        lastAt: last?.at ?? null, nowMs: Date.now(), serverRunning: true,
       })
       if (!verdict.due) return
 

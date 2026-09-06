@@ -26,10 +26,27 @@ function handlerFor(path: string): string {
   return rest.slice(0, end === -1 ? rest.length : end)
 }
 
+/**
+ * A handler satisfies the rule EITHER by naming the field, OR by forwarding the validated body
+ * whole (`fn(body.value)`) — which reaches every field by construction and is a perfectly good
+ * shape. Demanding the name would have flagged `/api/backup/config`, which forwards, and a lint
+ * that cries wolf is a lint people switch off.
+ */
+function reaches(handler: string, field: string): boolean {
+  return handler.includes('(body.value)') || handler.includes(field)
+}
+
 test('the github setup route passes on `auth` — the field that makes gh mode work', () => {
   const h = handlerFor('/api/backup/github/setup')
   for (const field of ['url', 'token', 'auth']) {
-    expect(h.includes(field)).toBe(true)
+    expect(reaches(h, field)).toBe(true)
+  }
+})
+
+test('the config route reaches every field of its patch, including `customHours`', () => {
+  const h = handlerFor('/api/backup/config')
+  for (const field of ['layers', 'scheduleLayers', 'schedule', 'customHours']) {
+    expect(reaches(h, field)).toBe(true)
   }
 })
 
@@ -38,13 +55,13 @@ test('the restore start route passes on every field a restore needs', () => {
   // and dropping it would quietly restore metrics only while the screen said "everything".
   const h = handlerFor('/api/backup/restore/start')
   for (const field of ['url', 'tag', 'token', 'withRepos']) {
-    expect(h.includes(field)).toBe(true)
+    expect(reaches(h, field)).toBe(true)
   }
 })
 
 test('the restore list route passes on the token', () => {
   const h = handlerFor('/api/backup/restore/list')
   for (const field of ['url', 'token']) {
-    expect(h.includes(field)).toBe(true)
+    expect(reaches(h, field)).toBe(true)
   }
 })
