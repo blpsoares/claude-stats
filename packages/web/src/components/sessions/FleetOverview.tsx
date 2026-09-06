@@ -12,6 +12,7 @@
  */
 
 import { useMemo } from 'react'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { Activity, Bell, FolderGit2, Power } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
@@ -60,6 +61,8 @@ export interface FleetOverviewProps {
 export function FleetOverview({
   lang, rows, loading, unsupported, unavailable, heatmap, heatmapByHarness,
 }: FleetOverviewProps) {
+  // Where the session list IS depends on the layout — see the paragraph below.
+  const isMobile = useIsMobile()
   /** One line per harness, on one axis and one scale. See `trendLines.ts`. */
   const chart = useMemo(() => trendChart(heatmapByHarness ?? {}), [heatmapByHarness])
   const pt = lang === 'pt'
@@ -114,10 +117,17 @@ export function FleetOverview({
           cards hold still — a reasonable reading of that is that the cards are stale. They were
           not stale; they were counting a different set, and nothing on the screen said so. Same
           rule as every N/A in this product: a number must say what it counts. */}
+      {/* WHERE THE LIST IS depends on the layout, and this said "on the left" on a phone — where
+          there is no left, only the tab beside this one. A sentence that points somewhere that does
+          not exist is worse than one that points nowhere, so the phone's names its own control. */}
       <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-tertiary)', lineHeight: 1.55 }}>
-        {pt
-          ? 'O que está rodando nesta máquina agora. Escolha uma sessão na lateral para abri-la.'
-          : 'What is running on this machine right now. Pick a session on the left to open it.'}
+        {isMobile
+          ? (pt
+            ? 'O que está rodando nesta máquina agora. Abra a aba Sessões para escolher uma.'
+            : 'What is running on this machine right now. Open the Sessions tab to pick one.')
+          : (pt
+            ? 'O que está rodando nesta máquina agora. Escolha uma sessão na lateral para abri-la.'
+            : 'What is running on this machine right now. Pick a session on the left to open it.')}
       </p>
 
       <SectionNote text={pt

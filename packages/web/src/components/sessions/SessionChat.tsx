@@ -1813,19 +1813,39 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                           `localhost` would be a guess about which machine they are sitting at, so
                           where there is no answer this row is simply absent. */}
                       {dictation.state === 'insecure' && (() => {
-                        const alt = typeof window === 'undefined' ? null : insecureAlternative(window.location.href)
-                        return alt === null ? null : (
-                          <a
-                            href={alt}
-                            style={{
-                              display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
-                              lineHeight: 1.4, color: 'var(--anthropic-orange)',
-                              overflowWrap: 'anywhere', textDecoration: 'none',
-                            }}
-                          >
-                            {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
-                          </a>
-                        )
+                        // `!isMobile` is the "am I sitting at the machine serving this page" the
+                        // rewrite needs. A phone reaches the dashboard by its LAN address and
+                        // nothing else, so `localhost` there is the PHONE — a link to a page that
+                        // cannot load, offered on the one device where this refusal always fires.
+                        const alt = typeof window === 'undefined'
+                          ? null
+                          : insecureAlternative(window.location.href, !isMobile)
+                        return alt === null
+                          ? (
+                            // Said rather than left blank: "the microphone needs HTTPS" with no
+                            // follow-up reads as a bug in this product, and it is a rule of the
+                            // browser that nothing here can lift.
+                            <p style={{
+                              margin: 0, padding: '4px 8px 8px 30px', fontSize: 10.5,
+                              lineHeight: 1.45, color: 'var(--text-tertiary)',
+                            }}>
+                              {pt
+                                ? 'Num celular não há alternativa: o navegador só libera o microfone em HTTPS, e este painel está em HTTP na rede local. Dite no computador ou sirva o painel por HTTPS.'
+                                : 'On a phone there is no alternative: the browser only allows the microphone over HTTPS, and this dashboard is on plain HTTP over the local network. Dictate on the computer, or serve it over HTTPS.'}
+                            </p>
+                          )
+                          : (
+                            <a
+                              href={alt}
+                              style={{
+                                display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
+                                lineHeight: 1.4, color: 'var(--anthropic-orange)',
+                                overflowWrap: 'anywhere', textDecoration: 'none',
+                              }}
+                            >
+                              {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
+                            </a>
+                          )
                       })()}
 
                       {/* MODEL. Same treatment: where it cannot work, the menu says why instead of
