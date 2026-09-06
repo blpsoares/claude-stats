@@ -747,7 +747,7 @@ export default function SessionsPage() {
 
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '10px 12px' }}>
           {mobileTab === 'overview' ? (
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
               <FleetOverview
                 lang={pt ? 'pt' : 'en'}
                 rows={overviewRows}
@@ -891,7 +891,7 @@ export default function SessionsPage() {
             : 'That session is no longer in this machine’s list.'}
         </p>
       )}
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
         <FleetOverview
           lang={pt ? 'pt' : 'en'}
           // THE SAME ROWS THE ASIDE IS SHOWING, through the same `filterFleet`.

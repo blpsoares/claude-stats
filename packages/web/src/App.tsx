@@ -22,6 +22,7 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
+import { useVisualViewport } from './hooks/useVisualViewport'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -1563,6 +1564,38 @@ export default function AppLayout() {
   // Only the sessions workspace offers the handle, but whatever it is dragged to applies to both.
   const liveAsideWidth = asideWidth
   const inSessionsWorkspace = modeOfPath(location.pathname) === 'sessions'
+
+  /**
+   * THE PHONE'S SESSIONS WORKSPACE IS THE ONE SCREEN THAT MUST NOT SCROLL AS A DOCUMENT.
+   *
+   * Reported together, because they are one cause: "quando eu tento scrollar as vezes no mobile,
+   * ele roda a página inteira e não deixa scrollar" and "quando o input sobe junto com o teclado,
+   * ao sair ele fica numa altura diferente do que estava antes". The workspace is a fixed-height
+   * column — the conversation, the list and the aside each scroll inside themselves — so it has
+   * nothing to scroll, and every pixel the document moves is either a rubber-band chained from an
+   * inner scroller that hit its end, or a keyboard scroll iOS never undid.
+   *
+   * `lib/mobileViewport.ts` carries the whole account. Two halves, and each is useless alone: the
+   * document is LOCKED (`html.ag-viewport-locked`), and the shell is then measured against the
+   * VISUAL viewport, so the composer still rises with the keyboard — by being in a shorter box
+   * rather than by having the page dragged out from under it — and returns to the exact height it
+   * left, because the number it is derived from does.
+   *
+   * Every other page keeps the window as its scroller. That is deliberate: they are columns of
+   * cards that grow past the fold, and locking them would strand the reader on the first screenful.
+   */
+  const lockViewport = isMobile && inSessionsWorkspace
+  const viewport = useVisualViewport(lockViewport)
+  useEffect(() => {
+    if (!lockViewport) return
+    const root = document.documentElement
+    root.classList.add('ag-viewport-locked')
+    // The lock stops NEW document scroll; it cannot undo what is already there. Arriving with the
+    // page stranded from a previous screen would freeze it stranded, which is the reported bug
+    // with the escape hatch removed.
+    window.scrollTo(0, 0)
+    return () => { root.classList.remove('ag-viewport-locked') }
+  }, [lockViewport])
 
   /**
    * The fixed strip is ONE row again.
@@ -3283,11 +3316,21 @@ export default function AppLayout() {
       // holds. What changes is that this div's border box now reaches the real bottom of the
       // screen, so a fixed descendant has nothing left to resolve against wrongly. The nav then
       // overlays its own padding, which is what the padding is for.
-      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
+      // ON A PHONE THIS IS THE MEASURED VISIBLE BAND, NOT `100dvh`. `dvh` tracks the collapsing
+      // URL bar and is deliberately blind to the KEYBOARD, which is the one thing that has to be
+      // subtracted here — see `lockViewport` above. With the document locked, a shell of `100dvh`
+      // would leave the composer sitting behind the keyboard with no scroll left to rescue it.
+      height: inSessionsWorkspace ? (isMobile ? viewport.height : '100vh') : undefined,
+      // WebKit can still slide the visual viewport DOWN inside the locked layout. It is normally
+      // 0; honouring it costs one margin and keeps the shell inside the band it was measured from.
+      ...(inSessionsWorkspace && isMobile && viewport.top > 0 ? { marginTop: viewport.top } : {}),
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
-      ...(inSessionsWorkspace && isMobile && !sessionOpen
+      // ...and not while the keyboard is up either: the bar steps aside for it (see its own note),
+      // so reserving its band would put a strip of nothing between the search field and the
+      // keyboard. The condition is the bar's own, restated in one place rather than two.
+      ...(inSessionsWorkspace && isMobile && !sessionOpen && !viewport.keyboard
         ? { paddingBottom: 'var(--mobile-nav-h)' }
         : {}),
       background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
@@ -3727,8 +3770,16 @@ export default function AppLayout() {
           competing with the thing it wraps, on a screen only 664px tall to begin with — the nav
           was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
           its own back arrow in the top bar, which is the way out and the only one a reader needs
-          while they are in it. The root's height drops the matching subtraction — see its note. */}
-      {isMobile && !sessionOpen && (
+          while they are in it. The root's height drops the matching subtraction — see its note.
+
+          AND HIDDEN WHILE THE KEYBOARD IS UP. The shell is now the visible band (see
+          `lockViewport`), so the bar correctly rides above the keyboard instead of being buried
+          under it — and five destinations wedged into the ~330px left over is the same chrome
+          crowding out the thing it wraps, one screen over. It also settles what the report noticed
+          from the other side: the bar is either at the foot of the screen or gone, never at a
+          third height nobody chose. `viewport.keyboard` is only ever true in this workspace, which
+          is the only one that locks the document. */}
+      {isMobile && !sessionOpen && !viewport.keyboard && (
         <MobileBottomNav
           lang={lang}
           harnesses={data.harnesses}

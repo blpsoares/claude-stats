@@ -212,6 +212,36 @@ html, body {
      which is what actually sits over it. Padding #root too double-counted the inset. */
 }
 
+/* ── The document lock ───────────────────────────────────────────────────────
+   Added by App.tsx for the sessions workspace on a phone, and by nothing else. The full account
+   is in `lib/mobileViewport.ts`; in one line: that workspace is a fixed-height column whose
+   conversation, list and aside each scroll inside themselves, so every pixel of DOCUMENT scroll
+   there is spurious — a rubber-band chained from an inner scroller that hit its end, or a
+   keyboard scroll iOS never undid. Both were reported together, which is what named the cause.
+
+   `position: fixed` on the body rather than `overflow: hidden` alone: WebKit will still scroll a
+   non-overflowing document to bring a focused caret into view, and that scroll is exactly the one
+   that never comes back. A fixed body has nothing to scroll in the first place.
+
+   It is safe here and NOWHERE ELSE in this product: every dashboard page is a column of cards
+   that grows past the fold and must keep the window as its scroller. The mobile base block above
+   deliberately leaves `overflow-y` alone for that reason — `hidden` on one axis computes the other
+   to `auto` and breaks every sticky header — and this rule opts one screen out explicitly instead.
+
+   The shell inside is then sized from `visualViewport.height`, so the composer still rises with
+   the keyboard and comes back to the pixel it left. */
+html.ag-viewport-locked {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+html.ag-viewport-locked > body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 /* Bottom nav safe-area padding.
    `box-sizing: border-box` is global, so this padding EATS the nav's height instead of adding to
    it: installed as a PWA (standalone, no browser toolbar) the inset is ~34-48px, which crushed a

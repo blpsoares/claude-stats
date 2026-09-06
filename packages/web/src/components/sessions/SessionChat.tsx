@@ -1048,7 +1048,15 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px' }}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px',
+          // A flick that reaches the top of the conversation stops HERE. Without it the
+          // gesture chains to the document, which has nothing to scroll and rubber-bands the
+          // whole page instead — reported as "ele roda a página inteira e não deixa scrollar",
+          // with the header dragged out from under the status bar. The document lock in
+          // App.tsx is the other half; this is the half that keeps the gesture where it began.
+          overscrollBehavior: 'contain',
+        }}
       >
         <div style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
           {loading ? (
@@ -1535,7 +1543,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (skillPickerOpen && slashFlat.length > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
                         e.preventDefault()
                         const picked = slashFlat[Math.min(slashIndex, slashFlat.length - 1)]
                         if (picked) insertSkill(picked.name)
@@ -1545,7 +1553,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // Escape closes the picker BEFORE it reaches the stop verb: a person dismissing
                     // a list they opened by accident must not interrupt the session's turn.
                     if (e.key === 'Escape' && skillPickerOpen) { e.preventDefault(); setSlashDismissed(true); return }
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+                    // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
+                    // convention every messaging app on a touch keyboard follows: the return key is
+                    // the only way to write a second line there, because `shift+enter` needs a
+                    // shift key the software keyboard does not have. Sending is the ✈ button, which
+                    // is a 44px target sitting right beside the field. On a hardware keyboard the
+                    // rule is the opposite one and unchanged — enter sends, shift+enter breaks —
+                    // and the picker above follows the same split for the same reason.
+                    if (e.key === 'Enter' && !e.shiftKey && !isMobile) { e.preventDefault(); void send() }
                     // The composer's own "esc": stops the CURRENT turn without touching the draft
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
