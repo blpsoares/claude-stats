@@ -34,7 +34,7 @@ import { asideCache, asideKey } from '../../lib/asideCache'
 import {
   FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
   BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
-  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X,
+  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X, Workflow,
 } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -55,6 +55,11 @@ import {
   subagentsStateOf, unmeasuredText, unpricedText,
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
+import {
+  liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
+  workflowCount, workflowsPollMs, workflowsStateOf,
+  type WorkflowRunRow, type WorkflowsPayload, type WorkflowsState,
+} from '../../lib/workflows'
 import { ConfirmModal } from '../../pages/settings/primitives'
 import {
   cannotWriteText, offerableScopes, runText, runningMcpCount, scopeText,
@@ -70,7 +75,7 @@ import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'mcps' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
@@ -293,6 +298,10 @@ export function ArtifactsAside({
    * the session, not about this mount — and this is the most expensive tab of the lot, since the
    * list costs a full read of the parent transcript.
    */
+  const [wfState, setWfState] = useState<WorkflowsState | null>(
+    () => asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null,
+  )
+  const [openRun, setOpenRun] = useState<string | null>(null)
   const [agentsState, setAgentsState] = useState<SubagentsState | null>(
     () => asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null,
   )
@@ -317,7 +326,7 @@ export function ArtifactsAside({
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
-      || t === 'agents' || t === 'mcps' || t === 'prs') setTab(t)
+      || t === 'agents' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -569,6 +578,12 @@ export function ArtifactsAside({
       icon: <Bot size={12} />,
       count: subagentCount(agentsState),
     },
+    {
+      id: 'workflows',
+      label: pt ? 'Workflows' : 'Workflows',
+      icon: <Workflow size={12} />,
+      count: workflowCount(wfState),
+    },
     { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp === null ? null : mcp.servers.length },
     { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs === null ? null : prs.pulls.length },
   ]
@@ -655,6 +670,7 @@ export function ArtifactsAside({
         {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
         {t.id === 'mcps' && runningMcpCount(mcp?.servers ?? null) > 0 && <RunningDot />}
         {t.id === 'agents' && runningCount(agentsState) > 0 && <RunningDot />}
+        {t.id === 'workflows' && liveRunCount(wfState) > 0 && <RunningDot />}
       </button>
     )
   }
@@ -789,6 +805,46 @@ export function ArtifactsAside({
   }, [tab, sessionId, pt])
 
   /**
+   * The session's DYNAMIC WORKFLOW runs.
+   *
+   * Fetched when the tab is opened and re-fetched only while a run is still going — a finished
+   * run's numbers cannot change, and the list costs a read of the parent transcript plus every
+   * agent's. Both halves are memoized server-side on their own file stamps; the rule for when to
+   * ask at all is `lib/workflows.ts`.
+   */
+  useEffect(() => {
+    const key = asideKey(sessionId, 'workflows')
+    const hit = asideCache.read<WorkflowsState>(key)
+    if (hit.value && !hit.stale && workflowsPollMs(hit.value) === null) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Only a tab with NOTHING to draw waits — a spinner over an answer already on screen is the
+    // reload `asideCache` exists to remove.
+    let first = hit.value === undefined
+    const read = async () => {
+      if (first) setWfState({ phase: 'loading' })
+      try {
+        const res = await fetch(`/api/fleet/workflows?id=${encodeURIComponent(sessionId)}&lang=${pt ? 'pt' : 'en'}`)
+        if (!alive) return
+        if (!res.ok) {
+          setWfState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os workflows.' : 'The workflows could not be read.' })
+          return
+        }
+        const next = workflowsStateOf(await res.json() as WorkflowsPayload)
+        asideCache.write(key, next)
+        if (!alive) return
+        setWfState(next)
+        const wait = tab === 'workflows' ? workflowsPollMs(next) : null
+        if (wait !== null) timer = setTimeout(read, wait)
+      } catch {
+        if (alive) setWfState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os workflows.' : 'The workflows could not be read.' })
+      } finally { first = false }
+    }
+    void read()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [tab, sessionId, pt])
+
+  /**
    * A different session is a different fleet of subagents — but it may be one this panel already
    * read. Re-SEED from the cache rather than blanking: a hit here is the difference between coming
    * back to an answer and coming back to a spinner, which is the whole point of `asideCache`.
@@ -796,6 +852,8 @@ export function ArtifactsAside({
   useEffect(() => {
     setAgentsState(asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null)
     setOpenAgent(null)
+    setWfState(asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null)
+    setOpenRun(null)
     setMcp(asideCache.read<McpListPayload>(asideKey(sessionId, 'mcps', cwd ?? '')).value ?? null)
     setMcpError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -819,6 +877,36 @@ export function ArtifactsAside({
       setAgentsState(next)
     } catch { /* the list stays as it is; the button can be pressed again */ }
     finally { setAgentsMore(false) }
+  }
+
+
+  const workflowsBody = (): React.ReactNode => {
+    const st = wfState
+    if (st === null || st.phase === 'loading') {
+      return <Note icon={<Spinner />} text={pt
+        ? 'Lendo os workflows desta conversa… isso abre a transcrição de cada agente.'
+        : 'Reading this conversation’s workflows… this opens each agent’s transcript.'} />
+    }
+    // FOUR SENTENCES, never one shared empty box: the harness runs none, the read failed, this
+    // conversation launched none, or here they are.
+    if (st.phase === 'unsupported') return <Note icon={<Workflow size={16} />} text={st.message} />
+    if (st.phase === 'failed') return <Note text={st.message} />
+    if (st.rows.length === 0) {
+      return <Note icon={<Workflow size={16} />} text={pt
+        ? 'Esta conversa não lançou nenhum Dynamic Workflow.'
+        : 'This conversation has not launched a Dynamic Workflow.'} />
+    }
+    return (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+        {st.rows.map(r => (
+          <WorkflowCard
+            key={r.runId} row={r} pt={pt} now={now}
+            open={openRun === r.runId}
+            onToggle={() => setOpenRun(openRun === r.runId ? null : r.runId)}
+          />
+        ))}
+      </div>
+    )
   }
 
   const agentsBody = (): React.ReactNode => {
@@ -1387,6 +1475,7 @@ export function ArtifactsAside({
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()
             : tab === 'agents' ? agentsBody()
+            : tab === 'workflows' ? workflowsBody()
             : tab === 'mcps' ? mcpBody()
             : tab === 'prs' ? prsBody()
             : body()}
@@ -1716,6 +1805,124 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
  * ones, so a zero on this row is not a rounding error, it is a wrong answer by a factor of a
  * hundred thousand.
  */
+
+/**
+ * One workflow RUN.
+ *
+ * The row says its state in a WORD and a colour — never a colour alone — and every figure that
+ * does not exist is an absence with a reason beside it, not a zero. Opening it lists the agents it
+ * ran, grouped by the phase the script declared, because "14 agents" is a number and "the extract
+ * phase ran 8 of them" is the thing somebody is actually watching.
+ */
+function WorkflowCard({ row, pt, now, open, onToggle }: {
+  row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
+}) {
+  const isMobile = useIsMobile()
+  const st = runStatusText(row.status, pt)
+  const note = runStatusNote(row.status, pt)
+  const unmeasured = unmeasuredRunText(row, pt)
+  const dur = runDurationText(row.durationMs, row.live, pt)
+  return (
+    <div style={{
+      border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 6, minWidth: 0,
+    }}>
+      <button
+        onClick={onToggle}
+        style={{
+          display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
+          padding: isMobile ? '10px 10px' : '7px 9px', cursor: 'pointer', fontFamily: 'inherit',
+          minWidth: 0, minHeight: isMobile ? 44 : undefined, borderRadius: 8,
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+          <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+            color: st.color, flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}>
+            {row.live && (
+              <span aria-hidden style={{
+                width: 6, height: 6, borderRadius: '50%', background: st.color,
+                animation: 'ag-agent-pulse 1.6s ease-in-out infinite',
+              }} />
+            )}
+            {st.text}
+          </span>
+          <span style={{
+            fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{row.name}</span>
+          {agoLabel(row.startedAt, now, pt) !== '' && (
+            <span style={{
+              marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)',
+              fontVariantNumeric: 'tabular-nums',
+            }}>{agoLabel(row.startedAt, now, pt)}</span>
+          )}
+        </div>
+        <div style={{
+          marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: '2px 10px',
+          fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+        }}>
+          <span>{fmt(row.agentCount)} {pt ? 'agentes' : 'agents'}</span>
+          {row.phases.length > 0 && (
+            <span>{fmt(row.phases.length)} {pt ? (row.phases.length === 1 ? 'fase' : 'fases') : (row.phases.length === 1 ? 'phase' : 'phases')}</span>
+          )}
+          {dur !== null && <span style={{ fontVariantNumeric: 'tabular-nums' }}>{dur}</span>}
+          {/* TOKENS: every counter. The breakdown rides the title so the headline can be accounted
+              for without spending a row on four numbers. */}
+          {row.totalTokens !== null ? (
+            <span title={row.tokens
+              ? `${pt ? 'entrada' : 'input'} ${fmt(row.tokens.input)} · ${pt ? 'saída' : 'output'} ${fmt(row.tokens.output)} · ${pt ? 'cache lido' : 'cache read'} ${fmt(row.tokens.cacheRead)} · ${pt ? 'cache escrito' : 'cache written'} ${fmt(row.tokens.cacheWrite)}`
+              : undefined}>
+              <strong style={{ color: 'var(--text-secondary)' }}>{fmt(row.totalTokens)}</strong> tok
+            </span>
+          ) : unmeasured !== null ? <span style={{ fontStyle: 'italic' }}>{unmeasured}</span> : null}
+          {row.costUSD !== null && (
+            <span><strong style={{ color: 'var(--text-secondary)' }}>{fmtCost(row.costUSD)}</strong></span>
+          )}
+        </div>
+        {/* A state a reader cannot be expected to infer is explained in a sentence. */}
+        {note !== null && (
+          <p style={{ margin: '3px 0 0', fontSize: 10, lineHeight: 1.45, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+            {note}
+          </p>
+        )}
+      </button>
+      {open && (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '5px 9px 7px' }}>
+          {row.agents.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 10.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+              {row.live
+                ? (pt ? 'Nenhum agente escreveu ainda.' : 'No agent has written yet.')
+                : (pt ? 'Nenhuma transcrição de agente ficou no disco.' : 'No agent transcript was left on disk.')}
+            </p>
+          ) : row.agents.map((a, i) => (
+            <div key={`${a.label}-${i}`} style={{
+              display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, padding: '2px 0',
+              fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+            }}>
+              <span style={{
+                minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                color: 'var(--text-secondary)',
+              }}>{a.label}</span>
+              {/* The phase is the script's own word for what this agent was doing. A transcript the
+                  matcher could not pair carries none, and says nothing rather than guessing one. */}
+              {a.phase !== '' && (
+                <span style={{ flexShrink: 0, opacity: 0.75 }}>{a.phase}</span>
+              )}
+              <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                {a.totalTokens !== null ? `${fmt(a.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
+                {a.costUSD !== null ? ` · ${fmtCost(a.costUSD)}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SubagentCard({ row, pt, now, onOpen }: {
   row: SubagentRow; pt: boolean; now: number; onOpen: () => void
 }) {

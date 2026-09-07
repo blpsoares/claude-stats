@@ -106,8 +106,18 @@ advertise the cycle key.
 
 ## The right aside
 
-Files, Docs, Live, Gallery, Skills, Agents, MCPs and PRs (`TabId` in `ArtifactsAside.tsx`). Its bar
-**keeps what fits** and a grid holds the rest, rather than overflowing.
+Files, Docs, Live, Gallery, Skills, Agents, Workflows, MCPs and PRs (`TabId` in
+`ArtifactsAside.tsx`). Its bar **keeps what fits** and a grid holds the rest, rather than
+overflowing.
+
+**Workflows shows Dynamic Workflow runs as something HAPPENING.** They were readable before, but
+only as history on the repo page, because the reader turned "has not reported back yet" into
+`completed` — so a run in flight claimed to be over and there was nothing live to show. The state
+is the pure `workflow-live.ts`, which ranks its evidence: the run's OWN end-of-run record (the only
+source that can say `killed`), then the completion counts, then whether the session is alive
+(three-valued — a caller that cannot see processes must not call a live run dead), then movement.
+A launched run that stopped moving is `abandoned`, said in words. Measured across 17 real runs on
+one machine, 4 had carried the wrong status. It polls only while a run is live.
 
 **It does not reload from zero when it is closed and reopened.** Tabs seed from `asideCache`, so
 skills, PRs and skill bodies survive a close — reopening used to re-fetch everything and stall.

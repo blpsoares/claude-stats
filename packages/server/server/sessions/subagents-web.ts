@@ -29,6 +29,8 @@ import {
 } from './subagents'
 
 /** The shape an id from a client must have before it is allowed to name a file. */
+import { resolveSessionTranscript, type Resolved } from './session-resolve'
+
 const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 export interface SubagentRow {
@@ -132,45 +134,6 @@ function subagentsDirFor(transcriptPath: string): string {
   return `${transcriptPath.replace(/\.jsonl$/, '')}/subagents`
 }
 
-interface Resolved {
-  row: { harness?: string; cwd?: string; state?: string; conversationBlind?: string }
-  transcript: string
-  live: boolean
-}
-
-async function resolve(
-  host: StartHost, lang: CliLang, id: string,
-): Promise<Resolved | { error: string }> {
-  const pt = lang === 'pt'
-  const fleet = await host.sessions!()
-  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
-  if (!row) {
-    return {
-      error: pt
-        ? 'Esta sessão não está mais na lista desta máquina.'
-        : 'This session is no longer in this machine’s list.',
-    }
-  }
-  const conversationId = conversationOfRow(row)
-  if (!conversationId) {
-    return {
-      error: row.conversationBlind ?? (pt
-        ? 'Esta sessão não tem uma conversa vinculada, então não há subagentes para listar.'
-        : 'This session has no linked conversation, so there are no subagents to list.'),
-    }
-  }
-  const transcript = await resolveChatTranscriptPath(row.cwd, conversationId).catch(() => null)
-  if (!transcript) {
-    return {
-      error: pt
-        ? 'A transcrição desta conversa não está mais no disco.'
-        : 'This conversation’s transcript is no longer on disk.',
-    }
-  }
-  const live = row.state === 'working' || row.state === 'waiting' || row.state === 'waiting-approval'
-  return { row, transcript, live }
-}
-
 /** The capability sentence — said in words, never as an empty list. */
 function unsupported(harness: string | undefined, lang: CliLang): string {
   const name = harness ?? '?'
@@ -184,7 +147,7 @@ export async function readSessionSubagents(
   page: { limit?: number; offset?: number } = {},
 ): Promise<SubagentsPayload> {
   if (!host.sessions) return { ok: false, message: 'no session host' }
-  const r = await resolve(host, lang, id)
+  const r = await resolveSessionTranscript(host, lang, id)
   if ('error' in r) return { ok: false, message: r.error }
 
   const harness = r.row.harness as HarnessId | undefined
@@ -279,7 +242,7 @@ export async function readSubagentActivity(
   if (!AGENT_ID.test(agentId)) {
     return { ok: false, message: pt ? 'Identificador de subagente inválido.' : 'Invalid subagent identifier.' }
   }
-  const r = await resolve(host, lang, id)
+  const r = await resolveSessionTranscript(host, lang, id)
   if ('error' in r) return { ok: false, message: r.error }
 
   const path = `${subagentsDirFor(r.transcript)}/agent-${agentId}.jsonl`
