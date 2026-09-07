@@ -78,6 +78,15 @@ export const MANAGED_SESSIONS_FILE = join(AGENTISTICS_DATA_DIR, 'managed-session
 // this file may only ever cost one slow build. Never store anything here that is not
 // also on disk somewhere else.
 export const PARSE_CACHE_FILE = process.env.AGENTISTICS_PARSE_CACHE_FILE ?? join(AGENTISTICS_DATA_DIR, 'cache.db')
+/** Repository statistics, keyed on the commit they were derived from. Its own file rather than a
+ *  table in `cache.db`: the two are gc'd on different clocks, and a corrupt parse cache must not
+ *  cost the git walks as well — each degrades to a no-op independently. */
+export const GIT_STATS_CACHE_FILE = process.env.AGENTISTICS_GIT_STATS_CACHE_FILE ?? join(AGENTISTICS_DATA_DIR, 'git-stats.db')
+
+/** One server per PORT. Keyed on the port rather than the machine because a local server and a
+ *  central are two legitimate processes on one host — what must never happen twice is two servers
+ *  answering for the same address while both scan every repository on disk. */
+export const serverLockFile = (port: number): string => join(AGENTISTICS_DATA_DIR, `server-${port}.lock`)
 export const PARSE_CACHE_ENABLED = process.env.AGENTISTICS_PARSE_CACHE !== '0'
 
 // ---------------------------------------------------------------------------

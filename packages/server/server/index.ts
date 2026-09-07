@@ -138,6 +138,35 @@ async function readCwdFromJsonl(filePath: string): Promise<string | null> {
 import type { ProcStatSample } from './hardware-pure'
 const serverProcStatsMap = new Map<number, ProcStatSample>()
 
+// ---------------------------------------------------------------------------
+// One server per port — decided BEFORE any work is spent
+// ---------------------------------------------------------------------------
+// Four server processes were once found running side by side on one laptop, each independently
+// walking every git repository on disk: the same work, four times, for one dashboard. The port
+// bind cannot prevent that, because it happens at the BOTTOM of this file — by then the watcher
+// and the first full build (right below) have already spent minutes of CPU and hundreds of
+// megabytes. And two processes started in the same second both pass a "is the port free?" check,
+// which is precisely how two of those four arrived.
+{
+  const { claimInstanceLock } = await import('./single-instance')
+  const { serverLockFile } = await import('./config')
+  const lock = await claimInstanceLock(serverLockFile(PORT))
+  if (!lock.ok) {
+    console.error(
+      `[startup] another agentop server is already running on port ${PORT}` +
+      (lock.holder ? ` (pid ${lock.holder})` : '') +
+      ' — exiting instead of scanning every repository a second time.'
+    )
+    process.exit(1)
+  }
+  // Best-effort release. A lock left behind by a hard kill is reclaimed as stale by the next
+  // start, so an unreleased lock costs nothing.
+  const release = () => { void lock.release() }
+  process.on('exit', release)
+  process.on('SIGINT', () => { release(); process.exit(130) })
+  process.on('SIGTERM', () => { release(); process.exit(143) })
+}
+
 // Preserve history before Claude's next cleanup (transcripts > cleanupPeriodDays,
 // default 30 days). 'full' mirrors raw files; both modes warm a build that persists
 // the consolidated per-session metrics store.

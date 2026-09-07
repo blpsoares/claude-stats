@@ -30,6 +30,8 @@ export interface WorkflowAgentRow {
   labelSource?: 'record' | 'matched' | 'none'
   phase: string
   toolCalls: number | null
+  /** Its transcript ends on an unanswered tool call. Only meaningful while the RUN is live. */
+  pending?: boolean
   model: string
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
   totalTokens: number | null
@@ -216,6 +218,7 @@ export type WorkflowAgentDetail =
   | {
       ok: true; agentId: string; label: string; phase: string; model: string; prompt: string
       toolCalls: number; tools: Record<string, number>; commands: string[]; commandsClipped: boolean
+      pendingIndex: number | null
     }
   | { ok: false; message: string }
 
@@ -235,4 +238,72 @@ export function agentDetailUrl(sessionId: string, runId: string, agentId: string
 /** An agent whose transcript is gone cannot be opened; the row must not offer it. */
 export function agentOpenable(a: WorkflowAgentRow): boolean {
   return typeof a.agentId === 'string' && a.agentId !== ''
+}
+
+
+// --- following a run while it happens ---------------------------------------
+
+/**
+ * Is this agent the one doing something RIGHT NOW?
+ *
+ * `pending` says its transcript ends on a tool call nobody answered — true of an agent that is
+ * working AND of one whose run was killed mid-call, which leaves exactly the same file behind. So
+ * the run's own liveness is required as well: a finished run has no live edge, whatever its
+ * transcripts look like, and pulsing a line inside it would announce work that stopped hours ago.
+ */
+export function agentIsRunning(agent: WorkflowAgentRow, runLive: boolean): boolean {
+  return runLive && agent.pending === true
+}
+
+/**
+ * Which command line to highlight, or null for none.
+ *
+ * Null whenever the answer would be a guess: the run is not live, nothing is pending, or the live
+ * edge is past the end of a clipped list — in that last case the line exists but is not on screen,
+ * and highlighting the last visible one instead would point at the wrong command.
+ */
+export function runningCommandIndex(
+  pendingIndex: number | null, commandCount: number, runLive: boolean,
+): number | null {
+  if (!runLive || pendingIndex === null) return null
+  return pendingIndex >= 0 && pendingIndex < commandCount ? pendingIndex : null
+}
+
+/**
+ * Does this run open by itself?
+ *
+ * A live run is one somebody is WATCHING — the whole reason the tab polls — so it opens without a
+ * click. A finished one does not: the list would then be several expanded runs deep and the newest
+ * would be off screen.
+ */
+export function runOpensByDefault(row: WorkflowRunRow): boolean {
+  return row.live
+}
+
+/** The agent that opens by itself inside an open live run: the one actually working. */
+export function agentOpensByDefault(agent: WorkflowAgentRow, runLive: boolean): boolean {
+  return agentIsRunning(agent, runLive) && agentOpenable(agent)
+}
+
+
+/**
+ * Could ANY agent be placed in a phase?
+ *
+ * False is the live case. A run's exact placement is written when it ENDS, and while it is going
+ * the only fallback is `workflow-match.ts` pairing transcripts to `agent()` calls by prompt, which
+ * is deliberately conservative and often matches nothing.
+ *
+ * It matters for the drawing. Grouping under phase headings when nothing is placed renders every
+ * declared phase as "nothing ran" beside a pile of agents that plainly ARE running — three false
+ * impressions from two true facts. When this is false the view should state the declared phases as
+ * the PLAN and list the agents under it, which says both facts and implies neither.
+ */
+export function placementKnown(run: WorkflowRunRow): boolean {
+  return run.agents.some(a => a.phase !== '')
+}
+
+/** The declared phases, as one line — what the run set out to do, when where each agent landed is
+ *  not yet knowable. Empty when the script declared none. */
+export function declaredPhases(run: WorkflowRunRow): string[] {
+  return run.phases.map(p => p.title).filter(t => t !== '')
 }

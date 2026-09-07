@@ -128,6 +128,32 @@ export function lastBackup(entries: BackupHistoryEntry[]): BackupHistoryEntry | 
 }
 
 /**
+ * When a backup last RAN — regardless of whether its file is still here.
+ *
+ * A different question from `lastBackup`, which answers "what can I restore from" and therefore
+ * requires the file to be present. Confusing the two is what made a daily schedule fire every
+ * fifteen minutes, measured on a real machine: with `deleteLocalAfterUpload` on, every scheduled
+ * run uploaded its archive and deleted the local copy, so no run it performed was ever `present`.
+ * The newest surviving file stayed a day old, "more than 24 h since the last backup" became
+ * permanently true, and every tick of the daemon started another one — 13 backups in three hours,
+ * each 112 MB, each re-downloaded to verify its hash.
+ *
+ * So the SCHEDULE reads this, and only the restore surfaces read `lastBackup`. A run that happened
+ * and was uploaded happened, whatever became of the local copy.
+ *
+ * Order-INDEPENDENT for the same reason `lastPerHarness` is: `markPresence` sorts, but a function
+ * whose answer depends on its caller having sorted silently becomes wrong the day one does not.
+ */
+export function lastBackupRun(entries: BackupHistoryEntry[]): BackupHistoryEntry | null {
+  let best: BackupHistoryEntry | null = null
+  for (const e of entries) {
+    if (!e.at) continue
+    if (best === null || e.at > best.at) best = e
+  }
+  return best
+}
+
+/**
  * When each harness was last covered by a backup that still exists.
  *
  * Deliberately order-INDEPENDENT: it keeps the maximum rather than the first hit. `markPresence`
