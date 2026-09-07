@@ -209,10 +209,24 @@ export async function runFleetAction(
       // queue held by the tab that sent it is a queue no other device can see, which is the whole
       // of the report. `conversationOfRow` because a message belongs to the CONVERSATION, not to
       // the session that happened to host it — reopening one must not lose what is still waiting.
+      //
+      // AND IT DOES NOT HOLD THE REPLY. `host.sessions()` is a FLEET READ — it walks every session
+      // and captures panes — and awaiting it here put that whole cost between pressing enter and
+      // the browser hearing back, on the one action where the person is watching. Reported as
+      // "está demorando pra ser enviada… não tem motivo pra demorar", and there was none: the
+      // message had already been delivered by the line above.
+      //
+      // The queue is for DISPLAY, so it can be written a moment later. What it must not do is make
+      // the send look slow. A failure to record leaves the message un-queued and delivered, which
+      // is the harmless direction: the transcript is the record either way.
       if (out.ok) {
-        const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
-        const conv = row ? conversationOfRow(row) : ''
-        if (conv) recordPrompt(conv, text)
+        void (async () => {
+          try {
+            const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
+            const conv = row ? conversationOfRow(row) : ''
+            if (conv) recordPrompt(conv, text)
+          } catch { /* the message went; the queue is a view of it, not the record */ }
+        })()
       }
       return out
     }
