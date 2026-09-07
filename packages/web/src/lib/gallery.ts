@@ -27,7 +27,7 @@
  */
 
 import { isPersonMessage, type SentTurn } from './lastSent'
-import { attachmentName, isImageAttachment, splitMessage } from './messageAttachments'
+import { attachmentKind, attachmentName, splitMessage, type AttachmentKind } from './messageAttachments'
 
 /** The one field beyond `SentTurn` this module reads. Structural — it imports no view. */
 export type GalleryTurn = SentTurn & { at?: string }
@@ -39,11 +39,14 @@ export interface GalleryFile {
   /** The file's own name, which is what a row shows. */
   name: string
   /**
-   * Can a preview exist AT ALL — decided by extension, which is what can be known without the
-   * bytes. False is not a failure: it means the row shows a name and says so, rather than a broken
-   * image where a thumbnail was promised.
+   * WHAT this file is — decided by extension, which is what can be known without the bytes.
+   *
+   * `'other'` is not a failure: it means the row shows a name and says so, rather than a broken
+   * image where a thumbnail was promised. It replaced a boolean `image`, which could only ever say
+   * "picture or nothing" — so an attached PDF or video, both of which agentop stores and can serve,
+   * were filed under "nothing" and had no way to be opened at all.
    */
-  image: boolean
+  kind: AttachmentKind
   /** The extension, uppercased, for the FORMAT column. `''` when the name carries none. */
   format: string
   /** Where the bytes come from — see `GalleryOrigin`. Absent reads as `sent` (every older group). */
@@ -111,7 +114,7 @@ export function galleryGroups(turns: readonly GalleryTurn[]): GalleryGroup[] {
     const files = attachments.map(path => {
       const name = attachmentName(path)
       return {
-        path, name, image: isImageAttachment(path), format: fileFormat(name),
+        path, name, kind: attachmentKind(path), format: fileFormat(name),
         origin: 'sent' as const,
       }
     })
@@ -140,21 +143,22 @@ export function galleryImageKey(groupIndex: number, fileIndex: number): string {
 }
 
 /**
- * Every previewable image, flattened, in reading order.
+ * Every file that can be SHOWN large, flattened, in reading order.
  *
  * The lightbox's scope is the WHOLE gallery rather than one message — unlike the chat's, which is
  * scoped to the turn that opened it. In the chat you are reading a conversation and a jump to some
- * other message's picture answers a question nobody asked; here you are looking at the pictures,
- * and "the next one" plainly means the next one on the screen.
+ * other message's picture answers a question nobody asked; here you are looking at the files, and
+ * "the next one" plainly means the next one on the screen.
  *
- * Non-image files are absent: there is nothing to show large, and a lightbox that stepped onto one
- * would be a black rectangle with a filename.
+ * `'other'` files are absent: there is nothing to show large, and a lightbox that stepped onto one
+ * would be a black rectangle with a filename. Video and PDF are NOT in that category — the lightbox
+ * plays the one and renders the other — and excluding them was the defect, not the design.
  */
 export function galleryImages(groups: readonly GalleryGroup[]): GalleryImage[] {
   const out: GalleryImage[] = []
   for (const group of groups) {
     group.files.forEach((file, i) => {
-      if (file.image) out.push({ path: file.path, group, key: galleryImageKey(group.index, i) })
+      if (file.kind !== 'other') out.push({ path: file.path, group, key: galleryImageKey(group.index, i) })
     })
   }
   return out
@@ -230,7 +234,12 @@ export function galleryMenuEntries(pt: boolean, group?: { index: number }): Gall
 
 
 /** Extensions the media route serves. Mirrors `artifact-media.ts`'s table — see the note below. */
+// Mirrors `artifact-media.ts`'s own table — the server refuses anything outside it, so a row the
+// gallery offered and the route would not serve is a tile that can only ever break. SVG is absent
+// on purpose there and therefore here: a session that wrote one would be writing script into the
+// page that is watching it.
 const PRODUCED_IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp'])
+const PRODUCED_VIDEO = new Set(['mp4', 'm4v', 'mov', 'webm', 'ogv'])
 const PRODUCED_OTHER = new Set(['pdf'])
 
 /**
@@ -260,11 +269,11 @@ export function producedGroups(
       const ext = dot > 0 ? a.name.slice(dot + 1).toLowerCase() : ''
       return { a, ext }
     })
-    .filter(({ ext }) => PRODUCED_IMAGE.has(ext) || PRODUCED_OTHER.has(ext))
+    .filter(({ ext }) => PRODUCED_IMAGE.has(ext) || PRODUCED_VIDEO.has(ext) || PRODUCED_OTHER.has(ext))
     .map(({ a, ext }) => ({
       path: a.path,
       name: a.name,
-      image: PRODUCED_IMAGE.has(ext),
+      kind: (PRODUCED_IMAGE.has(ext) ? 'image' : PRODUCED_VIDEO.has(ext) ? 'video' : 'pdf') as AttachmentKind,
       format: ext.toUpperCase(),
       origin: 'produced' as const,
     }))

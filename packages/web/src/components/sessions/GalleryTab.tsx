@@ -35,7 +35,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileQuestion, Grid2x2, Images, List, Paperclip } from 'lucide-react'
+import { FileQuestion, FileText, Grid2x2, Images, List, Paperclip, PlayCircle } from 'lucide-react'
 import { agoLabel } from '../../lib/artifactTabs'
 import {
   effectiveScope, filterGallery, formatBytes, galleryImageKey, galleryImages,
@@ -101,7 +101,7 @@ export function GalleryTab({
   // nothing about a file the session wrote somewhere else. A produced row shows no size rather
   // than a wrong one — the same rule the rest of this panel keeps.
   const names = useMemo(
-    () => groups.flatMap(g => g.files.filter(f => f.image && f.origin !== 'produced').map(f => f.name)),
+    () => groups.flatMap(g => g.files.filter(f => f.kind !== 'other' && f.origin !== 'produced').map(f => f.name)),
     [groups],
   )
   const sizes = useAttachmentSizes(names)
@@ -259,7 +259,7 @@ export function GalleryTab({
                     size={sizes[file.name]}
                     broken={broken[file.name] === true}
                     onBroken={() => markBroken(file.name)}
-                    {...(file.image && broken[file.name] !== true
+                    {...(file.kind !== 'other' && broken[file.name] !== true
                       ? { onOpen: () => openLightbox(galleryImageKey(group.index, i)) }
                       : {})}
                     onMenu={(x, y) => openMenu(x, y, group)}
@@ -272,7 +272,7 @@ export function GalleryTab({
                   key={`${file.path}-${i}`}
                   file={file} pt={pt} isMobile={isMobile}
                   size={sizes[file.name]}
-                  {...(file.image && broken[file.name] !== true
+                  {...(file.kind !== 'other' && broken[file.name] !== true
                     ? { onOpen: () => openLightbox(galleryImageKey(group.index, i)) }
                     : {})}
                   onMenu={(x, y) => openMenu(x, y, group)}
@@ -398,7 +398,7 @@ function FileFacts({ file, size, pt }: { file: GalleryFile; size: number | undef
         {file.format !== '' && file.format}
         {file.format !== '' && bytes !== '' && ' · '}
         {bytes}
-        {!file.image && (
+        {file.kind === 'other' && (
           <span style={{ marginLeft: file.format !== '' || bytes !== '' ? 6 : 0 }}>
             {pt ? '· sem prévia' : '· no preview'}
           </span>
@@ -429,7 +429,12 @@ function RowItem({ file, size, pt, isMobile, onOpen, onMenu }: {
       }}
     >
       <span style={{ flexShrink: 0, color: 'var(--text-tertiary)', display: 'flex' }}>
-        {file.image ? <Images size={14} /> : <FileQuestion size={14} />}
+        {/* The icon says WHICH of the three it is, because the row has no thumbnail to say it —
+            and "openable" is now three different experiences, not one. */}
+        {file.kind === 'image' ? <Images size={14} />
+          : file.kind === 'video' ? <PlayCircle size={14} />
+          : file.kind === 'pdf' ? <FileText size={14} />
+          : <FileQuestion size={14} />}
       </span>
       <span style={{ minWidth: 0, flex: 1 }}>
         <FileFacts file={file} size={size} pt={pt} />
@@ -450,7 +455,7 @@ function Tile({ file, sessionId, size, pt, isMobile, broken, onBroken, onOpen, o
   onMenu: (x: number, y: number) => void
 }) {
   const handlers = useMenuHandlers(onMenu)
-  const previewable = file.image && !broken
+  const previewable = file.kind !== 'other' && !broken
   return (
     <div
       {...handlers}
@@ -466,7 +471,34 @@ function Tile({ file, sessionId, size, pt, isMobile, broken, onBroken, onOpen, o
         aspectRatio: '4 / 3', display: 'flex', alignItems: 'center', justifyContent: 'center',
         minHeight: isMobile ? 44 : 0, background: 'var(--bg-base)', overflow: 'hidden',
       }}>
-        {previewable ? (
+        {previewable && file.kind === 'video' ? (
+          // A REAL FRAME, not an icon: `preload="metadata"` fetches enough for the browser to
+          // decode the first one and nothing more, so a wall of recordings costs a wall of headers
+          // rather than a wall of videos. No controls here — the tile's job is to be recognised,
+          // and the lightbox is where it plays.
+          <video
+            src={galleryFileUrl(file, sessionId)}
+            preload="metadata"
+            muted
+            playsInline
+            onError={onBroken}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : previewable && file.kind === 'pdf' ? (
+          // A PDF's real thumbnail is a RENDERED PAGE, and rendering one needs a PDF engine this
+          // bundle does not carry. So the tile says what it is and stays honest about it rather
+          // than showing a generic sheet that pretends to be the document — the page itself is one
+          // tap away in the viewer.
+          <span style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+            padding: 8, textAlign: 'center', color: 'var(--text-secondary)',
+          }}>
+            <FileText size={20} />
+            <span style={{ fontSize: 10, lineHeight: 1.3, color: 'var(--text-tertiary)' }}>
+              {pt ? 'toque para abrir' : 'tap to open'}
+            </span>
+          </span>
+        ) : previewable ? (
           <img
             src={galleryFileUrl(file, sessionId)}
             alt={file.name}

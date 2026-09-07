@@ -1643,21 +1643,22 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
     //
     // Narrower than `/api/fleet/attachment` above in both directions, on purpose. It takes a NAME
     // rather than a path, so `attachmentPathByName` can refuse a traversal by construction instead
-    // of resolving one; and it serves only IMAGES, so a preview route can never become a general
-    // reader of agentop's own directory. HEAD answers the SIZE without the bytes, which is what the
+    // of resolving one; and it serves only what `attachmentMediaType`'s CLOSED TABLE names —
+    // images, video and PDF — so a preview route can never become a general reader of agentop's own
+    // directory. HEAD answers the SIZE without the bytes, which is what the
     // list column is for — a size fetched by downloading the file is not a size, it is a download.
     //
     // Guarded by the `/api/fleet` PREFIX in `capability-guard.ts` (localShell) and 404'd on a
     // central with the rest of `/api/fleet*`, both above — neither needs a new entry, which is the
     // point of the prefix.
     //
-    // A refused name, a non-image and a missing file all get the same bare 404. Which of the three
+    // A refused name, a type the table does not name and a missing file all get the same bare 404. Which of the three
     // it was is not this reader's to say, and the path is never echoed back.
     if (url.pathname === '/api/fleet/attachment/by-name' && (req.method === 'GET' || req.method === 'HEAD')) {
-      const { attachmentPathByName, attachmentImageType } = await import('./sessions/attachment-web')
+      const { attachmentPathByName, attachmentMediaType } = await import('./sessions/attachment-web')
       const name = url.searchParams.get('name') ?? ''
       const resolved = attachmentPathByName(name)
-      const type = resolved === null ? null : attachmentImageType(name)
+      const type = resolved === null ? null : attachmentMediaType(name)
       if (resolved === null || type === null) {
         return new Response(null, { status: 404, headers: CORS_HEADERS })
       }
@@ -1672,7 +1673,23 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       // `securityHeaders` wrapper for every `/api/` response, and it SETS rather than appends —
       // repeating them here would be a header that never ships, which is worse than none because
       // it reads as a guarantee.
-      const headers = { ...CORS_HEADERS, 'Content-Type': type, 'Content-Length': String(file.size) }
+      const headers: Record<string, string> = {
+        ...CORS_HEADERS,
+        'Content-Type': type.mime,
+        'Content-Length': String(file.size),
+        // A VIDEO NEEDS THIS, and without it the element can only play from the first byte: Safari
+        // asks for a byte range before it will scrub or even start some files, and a server that
+        // does not say it accepts ranges is asking the browser to buffer the whole thing first.
+        // Bun's `Response(BunFile)` answers a `Range` request itself; this is the advertisement.
+        'Accept-Ranges': 'bytes',
+        // A PDF is a DOCUMENT, so it is named and declared inline — the browser's own viewer opens
+        // it in place instead of downloading it, and the name is what the viewer and a save dialog
+        // both show. Images and video need no disposition: an `<img>` and a `<video>` never offer
+        // to save under a name.
+        ...(type.kind === 'pdf'
+          ? { 'Content-Disposition': `inline; filename="${name.replace(/[^A-Za-z0-9._-]/g, '_')}"` }
+          : {}),
+      }
       // HEAD is the size question. It carries the same headers and no body — the whole reason it
       // exists is that the answer must not cost the bytes.
       if (req.method === 'HEAD') return new Response(null, { headers })

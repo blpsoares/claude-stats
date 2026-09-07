@@ -1616,21 +1616,37 @@ export default function AppLayout() {
    * of that. A layout that is correct must not be re-anchored to fix a scroll.
    */
   const keyboardUp = viewport.keyboard
+  /**
+   * THE DOCUMENT IS PINNED AT 0 ON THIS SCREEN, FOR AS LONG AS THE KEYBOARD IS DOWN.
+   *
+   * A single reset was tried and was not enough, which is what the fourth report was: the shell is
+   * exactly one viewport tall, so ANY document scroll shows as a band of nothing at the foot —
+   * the composer and the bottom bar both lifted by however many pixels the page is scrolled by,
+   * which is precisely "tanto o input como o menu estão desgrudados". iOS keeps adjusting that
+   * scroll across the keyboard's dismissal animation, so a reset fired once at 120ms lands in the
+   * middle of it and is overwritten a frame later.
+   *
+   * So this is not a timing guess any more, it is an INVARIANT: on this screen the document has
+   * nothing to scroll — the conversation, the list and the aside all scroll inside themselves — so
+   * a non-zero `scrollY` is by definition spurious and is put back. Listening to `scroll` makes it
+   * hold however long the animation takes and whatever else tries to move it.
+   *
+   * WHILE THE KEYBOARD IS UP, IT IS LEFT ALONE. iOS scrolls to reveal the caret and fighting it
+   * mid-gesture is how a page ends up juddering; the padding above is what lifts the composer
+   * there, and this pins the page again the moment the keyboard is gone.
+   */
   useEffect(() => {
-    if (!lockViewport) return
-    // BOTH DIRECTIONS, and one line for each reason.
-    //
-    // Closing: iOS is supposed to undo its caret scroll and routinely does not, which is what left
-    // the composer and the bar a little higher than they went.
-    //
-    // Opening: the padding above has already lifted the composer, so any scroll iOS DOES manage
-    // would lift it a second time. Putting the page back at 0 makes the rise come from exactly one
-    // place instead of two that have to agree.
-    //
-    // The delay is not cosmetic: WebKit settles the visual viewport after the resize event, and a
-    // scroll written into that settling is undone by it.
-    const id = window.setTimeout(() => window.scrollTo(0, 0), 120)
-    return () => window.clearTimeout(id)
+    if (!lockViewport || keyboardUp) return
+    const pin = () => { if (window.scrollY !== 0) window.scrollTo(0, 0) }
+    pin()
+    window.addEventListener('scroll', pin, { passive: true })
+    // The listener covers everything iOS does noisily; these cover a settle that moves the page
+    // without firing one, which WebKit has been observed to do on the last frame of the animation.
+    const timers = [60, 180, 400].map(ms => window.setTimeout(pin, ms))
+    return () => {
+      window.removeEventListener('scroll', pin)
+      for (const t of timers) window.clearTimeout(t)
+    }
   }, [lockViewport, keyboardUp])
 
   /**
