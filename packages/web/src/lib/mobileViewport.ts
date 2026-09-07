@@ -18,25 +18,19 @@
  *      routinely does not, so the document is left permanently scrolled — which is why the input
  *      and the fixed bottom nav both come back a little higher than they went.
  *
- * So the document is LOCKED (`body.ag-viewport-locked`, index.css) and the keyboard is MEASURED
- * here. Locking alone would be half a fix, and the wrong half: with nothing left to scroll, the
- * composer would simply sit behind the keyboard.
+ * WHAT THIS MODULE IS FOR: telling whether the keyboard is UP, and nothing more. The first fix is
+ * pure CSS (`overscroll-behavior: none`, paint-only) and the second is "put the scroll back when
+ * the keyboard closes" — which needs exactly one thing measured, the transition from up to down.
  *
- * WHAT THE SHELL SPENDS IS `keyboardInset`, AS PADDING — never `height` as its own height. Sizing
- * the shell to the visible band was tried and reverted within the hour: a shorter box ends above
- * the bottom of the screen, and since `#root` clips on a phone, every `position: fixed` descendant
- * anchors to that edge instead of the window's — so the bottom bar and the composer came up
- * already floating, before any keyboard was involved. The visible band is also not reliably the
- * screen at rest (Safari's collapsing toolbars, a non-zero `offsetTop`), which is exactly when a
- * shell must be right without anything having happened yet. `100dvh` + `padding-bottom: inset`
- * gives the same content height with the border box still on the floor.
- *
- * `100dvh` cannot do the job alone, either: it tracks the collapsing URL bar and is deliberately
- * blind to the keyboard, which is the one thing being measured here. The two together are the fix.
- *
- * `offsetTop` is the residue: WebKit can still scroll the visual viewport WITHIN the locked layout.
- * It is read so the measurement stays honest, and deliberately not acted on — a shell that moves
- * with it is the floating box again.
+ * IT DOES NOT SIZE ANYTHING, AND THAT IS THE RECORDED LESSON. Two versions of this file did: one
+ * gave the shell `visualViewport.height`, the next gave it `100%` inside a fixed body. Both ended
+ * the shell's box somewhere other than the screen's bottom edge — the first because the visible
+ * band is not the screen at rest (collapsing toolbars, a non-zero `offsetTop`), the second because
+ * a fixed body re-anchors the initial containing block to the SMALL viewport while `dvh` means the
+ * dynamic one. Since `#root` clips on a phone, a `position: fixed` descendant then anchors to that
+ * edge instead of the window's: the bottom bar floated, and the composer went under the fold. Three
+ * reports, one class of mistake. A measurement may inform a DECISION here; it may not become a
+ * BOX.
  */
 
 /** The visible band: its height, and how far WebKit has slid it down the locked layout. */

@@ -1566,23 +1566,26 @@ export default function AppLayout() {
   const inSessionsWorkspace = modeOfPath(location.pathname) === 'sessions'
 
   /**
-   * THE PHONE'S SESSIONS WORKSPACE IS THE ONE SCREEN THAT MUST NOT SCROLL AS A DOCUMENT.
+   * THE PHONE'S SESSIONS WORKSPACE, AND THE TWO WAYS ITS DOCUMENT MOVED WHEN IT SHOULD NOT HAVE.
    *
-   * Reported together, because they are one cause: "quando eu tento scrollar as vezes no mobile,
-   * ele roda a página inteira e não deixa scrollar" and "quando o input sobe junto com o teclado,
-   * ao sair ele fica numa altura diferente do que estava antes". The workspace is a fixed-height
-   * column — the conversation, the list and the aside each scroll inside themselves — so it has
-   * nothing to scroll, and every pixel the document moves is either a rubber-band chained from an
-   * inner scroller that hit its end, or a keyboard scroll iOS never undid.
+   * Reported together: "quando eu tento scrollar as vezes no mobile, ele roda a página inteira e
+   * não deixa scrollar" and "quando o input sobe junto com o teclado, ao sair ele fica numa altura
+   * diferente do que estava antes". The workspace is a fixed-height column — the conversation, the
+   * list and the aside each scroll inside themselves — so a flick that runs off the end of one of
+   * them has nowhere to chain but the document, which bounces the whole page; and iOS scrolls the
+   * page for the caret and does not always undo it.
    *
-   * `lib/mobileViewport.ts` carries the whole account. Two halves, and each is useless alone: the
-   * document is LOCKED (`html.ag-viewport-locked`), and the shell is then measured against the
-   * VISUAL viewport, so the composer still rises with the keyboard — by being in a shorter box
-   * rather than by having the page dragged out from under it — and returns to the exact height it
-   * left, because the number it is derived from does.
+   * BOTH FIXES ARE DELIBERATELY NON-STRUCTURAL. `overscroll-behavior: none` on the document
+   * (`html.ag-viewport-locked`, index.css) is paint-only, and the effect below simply puts the
+   * scroll back when the keyboard closes. iOS keeps doing the caret scroll, because the composer
+   * riding up with the keyboard is the half that WORKED.
    *
-   * Every other page keeps the window as its scroller. That is deliberate: they are columns of
-   * cards that grow past the fold, and locking them would strand the reader on the first screenful.
+   * Preventing the scroll structurally — a fixed body, the usual recipe — was tried and reverted:
+   * it moves the initial containing block onto the small viewport, so every viewport unit and every
+   * `position: fixed` descendant measures against a different box, and three position reports came
+   * out of it in an hour. A layout that is correct must not be re-anchored to fix a scroll.
+   *
+   * Every other page keeps the window as its scroller, and nothing here changes that.
    */
   const lockViewport = isMobile && inSessionsWorkspace
   const viewport = useVisualViewport(lockViewport)
@@ -1590,12 +1593,31 @@ export default function AppLayout() {
     if (!lockViewport) return
     const root = document.documentElement
     root.classList.add('ag-viewport-locked')
-    // The lock stops NEW document scroll; it cannot undo what is already there. Arriving with the
-    // page stranded from a previous screen would freeze it stranded, which is the reported bug
-    // with the escape hatch removed.
     window.scrollTo(0, 0)
     return () => { root.classList.remove('ag-viewport-locked') }
   }, [lockViewport])
+  /**
+   * THE KEYBOARD CLOSED — PUT THE SCROLL BACK.
+   *
+   * iOS scrolls the PAGE to bring the caret into view and is supposed to undo it on dismissal.
+   * Routinely it does not, and the document is then left permanently scrolled: the composer and the
+   * fixed bottom bar both come back a little higher than they went, which is the second half of the
+   * report. This is the whole fix for it, and it is deliberately the smallest one — iOS keeps doing
+   * the scroll, because the composer riding up with the keyboard is the part that WORKED.
+   *
+   * Preventing the scroll instead (a fixed body) was tried and reverted: it moves the initial
+   * containing block onto the small viewport, and every viewport unit and `position: fixed`
+   * descendant in the tree then measures against a different box. Three position reports came out
+   * of that. A layout that is correct must not be re-anchored to fix a scroll.
+   */
+  const keyboardUp = viewport.keyboard
+  useEffect(() => {
+    if (!lockViewport || keyboardUp) return
+    // Two frames: WebKit settles the visual viewport after the resize event, and a scroll written
+    // into that settling is undone by it.
+    const id = window.setTimeout(() => window.scrollTo(0, 0), 120)
+    return () => window.clearTimeout(id)
+  }, [lockViewport, keyboardUp])
 
   /**
    * The fixed strip is ONE row again.
@@ -3329,25 +3351,12 @@ export default function AppLayout() {
       // height the shorter box did — `box-sizing: border-box` is global — while the border box
       // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
       // pixel it left, and nothing anchors to an edge that is not the screen's.
-      // `100%` ON A PHONE, NOT `100dvh` — and the difference is not cosmetic. The lock above makes
-      // the body `position: fixed; inset: 0`, and `inset` resolves against the INITIAL CONTAINING
-      // BLOCK, which on iOS Safari is the SMALL viewport (URL bar expanded). `dvh` is the DYNAMIC
-      // one, taller whenever that chrome is collapsed. A shell of `100dvh` inside a small-viewport
-      // box is taller than its parent, which clips — so the composer and the bar anchored to it sat
-      // below the visible edge. `100%` is the very box the lock established, so they cannot
-      // disagree. Off the lock (desktop, and any non-mobile) nothing changes.
-      height: inSessionsWorkspace ? (isMobile ? '100%' : '100vh') : undefined,
+      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
-      // THE BAND AT THE FOOT, and only ever one of the two — they cannot co-occur, because the bar
-      // steps aside for the keyboard (see its own note). The nav's band is reserved only on the
-      // LIST, where the bar is actually drawn; the keyboard's is reserved whenever it is up, and
-      // that is what lifts the composer clear of it now that the box itself reaches the floor.
-      ...(inSessionsWorkspace && isMobile
-        ? (viewport.keyboard
-            ? { paddingBottom: viewport.keyboardInset }
-            : (!sessionOpen ? { paddingBottom: 'var(--mobile-nav-h)' } : {}))
+      ...(inSessionsWorkspace && isMobile && !sessionOpen
+        ? { paddingBottom: 'var(--mobile-nav-h)' }
         : {}),
       background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
       paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth),
@@ -3787,15 +3796,8 @@ export default function AppLayout() {
           was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
           its own back arrow in the top bar, which is the way out and the only one a reader needs
           while they are in it. The root's height drops the matching subtraction — see its note.
-
-          AND HIDDEN WHILE THE KEYBOARD IS UP. The shell is now the visible band (see
-          `lockViewport`), so the bar correctly rides above the keyboard instead of being buried
-          under it — and five destinations wedged into the ~330px left over is the same chrome
-          crowding out the thing it wraps, one screen over. It also settles what the report noticed
-          from the other side: the bar is either at the foot of the screen or gone, never at a
-          third height nobody chose. `viewport.keyboard` is only ever true in this workspace, which
-          is the only one that locks the document. */}
-      {isMobile && !sessionOpen && !viewport.keyboard && (
+ */}
+      {isMobile && !sessionOpen && (
         <MobileBottomNav
           lang={lang}
           harnesses={data.harnesses}
