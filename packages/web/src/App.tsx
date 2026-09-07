@@ -1612,9 +1612,18 @@ export default function AppLayout() {
    */
   const keyboardUp = viewport.keyboard
   useEffect(() => {
-    if (!lockViewport || keyboardUp) return
-    // Two frames: WebKit settles the visual viewport after the resize event, and a scroll written
-    // into that settling is undone by it.
+    if (!lockViewport) return
+    // BOTH DIRECTIONS, and one line for each reason.
+    //
+    // Closing: iOS is supposed to undo its caret scroll and routinely does not, which is what left
+    // the composer and the bar a little higher than they went.
+    //
+    // Opening: the padding above has already lifted the composer, so any scroll iOS DOES manage
+    // would lift it a second time. Putting the page back at 0 makes the rise come from exactly one
+    // place instead of two that have to agree.
+    //
+    // The delay is not cosmetic: WebKit settles the visual viewport after the resize event, and a
+    // scroll written into that settling is undone by it.
     const id = window.setTimeout(() => window.scrollTo(0, 0), 120)
     return () => window.clearTimeout(id)
   }, [lockViewport, keyboardUp])
@@ -3355,8 +3364,25 @@ export default function AppLayout() {
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
-      ...(inSessionsWorkspace && isMobile && !sessionOpen
-        ? { paddingBottom: 'var(--mobile-nav-h)' }
+      // THE KEYBOARD'S BAND, AS PADDING — the border box stays `100dvh` and still reaches the floor,
+      // so nothing anchors anywhere new; only the CONTENT box shrinks, which lifts the composer at
+      // the foot of the column clear of the keyboard.
+      //
+      // It has to be done here because iOS cannot do it: the document has no scrollable overflow on
+      // this screen, so there is nothing for the caret scroll to move, and the composer simply sat
+      // behind the keyboard with the accessory bar floating over the conversation. That is the
+      // whole of the video that reported it.
+      //
+      // This is NOT the reverted fix. What was reverted was `position: fixed` on the body, which
+      // re-anchors the initial containing block; padding changes no box's outer edge and no
+      // containing block, so the resting layout is byte-for-byte what it was — the inset is 0 until
+      // a keyboard is actually up.
+      //
+      // Never both bands at once: the bar steps aside for the keyboard (see its own note).
+      ...(inSessionsWorkspace && isMobile
+        ? (viewport.keyboard
+            ? { paddingBottom: viewport.keyboardInset }
+            : (!sessionOpen ? { paddingBottom: 'var(--mobile-nav-h)' } : {}))
         : {}),
       background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
       paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth),
@@ -3796,8 +3822,11 @@ export default function AppLayout() {
           was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
           its own back arrow in the top bar, which is the way out and the only one a reader needs
           while they are in it. The root's height drops the matching subtraction — see its note.
- */}
-      {isMobile && !sessionOpen && (
+
+          AND HIDDEN WHILE THE KEYBOARD IS UP: it is `position: fixed` at the foot of the shell's
+          border box, which the keyboard is covering, so it is behind it either way — and five
+          destinations wedged into what is left is chrome crowding out the thing it wraps. */}
+      {isMobile && !sessionOpen && !viewport.keyboard && (
         <MobileBottomNav
           lang={lang}
           harnesses={data.harnesses}
