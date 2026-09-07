@@ -84,7 +84,13 @@ async function apiSend(method: string, path: string, body?: unknown) {
       body: JSON.stringify(body),
     }),
   });
-  if (!res.ok) throw new Error(`${method} ${path} → HTTP ${res.status}`);
+  if (!res.ok) {
+    // The BODY, not just the status. A refusal here is usually actionable — "this move needs a
+    // reason", "somebody else holds this claim" — and a bare `HTTP 422` teaches the caller nothing
+    // it can act on, which turns one refusal into a retry loop.
+    const detail = await res.text().catch(() => "");
+    throw new Error(`${method} ${path} → HTTP ${res.status}${detail ? ` ${detail.slice(0, 400)}` : ""}`);
+  }
   return res.json().catch(() => ({}));
 }
 
@@ -201,7 +207,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_status",
     description:
-      "Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report. Pass `actor` (who you are) so the move is recorded against you in the activity log.",
+      "Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report. **`blocked` REQUIRES a `reason` or a `blockedBy` list** and is refused (422) without one: it is the status that names a problem somebody has to go and solve, and a blocked card that does not say what it is waiting on cannot be unblocked by anyone but you. Pass `actor` (who you are) so the move is recorded against you in the activity log.",
     inputSchema: {
       type: "object",
       properties: {
@@ -211,6 +217,15 @@ const TOOLS: Tool[] = [
           enum: ["backlog", "todo", "in_progress", "blocked", "in_review", "done", "abandoned"],
         },
         actor: { type: "string" },
+        reason: {
+          type: "string",
+          description: "Why it is blocked, in your own words. Required by `blocked` unless you pass `blockedBy`.",
+        },
+        blockedBy: {
+          type: "array",
+          items: { type: "string" },
+          description: "Task ids that must finish first — the other way to answer 'blocked on what'.",
+        },
       },
       required: ["ref", "status"],
     },
@@ -607,6 +622,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}`, {
           status: a?.status,
           ...(typeof a?.actor === "string" ? { actor: a.actor } : {}),
+          ...(typeof a?.reason === "string" ? { reason: a.reason } : {}),
+          ...(Array.isArray(a?.blockedBy) ? { blockedBy: a.blockedBy } : {}),
         });
         return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
       }

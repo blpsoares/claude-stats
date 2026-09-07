@@ -40,6 +40,7 @@ import { readBoardPrefs, writeBoardPrefs } from './boardPrefs'
 import { ConfirmModal } from '../../pages/settings/primitives'
 import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
+import { TaskProgressBar } from './TaskProgressBar'
 import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
 
 /** The words the "sorted by" note uses. Kept beside `COLUMNS`, whose labels they mirror. */
@@ -76,6 +77,7 @@ export const COLUMNS: ColumnDef[] = [
   { id: 'priority', label: 'Priority', width: 96, sort: 'priority' },
   { id: 'assignee', label: 'Owner', width: 110, sort: 'assignee' },
   { id: 'claim', label: 'Working on it', width: 132 },
+  { id: 'progress', label: 'Progress', width: 132, sort: 'subtasks' },
   { id: 'due', label: 'Due', width: 96, sort: 'due' },
   { id: 'sessions', label: 'Sessions', numeric: true, width: 84, sort: 'sessions' },
   { id: 'rounds', label: 'Rounds', numeric: true, width: 76, sort: 'rounds' },
@@ -93,7 +95,7 @@ export const COLUMNS: ColumnDef[] = [
 ]
 
 export const DEFAULT_COLUMNS: ColumnId[] =
-  ['status', 'priority', 'claim', 'sessions', 'rounds', 'cost', 'tokens', 'harnesses', 'subtasks']
+  ['status', 'priority', 'progress', 'claim', 'sessions', 'rounds', 'cost', 'tokens', 'harnesses']
 
 // ------------------------------------------------------------------------------- cells
 
@@ -272,6 +274,11 @@ function cellFor(
       ? <DueCell date={row.task.dueDate} closed={row.task.status === 'done' || row.task.status === 'abandoned'} nowMs={nowMs} />
       : <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
     case 'claim': return <ClaimCell claim={row.task.claim} nowMs={nowMs} />
+    case 'progress': return row.counts.subtasks === 0
+      // Nothing to be a fraction of. An empty bar here would say "0% done" about a task nobody
+      // broke up, which is a claim about the work rather than about the board.
+      ? <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
+      : <TaskProgressBar done={row.counts.subtasksDone} total={row.counts.subtasks} />
     case 'updated': return (
       <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
         {new Date(row.task.updatedAt).toLocaleDateString()}

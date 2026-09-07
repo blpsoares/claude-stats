@@ -43,6 +43,8 @@ import { RailSection } from '../components/tasks/RailSection'
 import { ConfirmModal } from './settings/primitives'
 import { DatePicker } from '../components/DatePicker'
 import { AgentsView } from '../components/tasks/AgentsView'
+import { BlockedDialog } from '../components/tasks/BlockedDialog'
+import { TaskProgressBar } from '../components/tasks/TaskProgressBar'
 import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
 import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
@@ -233,6 +235,21 @@ function PlanCard({ task, busy, onPatch, onStatus, onClaim }: {
         ))}
       </div>
 
+      {task.status === 'blocked' && task.blockedReason && (
+        // Asking for the reason and then not showing it would be theatre. It sits under the status
+        // it belongs to, in the status's own colour, and goes when the task leaves `blocked`.
+        <div style={{
+          fontSize: 12, lineHeight: 1.5, padding: '8px 10px', borderRadius: 7,
+          background: STATUS.blocked.dim, color: 'var(--text-secondary)',
+          border: `1px solid ${STATUS.blocked.color}`,
+        }}>
+          <span style={{ ...microLabel, fontSize: 9, display: 'block', marginBottom: 3, color: STATUS.blocked.color }}>
+            Waiting on
+          </span>
+          {task.blockedReason}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gap: 6, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
         <span style={{ ...microLabel, fontSize: 9 }}>Working on it</span>
         {task.claim
@@ -406,6 +423,14 @@ function TaskList() {
   const [lanes, setLanesState] = useState<LaneKey>(stored.lanes)
   const setLanes = (v: LaneKey) => { setLanesState(v); writeBoardPrefs({ lanes: v }) }
   const [wip, setWipState] = useState<Record<string, number>>(stored.wip)
+  /**
+   * The tasks on their way to `blocked`, waiting on the dialog's answer.
+   *
+   * Every path that can set a status funnels through `toStatus` below — the rail, the table cell,
+   * the batch bar, a drop into the Blocked column — so the question is asked ONCE, in one place,
+   * rather than four times with four chances to forget one.
+   */
+  const [blocking, setBlocking] = useState<string[] | null>(null)
   const setWip = (v: Record<string, number>) => { setWipState(v); writeBoardPrefs({ wip: v }) }
   const { fleet } = useFleet('en')
   // The orchestration view's three reads. They poll on their own cadence — the queue changes when
@@ -424,6 +449,13 @@ function TaskList() {
   /** Details fetched for the rows the table has expanded — subtasks live there. */
   const [details, setDetails] = useState<Map<string, TaskDetail>>(new Map())
   const [linking, setLinking] = useState<string | null>(null)
+
+  /** The ONE way a status is set from this page. `blocked` asks its question first. */
+  const toStatus = async (ids: string[], status: TaskStatus) => {
+    if (status === 'blocked') { setBlocking(ids); return }
+    for (const id of ids) await markTask(id, status)
+    await reload()
+  }
 
   const refreshDetail = async (id: string) => {
     const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`)
@@ -572,7 +604,7 @@ function TaskList() {
             wip={wip}
             sessions={fleet.sessions}
             onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
-            onStatus={async (id, status) => { await markTask(id, status); await reload() }}
+            onStatus={(id, status) => void toStatus([id], status)}
             onMove={async (id, index) => { await moveTask(id, index); await reload() }}
           />
         </>
@@ -582,7 +614,7 @@ function TaskList() {
           rows={shown}
           details={details}
           onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
-          onStatus={async (ref, status) => { await markTask(ref, status); await reload() }}
+          onStatus={(ref, status) => void toStatus([ref], status)}
           onPriority={async (ref, priority) => { await editTask(ref, { priority }); await reload() }}
           onCreate={async (title, status) => {
             const made = await createTask(title)
@@ -601,15 +633,29 @@ function TaskList() {
           onAddSubtask={async (ref, title) => { await addSubtask(ref, title); await refreshDetail(ref) }}
           onPatchSubtask={async (ref, sid, patch) => { await patchSubtask(ref, sid, patch); await refreshDetail(ref) }}
           onRemoveSubtask={async (ref, sid) => { await removeSubtask(ref, sid); await refreshDetail(ref) }}
-          onBatchStatus={async (ids, status) => {
-            for (const id of ids) await markTask(id, status)
-            await reload()
-          }}
+          onBatchStatus={(ids, status) => void toStatus(ids, status)}
           onBatchDelete={async ids => {
             for (const id of ids) await deleteTask(id)
             await reload()
           }}
           onLinkSession={ref => setLinking(ref)}
+        />
+      )}
+
+      {blocking && rows && (
+        <BlockedDialog
+          titles={blocking.map(id => rows.find(r => r.task.id === id)?.task.title ?? id)}
+          rows={rows}
+          already={blocking.length === 1
+            ? rows.find(r => r.task.id === blocking[0])?.task.blockedBy ?? []
+            : []}
+          onCancel={() => setBlocking(null)}
+          onConfirm={async ({ reason, blockedBy }) => {
+            const ids = blocking
+            setBlocking(null)
+            for (const id of ids) await markTask(id, 'blocked', { reason, blockedBy })
+            await reload()
+          }}
         />
       )}
 
@@ -1137,6 +1183,11 @@ function TaskDetailView({ id }: { id: string }) {
   // The board's own dialog, never `window.confirm`: the browser's box carries the page's URL and
   // none of the app's words, and on a phone it is a system sheet that reads as a site error.
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** Set while the task is on its way to `blocked` — see the list view's `toStatus`. */
+  const [blocking, setBlocking] = useState(false)
+  // The other tasks, to offer as blockers. The board is small enough that this is the same list the
+  // page already loads; a second endpoint for "what could block this" would be a second answer.
+  const { rows: boardRows } = useTaskList()
 
   if (error === 'missing') return <div style={{ padding: 18 }}><EmptyNotice error={null} /></div>
   if (error) return <div style={{ padding: 18 }}><EmptyNotice error={error} /></div>
@@ -1171,7 +1222,18 @@ function TaskDetailView({ id }: { id: string }) {
         <button onClick={() => navigate('/tasks')} style={{ ...button(isMobile), padding: '0 9px' }}>
           <ArrowLeft size={14} />
         </button>
-        <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650, flex: 1, minWidth: 150 }}>{detail.task.title}</h1>
+        <div style={{ flex: 1, minWidth: 150, display: 'grid', gap: 6 }}>
+          <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650 }}>{detail.task.title}</h1>
+          {/* The headline number for a broken-up task: how much of it is closed. Same arithmetic
+              and same rounding as the card and the table — one bar, four places. */}
+          <div style={{ maxWidth: 320 }}>
+            <TaskProgressBar
+              done={detail.subtasks.filter(t => t.done).length}
+              total={detail.subtasks.length}
+              height={5}
+            />
+          </div>
+        </div>
         <span style={{
           padding: '3px 11px', borderRadius: 6, fontSize: 11,
           background: s.dim, color: s.color, border: `1px solid ${s.color}`,
@@ -1274,7 +1336,10 @@ function TaskDetailView({ id }: { id: string }) {
             task={detail.task}
             busy={busy}
             onPatch={async patch => { await run(() => editTask(id, patch)) }}
-            onStatus={async st => { await run(() => markTask(id, st)) }}
+            onStatus={async st => {
+              if (st === 'blocked') { setBlocking(true); return }
+              await run(() => markTask(id, st))
+            }}
             onClaim={async release => {
               // `force` on a release: this is a person at the board, and the whole reason the lease
               // is visible here is so a stale one can be cleared without hunting down the agent.
@@ -1345,6 +1410,19 @@ function TaskDetailView({ id }: { id: string }) {
       <p style={{ margin: 0, fontSize: 11, color: 'var(--text-tertiary)' }}>
         These are cost, rounds and time. Whether the work is any good is not measured here.
       </p>
+
+      {blocking && (
+        <BlockedDialog
+          titles={[detail.task.title]}
+          rows={(boardRows ?? []).filter(r => r.task.id !== id)}
+          already={detail.task.blockedBy ?? []}
+          onCancel={() => setBlocking(false)}
+          onConfirm={async ({ reason, blockedBy }) => {
+            setBlocking(false)
+            await run(() => markTask(id, 'blocked', { reason, blockedBy }))
+          }}
+        />
+      )}
 
       <ConfirmModal
         open={confirmDelete}

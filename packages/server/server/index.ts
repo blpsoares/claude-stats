@@ -1284,7 +1284,10 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         })
         return json({ ok }, ok ? 200 : 404)
       }
-      if (Array.isArray(body.blockedBy)) {
+      // Blockers ALONE. With a `status` beside them the two belong to one move — "this is blocked,
+      // and here is what by" — and answering it here would set the blockers and silently drop the
+      // status, which is what happened: the task kept its old column and the caller was told ok.
+      if (Array.isArray(body.blockedBy) && typeof body.status !== 'string') {
         const ok = await mod.setBlockedBy(ref, body.blockedBy.filter((v): v is string => typeof v === 'string'))
         return json({ ok }, ok ? 200 : 404)
       }
@@ -1294,8 +1297,19 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         ? body.status as import('./sessions/task-model').TaskStatus
         : null
       if (!to) return json({ error: 'bad_status' }, 400)
-      const out = await mod.markTask(ref, to, typeof body.actor === 'string' ? body.actor : undefined)
-      return json(out, out.ok ? 200 : 404)
+      const out = await mod.markTask(
+        ref, to,
+        typeof body.actor === 'string' ? body.actor : undefined,
+        {
+          ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+          ...(Array.isArray(body.blockedBy)
+            ? { blockedBy: body.blockedBy.filter((v): v is string => typeof v === 'string') }
+            : {}),
+        },
+      )
+      // 422, not 404: the task exists and the move is understood — it is missing the one thing
+      // `blocked` cannot be recorded without. A 4xx a caller can act on, with a code that says so.
+      return json(out, out.ok ? 200 : out.message === 'blocked_needs_reason' ? 422 : 404)
     }
 
     if (url.pathname === '/api/fleet' && req.method === 'GET') {

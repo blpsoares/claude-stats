@@ -52,6 +52,8 @@ export interface TaskRecord {
   rank?: string
   /** Who is on it right now, and until when — a LEASE, so it expires on its own. */
   claim?: TaskClaim
+  /** Why it is blocked. `blocked` cannot be recorded without this or a blocking task. */
+  blockedReason?: string
 }
 
 export interface TaskClaim {
@@ -270,13 +272,24 @@ export function useTaskDetail(ref: string | undefined, filters?: Filters) {
   return { detail, error, reload: load }
 }
 
-export async function markTask(ref: string, status: TaskStatus): Promise<boolean> {
+export async function markTask(
+  ref: string,
+  status: TaskStatus,
+  o: { reason?: string; blockedBy?: string[]; actor?: string } = {},
+): Promise<boolean> {
   try {
     const res = await fetch(`/api/tasks/${encodeURIComponent(ref)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({
+        status,
+        ...(o.reason ? { reason: o.reason } : {}),
+        ...(o.blockedBy ? { blockedBy: o.blockedBy } : {}),
+        ...(o.actor ? { actor: o.actor } : {}),
+      }),
     })
+    // A 422 is the server refusing a `blocked` with nothing to say — the caller opens the dialog
+    // rather than reporting a failure, so the rule reads as a question and not as a bug.
     return res.ok
   } catch {
     return false

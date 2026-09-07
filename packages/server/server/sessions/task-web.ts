@@ -576,12 +576,43 @@ export async function markTask(
   ref: string,
   to: TaskStatus,
   actor?: string,
+  o: {
+    /** Why, in the blocker's own words. Required by `blocked` unless a blocking TASK is named. */
+    reason?: string
+    /** Blocking task ids to set as part of the same move — the other way to answer "why". */
+    blockedBy?: readonly string[]
+  } = {},
 ): Promise<{ ok: boolean; evidence?: DeliveryEvidence; message?: string }> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
   if (!task) return { ok: false, message: 'no_such_task' }
 
   const now = new Date().toISOString()
+  const reason = o.reason?.trim() ?? ''
+
+  /*
+   * `blocked` must SAY what it is waiting on.
+   *
+   * It is the one status that names a problem somebody has to go and solve, and a board of blocked
+   * cards that do not say why is a board nobody can unblock: the fact lives only in the head of
+   * whoever moved it, who by then has moved on. `task_next` already reports these as withheld —
+   * without a reason that report is "you cannot have this" with no way forward.
+   *
+   * The check is HERE and not in the browser, so it binds the MCP and the CLI too. An assistant
+   * that cannot say why it is blocked has not finished thinking about being blocked.
+   */
+  if (to === 'blocked') {
+    const blockers = o.blockedBy ?? task.blockedBy ?? []
+    if (!reason && blockers.length === 0) {
+      return { ok: false, message: 'blocked_needs_reason' }
+    }
+    if (o.blockedBy) {
+      await w.store.patchTask(task.id, {
+        blockedBy: [...new Set(o.blockedBy.filter(id => id !== task.id))],
+        updatedAt: now,
+      })
+    }
+  }
   // `done` is the ONE status that stamps a delivery. Every other move is a change of where the work
   // stands, and stamping one of those would close rounds-to-delivery on work that is not delivered.
   const done = to === 'done'
@@ -589,6 +620,9 @@ export async function markTask(
     status: to,
     updatedAt: now,
     ...(done ? { deliveredAt: now } : {}),
+    // The reason belongs to THIS block. Leaving `blocked` clears it: a sentence that outlived its
+    // block reads as current, which is worse than none.
+    ...(to === 'blocked' ? { blockedReason: reason } : { blockedReason: '' }),
   })
   // Attempts only ever settle when the TASK settles. An in-progress task leaves them running.
   if (done || to === 'abandoned') {
@@ -605,6 +639,9 @@ export async function markTask(
   // moved this to blocked, and when" is not rhetorical.
   await w.store.logEvents([event(task.id, actor?.trim() || 'you', 'status', {
     from: task.status, to,
+    // The log carries the reason with the move, so "why was this blocked on Tuesday" survives the
+    // task being unblocked and the field being cleared.
+    ...(to === 'blocked' && reason ? { detail: reason } : {}),
   })])
 
   const prefs = await readPreferences().catch(() => null)

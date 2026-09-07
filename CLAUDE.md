@@ -1802,6 +1802,14 @@ packages/web/src/components/tasks/   board.ts (vocabulary) · TaskTable · TaskB
 - **Absent priority is `none`** — "nobody has said" — never `medium`. A board full of a default
   nobody chose is a board where priority means nothing. An overdue date is red and NEVER on a closed
   task: finished work cannot be late.
+- **`blocked` is REFUSED without a reason or a blocking task** (422, `blocked_needs_reason`),
+  checked in `markTask` so it binds the browser, the CLI and the MCP alike. It is the one status
+  that names a problem somebody has to go and solve, and the queue reports it as withheld — without
+  a why that report is "you cannot have this" with no way forward. The reason is CLEARED when the
+  task leaves `blocked` and kept in the activity log.
+- **`taskProgress` (core) is the only place a percentage is computed**, and it rounds DOWN: a bar
+  that reads 100% while a subtask is open is the one error this figure cannot afford. A task with no
+  subtasks draws NO bar rather than an empty one — "nobody broke this up" is not "nothing is done".
 - **A WIP limit WARNS, it never blocks.** A board that refuses a drop teaches people to route around
   it instead of looking at it.
 - **The board's arrangement is `localStorage`, not `/api/preferences`** (`boardPrefs.ts`): on a

@@ -170,6 +170,18 @@ export interface Task {
   rank?: string
   /** Who is on it RIGHT NOW, and until when. See `TaskClaim`. */
   claim?: TaskClaim
+  /**
+   * WHY this task is blocked, in the words of whoever blocked it.
+   *
+   * `blocked` is the one status that names a problem somebody has to go and solve, and a board full
+   * of blocked cards that do not say what they are waiting on is a board nobody can unblock — the
+   * fact has to be re-discovered by asking the person, who by then has moved on. So the status
+   * cannot be SET without either this sentence or a blocking task (`blockedBy`); see `markTask`.
+   *
+   * Cleared when the task leaves `blocked`: a reason that outlived its block is a stale sentence
+   * that reads as current, which is worse than none.
+   */
+  blockedReason?: string
   /** `normalizeGitRemote` key, when the work belongs to one repository. */
   repo?: string
   /**

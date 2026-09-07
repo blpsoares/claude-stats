@@ -16,24 +16,8 @@ import {
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from './board'
 import type { LaneKey } from './boardPrefs'
+import { TaskProgressBar } from './TaskProgressBar'
 import type { TaskListRow } from '../../lib/tasks'
-
-/** Subtask progress, as Monday draws it: a thin bar with the count beside it. */
-function Progress({ done, total }: { done: number; total: number }) {
-  if (total === 0) return null
-  const pct = Math.round((done / total) * 100)
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-      <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--bg-elevated)' }}>
-        <div style={{
-          width: `${pct}%`, height: '100%', borderRadius: 2,
-          background: done === total ? 'var(--accent-green)' : 'var(--anthropic-orange)',
-        }} />
-      </div>
-      <span style={{ ...microLabel, fontSize: 10 }}>{done}/{total}</span>
-    </div>
-  )
-}
 
 function Facts({ row }: { row: TaskListRow }) {
   const r = row.rollup
@@ -119,7 +103,7 @@ function Card({ row, onOpen, live, nowMs }: {
           }}>{row.task.detail}</div>
         )}
 
-        {counts && <Progress done={counts.subtasksDone} total={counts.subtasks} />}
+        {counts && <TaskProgressBar done={counts.subtasksDone} total={counts.subtasks} />}
 
         <Agents row={row} live={live} nowMs={nowMs} />
 

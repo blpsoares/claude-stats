@@ -17,6 +17,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { COLUMN_ORDER, STATUS, field, microLabel, pill, surface, type BoardStatus } from './board'
 import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
+import { TaskProgressBar } from './TaskProgressBar'
 import type { Subtask, TaskStatus } from '../../lib/tasks'
 
 function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStatus) => void }) {
@@ -89,18 +90,11 @@ export function SubtaskTable(p: SubtaskTableProps) {
         borderBottom: '1px solid var(--border)',
       }}>
         <span style={microLabel}>Subtasks</span>
-        {p.subtasks.length > 0 && (
-          <>
-            <span style={{ flex: 1, maxWidth: 160, height: 4, borderRadius: 2, background: 'var(--bg-elevated)' }}>
-              <span style={{
-                display: 'block', height: '100%', borderRadius: 2,
-                width: `${Math.round((done / p.subtasks.length) * 100)}%`,
-                background: done === p.subtasks.length ? 'var(--accent-green)' : 'var(--anthropic-orange)',
-              }} />
-            </span>
-            <span style={{ ...microLabel, fontSize: 10.5 }}>{done}/{p.subtasks.length}</span>
-          </>
-        )}
+        {/* The shared bar — it rounds DOWN, so this one cannot say 100% while the grid below it
+            still shows an open row. That disagreement is exactly what one component prevents. */}
+        <div style={{ flex: 1, maxWidth: 220 }}>
+          <TaskProgressBar done={done} total={p.subtasks.length} />
+        </div>
       </div>
 
       <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>

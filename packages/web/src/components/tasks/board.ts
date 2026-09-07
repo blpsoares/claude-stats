@@ -29,9 +29,9 @@ export type BoardStatus =
  * lives here can never close a loop.
  */
 export type ColumnId =
-  | 'status' | 'priority' | 'assignee' | 'due' | 'claim' | 'attempts' | 'sessions' | 'rounds'
-  | 'tokens' | 'cost' | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links' | 'blockedBy'
-  | 'created' | 'updated'
+  | 'status' | 'priority' | 'assignee' | 'due' | 'claim' | 'progress' | 'attempts' | 'sessions'
+  | 'rounds' | 'tokens' | 'cost' | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links'
+  | 'blockedBy' | 'created' | 'updated'
 
 /**
  * A status has a colour and it is the SAME colour everywhere — the column header, the card's stripe

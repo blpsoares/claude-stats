@@ -43,6 +43,7 @@ export interface TaskPatch {
   startDate?: string
   labels?: string[]
   rank?: string
+  blockedReason?: string
 }
 
 export interface AttemptPatch {
@@ -172,6 +173,9 @@ function sanitizeTask(raw: unknown): Task | null {
       ? { labels: t.labels.filter((v): v is string => typeof v === 'string' && v !== '') }
       : {}),
     ...(typeof t.rank === 'string' && t.rank ? { rank: t.rank } : {}),
+    ...(typeof t.blockedReason === 'string' && t.blockedReason
+      ? { blockedReason: t.blockedReason }
+      : {}),
     ...(sanitizeClaim(t.claim) ? { claim: sanitizeClaim(t.claim)! } : {}),
   }
 }

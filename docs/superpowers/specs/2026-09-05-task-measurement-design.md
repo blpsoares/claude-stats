@@ -537,6 +537,33 @@ that screen is clearing a lease that has visibly lapsed — a correction, not an
 **MCP**: `task_next`, `task_claim` (claim / release / refresh), `task_activity`, `task_edit`,
 `task_session`, plus `actor` on `task_status` so every move is recorded against whoever made it.
 
+### `blocked` must say what it is waiting on
+
+The one status that names a problem somebody has to go and solve, and the one that is REFUSED
+without an answer (HTTP 422, `blocked_needs_reason`). A board of blocked cards that do not say why
+is a board nobody can unblock: the fact lives only in the head of whoever moved it, who by then has
+moved on — and `task_next` reports these as withheld, which without a reason is "you cannot have
+this" with no way forward.
+
+Two ways to answer, because there are two kinds of blocked: **another task** (a dependency the board
+knows, which lets the card unblock itself when that task closes) or **a sentence** (waiting on a
+person, a key, a deploy — not everything that blocks work is on the board, and forcing it to be
+would breed placeholder tasks). Either is enough.
+
+The check lives in `markTask`, so it binds the browser, the CLI and the MCP alike — an assistant
+that cannot say why it is blocked has not finished thinking about being blocked. The reason is
+CLEARED when the task leaves `blocked` (a sentence that outlived its block reads as current) and
+kept in the activity log, so "why was this blocked on Tuesday" survives the unblocking.
+
+### Progress is one arithmetic
+
+`taskProgress` (core) is the only place the percentage is computed, and four surfaces draw it: the
+card, the table column, the detail header and the subtask grid. It **rounds DOWN**, so a task with
+99 of 100 closed never reads 100% — a bar that says finished while something is open is the one
+error this figure cannot afford — and it returns `null` for a task with NO subtasks, which draws
+nothing rather than an empty 0% bar: "nobody broke this up" and "nothing is done yet" are different
+facts.
+
 ---
 
 ## 11. Testing
@@ -621,6 +648,8 @@ Every line is a thing that must be true of the shipped feature, in the order it 
       `cli-hooks.ts`'s note on Bash's permission prompt being the consent gate
 
 **Storage and the central**
+- [x] `blocked` refused without a reason or a blocker, in the ONE place every surface goes through
+- [x] Progress bar on the parent task, one arithmetic, four surfaces
 - [x] Board in `tasks.json`, never in the parse cache (`cache.db` is derived state only)
 - [x] File bytes under `task-files/<taskId>/<fileId>`, paths built from minted ids only
 - [ ] `Task.shared`, absent reading as NOT shared
