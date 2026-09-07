@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { refreshNotifications } from '../lib/notifications'
+import { subscribeEvent } from '../lib/eventStream'
 
 /**
  * Loads the notification history from the server on mount, then subscribes to the SSE
@@ -22,10 +23,8 @@ import { refreshNotifications } from '../lib/notifications'
 export function useNotificationStream(_lang: 'pt' | 'en'): void {
   useEffect(() => {
     void refreshNotifications()
-    const es = new EventSource('/api/events')
-    const handler = () => { void refreshNotifications() }
-    es.addEventListener('notification', handler)
-    es.onerror = () => { /* browser auto-reconnects */ }
-    return () => { es.removeEventListener('notification', handler); es.close() }
+    // Share the one `/api/events` socket (see lib/eventStream.ts) instead of opening a second one:
+    // a duplicate broadcast socket is a per-origin connection slot a live terminal could have had.
+    return subscribeEvent('notification', () => { void refreshNotifications() })
   }, [])
 }
