@@ -2,8 +2,14 @@ import { test, expect } from 'bun:test'
 import {
   workflowsStateOf, workflowCount, liveRunCount, workflowsPollMs, runStatusText,
   runStatusNote, runDurationText, unmeasuredRunText, WORKFLOW_POLL_MS,
-  type WorkflowRunRow, type WorkflowsPayload,
+  groupAgentsByPhase, labelCaveat, agentOpenable, agentDetailUrl, agentDetailStateOf,
+  type WorkflowRunRow, type WorkflowsPayload, type WorkflowAgentRow,
 } from './workflows'
+
+const ag = (over: Partial<WorkflowAgentRow> = {}): WorkflowAgentRow => ({
+  agentId: 'a1', label: 'x', labelSource: 'record', phase: 'A', toolCalls: 3, model: 'opus',
+  tokens: null, totalTokens: null, costUSD: null, ...over,
+})
 
 const run = (over: Partial<WorkflowRunRow> = {}): WorkflowRunRow => ({
   runId: 'wf_a', name: 'n', status: 'completed', live: false, startedAt: '2026-09-06T10:00:00Z',
@@ -72,4 +78,76 @@ test('unmeasured is told apart from unfinished', () => {
   expect(unmeasuredRunText(run({ totalTokens: null, live: true }), true)).toContain('ainda não')
   expect(unmeasuredRunText(run({ totalTokens: null, live: false }), true)).toContain('sem transcrições')
   expect(unmeasuredRunText(run(), true)).toBe(null)
+})
+
+// --- phases -----------------------------------------------------------------
+
+test('agents are grouped under their phase, in the run’s recorded order', () => {
+  const r = run({
+    phases: [{ title: 'Contract', agentCount: 2 }, { title: 'Critique', agentCount: 1 }],
+    agents: [
+      ag({ agentId: 'a1', label: 'critique:x', phase: 'Critique' }),
+      ag({ agentId: 'a2', label: 'contract:x', phase: 'Contract' }),
+      ag({ agentId: 'a3', label: 'contract:y', phase: 'Contract' }),
+    ],
+  })
+  const g = groupAgentsByPhase(r)
+  expect(g.map(x => x.title)).toEqual(['Contract', 'Critique'])
+  expect(g[0]!.agents.map(a => a.label)).toEqual(['contract:x', 'contract:y'])
+  expect(g[1]!.agents.map(a => a.label)).toEqual(['critique:x'])
+})
+
+// The counts on the card must never disagree with what is listed under it.
+test('an agent nothing could place is kept, in its own last group', () => {
+  const r = run({
+    phases: [{ title: 'A', agentCount: 1 }],
+    agents: [ag({ agentId: 'a1', phase: 'A' }), ag({ agentId: 'a2', phase: '', labelSource: 'none' })],
+  })
+  const g = groupAgentsByPhase(r)
+  expect(g.map(x => x.title)).toEqual(['A', ''])
+  expect(g.flatMap(x => x.agents).length).toBe(2)
+})
+
+test('a phase that ran nothing is still shown — that it ran nothing is information', () => {
+  const r = run({ phases: [{ title: 'A', agentCount: 0 }, { title: 'B', agentCount: 1 }], agents: [ag({ phase: 'B' })] })
+  const g = groupAgentsByPhase(r)
+  expect(g.map(x => x.title)).toEqual(['A', 'B'])
+  expect(g[0]!.agents).toEqual([])
+})
+
+test('a phase only the agents name is added after the declared ones', () => {
+  const r = run({ phases: [{ title: 'A', agentCount: 0 }], agents: [ag({ phase: 'Z' })] })
+  expect(groupAgentsByPhase(r).map(x => x.title)).toEqual(['A', 'Z'])
+})
+
+test('a run with no phases at all puts every agent in the unplaced group', () => {
+  const r = run({ phases: [], agents: [ag({ phase: '' }), ag({ agentId: 'a2', phase: '' })] })
+  const g = groupAgentsByPhase(r)
+  expect(g.length).toBe(1)
+  expect(g[0]!.title).toBe('')
+  expect(g[0]!.agents.length).toBe(2)
+})
+
+// A guessed label and a recorded one look identical on screen.
+test('only a label the run recorded goes without a caveat', () => {
+  expect(labelCaveat(ag({ labelSource: 'record' }), true)).toBe(null)
+  expect(labelCaveat(ag({ labelSource: 'matched' }), true)).toContain('deduzido')
+  expect(labelCaveat(ag({ labelSource: 'none' }), true)).toContain('não registrou')
+})
+
+test('an agent with no id cannot be opened, so the row must not offer it', () => {
+  expect(agentOpenable(ag())).toBe(true)
+  expect(agentOpenable(ag({ agentId: undefined }))).toBe(false)
+  expect(agentOpenable(ag({ agentId: '' }))).toBe(false)
+})
+
+test('the detail url carries the run AND the agent, both escaped', () => {
+  const u = agentDetailUrl('closed:a b', 'wf_1', 'a1', true)
+  expect(u).toContain('id=closed%3Aa%20b')
+  expect(u).toContain('run=wf_1')
+  expect(u).toContain('agent=a1')
+})
+
+test('a refused detail keeps its sentence', () => {
+  expect(agentDetailStateOf({ ok: false, message: 'gone' })).toEqual({ phase: 'failed', message: 'gone' })
 })
