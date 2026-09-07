@@ -19,7 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
 import { TaskPicker } from '../tasks/TaskPicker'
-import { attachSession } from '../../lib/tasks'
+import { attachSession, detachSession } from '../../lib/tasks'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
 
 export interface SessionActionsProps {
@@ -121,11 +121,21 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
       {linking && (
         <TaskPicker
           title={pt ? 'Vincular a uma tarefa' : 'File under a task'}
+          // The session goes IN, so the picker can show what it is filed under now, offer to
+          // unfile it, and pre-link it on a new task. Without it the picker can only ever move a
+          // session from one task to another.
+          session={{ id: row.id, title: row.title, harness: row.harness, ...(row.task ? { task: row.task } : {}) }}
           onPick={async taskId => {
             const ok = await attachSession(taskId, row.id)
             setNotice(ok
               ? (pt ? 'Sessão vinculada.' : 'Filed under the task.')
               : (pt ? 'Não foi possível vincular.' : 'Could not file that session.'))
+          }}
+          onDetach={async () => {
+            const ok = await detachSession(row.id, row.id)
+            setNotice(ok
+              ? (pt ? 'Sessão desvinculada.' : 'No longer filed under a task.')
+              : (pt ? 'Não foi possível desvincular.' : 'Could not unfile that session.'))
           }}
           onClose={() => setLinking(false)}
         />

@@ -65,7 +65,7 @@ export default function SessionsPage() {
 
   // Never on a central: it aggregates many machines and hosts none of their sessions, so the only
   // fleet it could read is its own box's, drawn under someone else's rows.
-  const { fleet, loading, unsupported: pollUnsupported, stale, act } = useFleet(pt ? 'pt' : 'en')
+  const { fleet, loading, unsupported: pollUnsupported, stale, act, refresh } = useFleet(pt ? 'pt' : 'en')
   /**
    * A CENTRAL cannot list a fleet, and must SAY so.
    *
@@ -359,6 +359,17 @@ export default function SessionsPage() {
       unlistedWrites={artifactsUnlisted}
       turns={artifactTurns}
       tabRequest={art.tabRequest}
+      // The session itself, for the TASKS tab: what it is filed under, and the composer that files
+      // it somewhere new without leaving the session you are sitting in.
+      session={{
+        id: selected.id,
+        title: selected.title,
+        harness: selected.harness,
+        ...(selected.task ? { task: selected.task } : {}),
+      }}
+      onOpenTask={taskId => navigate(`/tasks/${encodeURIComponent(taskId)}`)}
+      // The badge on the row is the fleet's; re-poll so it agrees with what the tab just did.
+      onTaskChanged={refresh}
       onClose={closeArtifacts}
     />
   )

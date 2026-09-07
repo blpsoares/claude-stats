@@ -423,6 +423,9 @@ function TaskList() {
   const [lanes, setLanesState] = useState<LaneKey>(stored.lanes)
   const setLanes = (v: LaneKey) => { setLanesState(v); writeBoardPrefs({ lanes: v }) }
   const [wip, setWipState] = useState<Record<string, number>>(stored.wip)
+  // The visible columns, shared with the table's group chooser — `boardPrefs.groups`.
+  const [boardColumns, setBoardColumnsState] = useState<BoardStatus[]>(stored.groups ?? [...COLUMN_ORDER])
+  const setBoardColumns = (v: BoardStatus[]) => { setBoardColumnsState(v); writeBoardPrefs({ groups: v }) }
   /**
    * The tasks on their way to `blocked`, waiting on the dialog's answer.
    *
@@ -596,12 +599,20 @@ function TaskList() {
             sort={sort} onSort={setSort}
             lanes={lanes} onLanes={setLanes}
             wip={wip} onWip={setWip}
+            // The board and the table share ONE set of visible columns: they are the same seven
+            // statuses, and letting each remember its own would mean hiding `abandoned` twice.
+            columns={boardColumns}
+            onColumns={setBoardColumns}
+            counts={Object.fromEntries(COLUMN_ORDER.map(st => [
+              st, shown.filter(r => r.task.status === st).length,
+            ]))}
           />
           <BoardView
             rows={shown}
             sort={sort}
             lanes={lanes}
             wip={wip}
+            columns={boardColumns}
             sessions={fleet.sessions}
             onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
             onStatus={(id, status) => void toStatus([id], status)}

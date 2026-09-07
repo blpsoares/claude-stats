@@ -25,7 +25,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, Columns3, MessageSquare, Paperclip, Plus,
-  Rows3, Terminal, Trash2, X,
+  Rows3, SquareArrowOutUpRight, Terminal, Trash2, X,
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
@@ -40,6 +40,8 @@ import { readBoardPrefs, writeBoardPrefs } from './boardPrefs'
 import { ConfirmModal } from '../../pages/settings/primitives'
 import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
+import { ChipSelect, statusOptions } from './ChipSelect'
+import { PickerMenu } from './PickerMenu'
 import { TaskProgressBar } from './TaskProgressBar'
 import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
 
@@ -111,58 +113,6 @@ const cellPad = '7px 10px'
 const tap = (mobile: boolean): React.CSSProperties =>
   mobile ? { minHeight: 44, minWidth: 44, justifyContent: 'center' } : {}
 
-function StatusCell({ value, onPick, compact }: {
-  value: TaskStatus
-  onPick: (s: TaskStatus) => void
-  compact?: boolean
-}) {
-  const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
-  const s = STATUS[value as BoardStatus] ?? STATUS.todo
-  return (
-    <div style={{ position: 'relative' }}>
-      <button
-        onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
-        style={{
-          // Monday's status CELL: a solid block of colour that fills its cell, not a word.
-          width: '100%', border: 'none', cursor: 'pointer',
-          padding: compact ? '3px 8px' : '5px 9px', borderRadius: 5,
-          background: s.dim, color: s.color, fontSize: 11, fontWeight: 600,
-          outline: `1px solid ${s.color}`,
-          // The status is the cell people CHANGE from the table; on a phone it owes a thumb 44px.
-          minHeight: isMobile ? 44 : undefined,
-        }}
-      >{s.label}</button>
-      {open && (
-        <>
-          <div onClick={e => { e.stopPropagation(); setOpen(false) }}
-               style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
-          <div style={{
-            position: 'absolute', top: '100%', left: 0, zIndex: 31, marginTop: 4, minWidth: 132,
-            ...surface, background: 'var(--bg-elevated)', padding: 4, display: 'grid', gap: 2,
-            boxShadow: 'var(--shadow-elevated)',
-          }}>
-            {COLUMN_ORDER.map(st => {
-              const c = STATUS[st]
-              return (
-                <button
-                  key={st}
-                  onClick={e => { e.stopPropagation(); setOpen(false); onPick(st) }}
-                  style={{
-                    border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
-                    borderRadius: 5, background: c.dim, color: c.color, fontSize: 11, fontWeight: 600,
-                    minHeight: isMobile ? 44 : undefined,
-                  }}
-                >{c.label}</button>
-              )
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
 function Num({ v, accent }: { v: number | null | undefined; accent?: boolean }) {
   const absent = v === null || v === undefined
   return (
@@ -170,51 +120,6 @@ function Num({ v, accent }: { v: number | null | undefined; accent?: boolean }) 
       ...numeric, fontSize: 12,
       color: absent ? 'var(--text-tertiary)' : accent ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
     }}>{absent ? NA : v.toLocaleString()}</span>
-  )
-}
-
-function PriorityCell({ value, onPick }: { value: string; onPick: (p: TaskPriorityId) => void }) {
-  const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
-  const p = PRIORITY[value] ?? PRIORITY.none!
-  return (
-    <div style={{ position: 'relative' }}>
-      <button
-        onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
-        style={{
-          border: `1px solid ${value === 'none' ? 'var(--border)' : p.color}`,
-          background: p.dim, color: p.color, cursor: 'pointer',
-          padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 600,
-          minHeight: isMobile ? 44 : undefined, width: '100%',
-        }}
-      >{p.label}</button>
-      {open && (
-        <>
-          <div onClick={e => { e.stopPropagation(); setOpen(false) }}
-               style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
-          <div style={{
-            position: 'absolute', top: '100%', left: 0, zIndex: 31, marginTop: 4, minWidth: 120,
-            ...surface, background: 'var(--bg-elevated)', padding: 4, display: 'grid', gap: 2,
-            boxShadow: 'var(--shadow-elevated)',
-          }}>
-            {PRIORITY_ORDER.map(id => {
-              const c = PRIORITY[id]!
-              return (
-                <button
-                  key={id}
-                  onClick={e => { e.stopPropagation(); setOpen(false); onPick(id) }}
-                  style={{
-                    border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
-                    borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5,
-                    fontWeight: 600, minHeight: isMobile ? 44 : undefined,
-                  }}
-                >{c.label}</button>
-              )
-            })}
-          </div>
-        </>
-      )}
-    </div>
   )
 }
 
@@ -265,8 +170,24 @@ function cellFor(
 ): React.ReactNode {
   const r = row.rollup
   switch (col) {
-    case 'status': return <StatusCell value={row.task.status} onPick={onStatus} />
-    case 'priority': return <PriorityCell value={row.task.priority ?? 'none'} onPick={onPriority} />
+    case 'status': return (
+      <ChipSelect
+        compact
+        value={row.task.status}
+        options={statusOptions(STATUS, COLUMN_ORDER)}
+        onPick={v => onStatus(v as TaskStatus)}
+      />
+    )
+    case 'priority': return (
+      <ChipSelect
+        compact
+        value={row.task.priority ?? 'none'}
+        options={PRIORITY_ORDER.map(id => ({
+          value: id, label: PRIORITY[id]!.label, color: PRIORITY[id]!.color, dim: PRIORITY[id]!.dim,
+        }))}
+        onPick={v => onPriority(v as TaskPriorityId)}
+      />
+    )
     case 'assignee': return row.task.assignee
       ? <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{row.task.assignee}</span>
       : <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>—</span>
@@ -379,7 +300,12 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
             />
           </td>
           <td style={{ padding: cellPad }}>
-            <StatusCell compact value={t.status} onPick={s => onPatch(t.id, { status: s })} />
+            <ChipSelect
+              compact
+              value={t.status}
+              options={statusOptions(STATUS, COLUMN_ORDER)}
+              onPick={v => onPatch(t.id, { status: v as TaskStatus })}
+            />
           </td>
           <td style={{ padding: cellPad }}>
             <input
@@ -531,13 +457,17 @@ export function TaskTable(p: TaskTableProps) {
     fontSize: 12, color: 'var(--text-secondary)', minHeight: isMobile ? 34 : 22,
   }
 
-  const visible = groups.filter(g => groupsShown.includes(g.status))
+  // In the CHOSEN order, not the canonical one — see the chooser's note.
+  const visible = groupsShown
+    .map(st => groups.find(g => g.status === st))
+    .filter((g): g is typeof groups[number] => g !== undefined)
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       {/* The chooser bar. Groups first: it decides what is on the screen at all, and the columns
-          only decide what each row says. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', position: 'relative' }}>
+          only decide what each row says. Both are the app's own multi-select popover — fixed, in a
+          portal, clamped — because a menu that opens inside a scrolling table is clipped by it. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ ...microLabel, fontSize: 10.5 }}>
           {visible.length} of {groups.length} groups
         </span>
@@ -555,67 +485,37 @@ export function TaskTable(p: TaskTableProps) {
           </button>
         )}
         <span style={{ flex: 1 }} />
-        <div style={{ position: 'relative' }}>
-          <button
-            style={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
-            onClick={() => setMenu(m => (m === 'groups' ? null : 'groups'))}
-          ><Rows3 size={13} /> Groups</button>
-          {menu === 'groups' && (
-            <>
-              <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-              <div style={menuBox}>
-                <div style={{ ...microLabel, marginBottom: 3 }}>Show groups</div>
-                {groups.map(g => {
-                  const c = STATUS[g.status]
-                  return (
-                    <label key={g.status} style={check}>
-                      <input
-                        type="checkbox" checked={groupsShown.includes(g.status)}
-                        onChange={() => setGroups(
-                          groupsShown.includes(g.status)
-                            ? groupsShown.filter(x => x !== g.status)
-                            : [...COLUMN_ORDER].filter(x => x === g.status || groupsShown.includes(x)),
-                        )}
-                        style={{ width: 14, height: 14, accentColor: 'var(--anthropic-orange)' }}
-                      />
-                      <span style={{ color: c.color }}>{c.label}</span>
-                      <span style={{ flex: 1 }} />
-                      {/* The count of a HIDDEN group too — "hidden" must not read as "empty". */}
-                      <span style={{ ...numeric, fontSize: 11, color: 'var(--text-tertiary)' }}>
-                        {g.rows.length}
-                      </span>
-                    </label>
-                  )
-                })}
-              </div>
-            </>
-          )}
-        </div>
-        <div style={{ position: 'relative' }}>
-          <button
-            style={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
-            onClick={() => setMenu(m => (m === 'columns' ? null : 'columns'))}
-          ><Columns3 size={13} /> Columns</button>
-          {menu === 'columns' && (
-            <>
-              <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-              <div style={menuBox}>
-                <div style={{ ...microLabel, marginBottom: 3 }}>Columns</div>
-                {COLUMNS.map(c => (
-                  <label key={c.id} style={check}>
-                    <input
-                      type="checkbox" checked={shown.includes(c.id)}
-                      onChange={() => setColumns(
-                        shown.includes(c.id) ? shown.filter(x => x !== c.id) : [...shown, c.id])}
-                      style={{ width: 14, height: 14, accentColor: 'var(--anthropic-orange)' }}
-                    />
-                    {c.label}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+        <PickerMenu
+          title="Show groups"
+          triggerStyle={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
+          items={groups.map(g => ({
+            value: g.status,
+            label: STATUS[g.status].label,
+            color: STATUS[g.status].color,
+            // The count of a HIDDEN group too — "hidden" must not read as "empty".
+            hint: String(g.rows.length),
+          }))}
+          value={groupsShown}
+          // The picked ORDER is kept, not re-canonicalised: the board and the table share this
+          // field, and the board draws its columns in it — forcing `COLUMN_ORDER` here would undo
+          // a reorder made one screen away.
+          onChange={next => setGroups(next as BoardStatus[])}
+          note="A hidden group's tasks are still there — this only decides what is on screen."
+        >
+          <Rows3 size={13} /> Groups
+        </PickerMenu>
+        <PickerMenu
+          title="Columns"
+          width={270}
+          orderable
+          triggerStyle={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
+          items={COLUMNS.map(c => ({ value: c.id, label: c.label }))}
+          value={shown}
+          onChange={next => setColumns(next as ColumnId[])}
+          note="Drag a ticked column to reorder it — the table follows this order."
+        >
+          <Columns3 size={13} /> Columns
+        </PickerMenu>
       </div>
 
       {visible.length === 0 && (
@@ -705,12 +605,11 @@ export function TaskTable(p: TaskTableProps) {
                       return (
                         <React.Fragment key={row.task.id}>
                           <tr
-                            style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }}
-                            onClick={() => p.onOpen(row.task.id)}
+                            style={{ borderTop: '1px solid var(--border)' }}
                             onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)' }}
                             onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
                           >
-                            <td style={{ padding: cellPad }} onClick={e => e.stopPropagation()}>
+                            <td style={{ padding: cellPad }}>
                               <input
                                 type="checkbox" checked={selected.has(row.task.id)}
                                 onChange={() => toggleIn(selected, row.task.id, setSelected)}
@@ -720,30 +619,43 @@ export function TaskTable(p: TaskTableProps) {
                                 }}
                               />
                             </td>
+                            {/*
+                              * The NAME opens the subitems; a button opens the task.
+                              *
+                              * The row used to navigate away on any click, which made the title the
+                              * one thing you could not press to look INSIDE the row — and made
+                              * every stray click on a cell leave the board. Monday's rule, and the
+                              * right one: the name belongs to the row, the arrow leaves it.
+                              */}
                             <td style={{ padding: cellPad }}>
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                                <button
-                                  onClick={e => {
-                                    e.stopPropagation()
-                                    toggleIn(expanded, row.task.id, setExpanded)
-                                    if (!open) p.onExpand(row.task.id)
-                                  }}
-                                  style={{
-                                    background: 'none', border: 'none', cursor: 'pointer', display: 'inline-flex',
-                                    alignItems: 'center', color: 'var(--text-tertiary)', padding: 0,
-                                    ...tap(isMobile),
-                                  }}
-                                >{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>
-                                <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
+                              <button
+                                onClick={() => {
+                                  toggleIn(expanded, row.task.id, setExpanded)
+                                  if (!open) p.onExpand(row.task.id)
+                                }}
+                                title={open ? 'Hide the subtasks' : 'Show the subtasks'}
+                                style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0,
+                                  background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                                  textAlign: 'left', width: '100%',
+                                  ...tap(isMobile),
+                                }}
+                              >
+                                <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex', flexShrink: 0 }}>
+                                  {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                                </span>
+                                <span style={{
+                                  fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)',
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                }}>
                                   {row.task.title}
                                 </span>
-                              </span>
+                              </button>
                             </td>
                             {cols.map(c => (
                               <td
                                 key={c.id}
                                 style={{ padding: cellPad, textAlign: c.numeric ? 'right' : 'left' }}
-                                onClick={c.id === 'status' ? e => e.stopPropagation() : undefined}
                               >
                                 {cellFor(
                                   c.id, row,
@@ -753,7 +665,7 @@ export function TaskTable(p: TaskTableProps) {
                                 )}
                               </td>
                             ))}
-                            <td style={{ padding: cellPad, textAlign: 'right' }} onClick={e => e.stopPropagation()}>
+                            <td style={{ padding: cellPad, textAlign: 'right', whiteSpace: 'nowrap' }}>
                               <button
                                 onClick={() => p.onLinkSession(row.task.id)} title="Link a session"
                                 style={{
@@ -762,6 +674,14 @@ export function TaskTable(p: TaskTableProps) {
                                   ...tap(isMobile),
                                 }}
                               ><Terminal size={13} /></button>
+                              <button
+                                onClick={() => p.onOpen(row.task.id)} title="Open this task"
+                                style={{
+                                  background: 'none', border: 'none', color: 'var(--text-tertiary)',
+                                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                                  ...tap(isMobile),
+                                }}
+                              ><SquareArrowOutUpRight size={13} /></button>
                             </td>
                           </tr>
 
@@ -898,20 +818,23 @@ export function TaskTable(p: TaskTableProps) {
           </span>
           <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>selected</span>
           <span style={{ width: 1, height: 18, background: 'var(--border)' }} />
-          {COLUMN_ORDER.map(st => {
-            const c = STATUS[st]
-            return (
-              <button
-                key={st}
-                onClick={() => { p.onBatchStatus([...selected], st); setSelected(new Set()) }}
-                style={{
-                  padding: '3px 8px', borderRadius: 5, fontSize: 10.5, cursor: 'pointer',
-                  background: c.dim, color: c.color, border: `1px solid ${c.color}`,
-                  minHeight: isMobile ? 34 : 24,
-                }}
-              >{c.label}</button>
-            )
-          })}
+          {/* One SELECT, not seven buttons: the bar is the same act as the row's status cell, and
+              two shapes for one act is two things to learn. `__none__` is the resting label — the
+              control has no current value, it only sets one. */}
+          <span style={{ minWidth: 150 }}>
+            <ChipSelect
+              value="__none__"
+              options={[
+                { value: '__none__', label: 'Move to…', color: 'var(--text-secondary)', dim: 'var(--bg-elevated)' },
+                ...statusOptions(STATUS, COLUMN_ORDER),
+              ]}
+              onPick={v => {
+                if (v === '__none__') return
+                p.onBatchStatus([...selected], v as TaskStatus)
+                setSelected(new Set())
+              }}
+            />
+          </span>
           <button
             onClick={() => setConfirmBatch(true)}
             style={{ ...button(isMobile), color: 'var(--accent-red)', height: isMobile ? 34 : 26 }}

@@ -12,10 +12,13 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ArrowDownUp, LayoutList, Rows3, X } from 'lucide-react'
+import { ArrowDownUp, Columns3, LayoutList, Rows3, X } from 'lucide-react'
 import { PRIORITY_ORDER, type SortKey, type SortSpec } from '@agentistics/core'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { COLUMN_ORDER, STATUS, button, field, microLabel, pill, surface } from './board'
+import {
+  COLUMN_ORDER, STATUS, button, field, microLabel, pill, surface, type BoardStatus,
+} from './board'
+import { PickerMenu } from './PickerMenu'
 import { LANE_KEYS, type LaneKey } from './boardPrefs'
 
 /**
@@ -50,6 +53,11 @@ export interface BoardArrangeProps {
   onLanes: (l: LaneKey) => void
   wip: Record<string, number>
   onWip: (w: Record<string, number>) => void
+  /** Which columns the board draws, in order. The same stored set the table's groups use. */
+  columns: readonly BoardStatus[]
+  onColumns: (next: BoardStatus[]) => void
+  /** How many cards sit in each status, so a HIDDEN column still says what it holds. */
+  counts: Record<string, number>
 }
 
 export function BoardArrange(p: BoardArrangeProps) {
@@ -120,6 +128,32 @@ export function BoardArrange(p: BoardArrangeProps) {
 
   return (
     <div ref={bar} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      {/*
+       * WHICH COLUMNS, and in what order.
+       *
+       * Seven fixed columns are wider than any screen, so the board scrolled sideways and the last
+       * two were simply off the edge with nothing offering to hide them — the arrangement existed
+       * for the table and not for the board it was more needed on. Reorderable too: a pipeline that
+       * runs backlog → done is a sequence, and a team that reviews before it blocks should be able
+       * to say so.
+       */}
+      <PickerMenu
+        title="Columns on the board"
+        triggerStyle={trigger}
+        items={COLUMN_ORDER.map(st => ({
+          value: st,
+          label: STATUS[st].label,
+          color: STATUS[st].color,
+          hint: String(p.counts[st] ?? 0),
+        }))}
+        value={p.columns}
+        onChange={next => p.onColumns(next as BoardStatus[])}
+        orderable
+        note="Drag a ticked column to reorder the pipeline. A hidden column's tasks are still there."
+      >
+        <Columns3 size={13} /> Columns · {p.columns.length}
+      </PickerMenu>
+
       <div>
         <button style={trigger} onClick={openAt('sort')}>
           <ArrowDownUp size={13} />
@@ -227,9 +261,15 @@ export function BoardArrange(p: BoardArrangeProps) {
       )}
 
       <span style={{ flex: 1 }} />
-      {(p.sort.key !== 'manual' || p.lanes !== 'none' || limited > 0) && (
+      {(p.sort.key !== 'manual' || p.lanes !== 'none' || limited > 0
+        || p.columns.length !== COLUMN_ORDER.length) && (
         <button
-          onClick={() => { p.onSort({ key: 'manual', dir: 'asc' }); p.onLanes('none'); p.onWip({}) }}
+          onClick={() => {
+            p.onSort({ key: 'manual', dir: 'asc' })
+            p.onLanes('none')
+            p.onWip({})
+            p.onColumns([...COLUMN_ORDER])
+          }}
           style={{ ...trigger, color: 'var(--text-tertiary)' }}
           title="Back to the plain board"
         ><X size={12} /> Reset</button>

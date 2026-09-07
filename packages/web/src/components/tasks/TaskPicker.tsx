@@ -7,7 +7,14 @@
  *
  * It always offers CREATE as well as pick. A picker that can only choose from what exists makes
  * "file this under something new" a two-screen errand, which is how a filing gesture goes unused —
- * and unfiled sessions are exactly what makes the whole measurement short.
+ * and unfiled sessions are exactly what makes the whole measurement short. Creating from here opens
+ * the FULL composer with this session already linked, rather than minting a bare title: a task
+ * created from a session used to arrive with no status, no priority and nothing broken out, while
+ * the same task created from the board got all three.
+ *
+ * And it says what the session is filed under NOW, with the way to undo it. Assigning without being
+ * able to unassign is half a control — you can put a session under the wrong task and then only fix
+ * it by picking another, which leaves no way back to "filed under nothing".
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -16,6 +23,7 @@ import { Check, Plus, Search, X } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { STATUS, button, field, microLabel, pill, surface, type BoardStatus } from './board'
 import { createTask, useTaskList, type TaskListRow } from '../../lib/tasks'
+import { NewTaskWizard } from './NewTaskWizard'
 
 export interface TaskPickerProps {
   /** Where to anchor. Absent centres it — which is what a mobile sheet wants anyway. */
@@ -24,9 +32,19 @@ export interface TaskPickerProps {
   /** Called with the chosen (or newly created) task id. */
   onPick: (taskId: string, task: TaskListRow['task']) => void | Promise<void>
   onClose: () => void
+  /**
+   * The session being filed, when there is one.
+   *
+   * It buys two things nothing else can: the CURRENT task is shown with an unassign beside it, and
+   * "create a new one" can pre-link this session instead of leaving it to a second gesture.
+   */
+  session?: { id: string; title: string; harness?: string; task?: string }
+  /** Unfile it. Absent means this caller has no session to unfile — the row is then not offered. */
+  onDetach?: () => void | Promise<void>
 }
 
-export function TaskPicker({ at, title, onPick, onClose }: TaskPickerProps) {
+export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: TaskPickerProps) {
+  const [composing, setComposing] = useState(false)
   const isMobile = useIsMobile()
   const { rows, reload } = useTaskList()
   const [q, setQ] = useState('')
@@ -70,6 +88,11 @@ export function TaskPicker({ at, title, onPick, onClose }: TaskPickerProps) {
     onClose()
   }
 
+  /** What this session is filed under right now — matched by NAME, which is what the fleet carries. */
+  const current = session?.task
+    ? (rows ?? []).find(r => r.task.title === session.task)
+    : undefined
+
   const box: React.CSSProperties = isMobile || !at
     ? {
       position: 'fixed', inset: 0, margin: 'auto', width: 'min(420px, 92vw)', maxHeight: '70vh',
@@ -101,6 +124,37 @@ export function TaskPicker({ at, title, onPick, onClose }: TaskPickerProps) {
           </button>
         </div>
 
+        {session?.task && (
+          // What it is filed under NOW, and the way out. Without this the picker can only ever move
+          // a session from one task to another, never back to none.
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 9px',
+            borderRadius: 'var(--radius-sm)', background: 'var(--anthropic-orange-dim)',
+            border: '1px solid var(--anthropic-orange)',
+          }}>
+            <Check size={12} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
+            <span style={{
+              flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>{session.task}</span>
+            {current && (
+              <span style={pill(STATUS[current.task.status as BoardStatus]?.color)}>
+                {STATUS[current.task.status as BoardStatus]?.label}
+              </span>
+            )}
+            {onDetach && (
+              <button
+                onClick={async () => { await onDetach(); onClose() }}
+                title="Unfile this session"
+                style={{
+                  ...button(isMobile), height: isMobile ? 44 : 24, fontSize: 11,
+                  color: 'var(--accent-red)',
+                }}
+              >Unfile</button>
+            )}
+          </div>
+        )}
+
         <div style={{ position: 'relative' }}>
           <Search size={14} style={{ position: 'absolute', left: 10, top: isMobile ? 15 : 10, color: 'var(--text-tertiary)' }} />
           <input
@@ -120,9 +174,19 @@ export function TaskPicker({ at, title, onPick, onClose }: TaskPickerProps) {
                 color: 'var(--anthropic-orange)', borderStyle: 'dashed',
               }}
             >
-              <Plus size={14} /> Create “{q.trim()}”
+              <Plus size={14} /> Create “{q.trim()}” and file this here
             </button>
           )}
+          <button
+            onClick={() => setComposing(true)}
+            style={{
+              ...button(isMobile), justifyContent: 'flex-start', width: '100%',
+              borderStyle: 'dashed',
+            }}
+            title="The full form — status, priority, the pieces it breaks into"
+          >
+            <Plus size={14} /> New task with all the details…
+          </button>
           {shown.length === 0 && !needle && (
             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', padding: '6px 2px' }}>
               No tasks yet — type a name to create the first one.
@@ -157,6 +221,24 @@ export function TaskPicker({ at, title, onPick, onClose }: TaskPickerProps) {
           )}
         </div>
       </div>
+
+      {composing && (
+        // The FULL composer, with this session pre-linked — the same form the board's "New task"
+        // opens. A task created from a session should not be a poorer record than one created from
+        // the board; it is the same task.
+        <NewTaskWizard
+          {...(session ? { session } : {})}
+          onClose={() => setComposing(false)}
+          onDone={async taskId => {
+            setComposing(false)
+            await reload()
+            const made = (rows ?? []).find(r => r.task.id === taskId)
+            if (made) await onPick(taskId, made.task)
+            onClose()
+          }}
+          onCreateSession={() => { setComposing(false); onClose() }}
+        />
+      )}
     </>,
     document.body,
   )

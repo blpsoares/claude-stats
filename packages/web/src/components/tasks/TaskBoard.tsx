@@ -205,6 +205,8 @@ export interface BoardViewProps {
   lanes: LaneKey
   /** Per-status card limits. A column over its limit SAYS so; nothing is ever blocked. */
   wip: Record<string, number>
+  /** Which columns to draw, in order. Absent = the whole pipeline. */
+  columns?: readonly BoardStatus[]
 }
 
 /** What a lane is called, and which rows belong to it. */
@@ -239,14 +241,17 @@ export function BoardView(p: BoardViewProps) {
     return m
   }, [p.sessions])
 
-  /** Lanes in a stable order, each holding the seven columns. One lane when `lanes` is `none`. */
+  /** Lanes in a stable order, each holding the chosen columns. One lane when `lanes` is `none`. */
   const lanes = useMemo(() => {
     const names = p.lanes === 'none'
       ? ['']
       : [...new Set(rows.map(r => laneOf(r, p.lanes)))].sort()
+    // The chosen columns, in the chosen order — falling back to the whole pipeline, so a board
+    // whose preference has never been touched looks exactly as it did.
+    const shown = p.columns && p.columns.length > 0 ? p.columns : COLUMN_ORDER
     return names.map(name => ({
       name,
-      columns: COLUMN_ORDER.map(status => ({
+      columns: shown.map(status => ({
         status,
         rows: sortRows(
           rows.filter(r => (r.task.status as BoardStatus) === status
@@ -255,7 +260,7 @@ export function BoardView(p: BoardViewProps) {
         ),
       })),
     }))
-  }, [rows, p.lanes, p.sort])
+  }, [rows, p.lanes, p.sort, p.columns])
 
   const drop = (lane: string, status: BoardStatus, index: number) => {
     const id = drag

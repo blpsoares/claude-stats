@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
   BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft,
+  ClipboardList,
 } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -35,6 +36,7 @@ import {
 import { requestDraft } from '../../lib/composerStore'
 import { splitFrontmatter } from '../../lib/skillGroups'
 import ReactMarkdown from 'react-markdown'
+import { SessionTasksTab } from '../tasks/SessionTasksTab'
 import remarkGfm from 'remark-gfm'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { agoLabel, isDoc, liveEvents, writeStatus, type LiveEvent, type LiveTurn, type WriteStatus } from '../../lib/artifactTabs'
@@ -45,7 +47,7 @@ import {
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'tasks'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
@@ -63,6 +65,16 @@ export interface ArtifactsAsideProps {
   tabRequest?: { tab: string; at: number } | null
   sessionId: string
   lang: 'pt' | 'en'
+  /**
+   * The session itself, for the TASKS tab — what it is called, which harness, and what it is filed
+   * under right now. Absent on a surface that has the id and nothing else; the tab then offers
+   * nothing rather than inventing a name.
+   */
+  session?: { id: string; title: string; harness?: string; task?: string }
+  /** Open a task's page from the tasks tab. */
+  onOpenTask?: (taskId: string) => void
+  /** The filing changed — the caller re-reads the fleet so the row's badge agrees with the tab. */
+  onTaskChanged?: () => void
   /** Every file this session touched, newest first. */
   artifacts: readonly Artifact[]
   /** The conversation has not answered yet — distinct from having answered with nothing. */
@@ -109,7 +121,7 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 
 export function ArtifactsAside({
   sessionId, lang, artifacts, loading, unavailable, unlistedWrites, turns, facts, onClose,
-  tabRequest,
+  tabRequest, session, onOpenTask, onTaskChanged,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
@@ -127,7 +139,7 @@ export function ArtifactsAside({
   const askedAt = tabRequest?.at
   useEffect(() => {
     const t = tabRequest?.tab
-    if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills') setTab(t)
+    if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills' || t === 'tasks') setTab(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -299,6 +311,14 @@ export function ArtifactsAside({
     // not asked the host yet, and a number it has not measured is the thing this codebase refuses
     // to print everywhere else.
     { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills?.length ?? 0 },
+    // The task this session is filed under, and the form to file it somewhere new. The count is 1
+    // or 0 because a session belongs to at most one task — it is a badge, not a list.
+    {
+      id: 'tasks',
+      label: pt ? 'Tarefa' : 'Task',
+      icon: <ClipboardList size={12} />,
+      count: session?.task ? 1 : 0,
+    },
   ]
 
   const tabBar = (
@@ -698,7 +718,18 @@ export function ArtifactsAside({
           {/* The REFUSAL outranks every tab: there is no list, feed or gallery to be empty when
               the conversation cannot be read at all, and `body()` is where that one sentence
               lives. */}
-          {unavailable ? body()
+          {/* The TASKS tab outranks the refusal: it is about the board, not about reading this
+              conversation, so a session whose transcript cannot be read can still be filed. */}
+          {tab === 'tasks' && session ? (
+            <div style={{ overflowY: 'auto', minHeight: 0 }}>
+              <SessionTasksTab
+                session={session}
+                lang={lang}
+                {...(onOpenTask ? { onOpenTask } : {})}
+                {...(onTaskChanged ? { onChanged: onTaskChanged } : {})}
+              />
+            </div>
+          ) : unavailable ? body()
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()

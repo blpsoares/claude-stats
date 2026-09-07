@@ -27,7 +27,7 @@ import { NewSessionModal } from '../sessions/NewSessionModal'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
 import { TaskPicker } from '../tasks/TaskPicker'
-import { attachSession } from '../../lib/tasks'
+import { attachSession, detachSession } from '../../lib/tasks'
 import { SessionFacts } from '../sessions/SessionFacts'
 import { sessionPath } from '../../lib/sessionRoute'
 import {
@@ -465,11 +465,30 @@ export function SessionsAside({
         <TaskPicker
           at={{ x: linking.x, y: linking.y }}
           title={pt ? 'Vincular a uma tarefa' : 'Link to a task'}
+          {...(() => {
+            // The row the menu was opened on, so the picker can name what it is filed under and
+            // offer to unfile it — the same contract the three-dot menu passes.
+            const row = rows.find(r => r.id === linking.id)
+            return row
+              ? {
+                session: {
+                  id: row.id, title: row.title, harness: row.harness,
+                  ...(row.task ? { task: row.task } : {}),
+                },
+              }
+              : {}
+          })()}
           onPick={async taskId => {
             const ok = await attachSession(taskId, linking.id)
             setNotice(ok
               ? (pt ? 'Sessão vinculada à tarefa.' : 'Session filed under the task.')
               : (pt ? 'Não foi possível vincular.' : 'Could not link that session.'))
+          }}
+          onDetach={async () => {
+            const ok = await detachSession(linking.id, linking.id)
+            setNotice(ok
+              ? (pt ? 'Sessão desvinculada.' : 'No longer filed under a task.')
+              : (pt ? 'Não foi possível desvincular.' : 'Could not unfile that session.'))
           }}
           onClose={() => setLinking(null)}
         />
