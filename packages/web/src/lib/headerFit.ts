@@ -58,6 +58,27 @@ export const COMPACT_DATE_BAR_W = DATE_COMPACT_W + GAP_W + ACTIVE_W + GAP_W + AD
 export const ICON_ACTIVE_BAR_W = DATE_COMPACT_W + GAP_W + ACTIVE_ICON_W + GAP_W + ADD_FILTER_W
 export const ICON_BOTH_BAR_W = DATE_COMPACT_W + GAP_W + ACTIVE_ICON_W + GAP_W + ADD_FILTER_ICON_W
 
+/**
+ * THE FLOOR THE SLOT MUST HOLD, and the thing this module could not enforce on its own.
+ *
+ * "It shrinks rather than clips" is only true down to the narrowest tier's own width. Below that
+ * there is no tier left to choose, and the bar — `flexWrap: nowrap`, `maxWidth: 100%` — cannot
+ * wrap, cannot clip and cannot compact any further, so its controls simply crush into each other:
+ * the padding goes, the gaps go, and the `+` ends up welded to the button beside it. Reported from
+ * a tablet with eleven filters applied, which is the exact case the tiers budget for.
+ *
+ * The slot that hosts the bar carried `minWidth: 90` — 122px under this. So the strip kept taking
+ * width the bar had already run out of ways to give. Handing the slot THIS number instead makes
+ * the floor the one `headerFit` already decided, and what gives up the remaining width is the
+ * TITLE, which ellipsises: a name cut short is still a name, while a jammed control row is a set
+ * of buttons nobody can tell apart.
+ *
+ * It is `ICON_BOTH_BAR_W` and not something smaller for the reason the tiers are measured at their
+ * widest: "see active filters" exists only while something is filtering, and a floor that fits only
+ * an unfiltered bar is a floor that fails the moment somebody filters.
+ */
+export const MIN_BAR_W = ICON_BOTH_BAR_W
+
 export interface HeaderFit {
   /**
    * `full` — the presets and the from/to range, side by side on the line.

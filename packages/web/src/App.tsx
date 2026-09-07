@@ -67,7 +67,7 @@ import { TeamLogin } from './components/TeamLogin'
 import { Login } from './components/Login'
 import { ModeSwitch } from './components/nav/ModeSwitch'
 import { TopBar } from './components/nav/TopBar'
-import { COST_BASIS_W, FULL_BAR_W, headerFit, stripPadding } from './lib/headerFit'
+import { COST_BASIS_W, FULL_BAR_W, MIN_BAR_W, headerFit, stripPadding } from './lib/headerFit'
 import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
@@ -2987,7 +2987,12 @@ export default function AppLayout() {
           as dead. A clipping ancestor cannot tell a popover from an overflowing row. The overlap is
           prevented where it is caused instead: `headerFit` collapses the date block before the row
           can outgrow this slot, and the bar's own root is capped at 100%. */}
-      <div ref={setFilterSlotEl} style={{ flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center' }}>
+      {/* THE FLOOR IS THE NARROWEST TIER'S OWN WIDTH — `MIN_BAR_W`, not a number typed here. It was
+          `minWidth: 90`, 122px under it, so on a tablet the strip went on taking width after
+          `headerFit` had run out of tiers: the bar cannot wrap and cannot clip, so its controls
+          crushed together and the `+` ended up welded to the button beside it. Below this the TITLE
+          gives instead, and a title ellipsises. */}
+      <div ref={setFilterSlotEl} style={{ flex: 1, minWidth: MIN_BAR_W, display: 'flex', justifyContent: 'center' }}>
         <FiltersBar
           inline
           dateCompact={stripFit.date === 'compact'}
@@ -3173,7 +3178,8 @@ export default function AppLayout() {
           `paddingLeft` is the action cluster's own width, mirrored on this side so the filters land
           on the STRIP's centre line rather than the centre of what is left beside them. */}
       <div ref={setFilterSlotEl} style={{
-        flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center',
+        // The same floor, for the same reason — see the sessions strip's note.
+        flex: 1, minWidth: MIN_BAR_W, display: 'flex', justifyContent: 'center',
         paddingLeft: stripPad, boxSizing: 'border-box',
       }}>
         <FiltersBar
