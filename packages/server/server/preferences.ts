@@ -92,6 +92,13 @@ export interface Preferences {
   /** true once the user dismissed the install prompt with "don't show again".
    *  Persisted server-side (not localStorage) so it survives incognito windows. */
   installDismissed?: boolean
+  /** The sessions kept in sight, in their pinned order.
+   *
+   *  SERVER-SIDE because a pin is a fact about the WORK, not about the screen it was made on. It
+   *  lived in localStorage, so the same dashboard reached from a phone, a tablet and the desktop
+   *  showed three different pinned bands — one application, three answers. The browser copy stays
+   *  as the first paint (see `pinnedSessions.ts`); this is the one that is true. */
+  pinnedSessions?: string[]
   /** Magnifier lenses and their settings, for a MACHINE. On a central the same object lives per
    *  account in the `userPrefs` collection instead — see a11y-prefs.ts, which owns that choice. */
   accessibility?: AccessibilityPrefs

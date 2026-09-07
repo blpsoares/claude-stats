@@ -6,6 +6,16 @@
  * OUTSIDE the grouping, and survive a reload. The store is the persisted, shared source of truth
  * (localStorage + an external store), the same shape as `terminalZoom.ts`.
  *
+ * WHERE IT LIVES: the SERVER (`/api/preferences`), with the browser copy kept only as the first
+ * paint. A pin is a fact about the WORK — these three sessions are the ones I am holding — and not
+ * about the screen the pin was made on, so the same dashboard opened from a phone, a tablet and
+ * the desktop must show one pinned band. It was localStorage, which is per browser, so it showed
+ * three; reported as "as coisas se comportam de forma diferente… é literalmente a mesma aplicação".
+ *
+ * THE WRITE IS ARMED ONLY BY A SUCCESSFUL LOAD — the same rule `a11y-prefs.ts` states for the same
+ * trap. A central answers 401 until login and a machine can be starting up, and treating a failed
+ * read as an empty set would let the first pin on one device PUT `[]` over what the others hold.
+ *
  * The rules are deliberate and pinned by the pure `planPinToggle`:
  *  - a HARD limit (MAX_PINNED), and the one past it is REFUSED, never a silent swap — a swap
  *    surprises, a refusal is predictable;
@@ -88,11 +98,46 @@ function readInitial(): string[] {
 let current: string[] = readInitial()
 const subscribers = new Set<() => void>()
 
+/** False until the server has answered once. See the header: an unarmed write would clobber. */
+let armed = false
+
+/**
+ * Read the shared set and adopt it.
+ *
+ * Idempotent and safe to call on every mount. A failure leaves `armed` false, so this device goes
+ * on working from its local copy and writes nothing — a device that cannot read the shared set is
+ * exactly the one that must not overwrite it.
+ */
+export async function loadPinnedSessions(): Promise<void> {
+  try {
+    const res = await fetch('/api/preferences')
+    if (!res.ok) return
+    const prefs = await res.json() as { pinnedSessions?: unknown }
+    armed = true
+    const shared = Array.isArray(prefs.pinnedSessions)
+      ? prefs.pinnedSessions.filter((x): x is string => typeof x === 'string').slice(0, MAX_PINNED)
+      : []
+    if (shared.length === current.length && shared.every((x, i) => x === current[i])) return
+    current = shared
+    try { localStorage.setItem(KEY, JSON.stringify(current)) } catch { /* private mode */ }
+    for (const fn of subscribers) fn()
+  } catch {
+    /* offline, or a central that has not signed us in yet — stay unarmed and local */
+  }
+}
+
 function persist() {
   try {
     localStorage.setItem(KEY, JSON.stringify(current))
   } catch {
     /* storage may be unavailable; the in-memory set still drives this session */
+  }
+  if (armed) {
+    void fetch('/api/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinnedSessions: current }),
+    }).catch(() => { /* the pin holds here; the next load reconciles */ })
   }
   for (const fn of subscribers) fn()
 }

@@ -70,7 +70,7 @@ import { COST_BASIS_W, FULL_BAR_W, headerFit, stripPadding } from './lib/headerF
 import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
-import { getPinnedIds } from './lib/pinnedSessions'
+import { getPinnedIds, loadPinnedSessions } from './lib/pinnedSessions'
 import {
   DEFAULT_ORDER, sortSessions, type ControlSession,
 } from '@agentistics/tui/control/session-fleet'
@@ -1868,6 +1868,20 @@ export default function AppLayout() {
       .then(prefs => { if (prefs) setDeniedRepoLabels(buildDeniedRepoLabels(readTeamConnections(prefs))) })
       .catch(() => { /* a failed refresh keeps the last-known map — never wipes the badges */ })
   }, [])
+  // THE PINNED SET IS SHARED, so it is read here and re-read whenever this tab comes back to the
+  // front: a pin made on the phone must appear on the desktop without a reload, or "the same
+  // application from three devices" is three applications again. See `pinnedSessions.ts`.
+  useEffect(() => {
+    void loadPinnedSessions()
+    const again = () => { if (document.visibilityState === 'visible') void loadPinnedSessions() }
+    document.addEventListener('visibilitychange', again)
+    window.addEventListener('focus', again)
+    return () => {
+      document.removeEventListener('visibilitychange', again)
+      window.removeEventListener('focus', again)
+    }
+  }, [])
+
   const chooseArchive = useCallback((mode: ArchiveMode) => {
     setArchiveChoice(mode)
     fetch('/api/preferences', {
