@@ -257,6 +257,12 @@ export function SessionWizard({ host, strings: s, width, height, isActive, onCan
       <Box flexDirection="column" width={width}>
         <Text dimColor>{truncate(s.wizPromptHint, width)}</Text>
         <TextPrompt
+          // KEYED per step. `prompt` and `name` render a `TextPrompt` at the SAME position in this
+          // component's tree, so React reconciled them as one element and carried its `value` state
+          // across — the name field arrived holding the whole first prompt, and a long one had to be
+          // deleted by hand before the session could be named. The key is what makes them two
+          // fields. Reported as "o prompt vira o titulo da sessao".
+          key="wiz-prompt"
           label={s.wizPrompt}
           width={width}
           isActive={isActive}
@@ -276,6 +282,7 @@ export function SessionWizard({ host, strings: s, width, height, isActive, onCan
       <Box flexDirection="column" width={width}>
         <Text dimColor>{truncate(s.wizNameHint, width)}</Text>
         <TextPrompt
+          key="wiz-name"
           label={s.wizName}
           // A PLACEHOLDER, never a `defaultValue`: `TextPrompt` treats a default as the answer to an
           // empty submit, which is right for renaming and wrong here — enter on an untouched field

@@ -70,7 +70,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
           width: '100%',
           maxWidth: 480,
           background: 'var(--bg-elevated, #1a1a1a)',
-          border: '1px solid var(--border, rgba(255,255,255,0.1))',
+          border: '1px solid var(--border, var(--ag-tint-4))',
           borderRadius: 14,
           boxShadow: '0 24px 64px rgba(0,0,0,0.7)',
           overflow: 'hidden',
@@ -84,7 +84,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '16px 18px 14px',
-          borderBottom: '1px solid var(--border-subtle, rgba(255,255,255,0.07))',
+          borderBottom: '1px solid var(--border-subtle, var(--ag-tint-3))',
         }}>
           <span style={{
             fontSize: 13,
@@ -113,7 +113,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
             }}
             onMouseEnter={e => {
               const el = e.currentTarget
-              el.style.background = 'rgba(255,255,255,0.08)'
+              el.style.background = 'var(--ag-tint-4)'
               el.style.color = 'var(--text-primary, #e8e8e8)'
             }}
             onMouseLeave={e => {
@@ -144,7 +144,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
                 borderRadius: 3,
                 background: i === currentIndex
                   ? 'var(--anthropic-orange, #e8925a)'
-                  : 'rgba(255,255,255,0.15)',
+                  : 'var(--ag-tint-5)',
                 border: 'none',
                 cursor: 'pointer',
                 padding: 0,
@@ -221,7 +221,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
           {/* Note */}
           {item.note && (
             <div style={{
-              borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.07))',
+              borderTop: '1px solid var(--border-subtle, var(--ag-tint-3))',
               paddingTop: 12,
               marginTop: item.formula ? 0 : 0,
             }}>
@@ -262,7 +262,7 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '10px 14px 14px',
-          borderTop: '1px solid var(--border-subtle, rgba(255,255,255,0.07))',
+          borderTop: '1px solid var(--border-subtle, var(--ag-tint-3))',
         }}>
           <button
             onClick={goLeft}
@@ -271,8 +271,8 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid var(--border, rgba(255,255,255,0.1))',
+              background: 'var(--ag-tint-2)',
+              border: '1px solid var(--border, var(--ag-tint-4))',
               cursor: total <= 1 ? 'default' : 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -284,12 +284,12 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
             }}
             onMouseEnter={e => {
               if (total > 1) {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.1)'
+                e.currentTarget.style.background = 'var(--ag-tint-4)'
                 e.currentTarget.style.color = 'var(--text-primary, #e8e8e8)'
               }
             }}
             onMouseLeave={e => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+              e.currentTarget.style.background = 'var(--ag-tint-2)'
               e.currentTarget.style.color = total <= 1 ? 'var(--text-tertiary, #555)' : 'var(--text-secondary, #aaa)'
             }}
           >
@@ -311,8 +311,8 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid var(--border, rgba(255,255,255,0.1))',
+              background: 'var(--ag-tint-2)',
+              border: '1px solid var(--border, var(--ag-tint-4))',
               cursor: total <= 1 ? 'default' : 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -324,12 +324,12 @@ export function InfoModal({ items, currentIndex, onClose, onNavigate, lang }: Pr
             }}
             onMouseEnter={e => {
               if (total > 1) {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.1)'
+                e.currentTarget.style.background = 'var(--ag-tint-4)'
                 e.currentTarget.style.color = 'var(--text-primary, #e8e8e8)'
               }
             }}
             onMouseLeave={e => {
-              e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+              e.currentTarget.style.background = 'var(--ag-tint-2)'
               e.currentTarget.style.color = total <= 1 ? 'var(--text-tertiary, #555)' : 'var(--text-secondary, #aaa)'
             }}
           >

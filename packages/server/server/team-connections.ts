@@ -14,7 +14,7 @@
  */
 
 import type { TeamConnection, TeamConfig, ShareSource, ShareSourceType } from '@agentistics/core'
-import { connectionId, defaultTeam, normalizeTeamConfig, normalizeEndpointKey, normalizeGitRemote, NO_REPO_KEY } from '@agentistics/core'
+import { connectionId, defaultTeam, normalizeTeamConfig, normalizeEndpointKey, normalizeGitRemote, NO_REPO_KEY, resolveRemoteConsent } from '@agentistics/core'
 import { readPreferences, updateTeamConfig, PreferencesLockTimeoutError } from './preferences'
 import { safeConnId, AGENTISTICS_DATA_DIR } from './config'
 import { readJsonLimited, LIMITS } from './limits'
@@ -26,6 +26,7 @@ import type { ForgetProgress } from './team-forget-client'
 import { loadRulesState } from './team-rules'
 import { getElsewhere, scheduleElsewhereCheck, checkElsewhereNow } from './team-elsewhere'
 import { announceRestrictionNow, scheduleEnvelopeSync } from './envelope-client'
+import { announceRemoteConsentNow } from './team-agent-client'
 import type { ElsewhereRepo } from './account-repos'
 import {
   sourcesRestrict, withUnresolvedSources, rulesSignature, emptyRulesSignature, normalizeSources,
@@ -200,6 +201,9 @@ export interface PatchBody {
   label?: string
   shareMode?: 'denylist' | 'allowlist'
   sources?: ShareSource[]
+  /** This machine's consent for THIS central to manage its sessions — see `remoteSessions.ts`. */
+  allowRemoteSessions?: boolean
+  allowRemoteScreens?: boolean
 }
 
 /** Validate the PATCH /api/team/connections/:id body. Pure. An empty string label is a
@@ -220,8 +224,19 @@ export function validatePatchBody(raw: unknown): PatchBody | { error: string } {
   if (rules.shareMode !== undefined) out.shareMode = rules.shareMode
   if (rules.sources !== undefined) out.sources = rules.sources
 
-  if (out.label === undefined && out.shareMode === undefined && out.sources === undefined) {
-    return { error: 'nothing to update — provide label, shareMode and/or sources' }
+  // The consent switches. Only a real boolean is accepted — a truthy string arriving from a
+  // hand-rolled client must not read as an agreement nobody made, which is the same reason
+  // `resolveRemoteConsent` tests for a literal `true` rather than truthiness.
+  for (const key of ['allowRemoteSessions', 'allowRemoteScreens'] as const) {
+    if (key in r && r[key] !== undefined) {
+      if (typeof r[key] !== 'boolean') return { error: `${key} must be a boolean` }
+      out[key] = r[key] as boolean
+    }
+  }
+
+  if (out.label === undefined && out.shareMode === undefined && out.sources === undefined
+      && out.allowRemoteSessions === undefined && out.allowRemoteScreens === undefined) {
+    return { error: 'nothing to update — provide label, shareMode, sources and/or the remote-session switches' }
   }
   return out
 }
@@ -587,6 +602,7 @@ export async function handlePatchConnection(
     notify?: () => void
     checkElsewhere?: (connId: string) => void
     announce?: (connId: string) => void
+    announceConsent?: (connId: string) => void
   } = {},
 ): Promise<Response> {
   const _updateTeamConfig = deps.updateTeamConfig ?? updateTeamConfig
@@ -594,6 +610,7 @@ export async function handlePatchConnection(
   const _notify = deps.notify ?? notifyLocalDashboards
   const _checkElsewhere = deps.checkElsewhere ?? checkElsewhereNow
   const _announce = deps.announce ?? announceRestrictionNow
+  const _announceConsent = deps.announceConsent ?? announceRemoteConsentNow
   let id: string
   try {
     id = safeConnId(rawId)
@@ -609,6 +626,7 @@ export async function handlePatchConnection(
   let found = false
   let rulesChanged = false
   let somethingChanged = false
+  let consentChanged = false
   try {
     await _updateTeamConfig((current: TeamConfig) => {
       const existing = current.connections.find(c => c.id === id)
@@ -633,8 +651,37 @@ export async function handlePatchConnection(
       }
       const newLabel = body.label !== undefined ? (body.label || undefined) : existing.label
       if (body.label !== undefined && newLabel !== existing.label) somethingChanged = true
+      // The consent switches. Written independently of each other — the UI can turn screens off
+      // without touching sessions — but `resolveRemoteConsent` is what READS them, so a stored
+      // `{sessions:false, screens:true}` is never in force whatever order the two writes arrive in.
+      const allowRemoteSessions = body.allowRemoteSessions !== undefined ? body.allowRemoteSessions : existing.allowRemoteSessions
+      // Withdrawing the fleet consent CLEARS the screen consent too, rather than leaving it stored
+      // and inert. `resolveRemoteConsent` would already refuse to act on it, so this is not about
+      // enforcement — it is about what happens LATER: a stored `screens:true` under a switched-off
+      // `sessions` comes back the moment sessions is switched on again, and a grant nobody
+      // re-made is the thing a withdrawal is supposed to prevent. Turning it back on is one click;
+      // discovering your terminal is being read again because of a decision you reversed months
+      // ago is not recoverable.
+      const requestedScreens = body.allowRemoteScreens !== undefined ? body.allowRemoteScreens : existing.allowRemoteScreens
+      // Only a GRANT is cleared. An absent field stays absent: rewriting `undefined` to `false` on
+      // every unrelated PATCH would mark the connection as changed and wake every open dashboard
+      // for a no-op, which is exactly what `somethingChanged` exists to avoid.
+      const allowRemoteScreens = allowRemoteSessions === true
+        ? requestedScreens
+        : (requestedScreens === true ? false : requestedScreens)
+      if (allowRemoteSessions !== existing.allowRemoteSessions || allowRemoteScreens !== existing.allowRemoteScreens) {
+        somethingChanged = true
+        consentChanged = true
+      }
       const connections = current.connections.map(c => c.id === id
-        ? { ...c, ...(body.label !== undefined ? { label: newLabel } : {}), shareMode, sources }
+        ? {
+            ...c,
+            ...(body.label !== undefined ? { label: newLabel } : {}),
+            shareMode,
+            sources,
+            ...(allowRemoteSessions !== undefined ? { allowRemoteSessions } : {}),
+            ...(allowRemoteScreens !== undefined ? { allowRemoteScreens } : {}),
+          }
         : c)
       return normalizeTeamConfig({ ...defaultTeam(), mode: 'member', connections })
     })
@@ -646,6 +693,10 @@ export async function handlePatchConnection(
   if (!found) return json({ error: 'unknown connection' }, 404)
   // Notify only once the write above has resolved — the client's refetch must observe it.
   if (somethingChanged) _notify()
+  // Tell the central at once. A consent that only reached it at the next reconnect would leave the
+  // owning account looking at a switch they just turned OFF while the central still believed it was
+  // on — and "off" is the half of this that has to be immediate.
+  if (consentChanged) _announceConsent(id)
   if (rulesChanged) {
     // The moment the answer matters: the user has just restricted something, so ask the central
     // (question unchanged, see account-repos.ts) and recompute the warning without waiting out
@@ -822,6 +873,16 @@ export interface ConnectionStatusEntry {
    *  connection whose rules were just saved is restricted immediately, even before its first
    *  cycle has run. Allowlist mode is ALWAYS restricted, even with an empty source list. */
   restricted: boolean
+  /**
+   * This machine's consent for THIS central to manage its sessions — the RESOLVED pair, never the
+   * two raw fields, so `resolveRemoteConsent` stays the only interpretation of them.
+   *
+   * Same-origin only, like every other field on this route. It is on the wire here for the machine's
+   * OWN dashboard to render its switches; the central learns it by announcement over the reverse
+   * channel (`remote-consent`), not from this.
+   */
+  remoteSessions: boolean
+  remoteScreens: boolean
   /** The day after Claude's own rollup watermark — the local honesty marker from §4.4/§5.9.
    *  Shared across every connection (it describes THIS machine's stats-cache, not a connection),
    *  and lives on this route only: never sent to a central. `null` = unknowable this cycle
@@ -913,6 +974,10 @@ export function buildConnectionStatusEntry(
     allowedCount: counts.allowedCount,
     deniedCount: counts.shareMode === 'allowlist' ? counts.allowedCount : counts.deniedRepos + counts.deniedProjects,
     restricted: sourcesRestrict(conn.shareMode, conn.sources),
+    ...(() => {
+      const consent = resolveRemoteConsent(conn.allowRemoteSessions, conn.allowRemoteScreens)
+      return { remoteSessions: consent.sessions, remoteScreens: consent.screens }
+    })(),
     boundary: local.boundary,
     prehistorySessions: local.prehistorySessions,
     canForget: local.canForget,

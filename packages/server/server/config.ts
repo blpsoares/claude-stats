@@ -47,7 +47,11 @@ export const ARCHIVE_ENABLED = process.env.AGENTISTICS_ARCHIVE !== '0'
 // the read-WRITE ~/.agentistics mount, whereas CLAUDE_DIR is the host ~/.claude mounted
 // read-only — so anything the app must persist (preferences, consolidate store, sync state)
 // belongs here, never under CLAUDE_DIR.
-export const AGENTISTICS_DATA_DIR = process.env.AGENTISTICS_DIR ?? join(HOME_DIR, '.agentistics')
+// The location an install with no `AGENTISTICS_DIR` uses. Exported because it is the ONLY
+// directory a pre-`~/.agentistics` legacy file may seed: see `legacyPreferencesSource` in
+// preferences.ts.
+export const DEFAULT_AGENTISTICS_DATA_DIR = join(HOME_DIR, '.agentistics')
+export const AGENTISTICS_DATA_DIR = process.env.AGENTISTICS_DIR ?? DEFAULT_AGENTISTICS_DATA_DIR
 // EVERY path below is derived from AGENTISTICS_DATA_DIR, never from HOME_DIR directly. They used
 // to be built from the home directory, so `AGENTISTICS_DIR` relocated preferences and the
 // connection state while the consolidate store, the archive and the workflow runs silently stayed

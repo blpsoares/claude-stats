@@ -30,6 +30,19 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
   // Raised when an owner recovers their password with the second factor. It is a WARNING, not a
   // success: the whole point of showing it to every other owner is that this is what an account
   // takeover would look like, and the only chance anyone has to notice it.
+  // Raised for a MANAGER, about somebody else's account — it carries no `meta` at all, which is
+  // why `notifications-store.ts` keys it by SUBJECT: two people asking at once must not collapse
+  // into one row that shows only the second one.
+  'iam.reset_requested': {
+    pt: {
+      title: 'Pedido de redefinição de senha',
+      message: 'Alguém pediu para redefinir a senha de uma conta que você administra. Confirme com a pessoa antes de aprovar.',
+    },
+    en: {
+      title: 'Password reset requested',
+      message: 'Someone asked to reset the password of an account you administer. Confirm with them before approving.',
+    },
+  },
   'iam.password_recovered': {
     pt: {
       title: 'Senha de owner redefinida',
@@ -51,6 +64,39 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
   'member.reconnected': {
     pt: { title: 'Conectado à central', message: 'Os envios para {central} voltaram a funcionar.' },
     en: { title: 'Connected to the central', message: 'Pushes to {central} are working again.' },
+  },
+  // The backup's own toasts. A backup can take minutes and, on a schedule, nobody pressed
+  // anything to start it — so a machine that is busy backing up would otherwise look exactly like
+  // one that is idle, and a FAILED backup exactly like one that never ran. That last pair is the
+  // dangerous one: it is the case where the person believes they are covered.
+  'backup.started': {
+    pt: { title: 'Backup em andamento', message: 'Salvando {layers}. Você pode continuar usando a máquina.' },
+    en: { title: 'Backup running', message: 'Saving {layers}. You can keep using the machine.' },
+  },
+  'backup.done': {
+    pt: { title: 'Backup concluído', message: '{layers} · {size}.' },
+    en: { title: 'Backup complete', message: '{layers} · {size}.' },
+  },
+  // A clean run and a partial one are different facts, so they are different codes — one sentence
+  // covering both would let a backup quietly stop carrying something.
+  'backup.done.skipped': {
+    pt: { title: 'Backup concluído, com ressalvas', message: '{layers} · {size}. {skipped} caminho(s) não puderam ser lidos e ficaram de fora — veja o log.' },
+    en: { title: 'Backup complete, with caveats', message: '{layers} · {size}. {skipped} path(s) could not be read and were left out — see the log.' },
+  },
+  'backup.failed': {
+    pt: { title: 'Backup FALHOU', message: 'Nada foi gravado. Motivo: {reason}' },
+    en: { title: 'Backup FAILED', message: 'Nothing was written. Reason: {reason}' },
+  },
+  'backup.uploaded': {
+    pt: { title: 'Backup versionado no GitHub', message: 'Release {tag} — conferido byte a byte.' },
+    en: { title: 'Backup versioned on GitHub', message: 'Release {tag} — confirmed byte for byte.' },
+  },
+  // A WARNING, deliberately, not an error: the archive was written and is on disk and restores.
+  // Calling this a failed backup would tell someone they have nothing when they have everything
+  // except the copy on GitHub.
+  'backup.upload_failed': {
+    pt: { title: 'Backup salvo, envio falhou', message: 'O arquivo está no disco desta máquina e restaura normalmente — só a cópia no GitHub não foi feita. Motivo: {reason}' },
+    en: { title: 'Backup saved, upload failed', message: 'The archive is on this machine and restores normally — only the GitHub copy was not made. Reason: {reason}' },
   },
   'member.removed': {
     pt: { title: 'Removido da central', message: 'O acesso desta máquina a {central} foi revogado. A conexão foi removida — gere um novo token nessa central para reconectar.' },
@@ -105,6 +151,12 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
     pt: { title: 'Máquina reatribuída', message: 'Esta máquina agora pertence a {account} (alterado por {actor}).' },
     en: { title: 'Machine reassigned', message: 'This machine now belongs to {account} (changed by {actor}).' },
   },
+  'machine.session_acted': {
+    // Says WHICH verb: "somebody acted on a session" is unfalsifiable reassurance, while "killed"
+    // and "renamed" are things the person at this keyboard can check.
+    pt: { title: 'Sessão alterada pela central', message: 'A central executou "{verb}" numa sessão desta máquina.' },
+    en: { title: 'Session acted on from the central', message: 'The central performed "{verb}" on a session of this machine.' },
+  },
   'app.update_available': {
     pt: { title: 'Atualização disponível', message: 'Uma nova versão do agentistics ({version}) está disponível.' },
     en: { title: 'Update available', message: 'A new version of agentistics ({version}) is available.' },
@@ -119,7 +171,21 @@ const PEER_CODES = new Set(['member.rules_proposed', 'member.peer_pinned', 'memb
 
 export function resolveNotification(n: AppNotification, lang: 'pt' | 'en'): Localized {
   const loc = n.code ? NOTIFICATION_TEXT[n.code]?.[lang] : undefined
-  const title = loc?.title ?? n.title ?? ''
+  // A CODE WITH NO TEXT MUST NOT RENDER AS A BLANK CARD.
+  //
+  // Only `code` + `meta` are stored, so a code this table has not met resolves to empty strings —
+  // and both surfaces then draw a card with an icon, a timestamp, a dismiss button and NOTHING to
+  // read. It is the worst possible failure for a notification: the product is telling the user
+  // something happened and refusing to say what, and it is indistinguishable from a rendering bug.
+  //
+  // `notificationCoverage.test.ts` makes an unmapped code fail the build, so this should never
+  // fire. It exists anyway because that test can only see the codes the server emits TODAY, and a
+  // notification stored by a newer build and read by an older one is the case no lint can reach.
+  // The code itself is a poor title and an honest one.
+  const fallbackTitle = n.code
+    ? (lang === 'pt' ? `Evento: ${n.code}` : `Event: ${n.code}`)
+    : ''
+  const title = loc?.title ?? n.title ?? fallbackTitle
   let message = loc?.message ?? n.message
   // Interpolate {user} from meta (e.g. "{user} connected to the central").
   if (message && n.meta?.user) {
@@ -158,6 +224,25 @@ export function resolveNotification(n: AppNotification, lang: 'pt' | 'en'): Loca
   // Append the HTTP status to the auth-rejected message when the central provided one.
   if (n.code === 'member.auth_rejected' && n.meta?.status && message) {
     message = `${message} (HTTP ${n.meta.status})`
+  }
+
+  // EVERY remaining {placeholder}, from `meta` under the same name.
+  //
+  // The cases above are the ones that TRANSFORM their value — a `v` prefix, a fallback noun when
+  // the fact is missing, a whole different sentence for the peer codes — and they run first so
+  // this never overrides them. What was missing was the ordinary case, and its absence was a bug
+  // factory: interpolation was a hand-written list, so every new code with a new placeholder
+  // shipped showing its own braces. Seen on screen as "Salvando {layers}." and "Motivo: {reason}".
+  //
+  // A placeholder with NO value in `meta` is LEFT ALONE rather than replaced: printing the word
+  // `undefined` inside a sentence a person reads is worse than a visible brace, because it looks
+  // like the value.
+  if (message && n.meta) {
+    const meta = n.meta
+    message = message.replace(/\{([a-zA-Z][a-zA-Z0-9_]*)\}/g, (whole, key: string) => {
+      const v = meta[key]
+      return v === undefined || v === null ? whole : String(v)
+    })
   }
   return { title, message }
 }

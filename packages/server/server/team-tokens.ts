@@ -25,7 +25,7 @@ import { getMongoDb } from './mongo'
 import { fromBsonDate, fromBsonDateOrNull } from './mongo-dates'
 import { teamDocId, type TeamSessionDoc } from './team-store'
 import { claimRotation } from './rotate-claim'
-import { accountTeamsMap, resolveMachineTeams } from '@agentistics/core'
+import { accountTeamsMap, resolveMachineTeams, machineSessionAccounts, resolveSessionGrant } from '@agentistics/core'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +50,15 @@ export interface TokenDoc {
   accountId?: string
   /** All owning accounts for machine tokens — a machine can be owned/managed by several accounts. */
   accountIds?: string[]
+  /**
+   * The accounts allowed to reach this machine's SESSIONS — a subset of `accountIds`, never wider.
+   *
+   * Seeded at MINT with the creation accounts, so a machine created for your account is one you
+   * manage sessions on with nothing to click. A LATER link does not join it: that is the whole
+   * separation. Absent means "not recorded yet" and is read by `machineSessionAccounts` as the
+   * first linked account — never as everyone linked. See `@agentistics/core/machineSessions`.
+   */
+  sessionAccountIds?: string[]
   /** Teams this machine is held OUT of even though it would otherwise inherit them from an owner
    *  account (or carry them directly). This is what makes UNCHECKING an inherited team stick:
    *  without a stored exclusion the machine would re-inherit the team on the very next read. */
@@ -431,7 +440,9 @@ export async function mintMachine(input: { machineName: string; user: string; ac
     label: input.machineName,
     createdAt: new Date(),
     lastSeenAt: null,
-    ...(unique.length > 0 ? { accountId: unique[0], accountIds: unique } : {}),
+    // The creation accounts get session access automatically — the machine is being made FOR
+    // them. Every later link starts without it.
+    ...(unique.length > 0 ? { accountId: unique[0], accountIds: unique, sessionAccountIds: unique } : {}),
     ...(teams.length > 0 ? { teamId: teams[0], teamIds: teams } : {}),
   }
   const col = await getTokensCollection()
@@ -608,13 +619,32 @@ export async function setMachineLabel(id: string, label: string): Promise<boolea
  *  @agentistics/core) reads an empty `user` as "no owner" and excludes it, while the machine
  *  dimension keeps naming the machine by its `label` regardless. History is keyed by the token hash
  *  (memberId), not by this string, so changing it never splits past sessions. */
-export async function setMachineOwners(id: string, accountIds: string[], user?: string): Promise<boolean> {
+export async function setMachineOwners(
+  id: string,
+  accountIds: string[],
+  user?: string,
+  /**
+   * The accounts that may reach the SESSIONS, when the caller is allowed to decide it.
+   *
+   * Omitted leaves the stored grant alone — re-linking accounts for administration must not
+   * silently widen or narrow who can drive the machine's terminals. What IS enforced on every
+   * write is the intersection: an account that stops being linked stops being granted, so
+   * unlinking can never leave a live grant behind.
+   */
+  sessionAccountIds?: string[],
+): Promise<boolean> {
   const col = await getTokensCollection()
   const unique = [...new Set(accountIds.filter(Boolean))]
   const doc = await col.findOne({ _id: id })
   const nextUser = user !== undefined ? user : (unique.length > 0 ? machineUserFor(doc?.user) : '')
+  const requested = sessionAccountIds ?? machineSessionAccounts({
+    accountIds: doc?.accountIds, accountId: doc?.accountId, sessionAccountIds: doc?.sessionAccountIds,
+  })
   const res = await col.updateOne({ _id: id }, {
-    $set: { accountIds: unique, accountId: unique[0], user: nextUser },
+    $set: {
+      accountIds: unique, accountId: unique[0], user: nextUser,
+      sessionAccountIds: resolveSessionGrant(unique, requested),
+    },
   })
   return res.matchedCount > 0
 }

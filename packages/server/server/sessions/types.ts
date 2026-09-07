@@ -33,10 +33,23 @@ export interface SpawnSpec {
    * would reject valid input the day a model ships.
    */
   modelSuggestions: string[]
+  /**
+   * The model this CLI uses when `--model` is not passed — ONLY when the CLI itself publishes it.
+   *
+   * It exists so a picker can say "Default (sonnet)" instead of "the assistant's default", which
+   * names a thing without saying what it is. ABSENT is the honest answer everywhere it cannot be
+   * read out of the tool's own output, and absent is what every entry is today — see the block
+   * above `SPAWN_SPECS` for what was checked, per harness, and how. Never fill this from a vendor
+   * page, a config file, or memory: a wrong default is stated with the same confidence as a right
+   * one and is read at a glance.
+   */
+  defaultModel?: string
   /** Absent when the CLI has no effort flag. Paired with `efforts`; never one without the other. */
   effortFlag?: string
   /** A genuine closed enum, printed by the CLI itself — so this one IS validated. */
   efforts?: string[]
+  /** The effort used when `--effort` is not passed, under exactly `defaultModel`'s rule. */
+  defaultEffort?: string
   /**
    * The argv (after `bin`) that reopens an existing conversation by ID.
    *
@@ -324,6 +337,24 @@ export interface AttentionRules {
    * is the only working signal there is, and claiming otherwise would be a guess.
    */
   working?: RegExp[]
+  /**
+   * The MAIN agent is producing, right now.
+   *
+   * Distinct from `working`, and the distinction is the whole point: claude prints `esc to
+   * interrupt` whenever ANYTHING is interruptible — a background subagent included — so a session
+   * that has already answered you and is waiting still carries it. Reading that as `working` told
+   * a person nothing was needed from them when something was. Measured on a live session:
+   *
+   *   waiting, subagents running   `⏵⏵ auto mode on · esc to interrupt · ← 6 agents`
+   *   the agent actually producing `· Jitterbugging… (37s · ↓ 1.7k tokens · thought for 17s)`
+   *
+   * The whimsical verb changes every frame; what does not is the elapsed time and the token
+   * counter, so that is what is matched.
+   *
+   * Optional, like `working`: a harness that does not draw one is not given a guess. Where it is
+   * absent the old behaviour stands exactly.
+   */
+  mainWorking?: RegExp[]
   /** Provenance — the exact CLI version the frames came from, and the date. */
   probed: string
 }
@@ -332,7 +363,15 @@ export interface SessionBackend {
   readonly id: 'tmux' | 'pty'
   /** Why this backend cannot run here, already localized. Absent when it can. */
   unavailable(): Promise<string | undefined>
-  spawn(req: BackendSpawn): Promise<void>
+  /**
+   * Start the session. Resolves once the session EXISTS — not once its first prompt has landed.
+   *
+   * An `initialPrompt` is delivered as a FOLLOW-UP: the harness has to draw its input box before a
+   * prompt can be typed into it, and waiting for that held every caller for the whole of the CLI's
+   * startup. `delivery` is that follow-up, for the rare caller that must wait; ignoring it is the
+   * normal case and never leaves an unhandled rejection.
+   */
+  spawn(req: BackendSpawn): Promise<{ delivery?: Promise<void> } | void>
   list(): Promise<BackendSession[]>
   /** Newest-last lines of the last rendered frame, trailing blanks removed. */
   capture(id: string, lines: number): Promise<string[]>
@@ -362,6 +401,13 @@ export interface SessionBackend {
    * poll and the keystroke is an ordinary outcome, not an error to crash a caller with.
    */
   sendText(id: string, text: string): Promise<boolean>
+  /**
+   * Pick a numbered option and write into the FIELD it opens — see the tmux implementation.
+   *
+   * One call rather than three, because the wait between the keystrokes is the whole point: sent as
+   * a burst, the option's digit lands inside the field it just opened.
+   */
+  sendChoiceText?(id: string, key: string, text: string): Promise<boolean>
   /**
    * Type literal text into the session WITHOUT submitting — the first half of `sendText`, exposed on
    * its own for the browser's key-by-key write channel (`input-web.ts`), where an implicit `Enter`

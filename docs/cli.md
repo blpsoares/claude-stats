@@ -37,6 +37,8 @@ agentop --version    # print version (and a notice if an update exists)
 | [`member`](#member) | Join / leave / inspect a Team Mode central from this machine |
 | [`session`](#session) | Start / list / attach / kill background assistant sessions (tmux-backed); `ls` prints the cockpit's table |
 | [`hooks`](#hooks) | Teach Claude Code to fan work out across several assistants through agentop |
+| [`backup`](#backup) | Back up this machine's history — metrics, and a manifest that rebuilds every repository |
+| [`restore`](#restore) | Restore a backup, or pull one from the private GitHub repository holding them |
 | [`ci-push`](#ci-push) | One-shot push of a GitHub Actions run's metrics to a central (per repo) |
 | [`autostart`](#autostart) | Start a mode with the system (systemd user service) |
 | [`upgrade`](#upgrade) | Upgrade `agentop` to the latest release |
@@ -502,6 +504,57 @@ the cockpit, harness support table and where state lives: see
 
 To have **Claude Code itself** propose the split, write each session's prompt and drive `batch`, see
 [`hooks`](#hooks) below.
+
+---
+
+## `backup`
+
+```bash
+agentop backup [--with-archive] [--with-raw] [--harness a,b] [--dest DIR]
+               [--max-bundle MB] [--plan]
+agentop backup schedule <off|daily|weekly>
+agentop backup config [--layers a,b] [--schedule <off|daily|weekly>] [--schedule-layers a,b]
+agentop backup status
+agentop backup github setup <repository-url>
+agentop backup github status
+agentop backup github install-workflow
+```
+
+Carries this machine's whole agentistics history to another one. A backup always holds the computed
+**metrics** plus a **repository manifest** that can rebuild every checkout, worktree, unpushed
+branch and uncommitted diff; `--with-archive` adds the mirrored transcripts and `--with-raw` the
+harness directories themselves. `--plan` prints what would be written and writes nothing.
+
+**Live credentials are never included**, by decision — `restore` prints each one and the command
+that re-establishes it. A schedule never carries the `repos` layer: rebuilding that manifest shells
+out to git across every candidate directory, which is a thing a person asks for, not something a
+timer does behind them. The schedule rides the daemon `agentop server` already runs, and `status`
+says so when the server is down rather than reporting an empty history.
+
+`github setup <url>` connects a **private** GitHub repository to hold versioned backups as releases
+— it verifies the repository is private and that the token can push before writing anything.
+
+→ **Full reference: [docs/backup.md](backup.md)**
+
+---
+
+## `restore`
+
+```bash
+agentop restore <archive> [--repos] [--only <repo>]
+agentop restore <repository-url> [--release <tag>] [--from <machine>]
+agentop restore github --list <repository-url>
+```
+
+Two phases and **resumable**: an interrupted restore continues rather than starting over. `--repos`
+replays the repository manifest (clone, worktrees, bundle, patch) as structured argv — never a
+joined string, and never a shell. Given a **repository URL** instead of a file it is the path back
+on a machine that has nothing else: it lists the releases, shows what would be downloaded, asks, and
+**verifies the sha256 against the release body before touching anything**. `--from <machine>` is
+required as soon as several machines version into the same repository, where "the newest" would
+otherwise be whichever ran last.
+
+→ **Full reference: [docs/backup.md](backup.md)**
 
 ---
 

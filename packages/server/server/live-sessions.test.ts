@@ -1,7 +1,7 @@
-import { test, expect } from 'bun:test'
+import { describe, it, test, expect } from 'bun:test'
 import {
   resolveOpenSessionIds, resolveLiveSnapshot, sessionIdFromArgv, harnessOf, sessionIdFromFdPaths,
-  LIVE_ACTIVITY_WINDOW_MIN, LIVE_STARTUP_GRACE_MIN, harnessOfProcess, detectionUnavailable,
+  LIVE_ACTIVITY_WINDOW_MIN, LIVE_STARTUP_GRACE_MIN, harnessOfProcess, detectionUnavailable, isHarnessInfrastructure
 } from './live-sessions'
 import type { HarnessId, SessionMeta } from '@agentistics/core'
 
@@ -425,4 +425,55 @@ test('an empty scan is reported as impossible only when it genuinely is', () => 
   expect(detectionUnavailable({ ...base, foreignPids: 0 })).toBe('container-isolated')
   // pid: host, but the container's uid cannot ptrace the host user's processes.
   expect(detectionUnavailable({ ...base, cwdDenied: true })).toBe('permission-denied')
+})
+
+describe('management subcommands are not sessions', () => {
+  it('the GHOST that was reported, verbatim', () => {
+    // Caught by sampling /proc twice a second for two minutes, printing every claude whose argv was
+    // not `--resume`. It ran for about a second in a worktree and flickered through the fleet as
+    // `claude in task-alm` — a session nobody opened and that no longer existed by the time it was
+    // read.
+    expect(isHarnessInfrastructure('claude', [
+      'claude', 'mcp', 'add', '-s', 'user', 'agentistics', '-e', 'AGENTISTICS_API=x',
+      '--', 'bun', 'run', 'x.ts',
+    ])).toBe(true)
+  })
+
+  it('every harness whose --help publishes a command list', () => {
+    expect(isHarnessInfrastructure('codex', ['codex', 'exec', 'do the thing'])).toBe(true)
+    expect(isHarnessInfrastructure('copilot', ['copilot', 'mcp', 'list'])).toBe(true)
+    expect(isHarnessInfrastructure('kimi', ['kimi', 'login'])).toBe(true)
+  })
+
+  it('A REAL SESSION NEVER DISAPPEARS — the expensive direction', () => {
+    // A ghost row is noise; a session nobody can find is a session nobody can find.
+    expect(isHarnessInfrastructure('claude', ['claude'])).toBe(false)
+    expect(isHarnessInfrastructure('claude', ['claude', '--resume', 'abc'])).toBe(false)
+    expect(isHarnessInfrastructure('claude', ['claude', '--session-id', 'abc'])).toBe(false)
+    expect(isHarnessInfrastructure('copilot', ['copilot', '--session-id', 'abc'])).toBe(false)
+    expect(isHarnessInfrastructure('kimi', ['kimi', '-S', 'abc'])).toBe(false)
+  })
+
+  it('the verbs that CONTINUE a conversation are excluded on purpose', () => {
+    // claude's `attach` is documented as "Open a background session in this terminal"; codex's
+    // `resume` and `fork` pick a conversation back up. All three open the very thing this list
+    // exists to keep.
+    expect(isHarnessInfrastructure('claude', ['claude', 'attach', '3f5f'])).toBe(false)
+    expect(isHarnessInfrastructure('codex', ['codex', 'resume', 'abc'])).toBe(false)
+    expect(isHarnessInfrastructure('codex', ['codex', 'fork', 'abc'])).toBe(false)
+  })
+
+  it('a PROMPT that mentions a subcommand does not kill the session', () => {
+    // The token bound exists for exactly this: the words are ordinary English and a first message
+    // may contain any of them.
+    expect(isHarnessInfrastructure('claude', ['claude', '-p', 'explain the mcp add command'])).toBe(false)
+    expect(isHarnessInfrastructure('claude', ['claude', '--resume', 'x', 'update the doctor'])).toBe(false)
+  })
+
+  it('gemini and antigravity are ABSENT rather than guessed', () => {
+    // gemini's help prints no readable command list and agy prints none at all. Absent means "not
+    // known to be management", so they behave exactly as they did.
+    expect(isHarnessInfrastructure('gemini', ['gemini', 'mcp', 'list'])).toBe(false)
+    expect(isHarnessInfrastructure('antigravity', ['agy', 'login'])).toBe(false)
+  })
 })

@@ -448,6 +448,18 @@ if (command === 'events') {
   process.exit(code)
 }
 
+if (command === 'backup') {
+  const { runBackupCli } = await import('../server/cli-backup.ts')
+  const code = await runBackupCli(args)
+  process.exit(code)
+}
+
+if (command === 'restore') {
+  const { runRestoreCli } = await import('../server/cli-backup.ts')
+  const code = await runRestoreCli(args)
+  process.exit(code)
+}
+
 if (command === 'member') {
   const sub = args[0]
   const rest = args.slice(1)

@@ -1,4 +1,5 @@
 import React from 'react'
+import { clearDataCache } from '../hooks/useData'
 
 interface Props {
   children: React.ReactNode
@@ -60,7 +61,16 @@ export class RootErrorBoundary extends React.Component<Props, State> {
               : 'The interface hit unexpected data and could not continue. Reloading the page usually fixes this.'}
           </p>
           <button
-            onClick={() => window.location.reload()}
+            onClick={() => {
+              // Clear the persisted /api/data snapshot BEFORE reloading. The most likely cause of
+              // a render crash is data, and the only data that survives a reload is that snapshot —
+              // so a bare reload re-read exactly the bytes that just crashed, and the button below
+              // the sentence "reloading usually fixes this" fixed nothing, forever. Verified: an
+              // incomplete snapshot throws in `computeDerivedStats` and every reload repeats it.
+              // Dropping it costs one slower first paint and is the only thing that can recover.
+              clearDataCache()
+              window.location.reload()
+            }}
             style={{
               padding: '9px 20px', borderRadius: 8, border: 'none',
               background: '#D97706', color: '#fff', fontSize: 13, fontWeight: 700,

@@ -16,7 +16,6 @@ import { UUID_RE, decodeProjectDir, getProjectGitStats, getGitRemote, gcGitStats
 import { parseSessionJsonl } from './jsonl'
 import type { MachineInfo } from './team-tokens'
 import { runHealthChecks, analyzeToolHealthIssues, analyzeCacheStaleness } from './health'
-import { extractAgentMetricsFromFile } from './agent-metrics'
 import { openParseCache, NOOP_PARSE_CACHE, type ParseCache } from './parse-cache'
 import { cachedParseSession, cachedEnrich } from './parse-cache-jsonl'
 
@@ -394,7 +393,7 @@ export async function scanProjects(
   cache: ParseCache = NOOP_PARSE_CACHE,
 ): Promise<ScanResult> {
   // Separate limiter just for file reads (not project dir traversal)
-  const fileLimit = createLimiter(30)
+  const fileLimit = createLimiter(6)
 
   // Union encoded project dirs across all roots (live + archive). Each maps to
   // the list of absolute paths that contain it, in root priority order (live first).

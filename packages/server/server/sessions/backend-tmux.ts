@@ -6,11 +6,15 @@
 import {
   attachArgs, capturePaneArgs, capturePaneAnsiArgs, idFromTmuxName, isSessionGoneError,
   killSessionArgs, listSessionsArgs, paneInfoArgs, parsePaneInfo, parsePrefix, parseTmuxList,
+  tmuxListIsEmptyState,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs, sendKeysNamedArgs, sendKeysLiteralArgs,
   showPrefixArgs, trimCapture,
   type TerminalProfile,
 } from './tmux-cli'
+import { dependencyCommandLine } from './dependency-plan'
+import { probeDependency } from './dependency-probe'
 import { planPromptDelivery } from './initial-prompt'
+import { frameChanged } from './submit-check'
 import type {
   BackendInitialPrompt, BackendSession, BackendSpawn, SessionBackend, TerminalCapture,
 } from './types'
@@ -29,6 +33,21 @@ const DELIVER_DEADLINE_MS = Number(process.env.AGENTISTICS_DELIVER_DEADLINE_MS) 
   : 15_000
 /** How much of the pane to read to judge readiness — enough for the input box and its footer. */
 const DELIVER_CAPTURE_LINES = 40
+
+/**
+ * The gap between typing a prompt and submitting it, and how long the submit is given to show.
+ *
+ * The gap exists because the two `send-keys` calls were back to back, microseconds apart, and a
+ * terminal UI reading a burst that size has every reason to treat the `\r` at the end of it as part
+ * of the same burst rather than as a person pressing return.
+ *
+ * The wait is what makes the CHECK possible at all: a pane captured the instant after `Enter` has
+ * not repainted yet, so it always looks unchanged and every send would retry.
+ */
+const SUBMIT_SETTLE_MS = 120
+/** How long to keep looking for the submit to show, and how often to look. */
+const SUBMIT_SHOW_MS = 600
+const SUBMIT_POLL_MS = 60
 
 /** True when this host has the named terminfo entry (`infocmp` exits 0). Never throws. */
 async function terminfoHas(name: string): Promise<boolean> {
@@ -93,7 +112,34 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 async function sendTextTo(id: string, text: string): Promise<boolean> {
   const typed = await tmux(sendKeysLiteralArgs(id, text))
   if (typed.code !== 0) return false
-  return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+
+  // Let the burst end before the return key, then look at what the typing produced — that frame is
+  // the thing the submit has to change. See `submit-check.ts` for why the check is the SCREEN and
+  // not the prompt's own words.
+  await sleep(SUBMIT_SETTLE_MS)
+  const typedFrame = await captureFrame(id)
+  if ((await tmux(sendKeysNamedArgs(id, 'Enter'))).code !== 0) return false
+  // POLLED, not slept. A fixed wait spends its whole budget on every message — measured at ~820ms
+  // per send, which a person feels on every keystroke of a conversation ("DEMORA MUITO pra enviar
+  // as mensagens"). The pane usually moves within one or two frames, so the common case now costs
+  // one poll and the budget is only spent when the submit genuinely did not show.
+  if (!(await paneMoved(id, typedFrame))) {
+    // The pane did not move. That is NOT proof the submit was swallowed — measured: a screen that
+    // redraws identically looks the same either way — so it buys one more return rather than a
+    // verdict. An extra return on an emptied input does nothing.
+    await tmux(sendKeysNamedArgs(id, 'Enter'))
+  }
+  return true
+}
+
+/** Did the pane change within the budget? Returns as soon as it did. */
+async function paneMoved(id: string, before: readonly string[]): Promise<boolean> {
+  const deadline = Date.now() + SUBMIT_SHOW_MS
+  for (;;) {
+    await sleep(SUBMIT_POLL_MS)
+    if (frameChanged(before, await captureFrame(id))) return true
+    if (Date.now() >= deadline) return false
+  }
 }
 
 async function captureFrame(id: string): Promise<string[]> {
@@ -129,6 +175,32 @@ async function deliverInitialPrompt(id: string, d: BackendInitialPrompt): Promis
 }
 
 let tmuxPresent: boolean | null = null
+/** The install sentence, computed once — same cost as the presence check it already memoized. */
+let tmuxMissingReason: string | null = null
+
+/**
+ * Why tmux is missing, and what would fix it — NAMING the manager and showing the exact command,
+ * never a generic "install it" that leaves the reader to go find one themselves.
+ *
+ * `dependency-plan.ts` decides what to say; this only turns its three honest refusals into the one
+ * sentence every caller of `unavailable()` already knows how to show (a plain string, dimmed under
+ * the CLI's usage text, or a banner in the cockpit's Sessions tab).
+ */
+async function explainMissingTmux(): Promise<string> {
+  const plan = await probeDependency('tmux')
+  switch (plan.reason) {
+    case 'windows':
+      return 'tmux is not installed, and there is no Windows session backend — use WSL to manage background sessions.'
+    case 'no-manager':
+      return 'tmux is not installed, and no recognised package manager was found — install it yourself to manage background sessions.'
+    default: {
+      const line = dependencyCommandLine(plan)
+      return line
+        ? `tmux is not installed — install it with ${plan.manager}: ${line}`
+        : 'tmux is not installed — install it to manage background sessions'
+    }
+  }
+}
 
 export const tmuxBackend: SessionBackend = {
   id: 'tmux',
@@ -137,8 +209,9 @@ export const tmuxBackend: SessionBackend = {
     if (tmuxPresent === null) {
       const { code } = await tmux(['-V'])
       tmuxPresent = code === 0
+      if (!tmuxPresent) tmuxMissingReason = await explainMissingTmux()
     }
-    return tmuxPresent ? undefined : 'tmux is not installed — install it to manage background sessions'
+    return tmuxPresent ? undefined : tmuxMissingReason ?? 'tmux is not installed — install it to manage background sessions'
   },
 
   async spawn(req: BackendSpawn) {
@@ -156,11 +229,57 @@ export const tmuxBackend: SessionBackend = {
     if (req.initialPrompt) {
       // Deliver the prompt only once the harness is READY — polled, not a fixed sleep — so a slow
       // start does not lose it and a startup dialog is never submitted into. See `deliverInitialPrompt`.
-      await deliverInitialPrompt(req.id, req.initialPrompt)
+      //
+      // NOT AWAITED. The session EXISTS the moment tmux has it, which is what `spawn` promises and
+      // what the caller acts on; the prompt is a follow-up to a session that is already there.
+      // Awaiting it held every caller for as long as the harness took to draw its input box — up to
+      // `DELIVER_DEADLINE_MS`, which is fifteen seconds — so "create session" in the browser spun
+      // for the whole of claude's startup with a session that had been running since millisecond
+      // seven. Reported as creating a session taking VERY long. Nothing downstream needs the
+      // delivery to have happened: the pane is watched live, a `batch` starts its sessions in
+      // parallel instead of one startup after another, and delivery was already best-effort with
+      // its own fallback and deadline.
+      //
+      // The promise is returned so a caller that genuinely must wait can, and is caught here so a
+      // caller that does not never sees an unhandled rejection.
+      const delivery = deliverInitialPrompt(req.id, req.initialPrompt)
+        .catch(e => { console.error(`[session] ${req.id} initial prompt not delivered:`, e) })
+      return { delivery }
     }
+    return {}
   },
 
   sendText: sendTextTo,
+
+  /**
+   * Pick a numbered option, then WRITE INTO THE FIELD it opens, then submit.
+   *
+   * The three keystrokes a person would make by hand, with the wait between them that a person
+   * takes without noticing — and that wait is the whole reason this is one backend call rather than
+   * three from the caller.
+   *
+   * MEASURED. Driven by hand with a pause, the digit moved the cursor onto `Type something.`, the
+   * literal text turned the row into `3. capivara`, and Enter submitted it. Sent as one burst from
+   * the caller, the very same three steps produced the answer **`3jabuticaba`**: the dialog was
+   * still switching from list mode to field mode when the text arrived, so the digit landed in the
+   * field with it. The failure is invisible at the API — it answered `ok` — and only shows up in
+   * what the session recorded.
+   *
+   * So the text waits for the pane to MOVE, which is the same signal `sendTextTo` already uses to
+   * know a submit showed. A frame that never moves still gets the text: the budget is spent, not
+   * the answer, exactly as it is there.
+   */
+  async sendChoiceText(id: string, key: string, text: string): Promise<boolean> {
+    const before = await captureFrame(id)
+    if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return false
+    // The option turning into a field IS a frame change; waiting for it is waiting for the mode to
+    // switch. Bounded, because a pane that will not move must not hold the request open.
+    await paneMoved(id, before)
+    await sleep(SUBMIT_SETTLE_MS)
+    if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return false
+    await sleep(SUBMIT_SETTLE_MS)
+    return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+  },
 
   async sendTextRaw(id: string, text: string) {
     // Literal only, NO Enter — the first half of `sendTextTo`. This is what the browser's key-by-key
@@ -174,8 +293,17 @@ export const tmuxBackend: SessionBackend = {
 
   async list(): Promise<BackendSession[]> {
     // "no server running on …" is the ordinary empty state, not an error: exit code 1 with no
-    // sessions is what tmux reports before anything has been started.
-    const { out } = await tmux(listSessionsArgs())
+    // sessions is what tmux reports before anything has been started. EVERY OTHER non-zero exit is
+    // a failure and THROWS — see `tmuxListIsEmptyState`. Swallowing them made a tmux that could not
+    // be reached report every session as gone, which is the one answer a fleet monitor must never
+    // give by accident.
+    const { code, out, err } = await tmux(listSessionsArgs())
+    // BOTH streams: with no server tmux says nothing on stdout and puts its reason on stderr, so a
+    // stdout-only test would call the ordinary first-run state a failure. See `tmuxListIsEmptyState`.
+    if (!tmuxListIsEmptyState(code, out, err)) {
+      const said = (err.trim() || out.trim()).split('\n')[0]
+      throw new Error(said || `tmux list-sessions failed (code ${code})`)
+    }
     return parseTmuxList(out)
   },
 

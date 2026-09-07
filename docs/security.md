@@ -446,6 +446,71 @@ page's origin is `http:` or `https:` and cannot be forged into another scheme, s
 ability to frame anything, and `lan` / `public` are untouched — they keep `frame-ancestors 'none'`
 and the legacy header. `security-headers.test.ts` pins both directions.
 
+## 8c. Managing a machine's sessions from a central — what is guaranteed, and what is not
+
+Reaching into another machine's live sessions is the most powerful thing a central can be asked to
+relay. Four things make it safe enough to offer, and one thing it explicitly does not promise.
+
+**It is off until the machine turns it on.** Absent consent reads as OFF — the same rule
+`chat-gate.ts` applies to the local shell, and deliberately not the `shareMode` migration rule that
+treats absence as the old default. Treating absence as ON here would hand every already-connected
+machine to its central on upgrade.
+
+**Only the machine's OWN accounts.** `machineOwnedBy` (`iam-view.ts`) is deliberately narrower than
+the `canManageMachine` that governs renaming, rotating and re-assigning a machine: administering a
+machine belongs to whoever runs the instance, reaching into its live sessions belongs to its user.
+An instance owner who is not this machine's account is refused, and gets the same `not-owner`
+answer as a stranger — so the route is not an oracle for which machines a central holds.
+
+**The screen and the conversation never travel.** The relayed row is built by an ALLOWLIST of keys
+(`reduceMachineFleetRow`), so `lastLines`, `chatTurns`, `approvalLines` and `dialogOptions` cannot
+cross even as a future field somebody adds to `ControlSession`. `machineFleet.test.ts` feeds a row
+carrying all of them and asserts none survives. This is what keeps the 410 on
+`GET /api/team/session-chat` meaningful.
+
+**`approve` and `prompt` are refused, and not merely disabled.** Neither can be offered honestly
+without the screen: a permission prompt is `1. Yes / 2. Yes, always / 3. No`, an `AskUserQuestion`
+can offer five answers that do different work, and a keystroke that answers cannot know which
+option it is taking. A button over a dialog nobody can read is the accident `parseDialogOptions`
+exists to prevent.
+
+**The machine is the authority, not the central.** Consent, the verb allowlist **and this
+connection's sharing rules** are re-read on the member on every request. The central's copy of
+those checks exists only to spare a round trip and answer the user instantly; a check that runs
+only on the party whose behaviour cannot be verified is not a check.
+
+**A withheld session cannot be acted on, and for one release it could be.** The two consent
+switches are machine-wide: they say whether sessions may be managed at all, and nothing about
+WHICH. The rules in §8 say which. Both must hold, and only the first one did — the read half
+filtered rows through `cwdShared` while the act half resolved the id against the machine's raw
+fleet, so a central could `kill`, `rename`, `resume` or re-task a session in a repository its
+member had explicitly withheld from it. A rule enforced when you look and not when you act is not
+a rule. `performMachineAction` now resolves the target through the same predicate the rows went
+through, and refuses an id it cannot resolve — an unresolvable target has no directory to judge,
+and passing it through would leave every verb reachable by naming an id the fleet does not list.
+
+**The task verbs are refused entirely while anything is withheld.** `openTask` acts on the piece of
+WORK a row is filed under, expanding across the whole registry, and a task routinely spans
+repositories — so on a restricted connection it reached sessions the central was never shown,
+started assistants in their directories and reported how many. Refusing only when a task provably
+spans a withheld row would answer, one visible row at a time, "does this one share work with the
+hidden half" — an oracle, and the same correlation §8 exists to deny. So the verbs are refused for
+every restricted connection and are absent from the relayed rows; the refusal names no repository
+and no count, disclosing nothing beyond the machine-level `withheld` figure the reply already
+carries. Open or finish the task on the machine itself.
+
+**The stated non-guarantee.** Whoever runs the central administers machines and can re-assign one
+to another account. This switch is what stops session access being on without its owner choosing
+it — it is **not** a lock against a hostile central operator, and no surface claims otherwise: the
+confirmation dialog says so before the switch is turned on. A guarantee that hides its own edge is
+the kind people stop believing the first time they find the edge themselves.
+
+Everything relayed is audited on the central (`machine.session_action`, its own action rather than
+a flavour of `machine.update`, so an audit can answer "who killed my session") and announced on the
+machine itself — an action invisible on the machine it happened to is the failure this feature has
+to avoid. The session id is recorded and the text never is: a rename or a note is the user's own
+words about their own work.
+
 ## 9. Verifying it yourself
 
 Each control has tests next to it; these are the ones worth reading first:

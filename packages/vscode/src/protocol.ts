@@ -192,6 +192,13 @@ export type LinkState =
    * facts and send the user to different places.
    */
   | 'refused'
+  /**
+   * The REQUEST timed out — distinct from `down`. A cold server (module load, first-touch of the
+   * conversation store) can take ~29s to answer `/api/fleet`, and a machine that is merely slow is
+   * not a machine that is not running: telling someone to start a server that is already starting
+   * sends them chasing a problem that does not exist.
+   */
+  | 'slow'
 
 export interface LinkStatus {
   state: LinkState

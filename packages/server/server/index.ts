@@ -14,7 +14,6 @@ import {
 } from './notifications-store'
 import { streamViaClaude, execCommand, ensureNayChat, ensureClaudeChat, CLAUDE_CHAT_DIR, type ChatMessage, type ChatModelId, type ChatAttachment } from './chat-tty'
 import { getChatDriver, chatHarnessStatus } from './chat-drivers/index'
-import { listMcpServers, removeMcpServer } from './mcp-list'
 import { listNaySessions, getNaySessionMessages } from './nay-sessions'
 import { listClaudeSessions, getClaudeSessionMessages, type ClaudeSessionSummary, type ClaudeSessionMessage } from './claude-sessions'
 import { listCodexSessions, getCodexSessionMessages, type CodexSessionSummary, type CodexSessionMessage } from './codex-sessions'
@@ -106,6 +105,7 @@ import {
 } from './sse'
 import { fullSync } from './archive'
 import { getArchiveMode } from './preferences'
+import { handleAccessibility } from './a11y-routes'
 import { registerAgent, unregisterAgent, onAgentMessage, onAgentPong, setPresenceChangeHook } from './team-agent'
 import { startAgentClient, reconcileNow } from './team-agent-client'
 import { validateIngestToken } from './team-tokens'
@@ -866,6 +866,10 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    if (url.pathname === '/api/accessibility') {
+      return await handleAccessibility(req, CORS_HEADERS)
+    }
+
     if (url.pathname === '/api/billing/plan-prices' && req.method === 'GET') {
       // Reads two public vendor pages — no host access, so no capability registration. It is
       // anchored: a page that fails its known-good figure returns nothing rather than a wrong
@@ -888,6 +892,263 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       return new Response(JSON.stringify({ detections }), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       })
+    }
+
+    if (url.pathname === '/api/backup/status' && req.method === 'GET') {
+      // A central aggregates other machines and has no local harness directories of its own to
+      // back up — the same reason Settings hides the `billing` and `live` sections there. The
+      // capability guard (localShell) has already run by here; this is the second gate.
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readBackupStatus } = await import('./backup-routes')
+        const status = await readBackupStatus()
+        return new Response(JSON.stringify(status), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/run' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { runBackupNow } = await import('./backup-routes')
+        const result = await runBackupNow()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // GitHub versioning. The GET never carries the token (`GithubSection` has no field for one),
+    // and the POST changes only what can be changed WITHOUT one — the label and retention. Setting
+    // the repository up genuinely needs a token and stays with `agentop backup github setup`,
+    // which verifies it against the API and refuses a public repository.
+    if (url.pathname === '/api/backup/github' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { readGithubSection } = await import('./backup-routes')
+        return new Response(JSON.stringify(await readGithubSection()), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // Restoring, from the interface. Three routes because a restore is three moments: see what a
+    // repository holds, start one, watch it. The third exists because the repos phase clones every
+    // repository the backup mapped — holding a request open for that times out in a proxy, in the
+    // browser, or both, and the only thing worse than a slow restore is one whose outcome nobody
+    // learns.
+    if (url.pathname === '/api/backup/restore/list' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { restoreCredential, restoreListing } = await import('./backup/restore-routes')
+        const body = await readJsonLimited<{ url?: unknown; token?: unknown }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const token = typeof body.value.token === 'string' ? body.value.token : undefined
+        const cred = await restoreCredential({ token })
+        if (!cred.ok) {
+          return new Response(JSON.stringify(cred), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        // This machine's own label, so the reply can mark which group is ours. Read from the
+        // stored config rather than taken from the body: what this machine is CALLED is not
+        // something a request gets to assert.
+        const { readGithubConfig } = await import('./backup/github-store')
+        const stored = await readGithubConfig().catch(() => null)
+        const result = await restoreListing({
+          url: body.value.url, token: cred.token, label: stored?.label,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // A token may be in this body — non-verbose regardless of profile, like the setup route.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/start' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { startRestore } = await import('./backup-routes')
+        const body = await readJsonLimited<{
+          url?: unknown; tag?: unknown; token?: unknown; withRepos?: unknown
+        }>(req, LIMITS.bodyBytes)
+        if (!body.ok || typeof body.value.url !== 'string' || typeof body.value.tag !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await startRestore({
+          url: body.value.url,
+          tag: body.value.tag,
+          token: typeof body.value.token === 'string' ? body.value.token : undefined,
+          withRepos: body.value.withRepos === true,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/restore/status' && req.method === 'GET') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const { readRestoreJob } = await import('./backup-routes')
+      return new Response(JSON.stringify({ job: readRestoreJob() }), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Connecting a repository, from the form in Settings → Backup. It takes a token, which is the
+    // whole reason it exists as its own route: `POST /api/backup/github` above deliberately changes
+    // only what can be changed WITHOUT one. There is no extra profile gate here — `/api/backup`
+    // already requires `localShell`, which is false on `public` and opt-in on `lan`, so on a
+    // dashboard someone else can open this route does not exist at all.
+    if (url.pathname === '/api/backup/github/setup' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { connectGithub } = await import('./backup-routes')
+        const body = await readJsonLimited<{
+          url?: unknown; token?: unknown; auth?: unknown
+        }>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const { url: repoUrl, token } = body.value
+        if (typeof repoUrl !== 'string' || typeof token !== 'string') {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        // `auth` is what selects the gh mode. Dropping it here made the fixed `connectGithub`
+        // unreachable: the function authenticated through gh perfectly and was never told to.
+        // Anything but the literal 'gh' reads as the token mode — the same allowlist rule
+        // `github-store.ts` applies when reading the field back off disk.
+        const result = await connectGithub({
+          url: repoUrl, token, auth: body.value.auth === 'gh' ? 'gh' : undefined,
+        })
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        // The token is in this request's body, so the usual `verbose` echo of an error is not safe
+        // here: `safeError` is given the non-verbose shape regardless of profile.
+        const safe = safeError(err, { verbose: false })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // Forgetting the repository. DELETE and not a POST with a flag, because it is the one
+    // irreversible-looking action here and the method should say so — though it only removes the
+    // LOCAL config: the releases on GitHub are untouched, and the interface says that before asking.
+    if (url.pathname === '/api/backup/github' && req.method === 'DELETE') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { disconnectGithub } = await import('./backup-routes')
+        const result = await disconnectGithub()
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/backup/github' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateGithubSection } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateGithubSection>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateGithubSection(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // The format/recurrence pickers — see `BackupSettings.tsx`. Same decisions as
+    // `agentop backup config` and the cockpit's layer editor, through the same three writers.
+    if (url.pathname === '/api/backup/config' && req.method === 'POST') {
+      if (TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      try {
+        const { updateBackupConfig } = await import('./backup-routes')
+        const body = await readJsonLimited<Parameters<typeof updateBackupConfig>[0]>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, reason: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = await updateBackupConfig(body.value)
+        return new Response(JSON.stringify(result), {
+          status: result.ok ? 200 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        const safe = safeError(err, { verbose: PROFILE === 'local' })
+        console.error(safe.logLine)
+        return new Response(JSON.stringify(safe.body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
     }
 
     if (url.pathname === '/api/projects-list' && req.method === 'GET') {
@@ -1055,25 +1316,65 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
-    if (url.pathname === '/api/mcp-list' && req.method === 'GET') {
-      const projectPath = url.searchParams.get('projectPath') ?? null
-      const result = await listMcpServers(projectPath)
-      return new Response(JSON.stringify(result), {
+    // THE MCP PANEL — what this machine has configured, what is running, and the two writes.
+    //
+    // Guarded by the `/api/mcp` prefix in `capability-guard.ts` (mcpAdmin). The writes run the
+    // HARNESS's own `claude mcp` command rather than editing `~/.claude.json`: every running
+    // `claude` rewrites that file, so our bytes would vanish or clobber theirs — the same reason
+    // `rename-spec.ts` types `/rename` instead of writing the session file.
+    if (url.pathname === '/api/mcp/servers' && req.method === 'GET') {
+      const { listMcp } = await import('./mcp-admin')
+      const payload = await listMcp(url.searchParams.get('projectPath'))
+      return new Response(JSON.stringify(payload), {
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       })
     }
 
-    if (url.pathname === '/api/mcp-action' && req.method === 'POST') {
+    if ((url.pathname === '/api/mcp/install' || url.pathname === '/api/mcp/remove'
+      || url.pathname === '/api/mcp/replace') && req.method === 'POST') {
       try {
-        const body = await req.json() as { action: 'remove'; name: string }
-        if (body.action === 'remove') {
-          const result = await removeMcpServer(body.name)
-          return new Response(JSON.stringify(result), {
+        const read = await readJsonLimited<{
+          paste?: string; name?: string; scope?: string; projectPath?: string; lang?: string
+          original?: string
+        }>(req, LIMITS.bodyBytes)
+        if (!read.ok) {
+          return new Response(JSON.stringify({ ok: false, message: read.error }), {
+            status: read.error === 'too_large' ? 413 : 400,
             headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           })
         }
-        return new Response(JSON.stringify({ ok: false, error: 'unknown action' }), {
-          status: 400,
+        const body = read.value
+        const lang = body.lang === 'pt' ? 'pt' : 'en'
+        // The scope is the USER'S CHOICE and is never inferred: `user` reaches every project on this
+        // machine and `project` is written into a repository other people pull.
+        const scope = body.scope
+        if (scope !== 'user' && scope !== 'local' && scope !== 'project') {
+          return new Response(JSON.stringify({ ok: false, message: 'bad scope' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const { installMcp, replaceMcp, uninstallMcp } = await import('./mcp-admin')
+        const result = url.pathname === '/api/mcp/install'
+          ? await installMcp({
+            paste: body.paste ?? '', scope, lang,
+            ...(body.name ? { name: body.name } : {}),
+            ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+          })
+          // REPLACE is remove-then-add, because `add-json` refuses an existing name. The ORIGINAL
+          // travels with it: it is the only thing that can put the server back if the add fails,
+          // and it is on screen at the moment the button is pressed.
+          : url.pathname === '/api/mcp/replace'
+            ? await replaceMcp({
+              name: body.name ?? '', scope, lang,
+              paste: body.paste ?? '', original: body.original ?? '',
+              ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+            })
+            : await uninstallMcp({
+              name: body.name ?? '', scope, lang,
+              ...(body.projectPath ? { projectPath: body.projectPath } : {}),
+            })
+        return new Response(JSON.stringify(result), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
       } catch (err) {
@@ -1100,6 +1401,22 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
       }
+    }
+
+    /**
+     * The RAW fleet snapshot, in the cockpit's own shape.
+     *
+     * `/api/fleet` answers the browser's `FleetRow`, which is deliberately narrower. This is for the
+     * other agentop processes — the cockpit and the one-shot commands — so they can read the
+     * snapshot of the poller that has MEMORY instead of building a second one that disagrees with
+     * it. See `shared-snapshot.ts`. Guarded by the `/api/fleet` prefix already registered in
+     * `capability-guard.ts`, like every other route here.
+     */
+    if (url.pathname === '/api/fleet/snapshot' && req.method === 'GET') {
+      const { readRawFleetSnapshot } = await import('./cli-start')
+      return new Response(JSON.stringify(await readRawFleetSnapshot()), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
     }
 
     if (url.pathname === '/api/fleet' && req.method === 'GET') {
@@ -1190,6 +1507,72 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    // The skills the assistant in this session can be asked to run. Guarded by the `/api/fleet`
+    // PREFIX already registered in `capability-guard.ts` — a new fleet route is guarded by having
+    // been ADDED, never by remembering a second table.
+    if (url.pathname === '/api/fleet/skills' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetSkills, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetSkills(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // The repository's pull requests, read through `gh` in the SESSION's directory. A READ: no
+    // route here opens, merges or comments on anything.
+    // What only the conversation's own transcript can answer — today, how many times it has been
+    // compacted. Guarded by the `/api/fleet` PREFIX already registered in `capability-guard.ts`.
+    if (url.pathname === '/api/fleet/conversation' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ unavailable: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readConversationFacts, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readConversationFacts(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    if (url.pathname === '/api/fleet/prs' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ pulls: [], unavailable: 'no-repo' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetPullRequests, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetPullRequests(fleetLang(url.searchParams.get('lang')), id)
+      return new Response(JSON.stringify(out), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // ONE skill's own text. The request names a SKILL, never a path — see `readFleetSkillBody`.
+    if (url.pathname === '/api/fleet/skill' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const name = url.searchParams.get('name')
+      if (!id || !name) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const { readFleetSkillBody, fleetLang } = await import('./sessions/fleet-web')
+      const out = await readFleetSkillBody(fleetLang(url.searchParams.get('lang')), id, name)
+      return new Response(JSON.stringify(out), {
+        status: out.ok ? 200 : 404,
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
     // Start one. The most powerful thing on this route table: it spawns a billable coding assistant,
     // with a prompt, in a directory the request names — see the header of `runFleetSpawn` for why
     // this one call reads a directory from the body when `resume` refuses to, and `fleet-spawn.ts`
@@ -1220,6 +1603,431 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
     // The live terminal channel: an SSE stream of one session's screen. Read-only (Phase 1). Already
     // gated by `localShell` (capability-guard) and 404'd on a central above, so this handler only has
     // to enforce SCOPE — the session must be one this machine manages — and the stream ceiling.
+    // One attachment: written to agentop's own directory, its PATH returned for the message. A
+    // multipart body rather than JSON, so a 20 MB file is not base64-inflated by a third on the way.
+    if (url.pathname === '/api/fleet/attach' && req.method === 'POST') {
+      try {
+        const { storeAttachment, MAX_ATTACHMENT_BYTES } = await import('./sessions/attachment-web')
+        const lang = url.searchParams.get('lang') === 'pt' ? 'pt' : 'en'
+        const len = Number(req.headers.get('content-length') ?? '0')
+        // Refused on the DECLARED length before the body is read: buffering it first is the thing
+        // the limit exists to prevent.
+        if (Number.isFinite(len) && len > MAX_ATTACHMENT_BYTES * 1.1) {
+          return new Response(JSON.stringify({ ok: false, message: 'too_large' }), {
+            status: 413,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const form = await req.formData()
+        const file = form.get('file')
+        if (!(file instanceof File)) {
+          return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const out = await storeAttachment(lang, {
+          name: file.name,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+        })
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // Reading an attachment BACK — the chat's inline image preview. `resolveAttachmentRead` is the
+    // whole of the security model here: a message carries the attachment's path verbatim (see
+    // attachment-web.ts's header), so this route necessarily accepts a path, and that function is
+    // what stops it becoming an arbitrary local file read. A path outside the attachment directory,
+    // or one naming nothing, gets exactly the same 404 — the difference is not this reader's to say.
+    if (url.pathname === '/api/fleet/attachment' && req.method === 'GET') {
+      const { resolveAttachmentRead } = await import('./sessions/attachment-web')
+      const resolved = resolveAttachmentRead(url.searchParams.get('path') ?? '')
+      if (!resolved) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      const file = Bun.file(resolved)
+      if (!(await file.exists())) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      return new Response(file, {
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': file.type || 'application/octet-stream',
+          // Never cached beyond this response: the same path can be overwritten by a later
+          // attachment of the same session, and a shared browser cache keyed on the URL would then
+          // serve the wrong image under the right name.
+          'Cache-Control': 'private, no-store',
+        },
+      })
+    }
+
+    // ONE stored attachment, BY NAME — the gallery's preview, and the size under it.
+    //
+    // Narrower than `/api/fleet/attachment` above in both directions, on purpose. It takes a NAME
+    // rather than a path, so `attachmentPathByName` can refuse a traversal by construction instead
+    // of resolving one; and it serves only what `attachmentMediaType`'s CLOSED TABLE names —
+    // images, video and PDF — so a preview route can never become a general reader of agentop's own
+    // directory. HEAD answers the SIZE without the bytes, which is what the
+    // list column is for — a size fetched by downloading the file is not a size, it is a download.
+    //
+    // Guarded by the `/api/fleet` PREFIX in `capability-guard.ts` (localShell) and 404'd on a
+    // central with the rest of `/api/fleet*`, both above — neither needs a new entry, which is the
+    // point of the prefix.
+    //
+    // A refused name, a type the table does not name and a missing file all get the same bare 404. Which of the three
+    // it was is not this reader's to say, and the path is never echoed back.
+    if (url.pathname === '/api/fleet/attachment/by-name' && (req.method === 'GET' || req.method === 'HEAD')) {
+      const { attachmentPathByName, attachmentMediaType } = await import('./sessions/attachment-web')
+      const name = url.searchParams.get('name') ?? ''
+      const resolved = attachmentPathByName(name)
+      const type = resolved === null ? null : attachmentMediaType(name)
+      if (resolved === null || type === null) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      const file = Bun.file(resolved)
+      if (!(await file.exists())) {
+        return new Response(null, { status: 404, headers: CORS_HEADERS })
+      }
+      // Only what this route OWNS. `nosniff` (so the browser cannot decide a type the extension
+      // did not), the CSP that keeps a directly-opened SVG's script from running, and `no-store`
+      // (a name can be reused by a later upload, and a cache keyed on the URL would then serve the
+      // wrong image under the right name) are all set by `handleRequest`'s own
+      // `securityHeaders` wrapper for every `/api/` response, and it SETS rather than appends —
+      // repeating them here would be a header that never ships, which is worse than none because
+      // it reads as a guarantee.
+      const headers: Record<string, string> = {
+        ...CORS_HEADERS,
+        'Content-Type': type.mime,
+        'Content-Length': String(file.size),
+        // A VIDEO NEEDS THIS, and without it the element can only play from the first byte: Safari
+        // asks for a byte range before it will scrub or even start some files, and a server that
+        // does not say it accepts ranges is asking the browser to buffer the whole thing first.
+        // Bun's `Response(BunFile)` answers a `Range` request itself; this is the advertisement.
+        'Accept-Ranges': 'bytes',
+        // A PDF is a DOCUMENT, so it is named and declared inline — the browser's own viewer opens
+        // it in place instead of downloading it, and the name is what the viewer and a save dialog
+        // both show. Images and video need no disposition: an `<img>` and a `<video>` never offer
+        // to save under a name.
+        ...(type.kind === 'pdf'
+          ? { 'Content-Disposition': `inline; filename="${name.replace(/[^A-Za-z0-9._-]/g, '_')}"` }
+          : {}),
+      }
+      // HEAD is the size question. It carries the same headers and no body — the whole reason it
+      // exists is that the answer must not cost the bytes.
+      if (req.method === 'HEAD') return new Response(null, { headers })
+      return new Response(file, { headers })
+    }
+
+    // What this machine can start, and from where. `q` searches the LOCAL project store, so the
+    // picker works with the server's own data cold.
+    if (url.pathname === '/api/fleet/new' && req.method === 'GET') {
+      try {
+        const { webHarnesses, webProjects, webTasks } = await import('./sessions/spawn-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const host = await hostForFleet(fleetLang(url.searchParams.get('lang')))
+        const q = url.searchParams.get('q') ?? ''
+        const [harnesses, projects, tasks] = await Promise.all([
+          webHarnesses(host),
+          webProjects(host, q),
+          webTasks(host),
+        ])
+        return new Response(JSON.stringify({ harnesses, projects, tasks }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // REOPEN everything that fell. Starting ONE session is `/api/fleet/new`, and this route no
+    // longer does it: two spawn paths for one act meant the browser could reach an unvalidated
+    // reading of a body that starts a real assistant, beside a validated one that refuses a
+    // relative cwd, an unknown effort and a model a harness has no flag for. The route survives for
+    // the reopen, which takes no body fields at all.
+    if (url.pathname === '/api/fleet/spawn' && req.method === 'POST') {
+      try {
+        const { reopenFellFromWeb } = await import('./sessions/spawn-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        const host = await hostForFleet(lang)
+        const body = await readJsonLimited<Record<string, unknown>>(req, LIMITS.bodyBytes)
+        if (!body.ok) {
+          return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const v = body.value
+        // Anything but the reopen is REFUSED here rather than quietly handled, and the refusal
+        // NAMES the route that does the job — a caller left with "bad request" would reasonably
+        // conclude its body was wrong when the route simply is not this one any more.
+        if (v['reopenFell'] !== true) {
+          return new Response(JSON.stringify({
+            ok: false,
+            message: lang === 'pt'
+              ? 'Esta rota só reabre o que caiu. Para iniciar uma sessão, use POST /api/fleet/new.'
+              : 'This route only reopens what fell. To start a session, use POST /api/fleet/new.',
+          }), { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } })
+        }
+        const out = await reopenFellFromWeb(host, lang)
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // The SUBAGENTS this conversation ran — the list, and one agent's own activity. Both ride the
+    // `/api/fleet` prefix guard and the central 404 above.
+    //
+    // `supported: false` is a real answer here: only Claude Code records subagents
+    // (`HARNESS_CAPABILITIES.agents`), and answering "0 subagents" for the other five would be the
+    // confident zero this area exists to prevent.
+    if (url.pathname === '/api/fleet/subagents' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionSubagents, readSubagentActivity } = await import('./sessions/subagents-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        const host = await hostForFleet(lang)
+        const agent = url.searchParams.get('agent')
+        // ONE route, two questions: without `agent` it is the list, with it the agent's activity.
+        // Splitting them would be two paths resolving the same row through the same three steps.
+        // Paged: choosing which agents to show costs a stat each, while summarising one costs
+        // reading its transcript. See `pageOfAgents`.
+        const num = (v: string | null): number | undefined => {
+          const n = Number(v)
+          return v !== null && Number.isFinite(n) ? n : undefined
+        }
+        const payload = agent
+          ? await readSubagentActivity(host, lang, id, agent)
+          : await readSessionSubagents(host, lang, id, {
+            ...(num(url.searchParams.get('limit')) !== undefined ? { limit: num(url.searchParams.get('limit'))! } : {}),
+            ...(num(url.searchParams.get('offset')) !== undefined ? { offset: num(url.searchParams.get('offset'))! } : {}),
+          }, url.searchParams.get('kind') === 'fork' ? 'fork' : 'agent')
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // The session's DYNAMIC WORKFLOW runs, as something happening rather than history. Same
+    // `/api/fleet` prefix guard as its neighbours — a new fleet route is guarded by having been
+    // ADDED, never by remembering a second table.
+    if (url.pathname === '/api/fleet/workflows' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionWorkflows, readWorkflowAgent } = await import('./sessions/workflows-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        const host = await hostForFleet(lang)
+        // ONE route, two questions: without `run`+`agent` it is the list of runs, with them it is
+        // that one agent opened up — what it was asked and every command it ran. Splitting them
+        // would be two paths resolving the same row through the same three steps, and the detail
+        // is a file the list deliberately does not read.
+        const run = url.searchParams.get('run')
+        const agent = url.searchParams.get('agent')
+        const payload = run && agent
+          ? await readWorkflowAgent(host, lang, id, run, agent)
+          : await readSessionWorkflows(host, lang, id)
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // ONE STEP of that conversation, opened up — the Live feed's rows expand into the command that
+    // ran and what it printed, WHILE it runs. Guarded by the `/api/fleet` PREFIX in
+    // `capability-guard.ts` (localShell) and 404'd on a central with the rest of `/api/fleet*`, both
+    // above: it needs no new entry, which is the point of the prefix.
+    if (url.pathname === '/api/fleet/step' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const ref = url.searchParams.get('ref')
+      if (!id || !ref) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionStep } = await import('./sessions/step-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        // `agent` opens a step of a SUBAGENT's own conversation — its activity feed carries refs
+        // from its own transcript, which are not in the parent's.
+        const agent = url.searchParams.get('agent')
+        const payload = await readSessionStep(
+          await hostForFleet(lang), lang, id, ref, agent ?? undefined,
+        )
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // One hosted session's conversation, for the workspace's chat view. Claude only in practice —
+    // the module refuses in words wherever the live-session -> conversation link is not exact.
+    // One hosted session's conversation, for the workspace's chat view. Which harnesses can be read
+    // is `harness-transcript.ts`; the module refuses IN WORDS wherever the conversation link is not
+    // exact or nothing here parses that harness's transcript format.
+    if (url.pathname === '/api/fleet/chat' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionChat } = await import('./sessions/chat-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const payload = await readSessionChat(
+          await hostForFleet(fleetLang(url.searchParams.get('lang'))),
+          fleetLang(url.searchParams.get('lang')),
+          id,
+        )
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // One file this session wrote. Guarded by the `/api/fleet` PREFIX already registered in
+    // `capability-guard.ts` — a new fleet route is guarded by having been ADDED, never by remembering
+    // a second table — and 404'd on a central with the rest of `/api/fleet*`.
+    // The panel's LIST — what this session wrote that is still a readable file with content. It
+    // rides the same `/api/fleet` prefix, so `capability-guard.ts` guards it by having been added.
+    if (url.pathname === '/api/fleet/artifacts' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ files: [] }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { listFleetArtifacts, fleetLang } = await import('./sessions/fleet-web')
+        const out = await listFleetArtifacts(fleetLang(url.searchParams.get('lang')), id)
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ files: [], ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    if (url.pathname === '/api/fleet/file' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const path = url.searchParams.get('path')
+      if (!id || !path) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readFleetArtifact, fleetLang } = await import('./sessions/fleet-web')
+        const out = await readFleetArtifact(fleetLang(url.searchParams.get('lang')), id, path)
+        return new Response(JSON.stringify(out), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
+    // THE BYTES of an image or PDF a session produced. Separate from `/api/fleet/file`, which
+    // answers JSON with text and refuses binaries by design. Same allowlist, plus a closed content
+    // table (`artifact-media.ts`) — and the response is locked down so a mislabelled file cannot
+    // become script on this origin: `nosniff`, a `default-src 'none'` policy, and no `Vary` games.
+    if (url.pathname === '/api/fleet/media' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      const path = url.searchParams.get('path')
+      if (!id || !path) {
+        return new Response(JSON.stringify({ ok: false, message: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readFleetArtifactMedia, fleetLang } = await import('./sessions/fleet-web')
+        const out = await readFleetArtifactMedia(fleetLang(url.searchParams.get('lang')), id, path)
+        if (!out.ok) {
+          return new Response(JSON.stringify({ ok: false, message: out.message }), {
+            status: out.status,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(out.bytes as unknown as BodyInit, {
+          headers: {
+            ...CORS_HEADERS,
+            'Content-Type': out.mime,
+            'Content-Disposition': `inline; filename="${out.name.replace(/[^\w.-]/g, '_')}"`,
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Security-Policy': "default-src 'none'; sandbox",
+            // A session rewrites the file it is working on; a cached copy would show the old one.
+            'Cache-Control': 'no-store',
+          },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, ...safeError(err, { verbose: PROFILE === 'local' }).body }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if (url.pathname === '/api/fleet/stream' && req.method === 'GET') {
       const id = url.searchParams.get('id')
       if (!id) {
@@ -2143,6 +2951,107 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       const headers = new Headers(res.headers)
       for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v)
       return new Response(res.body, { status: res.status, headers })
+    }
+
+    // GET /api/team/machine-fleet?machineId=… — one machine's session fleet, RELAYED.
+    //
+    // Central-only, and it does no host work: the fleet comes from the machine over the reverse
+    // channel, never from this box's own tmux (which is what the TEAM_CENTRAL block on
+    // /api/fleet* exists to prevent, and that block stays). Deliberately NOT in
+    // capability-guard.ts — it spawns nothing, reads no transcript and touches no dotfile; the
+    // reasoning is written down in machine-fleet-route.ts and pinned by capability-guard.test.ts,
+    // so the absence is a decision rather than an omission.
+    if (url.pathname === '/api/team/machine-fleet' && req.method === 'GET') {
+      if (!TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const principal = await getPrincipal(req)
+      if (!principal) {
+        return new Response(JSON.stringify({ error: 'unauthorized' }), {
+          status: 401, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const machineId = url.searchParams.get('machineId') ?? ''
+      const [{ resolveMachineFleet }, { listMachines }, agent, consent, relay] = await Promise.all([
+        import('./machine-fleet-route'),
+        import('./team-tokens'),
+        import('./team-agent'),
+        import('./machine-consent'),
+        import('./machine-fleet-relay'),
+      ])
+      const answer = await resolveMachineFleet(principal, machineId, {
+        listMachines,
+        isOnline: id => agent.hasAgentSocket(id),
+        consentOf: id => consent.effectiveConsent(id),
+        // `notifyMember` is the same send every central→member push already uses; the relay owns
+        // the correlation and the timeout.
+        request: id => relay.requestMachineFleet(id, payload => agent.notifyMember(id, payload)),
+      })
+      return new Response(JSON.stringify(answer), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
+    // POST /api/team/machine-fleet/act — perform ONE verb on one of that machine's sessions.
+    //
+    // Same three gates as the read plus the verb allowlist, and the machine checks all of it again:
+    // a central is the party whose behaviour a machine cannot verify, so the check here only spares
+    // a pointless round trip. Audited on the way out, and the MACHINE is told too — an action that
+    // is invisible on the machine it happened to is the failure this whole feature has to avoid.
+    if (url.pathname === '/api/team/machine-fleet/act' && req.method === 'POST') {
+      if (!TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const principal = await getPrincipal(req)
+      if (!principal) {
+        return new Response(JSON.stringify({ error: 'unauthorized' }), {
+          status: 401, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const parsed = await readJsonLimited<unknown>(req, LIMITS.bodyBytes)
+      if (!parsed.ok) {
+        return new Response(JSON.stringify({ error: parsed.error }), {
+          status: parsed.error === 'too_large' ? 413 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      const b = (parsed.value ?? {}) as Record<string, unknown>
+      const machineId = typeof b.machineId === 'string' ? b.machineId : ''
+      const action = typeof b.action === 'string' ? b.action : ''
+      const sessionId = typeof b.id === 'string' ? b.id : ''
+      const [{ resolveMachineAction }, { listMachines }, agent, consent, relay] = await Promise.all([
+        import('./machine-fleet-route'),
+        import('./team-tokens'),
+        import('./team-agent'),
+        import('./machine-consent'),
+        import('./machine-fleet-relay'),
+      ])
+      const answer = await resolveMachineAction(principal, machineId, {
+        action, id: sessionId,
+        ...(typeof b.text === 'string' ? { text: b.text } : {}),
+        // The dialog option the person picked. Validated as a finite number here and re-resolved
+        // against the LIVE screen by the machine, which refuses when the options changed — a poll
+        // is five seconds old, and five seconds is enough for one dialog to become another.
+        ...(typeof b.choice === 'number' && Number.isFinite(b.choice) ? { choice: b.choice } : {}),
+      }, {
+        listMachines,
+        isOnline: id => agent.hasAgentSocket(id),
+        consentOf: id => consent.effectiveConsent(id),
+        request: id => relay.requestMachineFleet(id, payload => agent.notifyMember(id, payload)),
+        act: (id, a) => relay.requestMachineAction(id, a, payload => agent.notifyMember(id, payload)),
+      })
+      // Audited whenever the verb actually REACHED the machine — a refusal decided here is not an
+      // action on anybody's session, and recording one would make the log describe things that
+      // never happened. The session id is recorded, never the text: a rename or a note is the
+      // user's own words about their own work.
+      if (answer.reply) {
+        void writeAudit({
+          action: 'machine.session_action', ip: clientIp, actorId: principal.accountId,
+          targetId: machineId, meta: { verb: action, session: sessionId, ok: answer.reply.ok },
+        })
+        // And the machine says so itself, so the person sitting at it learns that somebody acted
+        // on their session without having to read a central's audit log.
+        agent.notifyMember(machineId, { type: 'session-acted', verb: action, sessionId })
+      }
+      return new Response(JSON.stringify(answer), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
     }
 
     // /api/team/proposals — LOCAL, same-origin: the restriction proposals this machine has

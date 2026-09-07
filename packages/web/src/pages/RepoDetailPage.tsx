@@ -1,3 +1,4 @@
+import { runStatusText } from '../lib/workflows'
 import React, { useMemo, useState } from 'react'
 import { useOutletContext, useParams, useNavigate } from 'react-router-dom'
 import {
@@ -607,8 +608,12 @@ function MetricCard({ icon, label, value, hint, accent }: { icon: React.ReactNod
   )
 }
 
+/** One palette for a run's state, shared with the sessions aside — `lib/workflows.ts`.
+ *  It used to be `completed ? green : partial ? yellow : RED`, which painted every other state as
+ *  a failure. Now that a run can be `running`, `killed` or `abandoned`, that expression would have
+ *  shown a workflow in flight as a red dot. */
 function statusColor(status: WorkflowRun['status']): string {
-  return status === 'completed' ? '#22c55e' : status === 'partial' ? '#eab308' : '#ef4444'
+  return runStatusText(status, false).color
 }
 
 /** Seconds-aware run duration (fmtDuration floors to whole minutes, so a 12s run
@@ -738,7 +743,8 @@ function WorkflowRunCard({ run, pt, currency, brlRate, sessionById }: {
         style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 12px', cursor: 'pointer' }}
       >
         <ChevronDown size={14} style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform 0.2s', color: 'var(--text-tertiary)', flexShrink: 0 }} />
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(run.status), flexShrink: 0 }} />
+        {/* A colour alone cannot carry five states — the word rides the title. */}
+        <span title={runStatusText(run.status, pt).text} style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(run.status), flexShrink: 0 }} />
         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{run.name}</span>
         <span style={{
           fontSize: 10.5, fontWeight: 600, color: HARNESS_COLORS[harness], flexShrink: 0,

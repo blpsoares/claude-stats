@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Search, X, Check } from 'lucide-react'
 import { formatProjectName } from '@agentistics/core'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { OVERLAY_TOP } from '../lib/mobileOverlay'
 
 interface Props {
   projects: { path: string; sessions: { sessionId: string; created: string }[] }[]
@@ -130,7 +131,7 @@ export function ProjectsModal({ projects, sessionCountByProject, selected, onApp
     display: 'flex',
     alignItems: isMobile ? 'stretch' : 'center',
     justifyContent: 'center',
-    padding: isMobile ? 0 : '16px',
+    padding: isMobile ? OVERLAY_TOP : '16px',
   }
 
   const modalStyle: React.CSSProperties = {

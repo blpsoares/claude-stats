@@ -398,6 +398,8 @@ claude mcp list   # should show "agentistics"
 | [docs/data-sources.md](docs/data-sources.md) | Data sources, JSONL parsing, `SessionMeta` |
 | [docs/metrics.md](docs/metrics.md) | Pricing table, cost formula, streak, cache |
 | [docs/session-manager.md](docs/session-manager.md) | Background assistant sessions, the batch form, the cockpit |
+| [docs/sessions-web.md](docs/sessions-web.md) | The Sessions workspace in the browser: chat, dialogs, modes, the aside, mobile |
+| [docs/backup.md](docs/backup.md) | Backing up and restoring a machine's history, and versioning it to GitHub |
 | [docs/vscode-extension.md](docs/vscode-extension.md) | The VS Code extension: the fleet and the dashboard inside the editor |
 | [docs/claude-integration.md](docs/claude-integration.md) | The Claude Code skill + SessionStart hook `agentop hooks` installs |
 | [docs/nay.md](docs/nay.md) · [docs/mcp.md](docs/mcp.md) | The chat assistant and the MCP tools |

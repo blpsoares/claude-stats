@@ -62,7 +62,10 @@ jobs:
           # A FORCED release is never skipped. This guard exists so the workflow's own bump commit
           # does not trigger it again; the head of main is always that commit, so honouring it on a
           # manual dispatch would refuse every corrective release outright.
-          MSG=$(git log -1 --pretty=format:"%s")
+          # tformat:, like every other read in this file — see the note on the bump step. `$(…)`
+          # strips the trailing newline either way, which is exactly why the wrong form survives
+          # here unnoticed and gets copied into a loop where it drops a record.
+          MSG=$(git log -1 --pretty=tformat:"%s")
           if [ -n "${{ github.event.inputs.version }}" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
           elif echo "$MSG" | grep -q "chore: bump version"; then

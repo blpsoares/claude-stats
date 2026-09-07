@@ -48,6 +48,7 @@
 // TYPE-only, deliberately: `types.ts` imports the two default VALUES below, and a value cycle
 // between them would be a real one. Types are erased, so this direction costs nothing and keeps the
 // default arrangement derived from the vocabulary rather than spelled out a second time beside it.
+import { recencyOf } from './session-order'
 import type { ControlSession, SessionState, SessionViewPrefs } from './types'
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,7 @@ export function sessionNamed(s: ControlSession): boolean {
 // ---------------------------------------------------------------------------
 
 export type SessionDimensionId =
+  | 'day'
   | 'status'
   | 'harness'
   | 'model'
@@ -203,7 +205,26 @@ export interface SessionDimension {
  * `Record<…>`, never an array literal, so the build breaks when a dimension is added and some
  * surface has not been told. Same reason as `HARNESS_SORT`, `SPAWN_SPECS` and `ATTENTION_RULES`.
  */
+/**
+ * A local calendar day, `YYYY-MM-DD` — PURE given the timestamp.
+ *
+ * LOCAL and not UTC, deliberately, and it is the opposite call from `tagSessionDay`: a tag's window
+ * is a stored range compared against stored days across machines, while this is a heading over the
+ * work somebody did, and at UTC-3 a session from 21:00 last night belongs under yesterday for the
+ * person reading it, not under today. The two rules exist for two different questions; this file
+ * answers the second.
+ */
+export function dayKey(ms: number | undefined): string | undefined {
+  if (ms === undefined || !Number.isFinite(ms)) return undefined
+  const d = new Date(ms)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 export const SESSION_DIMENSIONS: Record<SessionDimensionId, SessionDimension> = {
+  // Banded on `recencyOf`, the very expression the `recent` sort orders by — see its doc comment.
+  // A row with no timestamp at all falls to UNFILED rather than to a guessed day.
+  day: { id: 'day', keyOf: s => dayKey(recencyOf(s)) },
   // `OFF_STATE` and not `s.state`, and this is the whole of the fix for "3 desligados, wtf".
   // Collapsing the WORDS left three menu rows all reading `desligada` — which is worse than three
   // different words, because now the list offers one choice three times and nothing on screen says
@@ -234,7 +255,7 @@ export const SESSION_DIMENSIONS: Record<SessionDimensionId, SessionDimension> = 
  * and filters correctly and simply never appears — which the test below refuses.
  */
 export const DIMENSION_ORDER: readonly SessionDimensionId[] =
-  ['status', 'repo', 'project', 'task', 'harness', 'model', 'marked'] as const
+  ['day', 'status', 'repo', 'project', 'task', 'harness', 'model', 'marked'] as const
 
 /**
  * How the list is arranged, where the arrangement is NOT one of the dimensions.
@@ -324,6 +345,15 @@ export function dimensionWordBook(w: {
   unfiled: Record<SessionDimensionId, string>
   /** The state words — the status dimension's keys ARE states. */
   states: Readonly<Record<string, string>>
+  /**
+   * What each DAY bucket is called, keyed by `YYYY-MM-DD`.
+   *
+   * Supplied by the caller and only for the days it wants named, because "today" and "yesterday"
+   * are relative to a clock this module does not read. An unnamed day falls back to its key, which
+   * is already a date a person can read — so a caller that supplies nothing is degraded, never
+   * broken.
+   */
+  days?: Readonly<Record<string, string>>
   /** "the directory is not there any more" — its own bucket, never `project`'s absence. */
   goneProject: string
   /** What a marked row's band is called. The unmarked side is `unfiled.marked`. */
@@ -335,6 +365,7 @@ export function dimensionWordBook(w: {
     ...(values ? { values } : {}),
   })
   return {
+    day: of('day', w.days),
     status: of('status', w.states),
     harness: of('harness'),
     model: of('model'),

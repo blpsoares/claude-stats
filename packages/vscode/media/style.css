@@ -257,6 +257,7 @@ button.chip { cursor: pointer; }
   border-left: 2px solid var(--border-strong);
 }
 .banner.bad { border-left-color: var(--red); }
+.banner.slow { border-left-color: var(--amber); }
 .result.ok { border-left-color: var(--green); }
 .result.bad { border-left-color: var(--red); }
 

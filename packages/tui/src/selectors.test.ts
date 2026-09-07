@@ -28,7 +28,7 @@ function session(over: Partial<SessionMeta> & { session_id: string }): SessionMe
 }
 
 function agents(totalInvocations: number): SessionMeta['agentMetrics'] {
-  return { invocations: [], totalInvocations, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0 }
+  return { invocations: [], totalInvocations, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0, unmeasuredInvocations: 0 }
 }
 
 function appData(over: Partial<AppData> = {}): AppData {

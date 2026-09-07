@@ -32,10 +32,12 @@ const LAYOUT = {
 
 const UNKNOWN = dimensionWordBook({
   labels: {
+    day: 'day',
     status: 'state', harness: 'harness', model: 'model', project: 'project', repo: 'repository',
     task: 'task', marked: 'marked',
   },
   unfiled: {
+    day: 'no date',
     status: 'state unrecorded', harness: 'harness unknown', model: 'no model recorded',
     project: 'no directory', task: 'no task', repo: 'no repository', marked: 'not marked',
   },
@@ -873,7 +875,7 @@ describe('asideRows', () => {
     finishTask: 'Finish task', approve: 'Answer', prompt: 'Send',
     new: 'New', search: 'Search', group: 'Group',
   }
-  const groupWords = { repo: 'repo', none: 'flat', tree: 'cascade', task: 'tasks', harness: 'harness', model: 'model', project: 'project', status: 'state', marked: 'marked' }
+  const groupWords = { day: 'day', repo: 'repo', none: 'flat', tree: 'cascade', task: 'tasks', harness: 'harness', model: 'model', project: 'project', status: 'state', marked: 'marked' }
   const toggleWords = { history: 'closed', named: 'named', done: 'done tasks', active: 'only active', detail: 'detail', cascade: 'cascade' }
   const headings = { actions: 'ACTIONS', view: 'VIEW', show: 'SHOW' }
 
@@ -1385,6 +1387,7 @@ describe('the only-active toggle', () => {
     },
     grouping: 'project',
     groupWords: {
+      day: 'day',
       repo: 'repository', none: 'flat', tree: 'cascade', task: 'task', harness: 'harness', model: 'model',
       project: 'project', status: 'state', marked: 'marked',
     },
@@ -2231,6 +2234,7 @@ describe('asideRows — the layout section', () => {
     },
     grouping: 'project',
     groupWords: {
+      day: 'day',
       repo: 'repository', none: 'flat', tree: 'cascade', task: 'task', harness: 'harness', model: 'model',
       project: 'project', status: 'state', marked: 'marked',
     },

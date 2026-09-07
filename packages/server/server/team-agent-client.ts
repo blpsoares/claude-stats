@@ -16,7 +16,7 @@
 // Never throws; all errors are swallowed internally.
 
 import type { TeamConnection } from '@agentistics/core'
-import { readTeamConnections, normalizeTeamConfig } from '@agentistics/core'
+import { readTeamConnections, normalizeTeamConfig, resolveRemoteConsent } from '@agentistics/core'
 import { readPreferences, updateTeamConfig } from './preferences'
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ export function shouldTeardown(storedFingerprint: string | undefined, conn: Team
 
 export interface AgentFrameDecision {
   /** A notification to broadcast, or null for an unrecognized/malformed frame. */
-  notification: { type: 'info'; code: 'machine.renamed' | 'machine.reassigned'; meta: Record<string, unknown> } | null
+  notification: { type: 'info'; code: 'machine.renamed' | 'machine.reassigned' | 'machine.session_acted'; meta: Record<string, unknown> } | null
   /** New value to write into this connection's `user`, or null for "no change". Note that ''
    *  (empty string) IS a valid update — it means "clear it", not "no change": a reassignment to
    *  no owner does not tell us what the machine's display name falls back to, so the existing
@@ -114,7 +114,7 @@ export interface AgentFrameDecision {
 export function decodeAgentFrame(raw: string, meta: { connectionId: string; central: string }): AgentFrameDecision {
   const none: AgentFrameDecision = { notification: null, userUpdate: null, refreshDashboard: false }
   if (!raw) return none
-  let data: { type?: string; name?: string; actor?: string; account?: string | null }
+  let data: { type?: string; name?: string; actor?: string; account?: string | null; verb?: string; sessionId?: string }
   try {
     data = JSON.parse(raw) as typeof data
   } catch {
@@ -129,6 +129,20 @@ export function decodeAgentFrame(raw: string, meta: { connectionId: string; cent
       },
       userUpdate: newName || null,
       refreshDashboard: false,
+    }
+  }
+  if (data?.type === 'session-acted') {
+    // Somebody acted on one of THIS machine's sessions from a central. Announced here rather than
+    // left to the central's audit log: an action that is invisible on the machine it happened to
+    // is the failure the whole remote-session feature has to avoid, and the person sitting at this
+    // keyboard should not have to read someone else's log to learn their session was killed.
+    return {
+      notification: {
+        type: 'info', code: 'machine.session_acted',
+        meta: { verb: data.verb ?? '', sessionId: data.sessionId ?? '', ...meta },
+      },
+      userUpdate: null,
+      refreshDashboard: true,
     }
   }
   if (data?.type === 'reassigned') {
@@ -189,7 +203,58 @@ const IDENTITY_RETRY_COOLDOWN_MS = 5 * 60_000
  */
 const LIVE_REPORT_INTERVAL_MS = 8_000
 
+/**
+ * How old the METRICS CORPUS behind a live-session report may be before this loop asks data.ts
+ * for a fresh one.
+ *
+ * The report itself keeps its `LIVE_REPORT_INTERVAL_MS` cadence — the /proc snapshot is the part
+ * that has to be current. The `ApiResponse` beside it is used for exactly two reads: resolving a
+ * live process to the session id it is writing, and building the share-rules path index. Both move
+ * at the pace of a session STARTING, not of a turn, so a corpus a minute old answers them.
+ *
+ * It exists because `buildApiResponse()` is not the cheap read its name suggests on a machine
+ * somebody is coding on. `sse.ts`'s watcher calls `invalidateCache()` on EVERY append to a live
+ * transcript, which zeroes data.ts's stale-while-revalidate timestamp — so its 30s TTL is
+ * permanently expired and every call KICKS A FULL REBUILD: a walk of every transcript on the
+ * machine, `git log --numstat` per project, and a peak measured at 550-810 MB.
+ *
+ * MEASURED 2026-09-03 on the reporter's own machine (846 MB of transcripts across 1.328 files,
+ * 6 live assistants, member mode, NO browser and no dashboard open):
+ *   - `agentop server` read 1.457 MB of file data PER MINUTE (92,6 GB cumulative in 81 minutes,
+ *     ~110 re-reads of a corpus that fits in RAM), burned 30% of one core continuously, spawned
+ *     bursts of up to 220 concurrent `git` children, and oscillated between 1,28 GB and 2,20 GB
+ *     of RSS with a 2,04 GB high-water mark.
+ *   - The SAME build in solo mode — same store, same code, same file churn, but no reverse
+ *     channel and therefore no live-report loop — idled at 188 MB, 1-2% CPU and 0 MB/min.
+ *   - A solo server driven with an 8s `/api/data` poll (this loop's cadence, same code path)
+ *     reproduced it: 188 MB -> 700 MB within four minutes.
+ *
+ * This is the same defect `peekPushContext()` in team-uploader.ts was added for, one module over:
+ * a poller whose cadence is set by what it WATCHES ended up setting the cadence of the most
+ * expensive computation in the process. The complete fix belongs in data.ts (a peek that never
+ * revalidates, or a floor on how often a background revalidation may start); this constant is the
+ * caller-side half, and it removes ~7 of the ~8 rebuild triggers this loop contributes per minute.
+ */
+export const LIVE_REPORT_DATA_MAX_AGE_MS = 60_000
+
+/**
+ * Whether the live-session report should ask for a fresh `ApiResponse`. PURE.
+ *
+ * `null` = this loop has never obtained one, which ALWAYS rebuilds: the first report has nothing
+ * to reuse, and reporting no sessions because the corpus was not ready would be worse than the
+ * one build. Thereafter it is a plain age test against `LIVE_REPORT_DATA_MAX_AGE_MS`.
+ */
+export function liveReportNeedsData(
+  lastBuiltAtMs: number | null,
+  nowMs: number,
+  maxAgeMs: number = LIVE_REPORT_DATA_MAX_AGE_MS,
+): boolean {
+  return lastBuiltAtMs === null || nowMs - lastBuiltAtMs >= maxAgeMs
+}
+
 const liveTimers = new Map<string, ReturnType<typeof setInterval>>()
+/** Per connection, the re-announce timer — cleared with the live timer it rides beside. */
+const consentTimers = new Map<string, ReturnType<typeof setInterval>>()
 
 /**
  * Report this machine's live sessions to ONE central over its reverse channel.
@@ -212,6 +277,12 @@ const liveTimers = new Map<string, ReturnType<typeof setInterval>>()
 function startLiveReporting(connId: string, socket: WebSocket): void {
   stopLiveReporting(connId)
 
+  // The corpus this loop reads, held across ticks. See LIVE_REPORT_DATA_MAX_AGE_MS: calling
+  // buildApiResponse() every tick made THIS 8s timer the cadence of a full transcript walk.
+  // Per socket, so a torn-down connection drops its copy with the timer.
+  let heldData: Awaited<ReturnType<typeof import('./data').buildApiResponse>> | null = null
+  let heldAt: number | null = null
+
   const send = async (): Promise<void> => {
     if (socket.readyState !== WebSocket.OPEN) return
     try {
@@ -220,7 +291,15 @@ function startLiveReporting(connId: string, socket: WebSocket): void {
         import('./live-sessions'),
         import('./share-rules'),
       ])
-      const data = await buildApiResponse()
+      if (liveReportNeedsData(heldAt, Date.now())) {
+        heldData = await buildApiResponse()
+        // Stamped AFTER the await: a build that took 30s must not be born half expired, or a
+        // slow machine is exactly the one that goes back to rebuilding on every tick.
+        heldAt = Date.now()
+      }
+      // Non-null after the block above: the `null` age always rebuilds, and a build that throws
+      // leaves the catch below rather than reaching here.
+      const data = heldData!
       const snap = await getLiveSnapshot(data.sessions)
 
       // A connection that vanished mid-flight reports nothing: there is no denylist left to
@@ -241,11 +320,14 @@ function startLiveReporting(connId: string, socket: WebSocket): void {
       const shared = shareRules.filterLiveShared(snap, data.sessions, rules, index)
 
       if (socket.readyState !== WebSocket.OPEN) return
+      // Every field comes off `shared` — nothing on this message is read from `snap` directly.
+      // The activities used to be, and a withheld repo's session announced its id and its state
+      // beside the two fields that were filtered.
       socket.send(JSON.stringify({
         type: 'live-sessions',
         sessionIds: shared.liveSessionIds,
         processes: shared.liveProcesses,
-        sessionActivities: snap.liveSessionActivities ?? {},
+        sessionActivities: shared.liveSessionActivities,
       }))
     } catch { /* transient — the next tick retries */ }
   }
@@ -254,6 +336,15 @@ function startLiveReporting(connId: string, socket: WebSocket): void {
   const timer = setInterval(() => { void send() }, LIVE_REPORT_INTERVAL_MS)
   timer.unref?.()
   liveTimers.set(connId, timer)
+
+  // Its own timer rather than a counter on the one above: the two answer different questions at
+  // different rates, and folding them together would tie a consent re-statement to whatever the
+  // live report's cadence becomes next.
+  const consentTimer = setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) announceRemoteConsentNow(connId)
+  }, CONSENT_REANNOUNCE_MS)
+  consentTimer.unref?.()
+  consentTimers.set(connId, consentTimer)
 }
 
 function stopLiveReporting(connId: string): void {
@@ -261,6 +352,14 @@ function stopLiveReporting(connId: string): void {
   if (timer) {
     clearInterval(timer)
     liveTimers.delete(connId)
+  }
+  // The consent re-announce is started by `startLiveReporting` and must be stopped here, or a
+  // torn-down connection leaves a timer firing against a socket that is gone. It is cleared in
+  // the same function for exactly that reason — two lifecycles to remember is one to forget.
+  const consentTimer = consentTimers.get(connId)
+  if (consentTimer) {
+    clearInterval(consentTimer)
+    consentTimers.delete(connId)
   }
 }
 
@@ -382,6 +481,140 @@ function scheduleReconnect(connId: string): void {
   }, delay)
 }
 
+/**
+ * How often the consent is RE-STATED on an already-open socket.
+ *
+ * The announcement used to happen exactly once per connection, and that made it fragile in a way
+ * that only shows up in a real deployment. A central holds the consent in memory for the socket's
+ * lifetime (`machine-consent.ts`), so it forgets on restart — and it recovers only because the
+ * socket drops and the machine announces again on reconnect. Put a reverse proxy in front of the
+ * central, which is how one is normally exposed, and that assumption breaks: the backend can
+ * restart while the member's TCP connection to the PROXY stays up, so the member never reconnects,
+ * never re-announces, and the central sits with an empty registry believing this machine has said
+ * nothing. The owner then reads "this machine has not said whether it allows session management" —
+ * which is a true sentence about the central's memory and a false one about the machine.
+ *
+ * A single frame arriving is not something to depend on when re-stating it costs two booleans.
+ * Slow on purpose: 60s is far below any human's patience for "why is it not showing" and far above
+ * anything that could be called chatter.
+ */
+const CONSENT_REANNOUNCE_MS = 60_000
+
+/**
+ * Announce this machine's REMOTE-SESSION CONSENT to one central, now.
+ *
+ * Unsolicited and one-directional, exactly like `live-sessions` above and for the same reason: the
+ * central asks this machine nothing. It is a statement about what the machine has agreed to, so it
+ * is sent on connect (a central that restarted has forgotten) and again the moment the switch moves
+ * — `handlePatchConnection` calls this, because a consent WITHDRAWN that took until the next
+ * reconnect to arrive is a central acting on an agreement that no longer exists.
+ *
+ * The payload is two booleans. It carries no session, no screen and no rule.
+ */
+export function announceRemoteConsentNow(connId: string): void {
+  const socket = activeWs.get(connId)
+  if (!socket || socket.readyState !== WebSocket.OPEN) return
+  void (async () => {
+    try {
+      const conn = readTeamConnections(await readPreferences()).find(c => c.id === connId)
+      if (!conn) return
+      // Sent RESOLVED, never as the two raw fields: `resolveRemoteConsent` is the only place the
+      // pair is interpreted, and a central re-deriving it would be a second implementation of the
+      // rule that screens require sessions.
+      const consent = resolveRemoteConsent(conn.allowRemoteSessions, conn.allowRemoteScreens)
+      if (socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ type: 'remote-consent', sessions: consent.sessions, screens: consent.screens }))
+    } catch { /* best-effort — the next connect re-announces */ }
+  })()
+}
+
+/**
+ * Answer one central's `fleet-request`.
+ *
+ * Never throws and never answers on the wrong shape: a frame with no rid is dropped silently, and
+ * the central's own timeout is what turns that into a sentence. Refusing to answer is also the
+ * correct response to a withdrawn consent — the central distinguishes "did not answer" from
+ * "says no" through `machine-consent.ts`, which the machine keeps up to date by announcement.
+ */
+async function answerFleetRequest(connId: string, socket: WebSocket, raw: string): Promise<void> {
+  try {
+    const msg = JSON.parse(raw) as {
+      type?: string; rid?: unknown; op?: unknown; action?: unknown; id?: unknown
+      text?: unknown; choice?: unknown
+    }
+    if (msg?.type !== 'fleet-request' || typeof msg.rid !== 'string' || !msg.rid) return
+    const conn = readTeamConnections(await readPreferences()).find(c => c.id === connId)
+    if (!conn) return
+
+    const [{ buildMachineFleetReply, performMachineAction }, { readFleet, runFleetAction }, { buildApiResponse }, { resolveLang }] = await Promise.all([
+      import('./sessions/machine-fleet'),
+      import('./sessions/fleet-web'),
+      import('./data'),
+      import('./cli-lang'),
+    ])
+    const lang = await resolveLang()
+    // ONE set of sources for both halves. The act half needs them too — it resolves the target
+    // against the very fleet the read half filters, so that a verb can only reach a row this
+    // connection was allowed to see — and building them twice is how the two halves came to
+    // disagree about a directory in the first place.
+    const fleetDeps = {
+      readFleet: async (l: typeof lang) => {
+        const payload = await readFleet(l)
+        // The VERBS live on the presentation half (`sessions`, a FleetRow[]) and everything else on
+        // the raw half (`rows`, a ControlSession[]); they are the same rows in the same order.
+        // Merged by id rather than by position — an order that happens to match today is not a
+        // guarantee, and pairing rows by index is exactly the defect `workflow-match.ts` exists to
+        // have fixed once.
+        const verbsById = new Map(payload.sessions.map(r => [r.id, r.verbs]))
+        return {
+          rows: payload.rows.map(r => ({
+            ...(r as unknown as Record<string, unknown>),
+            verbs: verbsById.get(r.id) ?? [],
+          })),
+          attention: payload.attention,
+          ...(payload.unavailable ? { unavailable: payload.unavailable } : {}),
+        }
+      },
+      readIndexSources: async () => {
+        const data = await buildApiResponse()
+        return { sessions: data.sessions, projects: data.projects.map(p => ({ path: p.path, gitRemote: p.gitRemote })) }
+      },
+    }
+
+    // `op: 'act'` — perform one verb. The consent, the verb allowlist AND this connection's
+    // sharing rules are re-checked by `performMachineAction` on THIS machine; nothing the central
+    // decided is trusted here.
+    if (msg.op === 'act') {
+      const reply = await performMachineAction(conn, lang, {
+        action: typeof msg.action === 'string' ? msg.action : '',
+        id: typeof msg.id === 'string' ? msg.id : '',
+        ...(typeof msg.text === 'string' ? { text: msg.text } : {}),
+        // The option the person PICKED off the relayed dialog. Only a real number crosses:
+        // `runFleetAction` reads an absent choice as "press the dialog's confirm key", which is
+        // right where there is nothing to choose between and wrong on a `1. Yes / 2. Yes, always /
+        // 3. No`. A junk value must become "no choice", never "option NaN".
+        ...(typeof msg.choice === 'number' && Number.isFinite(msg.choice) ? { choice: msg.choice } : {}),
+      }, {
+        ...fleetDeps,
+        // `runFleetAction` is the SAME path the machine's own web Sessions page calls, so every
+        // refusal the cockpit makes is made here too — there is no second implementation of what a
+        // row may take.
+        runAction: (l, r) => runFleetAction(l, r as never),
+      })
+      if (socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ type: 'fleet-reply', rid: msg.rid, reply }))
+      return
+    }
+
+    const reply = await buildMachineFleetReply(conn, lang, fleetDeps)
+    // A machine that has not agreed sends NOTHING. An empty reply would read as "no sessions",
+    // which is a statement about the fleet rather than about consent.
+    if (!reply) return
+    if (socket.readyState !== WebSocket.OPEN) return
+    socket.send(JSON.stringify({ type: 'fleet-reply', rid: msg.rid, reply }))
+  } catch { /* the central's timeout reports this as a machine that did not answer */ }
+}
+
 /** Open a socket for ONE connection. Self-guards against a duplicate open (an already
  *  OPEN/CONNECTING socket for this id short-circuits). Never throws. */
 function openConnection(conn: TeamConnection): void {
@@ -409,6 +642,10 @@ function openConnection(conn: TeamConnection): void {
   socket.addEventListener('open', () => {
     backoffIdx.set(conn.id, 0) // successful open — reset this connection's backoff
     startLiveReporting(conn.id, socket)
+    // A central holds this in memory only (like every live fact on this channel), so a central
+    // that restarted has forgotten it. Re-stating it on every open is what makes the absence of a
+    // report mean "this machine is not here", never "it has not said yet".
+    announceRemoteConsentNow(conn.id)
   })
 
   // Inbound admin actions from the central: 'renamed' (the central renamed this machine) and
@@ -417,6 +654,15 @@ function openConnection(conn: TeamConnection): void {
   // persist `user`, maybe nudge open dashboards to refetch.
   socket.addEventListener('message', (ev: MessageEvent) => {
     const raw = typeof ev.data === 'string' ? ev.data : ''
+    // 'fleet-request' — this central is asking for the fleet. Answered only if THIS machine has
+    // agreed, re-read from preferences on every frame rather than trusted from the asker: the
+    // central asking is never the authority, and a switch turned off a moment ago must take effect
+    // on this frame rather than at the next handshake. See sessions/machine-fleet.ts for the two
+    // narrowings the answer goes through.
+    if (raw.includes('"fleet-request"')) {
+      void answerFleetRequest(conn.id, socket, raw)
+      return
+    }
     const decision = decodeAgentFrame(raw, { connectionId: conn.id, central: labelOf(conn) })
     if (decision.notification) {
       const notification = decision.notification

@@ -1,6 +1,6 @@
 // packages/server/server/iam-view.test.ts
 import { test, expect, describe, it } from 'bun:test'
-import { canSeeMemberNames, publicAccount, accountVisibleTo, canCreateAccount, canDeleteAccount, teamVisibleTo, canManageMachineTeam, canManageMachine, canAssignMemberships, authorizeAccountPatch, mfaDisableAllowed } from './iam-view'
+import { canSeeMemberNames, publicAccount, accountVisibleTo, canCreateAccount, canDeleteAccount, teamVisibleTo, canManageMachineTeam, canManageMachine, machineOwnedBy, canAssignMemberships, authorizeAccountPatch, mfaDisableAllowed } from './iam-view'
 import type { AccountDoc, Principal } from './iam-types'
 
 const owner: Principal = { accountId: 'o1', role: 'owner', memberships: [] }
@@ -18,6 +18,24 @@ test('canManageMachine: owner any; manager if managing ANY of the machine teams;
   expect(canManageMachine(mgrA, { teamId: 'A' })).toBe(true)           // legacy single
   expect(canManageMachine(mgrA, { teamIds: ['B'], accountIds: ['m1'] })).toBe(true) // owns it
   expect(canManageMachine(mgrA, {})).toBe(false)                        // loose, not owned
+})
+
+test('machineOwnedBy: the machine\'s OWN accounts and nobody else — not the instance owner, not a team manager', () => {
+  // The whole reason this exists beside canManageMachine: administering a machine (rename, rotate,
+  // re-assign) is the instance owner's and the team manager's job, and reaching into its live
+  // sessions is not. Every line here is a case canManageMachine answers the other way.
+  expect(machineOwnedBy(owner, { accountIds: ['someone-else'] })).toBe(false)
+  expect(machineOwnedBy(owner, {})).toBe(false)               // a loose machine belongs to nobody
+  expect(machineOwnedBy(mgrA, { accountIds: ['m1'] })).toBe(true)   // owns it
+  expect(machineOwnedBy(mgrA, { accountId: 'm1' })).toBe(true)      // legacy single field
+  expect(machineOwnedBy(mgrA, { accountIds: ['x', 'm1'] })).toBe(true) // one of several owners
+  expect(machineOwnedBy(mgrA, { accountIds: ['x'] })).toBe(false)
+  // Managing the machine's team is emphatically not owning the machine.
+  expect(canManageMachine(mgrA, { teamIds: ['A'] })).toBe(true)
+  expect(machineOwnedBy(mgrA, { teamIds: ['A'] } as never)).toBe(false)
+  // An empty accountIds array must not fall through to the legacy single field of someone else.
+  expect(machineOwnedBy(mgrA, { accountIds: [], accountId: 'm1' })).toBe(true)
+  expect(machineOwnedBy(mgrA, { accountIds: [], accountId: 'x' })).toBe(false)
 })
 
 test('canAssignMemberships: a manager may grant manager OR user inside a team they manage', () => {

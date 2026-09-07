@@ -2,7 +2,7 @@
  * fleet-row.ts — PURE. One `ControlSession`, shaped into the row the WEB Sessions page draws, with
  * the verbs it may offer already decided.
  *
- * The decision is NOT made here. `sessionActions` (`@agentistics/tui/control/sessions`) is the one
+ * The decision is NOT made here. `sessionActions` (`@agentistics/tui/control/session-verbs`) is the one
  * answer to "what can this row take", and the cockpit resolves every keypress against it; this
  * module calls it and carries the result over the wire. A browser-side re-derivation would be a
  * second set of rules — the bug `task-reopen.ts` exists to have fixed once — and it would go wrong
@@ -14,8 +14,8 @@
  * carries the command that does it instead of a button that cannot.
  */
 
-import { actionWords, sessionActions, type SessionAction } from '@agentistics/tui/control/sessions'
-import type { ControlSession } from '@agentistics/tui/control'
+import { actionWords, sessionActions, type SessionAction } from '@agentistics/tui/control/session-verbs'
+import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { ControlStrings } from '@agentistics/tui/control/i18n'
 
 /**
@@ -32,6 +32,23 @@ const NOT_IN_BROWSER: ReadonlySet<SessionAction> = new Set<SessionAction>([
 // that fell together, which is a property of the fleet. It is reachable as its own action below.
 
 /**
+ * `interrupt` has no entry in the cockpit's `sessionActions` — the terminal answers it with the
+ * Escape key inside an attached pane, so it never needed to be a listed verb there. The web has no
+ * pane to press a key into, so the row carries it explicitly, offered exactly when it can work: on
+ * a row agentop hosts that is measurably working.
+ */
+function interruptVerb(v: ControlSession, s: ControlStrings): FleetVerb {
+  const enabled = v.actionable && v.state === 'working'
+  return {
+    action: 'interrupt' as SessionAction,
+    label: s.sessionsInterrupt,
+    enabled,
+    // The row's own reason, so a disabled control is never silently inert.
+    ...(enabled ? {} : { reason: v.actionable ? s.sessionsInterruptIdle : s.sessionsExternalRow }),
+  }
+}
+
+/**
  * What the page may ask to be done to one row — a strict subset of the cockpit's verbs.
  *
  * It lives HERE, in the leaf, rather than beside its implementation in `fleet-web.ts`: `index.ts`
@@ -43,6 +60,24 @@ const NOT_IN_BROWSER: ReadonlySet<SessionAction> = new Set<SessionAction>([
 export type FleetActionId =
   | 'approve' | 'prompt' | 'rename' | 'note' | 'task' | 'kill' | 'resume'
   | 'openTask' | 'finishTask'
+  /**
+   * Stop what the session is doing WITHOUT ending it.
+   *
+   * Its own verb rather than a flavour of `kill`, because they are opposites: `kill` destroys the
+   * session, this one hands the turn back. The key is `Escape`, which is what `attention-rules.ts`
+   * already records these CLIs printing while they work (`esc to interrupt`) — read from the
+   * probed rules rather than assumed.
+   */
+  | 'interrupt'
+  /**
+   * Advance the harness to its NEXT mode — `auto` → `manual` → `accept edits` → `plan` → back.
+   *
+   * It CYCLES rather than picking, because that is all the harness offers: one keystroke, no way to
+   * jump to a named mode. Offering a menu of four would be a control that reaches three of them by
+   * luck. See `mode-spec.ts`, which was driven against a live session to learn both the key and the
+   * order.
+   */
+  | 'cycleMode'
   /**
    * The two that act on something other than one row, and carry no `id`.
    *
@@ -93,10 +128,14 @@ export interface FleetRow {
   task?: string
   note?: string
   model?: string
+  /** The reasoning effort this session was started with — see `ControlSession.effort`. */
+  effort?: string
+  /** The harness mode, in the harness's own words — see `mode-spec.ts`. */
+  mode?: { id: string; label: string }
   conversationId?: string
   /** The dialog this session is blocked on, verbatim, and the options read off it. */
   approvalLines?: string[]
-  dialogOptions?: { number: number; label: string; selected: boolean }[]
+  dialogOptions?: { number: number; label: string; selected: boolean; freeText?: boolean }[]
   /** The row's own sentences for what cannot be done to it. Already localized. */
   approvalBlind?: string
   approveBlind?: string
@@ -142,7 +181,7 @@ export function verbReason(
 /** One control-center row, shaped for the browser — verbs, wording and refusals included. */
 export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
   const words = actionWords(s)
-  const verbs = sessionActions(row)
+  const verbs: FleetVerb[] = sessionActions(row)
     .filter(a => !NOT_IN_BROWSER.has(a.action))
     .map(a => {
       const reason = a.enabled ? undefined : verbReason(row, a.action, s)
@@ -153,6 +192,9 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
         ...(reason ? { reason } : {}),
       }
     })
+  // Appended rather than folded into `sessionActions`: the cockpit answers "stop" with the Escape
+  // key inside an attached pane, so it never needed a listed verb. The browser has no pane.
+  verbs.push(interruptVerb(row, s))
   return {
     id: row.id,
     title: row.title,
@@ -165,6 +207,8 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
     ...(row.task ? { task: row.task } : {}),
     ...(row.note ? { note: row.note } : {}),
     ...(row.model ? { model: row.model } : {}),
+    ...(row.effort ? { effort: row.effort } : {}),
+    ...(row.mode ? { mode: row.mode } : {}),
     ...(row.conversationId ? { conversationId: row.conversationId } : {}),
     ...(row.approvalLines?.length ? { approvalLines: row.approvalLines } : {}),
     ...(row.dialogOptions?.length ? { dialogOptions: [...row.dialogOptions] } : {}),

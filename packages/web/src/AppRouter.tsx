@@ -20,9 +20,11 @@ const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage'))
 const SettingsPage = lazy(() => import('./pages/settings/SettingsPage'))
 const PreferencesSettings = lazy(() => import('./pages/settings/PreferencesSettings'))
+const AccessibilitySettings = lazy(() => import('./pages/settings/AccessibilitySettings'))
 const NotificationsSettings = lazy(() => import('./pages/settings/NotificationsSettings'))
 const SessionsSettings = lazy(() => import('./pages/settings/SessionsSettings'))
 const DataSourcesSettings = lazy(() => import('./pages/settings/DataSourcesSettings'))
+const BackupSettings = lazy(() => import('./pages/settings/BackupSettings'))
 const HarnessesSettings = lazy(() => import('./pages/settings/HarnessesSettings'))
 const InstallSettings = lazy(() => import('./pages/settings/InstallSettings'))
 const ConnectionSettings = lazy(() => import('./pages/settings/ConnectionSettings'))
@@ -56,7 +58,12 @@ export default function AppRouter() {
           <Route index element={<Suspense fallback={<PageFallback />}><HomePage /></Suspense>} />
           <Route path="costs" element={<Suspense fallback={<PageFallback />}><CostsPage /></Suspense>} />
           <Route path="top" element={<Suspense fallback={<PageFallback />}><TopUsagePage /></Suspense>} />
+          {/* The sessions WORKSPACE. `:sessionId` is optional because the workspace has a landing
+              state of its own — the active fleet's summary — rather than being blank until you pick
+              something. One route with an optional segment, not two, so the aside stays mounted and
+              the list does not flash on every selection. */}
           <Route path="sessions" element={<Suspense fallback={<PageFallback />}><SessionsPage /></Suspense>} />
+          <Route path="sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><SessionsPage /></Suspense>} />
           <Route path="workflows" element={<Suspense fallback={<PageFallback />}><WorkflowsPage /></Suspense>} />
           <Route path="projects" element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
           <Route path="repositories" element={<Suspense fallback={<PageFallback />}><RepositoriesPage /></Suspense>} />
@@ -76,9 +83,11 @@ export default function AppRouter() {
           <Route path="settings" element={<Suspense fallback={<PageFallback />}><SettingsPage /></Suspense>}>
             <Route index element={<Navigate to="preferences" replace />} />
             <Route path="preferences" element={<Suspense fallback={<PageFallback />}><PreferencesSettings /></Suspense>} />
+            <Route path="accessibility" element={<Suspense fallback={<PageFallback />}><AccessibilitySettings /></Suspense>} />
             <Route path="notifications" element={<Suspense fallback={<PageFallback />}><NotificationsSettings /></Suspense>} />
             <Route path="sessions" element={<Suspense fallback={<PageFallback />}><SessionsSettings /></Suspense>} />
             <Route path="data-sources" element={<Suspense fallback={<PageFallback />}><DataSourcesSettings /></Suspense>} />
+            <Route path="backup" element={<Suspense fallback={<PageFallback />}><BackupSettings /></Suspense>} />
             <Route path="harnesses" element={<Suspense fallback={<PageFallback />}><HarnessesSettings /></Suspense>} />
             <Route path="pricing" element={<Suspense fallback={<PageFallback />}><PricingSettings /></Suspense>} />
             <Route path="billing" element={<Suspense fallback={<PageFallback />}><BillingSettings /></Suspense>} />

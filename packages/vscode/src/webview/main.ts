@@ -258,8 +258,9 @@ function renderHeader(): void {
 
 function renderBanner(): void {
   banner.replaceChildren()
-  // Three link states, three sentences. "Nobody answered" and "answered, and said no" send a
-  // person to different places, so they are never collapsed into one message.
+  // Four link states, four sentences. "Nobody answered", "answered, and said no" and "answered, just
+  // not yet" are three different facts and send a person to three different places, so they are
+  // never collapsed into one message.
   if (state.link.state === 'down') {
     banner.className = 'banner visible bad'
     banner.append(el('span', undefined, fill(s('linkDown'), state.link.url)))
@@ -267,6 +268,9 @@ function renderBanner(): void {
   } else if (state.link.state === 'refused') {
     banner.className = 'banner visible'
     banner.append(el('span', undefined, state.link.detail ?? s('linkRefused')))
+  } else if (state.link.state === 'slow') {
+    banner.className = 'banner visible slow'
+    banner.append(el('span', undefined, s('linkSlow')))
   } else {
     banner.className = 'banner'
   }

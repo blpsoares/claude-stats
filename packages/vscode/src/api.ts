@@ -29,10 +29,25 @@ export interface ActionResult {
   message: string
 }
 
-/** How long any one call may take. The fleet poll is every 5s; a slower answer is a dead one. */
+/** How long any one call may take. */
 const TIMEOUT_MS = 8_000
 /** The metrics payload is megabytes on a well-used machine — it gets its own, longer, ceiling. */
 const DATA_TIMEOUT_MS = 30_000
+/**
+ * `/api/fleet`'s own ceiling.
+ *
+ * Measured on a real machine: the FIRST call after the server starts takes ~29s (module load, the
+ * conversation store, git-per-directory), independent of anything this poll asks for. `TIMEOUT_MS`
+ * is right for a request that answers in milliseconds when the server is up; against a cold start
+ * it aborts the request every single time, which is indistinguishable on screen from the server not
+ * running at all — the exact false "unreachable" report this constant exists to stop.
+ */
+const FLEET_TIMEOUT_MS = 40_000
+
+/** DOMException's own name for an `AbortSignal.timeout()` firing, in both Node and Bun's fetch. */
+export function isTimeout(err: unknown): boolean {
+  return err instanceof Error && err.name === 'TimeoutError'
+}
 
 export class AgentopClient {
   constructor(
@@ -53,20 +68,21 @@ export class AgentopClient {
    * 403 and 404 are ANSWERS, not failures: the first is an exposure profile with no host power, the
    * second a central, which aggregates many machines and hosts none of their sessions. Rendering
    * either as an empty fleet would be a confident "nothing is running" from a machine that was
-   * never allowed to look.
+   * never allowed to look. And a request that TIMED OUT is neither of those, nor a dead server —
+   * see `slow` on `LinkState`.
    */
   async fleet(view?: Arrangement): Promise<{ link: LinkStatus; payload?: FleetPayload }> {
     try {
       const res = await fetch(this.url('/api/fleet', viewParams(view)), {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(FLEET_TIMEOUT_MS),
       })
       if (res.status === 403 || res.status === 404) {
         return { link: { state: 'refused', url: this.api } }
       }
       if (!res.ok) return { link: { state: 'down', url: this.api } }
       return { link: { state: 'ok', url: this.api }, payload: await res.json() as FleetPayload }
-    } catch {
-      return { link: { state: 'down', url: this.api } }
+    } catch (err) {
+      return { link: { state: isTimeout(err) ? 'slow' : 'down', url: this.api } }
     }
   }
 
@@ -97,8 +113,8 @@ export class AgentopClient {
       const json = await res.json().catch(() => null) as (ActionResult & { id?: string }) | null
       if (json && typeof json.message === 'string') return { ...json, ok: Boolean(json.ok) }
       return { ok: false, message: this.networkError() }
-    } catch {
-      return { ok: false, message: this.networkError() }
+    } catch (err) {
+      return { ok: false, message: this.networkError(isTimeout(err)) }
     }
   }
 
@@ -129,8 +145,8 @@ export class AgentopClient {
       })
       if (!res.ok) return { harnesses: [], projects: [], tasks: [], unavailable: this.networkError() }
       return await res.json() as NewOptions
-    } catch {
-      return { harnesses: [], projects: [], tasks: [], unavailable: this.networkError() }
+    } catch (err) {
+      return { harnesses: [], projects: [], tasks: [], unavailable: this.networkError(isTimeout(err)) }
     }
   }
 
@@ -170,7 +186,17 @@ export class AgentopClient {
     }
   }
 
-  private networkError(): string {
+  /**
+   * The failure this call hit, worded for its actual cause. "Unreachable" is a claim about a dead
+   * server — reusing it for a request that simply took too long tells someone to go start a server
+   * that is already running and, on a cold `/api/fleet`, already answering.
+   */
+  private networkError(timedOut = false): string {
+    if (timedOut) {
+      return this.lang === 'pt'
+        ? 'O agentop server desta máquina está demorando demais para responder.'
+        : 'The agentop server on this machine is taking too long to answer.'
+    }
     return this.lang === 'pt'
       ? 'Não foi possível falar com o agentop server desta máquina.'
       : 'Could not reach the agentop server on this machine.'

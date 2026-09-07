@@ -20,6 +20,9 @@ export interface ConnectionStatusEntry {
   org: string
   user: string
   label?: string
+  /** What the CENTRAL calls this machine, resolved from `whoami`. Absent on an older server, or on
+   *  a connection that has never completed a handshake — never a hostname substituted for it. */
+  machineName?: string
   lastSuccessAt: number | null
   errKind: 'auth' | 'net' | null
   latencyMs: number | null
@@ -37,6 +40,16 @@ export interface ConnectionStatusEntry {
    *  `allowedCount` in allowlist mode. */
   deniedCount: number
   restricted: boolean
+  /**
+   * This machine's consent for THIS central to manage its sessions — the RESOLVED pair (see
+   * `resolveRemoteConsent` in `@agentistics/core`, the only place the two stored switches are
+   * interpreted). `remoteScreens` is never true while `remoteSessions` is false.
+   *
+   * Optional because an older server build does not send it, and absent must read as OFF like
+   * every other reading of this consent — never as "unknown, so probably fine".
+   */
+  remoteSessions?: boolean
+  remoteScreens?: boolean
   /** `null` = unknowable this cycle, distinct from the real `''` ("nothing rolled up yet"). */
   boundary: string | null
   /** `null` = unknowable, distinct from a real `0`. Never coerce one into the other. */

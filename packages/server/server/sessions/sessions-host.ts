@@ -15,8 +15,11 @@ import { createLimiter } from '../utils'
 import type { HarnessProcess } from '../live-sessions'
 import { rulesFor } from './attention-rules'
 import { approvalTail, attentionOf, digestFrame, frameTail } from './attention'
+import { modeOf, modeSpecFor } from './mode-spec'
 import { EMPTY_CONFIRM_MEMORY, confirmActivities, type ConfirmMemory } from './attention-confirm'
-import { readRecentChatTurns, resolveChatTranscriptPath, type ChatTurn } from './chat-tail'
+import type { ChatTurn } from './chat-turn'
+import { transcriptReaderFor } from './harness-transcript'
+import { markFleetPhase } from './fleet-profile'
 import { parseDialogOptions, type DialogOption } from './dialog-choice'
 // Taking a running session back when its registry record is gone. See `session-adopt.ts`.
 import { planAdoptions } from './session-adopt'
@@ -32,6 +35,7 @@ import type { ManagedSession, SessionActivity, SessionBackend } from './types'
 import { calculateProcCpu, type ProcStatSample } from '../hardware-pure'
 import { readProcRss, readProcStat } from '../hardware-probe'
 import { procAvailable } from './proc-liveness'
+import { backgroundWork } from './attention'
 
 /** How often the cockpit refreshes. Five seconds is the interval the feature was specified at. */
 export const SESSION_POLL_MS = Number(process.env.AGENTISTICS_SESSION_POLL_MS) > 0
@@ -49,7 +53,7 @@ const CAPTURE_CONCURRENCY = 4
  *  with; the pane cuts from the bottom to whatever it can actually draw. */
 const TAIL_LINES = 8
 
-/** How many role-tagged chat turns to carry for a Claude session — see `chat-tail.ts`. */
+/** How many role-tagged chat turns to carry for a readable session — see `harness-transcript.ts`. */
 const TAIL_CHAT_TURNS = 6
 
 /**
@@ -187,19 +191,34 @@ export function createSessionsPoller(o: {
     }
 
     try {
+      const gatherStart = performance.now()
+      // Each of the five is timed SEPARATELY as well as together, because the two numbers disagreed
+      // and the disagreement is the whole question. Measured individually in a bare process, none
+      // of them exceeded 415ms; measured here inside this `Promise.all`, the group took 2961ms. A
+      // group total cannot say which member carries that, and five concurrent readers of the same
+      // disk are exactly the shape that makes a per-member number differ from a solo one — so the
+      // per-member marks are taken IN PLACE, under the concurrency they actually run under, rather
+      // than inferred from a solo timing that has already proved not to transfer.
+      const timed = <T>(label: string, p: Promise<T>): Promise<T> => {
+        const started = performance.now()
+        return p.then(v => { markFleetPhase(`poll: gather · ${label}`, started); return v })
+      }
       const [registry, backendSessions, processes, conversations, harnessSessions] = await Promise.all([
-        o.readRegistry(),
-        o.backend.list(),
-        o.scanProcesses().then(r => r.procs).catch(() => [] as HarnessProcess[]),
+        timed('readRegistry', o.readRegistry()),
+        timed('backend.list', o.backend.list()),
+        timed('scanProcesses', o.scanProcesses().then(r => r.procs).catch(() => [] as HarnessProcess[])),
         // History is an enrichment, never a prerequisite: a store that cannot be read costs the
         // closed rows, not the running ones.
-        o.loadConversations ? o.loadConversations().catch(() => [] as Conversation[]) : Promise.resolve([]),
+        timed('loadConversations',
+          o.loadConversations ? o.loadConversations().catch(() => [] as Conversation[]) : Promise.resolve([])),
         // Same rule: unreadable costs the harness's own names and its exact conversation ids, and
         // every row falls back to behaving exactly as it did before this existed.
-        o.loadHarnessSessions
-          ? o.loadHarnessSessions().catch(() => emptyHarnessSessionIndex())
-          : Promise.resolve(emptyHarnessSessionIndex()),
+        timed('loadHarnessSessions',
+          o.loadHarnessSessions
+            ? o.loadHarnessSessions().catch(() => emptyHarnessSessionIndex())
+            : Promise.resolve(emptyHarnessSessionIndex())),
       ])
+      markFleetPhase('poll: gather (registry/backend.list/scanProcesses/conversations/harnessSessions)', gatherStart)
 
       const reconciled = reconcileSessions(registry, backendSessions)
       const harnessOf = new Map(registry.map(r => [r.id, r.harness]))
@@ -211,6 +230,7 @@ export function createSessionsPoller(o: {
       // attach to, rename or kill. Adoption never invents anything: see `session-adopt.ts`. It is
       // idempotent by construction (an adopted row stops being `unregistered`), so it writes once.
       if (o.adoptSessions) {
+        const adoptStart = performance.now()
         const adopt = planAdoptions({
           rows: reconciled,
           byManagedId: harnessSessions.byManagedId,
@@ -220,42 +240,77 @@ export function createSessionsPoller(o: {
         // Best effort, exactly like the heartbeat: a registry that cannot be written costs the
         // adoption, never the fleet on screen.
         if (adopt.length > 0) await o.adoptSessions(adopt).catch(() => undefined)
+        markFleetPhase(`poll: adoptSessions x${adopt.length}`, adoptStart)
       }
 
       const nextDigest = new Map<string, string>()
       const activity = new Map<string, SessionActivity>()
+      /** Rows whose reading is backed by more than movement — see `confirmActivities`. */
+      const corroborated = new Set<string>()
+      /** Rows with work running that is not their own turn — see `backgroundWork`. */
+      const background = new Set<string>()
       const tails = new Map<string, string[]>()
       const approvals = new Map<string, string[]>()
+      /** The harness mode each running session is in — see `mode-spec.ts`. */
+      const modes = new Map<string, { id: string; label: string }>()
       const dialogOptions = new Map<string, DialogOption[]>()
       const chatTails = new Map<string, ChatTurn[]>()
 
+      const captureStart = performance.now()
       await Promise.all(reconciled.map(r => limit(async () => {
         const b = r.backend
         if (!b) return // `lost`: the backend has nothing to capture and nothing to report.
         if (!b.alive) { activity.set(r.id, 'exited'); return }
 
         const frame = await o.backend.capture(r.id, lines).catch(() => [] as string[])
+        // WHICH MODE the harness is in, read off the same frame the state came from — see
+        // `mode-spec.ts`. `null` for a harness nobody has probed and for a frame with no footer yet,
+        // and the row then simply carries none.
+        {
+          const m = modeOf(frame, modeSpecFor(r.managed?.harness))
+          if (m) modes.set(r.id, { id: m.id, label: m.label })
+        }
         const frameDigest = digestFrame(frame)
         nextDigest.set(r.id, frameDigest)
         tails.set(r.id, frameTail(frame, TAIL_LINES))
 
         const harness = harnessOf.get(r.id)
 
-        // Claude only: the one harness with an EXACT live-session -> conversation-id link
-        // (`harness-sessions.ts`), which is what makes reading its own transcript safe rather than
-        // a guess. Every other harness keeps the raw screen tail above as its only detail content.
+        // Read the harness's own transcript instead of the screen, wherever BOTH halves hold: the
+        // conversation id is EXACT and somebody has written a reader for that harness's format
+        // (`harness-transcript.ts`). Either missing and the raw screen tail above stays the row's
+        // only detail content — never a conversation guessed from harness-and-directory.
+        //
+        // TWO exact sources, and they are not interchangeable. Claude's own
+        // `~/.claude/sessions/<pid>.json` names our tmux session, which is the link for a session
+        // we did not start; `ManagedSession.conversationId` is the id agentop handed the CLI
+        // itself, which is the only one the other harnesses can ever have. Claude's own record is
+        // preferred where both exist — it is the LIVE one, while the registry's was recorded once.
         const cwd = r.managed?.cwd
         const conversationId = harnessSessions.byManagedId.get(r.id)?.sessionId
-        if (harness === 'claude' && cwd && conversationId) {
-          const path = await resolveChatTranscriptPath(cwd, conversationId).catch(() => null)
+          ?? r.managed?.conversationId
+        const transcript = transcriptReaderFor(harness)
+        if (transcript && conversationId) {
+          const path = await transcript
+            .resolve({ conversationId, ...(cwd ? { cwd } : {}) })
+            .catch(() => null)
           if (path) {
-            const turns = await readRecentChatTurns(path, TAIL_CHAT_TURNS).catch(() => [] as ChatTurn[])
+            const turns = await transcript.readRecent(path, TAIL_CHAT_TURNS).catch(() => [] as ChatTurn[])
             if (turns.length > 0) chatTails.set(r.id, turns)
           }
         }
 
         const rules = harness ? rulesFor(harness) : undefined
+        // CORROBORATED: the harness said so itself. A `working` read from MOVEMENT ALONE, on a
+        // harness that does print a working marker, is most likely a repaint — and that is what
+        // made a row alternate between `working` and `needs you` continuously, with a notification
+        // each time. A harness with NO marker has nothing better than movement, so its reading
+        // stands. See `confirmActivities`.
+        if (!rules?.working?.length || rules.working.some(re => re.test(frame.join('\n')))) {
+          corroborated.add(r.id)
+        }
         const before = prevDigest.get(r.id)
+        if (backgroundWork({ frame, ...(rules ? { rules } : {}) })) background.add(r.id)
         const state = attentionOf({
           alive: true,
           lastActivityMs: b.lastActivityMs,
@@ -277,6 +332,7 @@ export function createSessionsPoller(o: {
           if (options.length > 0) dialogOptions.set(r.id, options)
         }
       })))
+      markFleetPhase(`poll: capture+chatTail x${reconciled.length} (concurrency ${CAPTURE_CONCURRENCY})`, captureStart)
 
       // The heartbeat: one write, one timestamp, every session the backend reports as ALIVE. See
       // `crash-group.ts` for why one shared timestamp is what makes the grouping exact.
@@ -290,25 +346,33 @@ export function createSessionsPoller(o: {
 
       // The exact conversation, written down while there is still a harness to ask. Only where it
       // would CHANGE the registry, so this is one write per session and not one per poll.
+      const recordConvStart = performance.now()
+      let recordConvWrites = 0
       if (o.recordConversation) {
         for (const m of registry) {
           const exact = harnessSessions.byManagedId.get(m.id)?.sessionId
           if (!exact || m.conversationId === exact) continue
+          recordConvWrites++
           await o.recordConversation(m.id, exact).catch(() => undefined)
         }
       }
+      markFleetPhase(`poll: recordConversation x${recordConvWrites}`, recordConvStart)
 
       // The `/rename` name, captured WHILE there is still a harness file to read it from, so the
       // title outlives the process. Only a name a PERSON typed (`chosenName` drops the harness's own
       // invented `agentistics-77`), and only when it CHANGED — one write per rename, never per poll.
+      const recordNameStart = performance.now()
+      let recordNameWrites = 0
       if (o.recordHarnessName) {
         for (const m of registry) {
           const file = harnessSessions.byManagedId.get(m.id)
           const name = chosenName(file)
           if (!name || (m.harnessName === name && m.harnessNameSince === file?.nameSince)) continue
+          recordNameWrites++
           await o.recordHarnessName(m.id, name, file?.nameSince).catch(() => undefined)
         }
       }
+      markFleetPhase(`poll: recordHarnessName x${recordNameWrites}`, recordNameStart)
 
       // Decided against the BACKEND's own list rather than the reconciled statuses, because that is
       // the question: a row the backend has never heard of is one the machine took.
@@ -317,6 +381,7 @@ export function createSessionsPoller(o: {
 
       const canReadProc = await procAvailable()
       const sessionHardware = new Map<string, { pid?: number; cpuPercent?: number | null; rssBytes?: number | null }>()
+      const procStatStart = performance.now()
       if (canReadProc) {
         const panePids = await o.backend.listPanePids?.().catch(() => new Map<string, number>())
         for (const r of reconciled) {
@@ -345,6 +410,7 @@ export function createSessionsPoller(o: {
           }
         }
       }
+      if (canReadProc) markFleetPhase(`poll: procStat+procRss x${reconciled.length} (sequential)`, procStatStart)
 
       // Confirm the raw readings before anything downstream sees them: the count, the sort, the bell
       // and the TUI all read `activity`, so confirming here is the one place that makes every surface
@@ -352,16 +418,18 @@ export function createSessionsPoller(o: {
       // believed immediately (see `attention-confirm.ts`). The dialog/approval frames captured above
       // are keyed to the RAW `waiting-approval` reading and only reach a row once its CONFIRMED state
       // is `waiting-approval` too — `buildSessionViews` gates them on `activity`.
-      const confirm = confirmActivities(confirmMemory, activity)
+      const confirm = confirmActivities(confirmMemory, activity, corroborated)
       confirmMemory = confirm.memory
       const confirmedActivity = confirm.activities
 
       const sessions = buildSessionViews({
         reconciled,
         activity: confirmedActivity,
+        background,
         tails,
         chatTails,
         approvals,
+        modes,
         dialogOptions,
         processes,
         conversations,
