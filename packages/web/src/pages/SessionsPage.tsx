@@ -147,15 +147,30 @@ export default function SessionsPage() {
    * Keyed by the path AS RECORDED, which is the key the browser's own list is built on.
    */
   const [onDisk, setOnDisk] = useState<Map<string, { bytes: number; scope: 'project' | 'temp' }>>(new Map())
+  /**
+   * Already-localized: files this session wrote OUTSIDE its own folder, which the list cannot offer.
+   *
+   * Reported as the panel missing a file the session had just written. It had not missed it — the
+   * list drops what the read route would refuse, because a row whose only outcome is a refusal is
+   * worse than no row. What was wrong is that the drop was SILENT, and a silent drop reads as a bug
+   * in the panel. A count and a sentence say the list is complete for what it can serve, and that
+   * something else was written elsewhere; the paths themselves stay off the screen, or explaining
+   * the guard would undo it.
+   */
+  const [outsideNote, setOutsideNote] = useState<string | null>(null)
   useEffect(() => {
-    if (!selected) { setOnDisk(new Map()); return }
+    if (!selected) { setOnDisk(new Map()); setOutsideNote(null); return }
     let alive = true
     const read = async () => {
       try {
         const r = await fetch(`/api/fleet/artifacts?id=${encodeURIComponent(selected.id)}&lang=${pt ? 'pt' : 'en'}`)
         if (!r.ok || !alive) return
-        const d = await r.json() as { files?: { raw: string; bytes: number; scope: 'project' | 'temp' }[] }
+        const d = await r.json() as {
+          files?: { raw: string; bytes: number; scope: 'project' | 'temp' }[]
+          outside?: string
+        }
         setOnDisk(new Map((d.files ?? []).map(f => [f.raw, { bytes: f.bytes, scope: f.scope }])))
+        setOutsideNote(d.outside ?? null)
       } catch { /* the list simply stays as it was */ }
     }
     void read()
@@ -371,6 +386,7 @@ export default function SessionsPage() {
       // list is shown as recorded, so the panel is never empty for the length of a request.
       artifacts={onDisk.size === 0 ? artifacts : artifacts.filter(a => onDisk.has(a.path))}
       facts={onDisk}
+      {...(outsideNote ? { outsideNote } : {})}
       loading={artifactsLoading}
       {...(artifactsUnavailable ? { unavailable: artifactsUnavailable } : {})}
       {...(artifactsOlder ? { older: artifactsOlder } : {})}

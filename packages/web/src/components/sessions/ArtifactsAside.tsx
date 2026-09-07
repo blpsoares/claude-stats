@@ -86,6 +86,15 @@ const SKILL_FORMAT_KEY = 'agentistics:skill-format'
 
 export interface ArtifactsAsideProps {
   /**
+   * Already-localized: files this session wrote outside its own folder, which cannot be listed.
+   *
+   * A COUNT in a sentence, never the paths — see `listArtifactsWithOutside` on the server. It
+   * exists because the drop was silent, and a silent drop reads as the panel having missed
+   * something it wrote.
+   */
+  outsideNote?: string
+
+  /**
    * The session's own directory.
    *
    * Only the MCP tab uses it, and it uses it for a decision rather than a label: the `local` and
@@ -286,7 +295,7 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 }
 
 export function ArtifactsAside({
-  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, turns, facts, onClose,
+  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, outsideNote, turns, facts, onClose,
   tabRequest,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
@@ -1094,6 +1103,15 @@ export function ArtifactsAside({
             {pt
               ? 'A sessão também escreveu por comandos cujos caminhos não dá para ler; esses arquivos não estão nesta lista.'
               : 'The session also wrote through commands whose paths cannot be read; those files are not in this list.'}
+          </p>
+        )}
+        {/* The other reason a written file is not here, and the one that was silent: it is outside
+            this session's own folder, so the read route would refuse it and the list does not offer
+            a row whose only outcome is a refusal. The sentence is the server's — it holds the count
+            and never the paths. */}
+        {outsideNote && (
+          <p style={{ margin: '6px 8px 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {outsideNote}
           </p>
         )}
       </div>
