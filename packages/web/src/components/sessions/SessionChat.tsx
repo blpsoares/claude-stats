@@ -1734,10 +1734,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   </button>
                 )}
 
-                {/* Stop · Send · More, held together at the far end. `marginLeft: auto` on the
-                    GROUP rather than on send, so the three keep their order and their spacing
-                    whether or not the stop is there — a margin on send alone would push the more
-                    button off to the right on its own the moment a turn ended. */}
+                {/* Mode · Stop · Recall · Send · More, held together at the far end, in that
+                    order: the two that act on the RUNNING TURN, then the two about the message you
+                    are writing, then the menu. `marginLeft: auto` on the GROUP rather than on send,
+                    so they keep their order and their spacing whether or not the conditional two
+                    are there — a margin on send alone would push the more button off to the right
+                    on its own the moment a turn ended. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
                 {/* THE HARNESS MODE, and the one control that changes it.
                     Asked for: "nao consigo alternar entre os modos que os harnesses possuem (auto
@@ -1782,6 +1784,32 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   </button>
                 )}
 
+                {/* Working's own stop, right beside the field it does not block. Absent the moment
+                    the turn ends — a stop control on an idle session would send Escape into its
+                    prompt, which is exactly the row's own gate on `interrupt`.
+                    IT SITS WITH THE MODE CHIP, before the history button, because those two are the
+                    controls that act on THE TURN THAT IS RUNNING. Asked for in that order, and it
+                    reads that way: the pair about the live turn, then the pair about the message
+                    you are writing (recall, send), then the menu. It used to sit between recall and
+                    send, so the one control that appears and disappears mid-turn did so in the
+                    middle of the group and shifted send under a thumb that was already moving. */}
+                {working && stopVerb?.enabled && (
+                  <button
+                    onClick={() => void stopNow()}
+                    disabled={stopping}
+                    title={stopVerb.label}
+                    aria-label={stopVerb.label}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, cursor: stopping ? 'default' : 'pointer',
+                      border: '1px solid color-mix(in srgb, var(--accent-red) 45%, transparent)',
+                      background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
+                      color: 'var(--accent-red)',
+                    }}
+                  >
+                    {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
+                  </button>
+                )}
                 {/* THE LAST MESSAGE YOU SENT. ABSENT until there is one — `lastSent` is null on a
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting
@@ -1798,26 +1826,6 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     }}
                   >
                     <History size={15} />
-                  </button>
-                )}
-                {/* Working's own stop, right beside the field it does not block. Absent the moment
-                    the turn ends — a stop control on an idle session would send Escape into its
-                    prompt, which is exactly the row's own gate on `interrupt`. */}
-                {working && stopVerb?.enabled && (
-                  <button
-                    onClick={() => void stopNow()}
-                    disabled={stopping}
-                    title={stopVerb.label}
-                    aria-label={stopVerb.label}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, cursor: stopping ? 'default' : 'pointer',
-                      border: '1px solid color-mix(in srgb, var(--accent-red) 45%, transparent)',
-                      background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
-                      color: 'var(--accent-red)',
-                    }}
-                  >
-                    {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
                   </button>
                 )}
                 <button
