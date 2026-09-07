@@ -24,6 +24,7 @@ import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { FleetOverview } from '../components/sessions/FleetOverview'
+import { SessionStatsMenu } from '../components/sessions/SessionStatsMenu'
 import { MagnifierButton } from '../components/a11y/MagnifierButton'
 import { HideLensesButton } from '../components/a11y/HideLensesButton'
 import { ArtifactsAside } from '../components/sessions/ArtifactsAside'
@@ -51,6 +52,7 @@ export default function SessionsPage() {
   const {
     lang, isCentral, theme, filters, setFilters, activeOnly, setActiveOnly,
     availableProjects, sessionCountByProject, models, availableHarnesses, derived,
+    data, currency, brlRate,
   } = ctx
   const pt = lang === 'pt'
   const { sessionId } = useParams()
@@ -607,6 +609,26 @@ export default function SessionsPage() {
                   </button>
                 ))}
               </div>
+            )}
+
+            {/* WHAT THIS CONVERSATION HAS SPENT — the same control the desktop strip carries, and it
+                was simply not on this bar: the strip that hosts it is `!isMobile`, so a phone had no
+                way to see a session's tokens, cost, model or context gauge at all. The button is
+                already the compact one (an icon, plus the context percentage when there is one),
+                which is why it fits here beside five other controls; `compact` only asks it for the
+                44px target this bar holds everything else to. */}
+            {selected.conversationId !== undefined && (
+              <SessionStatsMenu
+                harness={selected.harness}
+                sessionId={selected.conversationId}
+                meta={data?.sessions?.find(x => x.session_id === selected.conversationId)}
+                lang={pt ? 'pt' : 'en'}
+                currency={currency}
+                brlRate={brlRate}
+                touch
+                {...(selected.model ? { startedModel: selected.model } : {})}
+                {...(selected.effort ? { startedEffort: selected.effort } : {})}
+              />
             )}
 
             {/* THE RIGHT ASIDE, reachable at all.
