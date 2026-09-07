@@ -36,6 +36,8 @@ export interface WorkflowAgentRow {
   phase: string
   /** How many tool calls it made. `null` when nothing could count them. */
   toolCalls: number | null
+  /** Its transcript ends on an unanswered tool call. Only meaningful while the RUN is live. */
+  pending?: boolean
   model: string
   /** The four counters. `null` when the agent has produced none — never a zeroed breakdown. */
   tokens: TokenBreakdown | null
@@ -145,6 +147,7 @@ export async function readSessionWorkflows(
           ...(a.labelSource ? { labelSource: a.labelSource } : {}),
           phase: a.phase, model: a.model,
           toolCalls: typeof a.toolCalls === 'number' ? a.toolCalls : null,
+          ...(a.pending ? { pending: true } : {}),
           tokens: at,
           totalTokens: at ? workflowTokens(a) : null,
           costUSD: a.costUSD > 0 ? a.costUSD : null,
@@ -174,6 +177,9 @@ export type WorkflowAgentDetail =
       commands: string[]
       /** The list was cut at the cap — said, so it never implies the agent stopped there. */
       commandsClipped: boolean
+      /** Index, among ALL calls, of the one asked and not yet answered — the live edge. Null when
+       *  every call came back. A fact about the file; the view decides whether to call it running. */
+      pendingIndex: number | null
     }
   | { ok: false; message: string }
 
@@ -231,5 +237,6 @@ export async function readWorkflowAgent(
     tools: agg.tools,
     commands: agg.commands,
     commandsClipped: agg.commandsClipped,
+    pendingIndex: agg.pendingToolIndex,
   }
 }

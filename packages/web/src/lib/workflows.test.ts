@@ -3,6 +3,8 @@ import {
   workflowsStateOf, workflowCount, liveRunCount, workflowsPollMs, runStatusText,
   runStatusNote, runDurationText, unmeasuredRunText, WORKFLOW_POLL_MS,
   groupAgentsByPhase, labelCaveat, agentOpenable, agentDetailUrl, agentDetailStateOf,
+  agentIsRunning, runningCommandIndex, runOpensByDefault, agentOpensByDefault,
+  placementKnown, declaredPhases,
   type WorkflowRunRow, type WorkflowsPayload, type WorkflowAgentRow,
 } from './workflows'
 
@@ -150,4 +152,52 @@ test('the detail url carries the run AND the agent, both escaped', () => {
 
 test('a refused detail keeps its sentence', () => {
   expect(agentDetailStateOf({ ok: false, message: 'gone' })).toEqual({ phase: 'failed', message: 'gone' })
+})
+
+// --- following a run while it happens ---------------------------------------
+
+test('a pending agent counts as running only while the run itself is live', () => {
+  const a = ag({ pending: true })
+  expect(agentIsRunning(a, true)).toBe(true)
+  // A killed run leaves the same dangling call behind; nothing in it is happening now.
+  expect(agentIsRunning(a, false)).toBe(false)
+  expect(agentIsRunning(ag({ pending: false }), true)).toBe(false)
+  expect(agentIsRunning(ag({ pending: undefined }), true)).toBe(false)
+})
+
+test('the highlighted line is the pending one, and nothing when it would be a guess', () => {
+  expect(runningCommandIndex(2, 5, true)).toBe(2)
+  expect(runningCommandIndex(2, 5, false)).toBe(null)   // the run is over
+  expect(runningCommandIndex(null, 5, true)).toBe(null) // nothing pending
+  // Past the end of a clipped list: the line exists but is not on screen, and highlighting the
+  // last visible one instead would point at the wrong command.
+  expect(runningCommandIndex(7, 5, true)).toBe(null)
+  expect(runningCommandIndex(-1, 5, true)).toBe(null)
+})
+
+test('a live run opens by itself; a finished one does not', () => {
+  expect(runOpensByDefault(run({ live: true, status: 'running' }))).toBe(true)
+  expect(runOpensByDefault(run({ live: false }))).toBe(false)
+})
+
+test('inside a live run, the working agent is the one that opens', () => {
+  expect(agentOpensByDefault(ag({ pending: true }), true)).toBe(true)
+  expect(agentOpensByDefault(ag({ pending: false }), true)).toBe(false)
+  // Nothing to open when there is no transcript to ask for.
+  expect(agentOpensByDefault(ag({ pending: true, agentId: undefined }), true)).toBe(false)
+})
+
+test('placement is unknown while a run is going, and the plan is still nameable', () => {
+  const live = run({
+    live: true, status: 'running',
+    phases: [{ title: 'Recon', agentCount: 0 }, { title: 'Build', agentCount: 0 }],
+    agents: [ag({ phase: '', labelSource: 'none' }), ag({ agentId: 'a2', phase: '', labelSource: 'none' })],
+  })
+  expect(placementKnown(live)).toBe(false)
+  expect(declaredPhases(live)).toEqual(['Recon', 'Build'])
+})
+
+test('placement is known as soon as one agent carries a phase', () => {
+  expect(placementKnown(run({ agents: [ag({ phase: 'A' }), ag({ agentId: 'a2', phase: '' })] }))).toBe(true)
+  expect(placementKnown(run({ agents: [] }))).toBe(false)
 })
