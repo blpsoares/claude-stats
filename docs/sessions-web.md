@@ -143,6 +143,32 @@ Full parity, not a subset — the aside, the metrics screen and the filters are 
   desktop's `FileText` icon with **no count**.
 - **The magnifier button lives in the bar**, not floating over the conversation.
 
+### Reaching it from a phone, and what that costs
+
+The dashboard is served over plain HTTP by default, and on a phone that decides more than it looks
+like it does. **Notifications, the service worker and installability all require a SECURE CONTEXT.**
+Reached as `http://100.109.247.39:47292` — a Tailscale address, which is the usual way — the origin
+is not one: `navigator.serviceWorker` is undefined, the app cannot really install, and the
+notification permission can never be granted however many times it is asked for. That is a browser
+rule, not a setting, and nothing in this product can substitute for it.
+
+`tailscale serve` is the fix, because it hands out a real certificate for the machine's own name:
+
+```bash
+tailscale serve --bg 47292      # then open https://<machine>.<tailnet>.ts.net
+```
+
+**And on iOS the browser matters after that.** Every iOS browser is WebKit underneath, but only a web
+app added to the Home Screen **from Safari** actually runs standalone — and only a standalone one is
+given the Notification API at all. A shortcut added from Chrome opens inside Chrome and never will
+be. So the order is: HTTPS first, then add it from Safari. Doing the second first lands in the same
+place.
+
+Settings → Notifications states whichever of these is in the way, one sentence each
+(`supportFrom` in `lib/sessionNotifications.ts`), and withholds the permission button wherever
+pressing it could not do anything — including when the permission is already `denied`, which the
+browser will never re-prompt for.
+
 ### The document must not bounce here, and the keyboard must not strand it
 
 The workspace is a fixed-height column whose conversation, list and aside each scroll inside
