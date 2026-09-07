@@ -1847,15 +1847,20 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                 </button>
 
                 {/* DICTATION, beside attach — the pair that PREPARES a message, which is what the
-                    left of this row is. It was reachable only through the "more" menu; on a desktop
-                    there is room for it and two clicks for a control used mid-sentence is one too
-                    many.
-                    ONLY WHEN IT CAN WORK, and only off a phone. Its refusal needs a LINE, not a
-                    `title` — the Web Speech API needs a secure context, so a dashboard opened over
-                    plain HTTP on a LAN has no microphone at all — and that line only fits in the
-                    menu, where the row stays. A control that is present and silently does nothing
-                    is the thing this codebase refuses everywhere else. */}
-                {!isMobile && dictation.state === 'ready' && (
+                    left of this row is. It was reachable only through the "more" menu, and two
+                    clicks for a control used mid-sentence is one too many.
+                    ONLY WHEN IT CAN WORK. Its refusal needs a LINE, not a `title` — the Web Speech
+                    API needs a secure context, so a dashboard opened over plain HTTP on a LAN has
+                    no microphone at all — and that line only fits in the menu, where the control
+                    stays in that case. A control that is present and silently does nothing is the
+                    thing this codebase refuses everywhere else.
+                    IT IS NO LONGER HIDDEN ON A PHONE. That was a WIDTH argument, written when this
+                    was one row holding the field and the buttons together; it became a column, and
+                    the row now has the space. Reported as the composer not looking like the
+                    desktop's — the microphone was the whole of the difference. Where it cannot
+                    work it is still in the menu, on a phone exactly as anywhere else, because there
+                    is the only place the reason fits. */}
+                {dictation.state === 'ready' && (
                   <button
                     onClick={toggleDictation}
                     disabled={!canPrompt}
@@ -2044,34 +2049,36 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       {/* NOT RENDERED where the standalone button above is shown, so dictation is
                           in ONE place at a time — two controls for one act is two states to keep in
                           agreement. Where it cannot work it lives here, because only here can it
-                          say why.
+                          say why. The `isMobile` half of this condition is gone with the one on the
+                          row: the two are the SAME switch, and leaving one of them would put the
+                          microphone in both places on a phone, which is the bug below.
                           It was `hidden` and that did nothing: the row sets `display: flex` inline,
                           and an inline style beats the user-agent rule `[hidden] { display: none }`
                           without `!important`. So the microphone appeared TWICE — reported as
                           exactly that. A conditional render has no such loophole. */}
-                      {(isMobile || dictation.state !== 'ready') && <button
-                        onClick={() => { if (dictation.state === 'ready') { setMoreOpen(false); toggleDictation() } }}
-                        disabled={dictation.state !== 'ready'}
+                      {/* IT IS ONLY EVER DISABLED HERE, and the compiler is what said so: this
+                          branch is reached only when the state is NOT `ready`, so the enabled half
+                          of this row — its click, its cursor, its "Parar de ouvir" — was code that
+                          could not run. It existed for the phone, which used to be sent here even
+                          when dictation worked. The row is now what it always was in practice: the
+                          REASON dictation is unavailable, said where there is room to say it. */}
+                      {dictation.state !== 'ready' && <div
                         style={{
-                          display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-                          minHeight: 40, padding: '6px 8px', borderRadius: 7, border: 'none',
-                          background: listening ? 'color-mix(in srgb, var(--accent-red) 12%, transparent)' : 'transparent',
-                          color: listening ? 'var(--accent-red)' : 'var(--text-primary)',
-                          fontFamily: 'inherit', fontSize: 12.5,
-                          cursor: dictation.state === 'ready' ? 'pointer' : 'default',
-                          opacity: dictation.state === 'ready' ? 1 : 0.55,
+                          display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%',
+                          minHeight: 40, padding: '6px 8px', borderRadius: 7,
+                          color: 'var(--text-tertiary)', fontFamily: 'inherit', fontSize: 12.5,
                         }}
                       >
-                        <Mic size={14} style={{ flexShrink: 0 }} />
+                        <Mic size={14} style={{ flexShrink: 0, marginTop: 2 }} />
                         <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                          <span>{listening ? (pt ? 'Parar de ouvir' : 'Stop listening') : (pt ? 'Ditar' : 'Dictate')}</span>
+                          <span>{pt ? 'Ditar' : 'Dictate'}</span>
                           {dictation.reason && (
-                            <span style={{ fontSize: 10.5, lineHeight: 1.4, color: 'var(--text-tertiary)', overflowWrap: 'anywhere' }}>
+                            <span style={{ fontSize: 10.5, lineHeight: 1.4, overflowWrap: 'anywhere' }}>
                               {dictation.reason}
                             </span>
                           )}
                         </span>
-                      </button>}
+                      </div>}
 
                       {/* The address that WOULD work, when there is one.
                           `localhost` is a secure context and `http://192.168.x.y:47292` is not, so
