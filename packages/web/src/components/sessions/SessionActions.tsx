@@ -53,6 +53,18 @@ export interface SessionActionsProps {
     on?: boolean
     onSelect: () => void
   }[]
+  /**
+   * A CONTROL, not a row — drawn above `extra` and above the verbs.
+   *
+   * Some of what came off the bar is not a list item. The view switch is a SEGMENTED CONTROL: its
+   * two halves are alternatives to each other, and that is the whole of what it says. Listed as two
+   * rows they read as two independent things you could pick, which is not the same statement — so
+   * it comes in as itself and this menu only places it.
+   *
+   * It is a function of `close` because the caller owns what its control does, and a menu that
+   * stays open after you have used it is a menu you then have to dismiss.
+   */
+  extraTop?: (close: () => void) => React.ReactNode
 }
 
 /** The verbs that take a line of text before they can run. */
@@ -61,7 +73,9 @@ const TEXT_VERBS = new Set<string>(['rename', 'note', 'task'])
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
 
-export function SessionActions({ row, lang, act, onGone, onOpened, extra = [] }: SessionActionsProps) {
+export function SessionActions({
+  row, lang, act, onGone, onOpened, extra = [], extraTop,
+}: SessionActionsProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState<FleetVerb | null>(null)
@@ -140,6 +154,10 @@ export function SessionActions({ row, lang, act, onGone, onOpened, extra = [] }:
             {/* THE SURFACE'S OWN CONTROLS, first: they are what the bar gave up to make room for the
                 title, and burying them under the row's verbs would make the trade a bad one. A rule
                 separates them because they act on THIS SCREEN while the verbs act on the SESSION. */}
+            {!asking && !confirming && extraTop && (
+              <div style={{ padding: '2px 2px 6px' }}>{extraTop(() => setOpen(false))}</div>
+            )}
+
             {!asking && !confirming && extra.length > 0 && (
               <div style={{
                 display: 'flex', flexDirection: 'column',

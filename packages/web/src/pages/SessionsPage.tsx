@@ -609,22 +609,49 @@ export default function SessionsPage() {
                 act={act}
                 onGone={() => navigate('/sessions')}
                 onOpened={id => navigate(sessionPath(id))}
+                /* THE VIEW SWITCH, AS THE SWITCH IT IS. It came off the bar and was briefly two
+                   rows in this list, which is a different statement: two rows read as two things
+                   you could pick, while a segmented control says they are ALTERNATIVES and which
+                   one you are in. It is the same control the bar carried, with its labels back —
+                   there is room for words in a 240px menu and there was none in a 390px bar.
+                   Absent for a harness that can never name its conversation, exactly as before. */
+                {...(selected.conversationBlind === undefined ? {
+                  extraTop: (close: () => void) => (
+                    <div role="tablist" style={{
+                      display: 'flex', gap: 3, padding: 3, borderRadius: 10,
+                      background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                    }}>
+                      {([
+                        ['chat', pt ? 'Conversa' : 'Chat', <MessagesSquare key="c" size={15} />],
+                        ['terminal', 'Terminal', <TerminalSquare key="t" size={15} />],
+                      ] as const).map(([id, label, icon]) => (
+                        <button
+                          key={id}
+                          role="tab"
+                          aria-selected={sessionView === id}
+                          onClick={() => { setSessionView(id); close() }}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                            // 44px, the figure this repo holds every mobile target to — and this
+                            // menu is opened with a thumb.
+                            flex: 1, minHeight: 44, borderRadius: 8, border: 'none',
+                            cursor: 'pointer', minWidth: 0,
+                            background: sessionView === id ? 'var(--bg-surface)' : 'transparent',
+                            color: sessionView === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                            fontFamily: 'inherit', fontSize: 12.5,
+                            fontWeight: sessionView === id ? 650 : 400,
+                          }}
+                        >
+                          {icon}
+                          <span style={{
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ),
+                } : {})}
                 extra={[
-                  /* THE TWO VIEWS, as rows rather than as a segmented control on the bar. Both are
-                     listed and the current one is MARKED — a single "switch view" row would not say
-                     which of the two you are in, and that is the only thing the control on the bar
-                     was still communicating once it lost its labels. Absent for a harness that can
-                     never name its conversation, exactly as the toggle was. */
-                  ...(selected.conversationBlind === undefined ? ([
-                    ['chat', pt ? 'Conversa' : 'Chat', <MessagesSquare key="c" size={15} />],
-                    ['terminal', 'Terminal', <TerminalSquare key="t" size={15} />],
-                  ] as const).map(([id, label, icon]) => ({
-                    id: `view-${id}`,
-                    label,
-                    icon,
-                    on: sessionView === id,
-                    onSelect: () => setSessionView(id),
-                  })) : []),
                   {
                     id: 'filters',
                     label: pt ? 'Filtros' : 'Filters',
