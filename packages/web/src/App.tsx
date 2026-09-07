@@ -1637,7 +1637,17 @@ export default function AppLayout() {
    */
   useEffect(() => {
     if (!lockViewport || keyboardUp) return
-    const pin = () => { if (window.scrollY !== 0) window.scrollTo(0, 0) }
+    const pin = () => {
+      // NEVER WHILE SOMETHING IS BEING TYPED INTO. The caret scroll iOS performs on focus is the
+      // one document scroll on this screen that is not spurious, and cancelling it is exactly how
+      // the composer ends up behind the keyboard. `keyboardUp` is supposed to cover this and did
+      // not in an installed PWA, where the window resizes with the keyboard and the shrink cannot
+      // be told from the window simply being smaller — so the guard is stated a second time
+      // against the one fact that is never ambiguous: is a field focused.
+      const el = document.activeElement as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      if (window.scrollY !== 0) window.scrollTo(0, 0)
+    }
     pin()
     window.addEventListener('scroll', pin, { passive: true })
     // The listener covers everything iOS does noisily; these cover a settle that moves the page

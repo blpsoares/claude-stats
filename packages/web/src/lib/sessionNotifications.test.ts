@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { SessionMeta } from '@agentistics/core'
 import {
-  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notifyFleetTransitions,
+  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notificationSupport, notifyFleetTransitions,
   resetNotificationMemory, type SessionActivity,
 } from './sessionNotifications'
 
@@ -231,5 +231,43 @@ describe('a row nobody watched arrive is not an event that happened', () => {
     const alive = settle(null, [{ id: 'a', state: 'working' }])
     notifyFleetTransitions(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting-approval' }], 'en')
     expect(captured).toHaveLength(0)
+  })
+})
+
+describe('notificationSupport', () => {
+  const g = globalThis as unknown as { window?: unknown; navigator?: unknown }
+  const realWindow = g.window
+  const realNavigator = g.navigator
+
+  afterEach(() => {
+    if (realWindow === undefined) delete g.window; else g.window = realWindow
+    if (realNavigator === undefined) delete g.navigator; else g.navigator = realNavigator
+  })
+
+  it('a browser that HAS the API is simply ok', () => {
+    g.window = { Notification: {} }
+    expect(notificationSupport()).toBe('ok')
+  })
+
+  it('THE REPORTED CASE: an iPhone tab needs the app installed, and says so', () => {
+    // Safari on iPhone exposes `Notification` only to a Home-Screen web app. Reported as "não tá
+    // pedindo permissão" — the button was there and could never do anything.
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari', platform: 'iPhone', maxTouchPoints: 5 }
+    expect(notificationSupport()).toBe('needs-install')
+  })
+
+  it('an iPad reporting itself as a Mac is still an iPad', () => {
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari', platform: 'MacIntel', maxTouchPoints: 5 }
+    expect(notificationSupport()).toBe('needs-install')
+  })
+
+  it('anything else without the API is unsupported — a different fact, kept separate', () => {
+    // `denied` is a decision the user can reverse from that screen; this is not, and folding them
+    // together is what leaves a reader pressing a button that cannot work.
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox', platform: 'Linux x86_64', maxTouchPoints: 0 }
+    expect(notificationSupport()).toBe('unsupported')
   })
 })

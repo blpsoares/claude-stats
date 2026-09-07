@@ -216,6 +216,32 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   return await Notification.requestPermission()
 }
 
+/**
+ * CAN THIS BROWSER NOTIFY AT ALL, and if not, why not — so the screen can say it.
+ *
+ * iOS is the case that forced this. Safari on iPhone exposes `Notification` **only to a web app
+ * installed on the Home Screen** (16.4+); in an ordinary tab the API is simply absent, so a
+ * settings screen that only knows `granted` / `denied` / `default` shows a permission button that
+ * can never do anything, and the honest answer — "install it first" — is the one thing it cannot
+ * say. That is the whole of "não tá pedindo permissão".
+ *
+ * `'unsupported'` is deliberately not folded into `'denied'`: one is a decision the user can
+ * reverse from this screen, the other is a step they have to take somewhere else.
+ */
+export type NotificationSupport = 'ok' | 'needs-install' | 'unsupported'
+
+export function notificationSupport(): NotificationSupport {
+  if (typeof window === 'undefined') return 'unsupported'
+  if ('Notification' in window) return 'ok'
+  // An iOS device with the API missing: installing it to the Home Screen is what turns it on. The
+  // test is for the PLATFORM rather than for standalone-ness, because a tab is exactly where the
+  // user is when they need to be told. iPadOS reports itself as a Mac, hence the touch check.
+  const ua = navigator.userAgent
+  const iOS = /iPad|iPhone|iPod/.test(ua)
+    || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1)
+  return iOS ? 'needs-install' : 'unsupported'
+}
+
 export function getBrowserNotificationPermission(): NotificationPermission {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'denied'
@@ -238,16 +264,39 @@ export function triggerSessionNotification(options: {
     playNotificationSound(options.soundPreset ?? settings.soundPreset, options.soundVolume ?? settings.soundVolume)
   }
 
-  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-    try {
-      new Notification(options.title, {
-        body: options.body,
-        icon: '/favicon.ico',
-        tag: options.tag,
-      })
-    } catch {
-      /* ignore notification errors */
-    }
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+
+  const opts: NotificationOptions = {
+    body: options.body,
+    // The app's own icon, at the size a notification actually renders. `/favicon.ico` was a 16px
+    // image blown up to 48 on a phone.
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192-maskable.png',
+    ...(options.tag ? { tag: options.tag } : {}),
+  }
+
+  // THE SERVICE WORKER IS THE PATH, NOT A FALLBACK. `new Notification()` is unimplemented in an
+  // installed iOS web app — the constructor exists and throws — so on the one platform this
+  // feature was reported broken on, the only thing that works is asking the registration to show
+  // it. It also works everywhere else, which is why it is tried FIRST rather than kept for iOS:
+  // one path that works in four places beats a branch that has to guess which place it is in.
+  const sw = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined
+  if (sw) {
+    void sw.ready
+      .then(reg => reg.showNotification(options.title, opts))
+      .catch(() => { legacyNotification(options.title, opts) })
+    return
+  }
+  legacyNotification(options.title, opts)
+}
+
+/** The constructor, for a browser with no service worker registration (a dev server, an old one). */
+function legacyNotification(title: string, opts: NotificationOptions): void {
+  try {
+    new Notification(title, opts)
+  } catch {
+    /* A platform that has the constructor and refuses to run it — nothing left to try. */
   }
 }
 

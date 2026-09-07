@@ -93,3 +93,19 @@ describe('keyboardOpen', () => {
     expect(keyboardOpen(Number.NaN, 328)).toBe(false)
   })
 })
+
+describe('the INSTALLED-PWA case — why the baseline is remembered', () => {
+  it('a window that shrinks WITH the keyboard hides it from a same-moment comparison', () => {
+    // In a Safari tab the layout viewport holds still, so `innerHeight - visualViewport.height` IS
+    // the keyboard. In an installed PWA — how this app is actually used on a phone — iOS resizes
+    // the window too: both numbers shrink together, the difference stays near zero, and the
+    // keyboard is never detected. No padding is reserved and the composer stays behind it.
+    const layoutAfterResize = 508   // the window itself came down with the keyboard
+    const visual = 508
+    expect(keyboardOpen(layoutAfterResize, visual)).toBe(false)
+    // Measured against the height the screen had while nothing covered it, the same moment reads
+    // correctly — which is why `useVisualViewport` keeps that number rather than re-reading one.
+    expect(keyboardOpen(844, visual)).toBe(true)
+    expect(keyboardInset(844, visual)).toBe(336)
+  })
+})

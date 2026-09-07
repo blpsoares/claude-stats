@@ -6,6 +6,8 @@ import {
   saveNotificationSettings,
   requestNotificationPermission,
   getBrowserNotificationPermission,
+  notificationSupport,
+  type NotificationSupport,
   playNotificationSound,
   triggerSessionNotification,
   DEFAULT_NOTIFICATION_SETTINGS,
@@ -22,9 +24,15 @@ export default function NotificationsSettings() {
 
   const [settings, setSettings] = useState<NotificationSettings>(getNotificationSettings)
   const [permission, setPermission] = useState<NotificationPermission>('default')
+  // WHETHER THIS BROWSER CAN NOTIFY AT ALL, which is a different question from whether it has been
+  // asked. On iPhone the API exists only in a web app installed on the Home Screen — in a tab it is
+  // simply absent, so the button below could never do anything and the screen had no way to say
+  // why. Read once, in an effect, so a server render never touches `navigator`.
+  const [support, setSupport] = useState<NotificationSupport>('ok')
 
   useEffect(() => {
     setPermission(getBrowserNotificationPermission())
+    setSupport(notificationSupport())
   }, [])
 
   function update(partial: Partial<NotificationSettings>) {
@@ -164,7 +172,20 @@ export default function NotificationsSettings() {
               {pt ? 'Permissão do Navegador' : 'Browser Permission'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {permission === 'granted' ? (
+              {support !== 'ok' ? (
+                <>
+                  <ShieldAlert size={12} style={{ color: 'var(--anthropic-orange)' }} />
+                  <span>
+                    {support === 'needs-install'
+                      ? (pt
+                          ? 'O iPhone só permite notificações depois que o app é instalado na tela de início — abra o menu de compartilhar e escolha “Adicionar à Tela de Início”.'
+                          : 'iPhone only allows notifications once the app is installed on the Home Screen — open the share menu and choose “Add to Home Screen”.')
+                      : (pt
+                          ? 'Este navegador não oferece notificações. Os alertas sonoros continuam funcionando.'
+                          : 'This browser offers no notifications. The sound alerts still work.')}
+                  </span>
+                </>
+              ) : permission === 'granted' ? (
                 <>
                   <CheckCircle2 size={12} style={{ color: '#22c55e' }} />
                   <span>{pt ? 'Permissão concedida no navegador' : 'Permission granted in browser'}</span>
@@ -184,7 +205,10 @@ export default function NotificationsSettings() {
           </div>
         </div>
 
-        {permission !== 'granted' && (
+        {/* Absent rather than disabled where it cannot work: a button that does nothing when
+            pressed is indistinguishable from a broken one, and the sentence above already says
+            what to do instead. */}
+        {support === 'ok' && permission !== 'granted' && (
           <button
             onClick={handleRequestPermission}
             style={{
