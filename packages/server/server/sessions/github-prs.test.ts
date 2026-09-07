@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, test } from 'bun:test'
-import { classifyPrFailure, parsePrList } from './github-prs'
+import { classifyPrFailure, parsePrList, prRank, sortPullRequests, type PullRequest } from './github-prs'
 
 test('a real `gh pr list --json` payload parses', () => {
   const text = JSON.stringify([{
@@ -77,5 +77,45 @@ describe('every field of PrList reaches the wire', () => {
   it('names every one of them', () => {
     expect(fields.length).toBeGreaterThan(1)
     for (const f of fields) expect(reply).toContain(`${f}:`)
+  })
+})
+
+describe('sortPullRequests — what is still moving comes first', () => {
+  const pr = (number: number, state: string, draft = false): PullRequest =>
+    ({ number, title: `PR ${number}`, url: `u${number}`, state, draft, branch: 'b' })
+
+  it('orders by STATUS: open, draft, merged, closed', () => {
+    // `gh` returns them by recency, which mixes a PR merged last week into the middle of the ones
+    // still open.
+    const out = sortPullRequests([
+      pr(1, 'MERGED'), pr(2, 'CLOSED'), pr(3, 'OPEN', true), pr(4, 'OPEN'),
+    ])
+    expect(out.map(p => p.number)).toEqual([4, 3, 1, 2])
+  })
+
+  it('keeps a DRAFT below the open PRs that are actually asking for something', () => {
+    const out = sortPullRequests([pr(9, 'OPEN', true), pr(1, 'OPEN')])
+    expect(out.map(p => p.number)).toEqual([1, 9])
+  })
+
+  it('leads with the newest number inside one status', () => {
+    const out = sortPullRequests([pr(3, 'OPEN'), pr(11, 'OPEN'), pr(7, 'OPEN')])
+    expect(out.map(p => p.number)).toEqual([11, 7, 3])
+  })
+
+  it('files a state it has no rank for with MERGED, never first or last', () => {
+    // Somebody else's vocabulary: an unknown word is not evidence that the PR is urgent OR
+    // abandoned.
+    expect(prRank({ state: 'SOMETHING_NEW', draft: false })).toBe(prRank({ state: 'MERGED', draft: false }))
+  })
+
+  it('reads the state case-insensitively — it is GitHub that decides the casing', () => {
+    expect(prRank({ state: 'open', draft: false })).toBe(0)
+  })
+
+  it('does not mutate what it was given', () => {
+    const input = [pr(1, 'MERGED'), pr(2, 'OPEN')]
+    sortPullRequests(input)
+    expect(input.map(p => p.number)).toEqual([1, 2])
   })
 })

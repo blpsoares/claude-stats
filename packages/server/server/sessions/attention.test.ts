@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
-import { QUIET_MS, approvalTail, attentionOf, digestFrame, frameTail, backgroundWork } from './attention'
+import { QUIET_MS, approvalTail, attentionOf, digestFrame, frameTail, backgroundWork, dialogHeight
+} from './attention'
 import type { AttentionRules } from './types'
 
 const NOW = 1_786_600_000_000
@@ -343,5 +344,70 @@ describe('background work', () => {
       alive: true, lastActivityMs: 0, nowMs: 1000, frame,
       frameDigest: 'd', prevDigest: 'd', rules: bare,
     })).toBe('working')
+  })
+})
+
+describe('approvalTail carries the QUESTION, not just the answers', () => {
+  /** An `AskUserQuestion` as claude 2.1.261 draws it — the shape from the report's screenshot. */
+  const ASK = [
+    'Some earlier assistant text that is NOT part of the dialog.',
+    'More conversation, further up.',
+    '',
+    'Devo abrir a issue retroativamente para o PR #368?',
+    '',
+    '  1. Não abrir (recomendado)',
+    '     O que importa está no corpo do PR, que é onde a revisão as pega.',
+    '  2. Abrir retroativamente',
+    '     Registro formal em Ideas apontando o PR #368, para o histórico do processo',
+    '     ficar completo.',
+    '❯ 3. Escrever a minha',
+    '  4. Chat about this',
+    '',
+    'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+  ]
+
+  it('THE REPORTED CASE: the question survives a tall dialog', () => {
+    // With a flat ten-line window the card began mid-sentence, inside option 1's second line, and
+    // showed a list of answers with nothing saying what was being asked.
+    const out = approvalTail(ASK, 10)
+    expect(out.join('\n')).toContain('Devo abrir a issue retroativamente')
+    expect(out.join('\n')).toContain('Enter to select')
+  })
+
+  it('does NOT reach into the conversation above the dialog', () => {
+    // The failure `approvalTail`'s own header calls the worst possible way to be wrong: prose from
+    // before the dialog, printed under "you are about to confirm this".
+    const out = approvalTail(ASK, 10).join('\n')
+    expect(out).not.toContain('NOT part of the dialog')
+    expect(out).not.toContain('further up')
+  })
+
+  it('a SHORT permission prompt is unchanged — the window only ever grows', () => {
+    const prompt = [
+      'irrelevant scrollback',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. Yes, and don\'t ask again',
+      '  3. No',
+      'Esc to cancel',
+    ]
+    expect(approvalTail(prompt, 10).join('\n')).toContain('Do you want to proceed?')
+  })
+
+  it('a frame with no readable options falls back to the flat window', () => {
+    // Reaching further up on a shape this cannot read is exactly what must not happen.
+    const noOptions = Array.from({ length: 40 }, (_, i) => `line ${i}`)
+    expect(approvalTail(noOptions, 10)).toHaveLength(10)
+    expect(dialogHeight(noOptions, 10)).toBe(10)
+  })
+
+  it('the room above option 1 is bounded', () => {
+    const tall = [
+      ...Array.from({ length: 60 }, (_, i) => `scrollback ${i}`),
+      '  1. one',
+      '  2. two',
+    ]
+    // Never the whole frame: a question is a sentence or two, not a screen.
+    expect(approvalTail(tall, 10).length).toBeLessThanOrEqual(22)
   })
 })

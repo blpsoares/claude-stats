@@ -108,7 +108,39 @@ export function parsePrList(text: string): PullRequest[] {
       ...(typeof r.updatedAt === 'string' ? { updatedAt: r.updatedAt } : {}),
     })
   }
-  return out
+  return sortPullRequests(out)
+}
+
+/**
+ * The order the list is read in — PURE, and by STATUS before anything else.
+ *
+ * `gh` returns them by recency, which mixes a PR merged last week into the middle of the ones still
+ * open. The panel is a view of work in flight, so what is still moving comes first and what is
+ * settled sinks: OPEN, then DRAFT, then MERGED, then CLOSED.
+ *
+ * DRAFT is its own rank rather than part of OPEN. It is open in GitHub's data and it is not asking
+ * anybody for anything yet, which is the distinction the reader cares about — a draft sitting above
+ * a PR waiting on review would put the one nobody is blocked on first.
+ *
+ * The review decision is deliberately NOT a second sort key. It is on the row as a badge, and a
+ * list ordered by two things at once is a list whose order nobody can predict; the reader asked for
+ * status. Within a rank the newest number leads, which is what `gh` already implies and what a
+ * person means by "the latest one".
+ *
+ * A state this reader has no rank for sorts with MERGED rather than first or last: it is somebody
+ * else's vocabulary, and an unknown word is not evidence that the PR is urgent OR abandoned.
+ */
+const PR_RANK: Record<string, number> = { OPEN: 0, MERGED: 2, CLOSED: 3 }
+const PR_RANK_UNKNOWN = 2
+
+export function prRank(pr: Pick<PullRequest, 'state' | 'draft'>): number {
+  const state = pr.state.toUpperCase()
+  if (state === 'OPEN') return pr.draft ? 1 : 0
+  return PR_RANK[state] ?? PR_RANK_UNKNOWN
+}
+
+export function sortPullRequests(pulls: readonly PullRequest[]): PullRequest[] {
+  return [...pulls].sort((a, b) => prRank(a) - prRank(b) || b.number - a.number)
 }
 
 /**

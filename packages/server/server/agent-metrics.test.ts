@@ -87,3 +87,88 @@ test('the legacy shape is read exactly as it always was', () => {
   expect(inv.costUSD).toBeGreaterThan(0)
   expect(m.unmeasuredInvocations).toBe(0)
 })
+
+/** A skill launched in the BACKGROUND. The tool is `Skill`, and the result names the agent. */
+function skillCall(id: string, name: string) {
+  return JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Skill', input: { skill: name } }] },
+  })
+}
+function forkedSkillResult(id: string, agentId: string, commandName: string) {
+  return JSON.stringify({
+    type: 'user',
+    toolUseResult: {
+      success: true, commandName, status: 'forked', background: true, agentId,
+      result: `Running in the background as @${commandName}`,
+    },
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'launched' }] },
+  })
+}
+
+test('a BACKGROUND forked skill is an agent — the launching tool is not what makes it one', () => {
+  // Measured 2026-09-06: `/code-review` run in the background produces a `Skill` tool_use whose
+  // result carries `{status:'forked', background:true, agentId}`. The parent names the agent; only
+  // the tool differs, and keying on `Agent` alone made the whole run vanish from the dashboard.
+  const m = extractAgentMetrics([
+    skillCall('toolu_1', 'code-review'),
+    forkedSkillResult('toolu_1', 'af78d79cddebfe710', 'code-review'),
+  ], 'claude-opus-5')
+
+  expect(m.invocations).toHaveLength(1)
+  const inv = m.invocations[0]!
+  expect(inv.toolUseId).toBe('toolu_1')
+  expect(inv.agentId).toBe('af78d79cddebfe710')
+  expect(inv.unmeasured).toBe(true)
+  expect(m.unmeasuredInvocations).toBe(1)
+})
+
+test('an Agent launched and never resolved is still an invocation', () => {
+  // The plain background agent: the parent gets no `tool_result` at all, so the launch used to sit
+  // in the pending map to the end of the file and be dropped. It ran; it has a transcript.
+  const m = extractAgentMetrics([agentCall('toolu_1', 'P2 Task 8: attach from the TUI')], 'claude-opus-5')
+
+  expect(m.invocations).toHaveLength(1)
+  const inv = m.invocations[0]!
+  expect(inv.toolUseId).toBe('toolu_1')
+  expect(inv.unmeasured).toBe(true)
+  expect(inv.description).toBe('P2 Task 8: attach from the TUI')
+  expect(inv.agentType).toBe('general-purpose')
+  expect(inv.agentId).toBeUndefined()
+})
+
+test('an unresolved launch is appended AFTER the ones the parent answered', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_1', 'launched'),
+    agentCall('toolu_2', 'answered'), legacyResult('toolu_2'),
+  ], 'claude-opus-5')
+
+  expect(m.invocations.map(i => i.toolUseId)).toEqual(['toolu_2', 'toolu_1'])
+})
+
+test('a result that names an agent already recorded never opens a SECOND row', () => {
+  const m = extractAgentMetrics([
+    agentCall('toolu_1', 'one'), asyncResult('toolu_1', 'aOne', 'one'),
+    // A later tool reporting on the same agent — a status read, an output fetch — is not a launch.
+    JSON.stringify({
+      type: 'user',
+      toolUseResult: { agentId: 'aOne', status: 'completed' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_99' }] },
+    }),
+  ], 'claude-opus-5')
+
+  expect(m.invocations).toHaveLength(1)
+  expect(m.invocations[0]!.toolUseId).toBe('toolu_1')
+})
+
+test('a tool_result carrying no agentId and answering no Agent call is not an invocation', () => {
+  const m = extractAgentMetrics([
+    JSON.stringify({
+      type: 'user',
+      toolUseResult: { stdout: 'ok' },
+      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_7' }] },
+    }),
+  ], 'claude-opus-5')
+
+  expect(m.invocations).toEqual([])
+})

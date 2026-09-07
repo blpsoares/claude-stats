@@ -110,7 +110,10 @@ export async function buildMachineFleetReply(
         && remoteActionAllowed(v.action, consent)
         && !(isShared && TASK_WIDE_ACTIONS.includes(v.action)))
       : undefined
-    rows.push(reduceMachineFleetRow({ ...row, ...(verbs ? { verbs } : {}) }))
+    // The consent decides which KEYS survive, not just which verbs. Without it the screen fields
+    // are dropped here even for a connection that was granted them, so the central would offer
+    // `approve` on a dialog it could not show — the blind choice this whole boundary refuses.
+    rows.push(reduceMachineFleetRow({ ...row, ...(verbs ? { verbs } : {}) }, consent))
   }
 
   return {
@@ -132,9 +135,17 @@ export async function buildMachineFleetReply(
  * checked against `remoteActionAllowed` HERE as well as on the central — a central is the party
  * whose behaviour this machine cannot verify, so a check that runs only there is not a check.
  *
- * `approve` and `prompt` are refused with a sentence naming WHY: they need the session's screen,
- * which does not travel. A refusal that says nothing is indistinguishable from a broken control —
- * the same rule `fleet-row.ts` states for a verb a row cannot take.
+ * `approve` and `prompt` are allowed exactly when the machine granted the SCREEN, and refused with
+ * a sentence naming WHY when it did not. A refusal that says nothing is indistinguishable from a
+ * broken control — the same rule `fleet-row.ts` states for a verb a row cannot take. The gate is
+ * the screen rather than the fleet because the dialog being READABLE is the safety: the keystroke
+ * that answers it cannot know which option it is taking, so an `approve` without the screen would
+ * be choosing for the person.
+ *
+ * The CHOICE travels with the request and is re-resolved HERE by `runFleetAction`, which re-reads
+ * the live screen immediately before sending and refuses when the options CHANGED. A poll is five
+ * seconds old, and five seconds is long enough for a dialog to be replaced by a different one with
+ * the same shape.
  *
  * The refusal wording is this machine's, in this machine's language, because every other refusal
  * the user meets already is.
@@ -151,8 +162,8 @@ export async function buildMachineFleetReply(
 export async function performMachineAction(
   conn: Pick<TeamConnection, 'allowRemoteSessions' | 'allowRemoteScreens' | 'shareMode' | 'sources'>,
   lang: CliLang,
-  req: { action: string; id: string; text?: string },
-  deps: MachineFleetDeps & { runAction: (lang: CliLang, req: { id: string; action: string; text?: string }) => Promise<MachineActionReply> },
+  req: { action: string; id: string; text?: string; choice?: number },
+  deps: MachineFleetDeps & { runAction: (lang: CliLang, req: { id: string; action: string; text?: string; choice?: number }) => Promise<MachineActionReply> },
 ): Promise<MachineActionReply> {
   const pt = lang === 'pt'
   const consent = resolveRemoteConsent(conn.allowRemoteSessions, conn.allowRemoteScreens)
@@ -219,5 +230,13 @@ export async function performMachineAction(
     }
   }
 
-  return await deps.runAction(lang, { id: req.id, action: req.action, text: req.text })
+  return await deps.runAction(lang, {
+    id: req.id,
+    action: req.action,
+    text: req.text,
+    // Carried only when it is a number: `runFleetAction` treats an absent choice as "use the
+    // dialog's confirm key", which is right for a dialog with nothing to choose between and wrong
+    // for one with options. `undefined` and "option zero" must not become the same request.
+    ...(typeof req.choice === 'number' ? { choice: req.choice } : {}),
+  })
 }

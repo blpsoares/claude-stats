@@ -67,34 +67,75 @@ export function attachmentPathByName(name: string): string | null {
 }
 
 /**
- * The content type to serve a stored attachment as, or `null` when it is not an image — PURE.
+ * The content type to serve a stored attachment as, or `null` when it is not one this route shows
+ * — PURE.
  *
- * The route serves IMAGES and refuses everything else, which is what stops a gallery preview route
- * becoming a general reader of agentop's own directory. The type is read off the EXTENSION and
- * never sniffed: the answer must be decidable before anything is opened, and it is paired with
- * `nosniff` on the response so the browser cannot decide differently.
+ * A CLOSED TABLE, never a default. That is what stops a preview route becoming a general reader of
+ * agentop's own directory, and it is why adding a kind is a deliberate act rather than a fallthrough
+ * — an extension absent here is refused. The type is read off the EXTENSION and never sniffed: the
+ * answer must be decidable before anything is opened, and it is paired with `nosniff` on the
+ * response so the browser cannot decide differently.
  *
- * The set matches the browser side's `isImageAttachment` deliberately, SVG included — a preview the
- * client believes exists and the server refuses is a broken image, which is the one thing the panel
- * may not show. SVG is a document that can carry script, so its response additionally carries a
- * `sandbox` CSP for the case where somebody opens the URL directly; inside an `<img>` an SVG's
- * script never runs.
+ * IT SERVES MORE THAN IMAGES, and that was a real gap. A person can attach a PDF or a video — the
+ * composer accepts both — and the gallery then showed a card saying "no preview" beside a file it
+ * had itself stored, with no way to open it at all. Both are now served, each declared as exactly
+ * what it is:
+ *
+ * - **video** is a `<video>` element's business. It is inert content: the browser decodes it, there
+ *   is no document and no script.
+ * - **pdf** is a document, so it is served with `Content-Disposition: inline` and viewed in the
+ *   browser's own PDF viewer, under the same `default-src 'none'` policy every response here
+ *   carries — the policy is what stops an embedded PDF reaching anything of ours.
+ * - **svg** stays in the IMAGE row it has always been in, and its script still never runs inside an
+ *   `<img>`; the CSP covers the case where somebody opens the URL directly.
+ *
+ * The `kind` travels with the mime because the CALLER needs it: a route that must decide between a
+ * `Content-Disposition` and none, and a client that must decide between `<img>`, `<video>` and a
+ * viewer. Deriving it from the mime string at each of those points would be the same table written
+ * twice more.
+ *
+ * The set matches the browser side's `attachmentKind` deliberately — a preview the client believes
+ * exists and the server refuses is a broken tile, which is the one thing the panel may not show.
  */
-const IMAGE_TYPES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  avif: 'image/avif',
-  bmp: 'image/bmp',
-  svg: 'image/svg+xml',
+export type AttachmentKind = 'image' | 'video' | 'pdf'
+
+export interface AttachmentType {
+  mime: string
+  kind: AttachmentKind
 }
 
-export function attachmentImageType(name: string): string | null {
+const ATTACHMENT_TYPES: Record<string, AttachmentType> = {
+  png: { mime: 'image/png', kind: 'image' },
+  jpg: { mime: 'image/jpeg', kind: 'image' },
+  jpeg: { mime: 'image/jpeg', kind: 'image' },
+  gif: { mime: 'image/gif', kind: 'image' },
+  webp: { mime: 'image/webp', kind: 'image' },
+  avif: { mime: 'image/avif', kind: 'image' },
+  bmp: { mime: 'image/bmp', kind: 'image' },
+  svg: { mime: 'image/svg+xml', kind: 'image' },
+  mp4: { mime: 'video/mp4', kind: 'video' },
+  m4v: { mime: 'video/mp4', kind: 'video' },
+  mov: { mime: 'video/quicktime', kind: 'video' },
+  webm: { mime: 'video/webm', kind: 'video' },
+  ogv: { mime: 'video/ogg', kind: 'video' },
+  pdf: { mime: 'application/pdf', kind: 'pdf' },
+}
+
+/** What to serve this stored attachment as, or `null` when this route does not show it. */
+export function attachmentMediaType(name: string): AttachmentType | null {
   const dot = name.lastIndexOf('.')
   if (dot <= 0) return null
-  return IMAGE_TYPES[name.slice(dot + 1).toLowerCase()] ?? null
+  return ATTACHMENT_TYPES[name.slice(dot + 1).toLowerCase()] ?? null
+}
+
+/**
+ * The image half of the table, kept because two callers ask exactly that question — the composer's
+ * own preview and the chat bubble's thumbnail, neither of which can render a video or a PDF.
+ * Derived from the one table rather than restated, so the two can never drift.
+ */
+export function attachmentImageType(name: string): string | null {
+  const t = attachmentMediaType(name)
+  return t && t.kind === 'image' ? t.mime : null
 }
 
 /**

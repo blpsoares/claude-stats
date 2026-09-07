@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { HARNESS_ORDER } from '@agentistics/core'
-import { APPROVAL_SPECS, approvalFor, choiceKey } from './approval-spec'
+import { APPROVAL_SPECS, approvalFor, choiceKey, isFreeTextOption
+} from './approval-spec'
 import { ATTENTION_RULES } from './attention-rules'
 
 describe('APPROVAL_SPECS', () => {
@@ -76,5 +77,30 @@ describe('the choice capability', () => {
       if (!spec?.choice) continue
       expect(spec.choice.probed, id).toMatch(/\d.*\d, \d{4}-\d{2}-\d{2}/)
     }
+  })
+})
+
+describe('isFreeTextOption', () => {
+  it("recognises claude's own label for the write-your-own option", () => {
+    // Measured on a live `AskUserQuestion` (claude 2.1.263): the row is drawn as `Type something.`
+    // and stays English under a Portuguese question — it is the harness's chrome, not a
+    // translation.
+    expect(isFreeTextOption('claude', 'Type something.')).toBe(true)
+    expect(isFreeTextOption('claude', 'type something')).toBe(true)
+    expect(isFreeTextOption('claude', '  Type something.  ')).toBe(true)
+  })
+
+  it('is not fooled by an ordinary answer that mentions typing', () => {
+    // A wrong `true` here opens a field over an option that submits, and the answer never lands.
+    expect(isFreeTextOption('claude', 'Type something into the config')).toBe(false)
+    expect(isFreeTextOption('claude', 'Chat about this')).toBe(false)
+    expect(isFreeTextOption('claude', 'Azul')).toBe(false)
+  })
+
+  it('every other harness is false — nobody has driven one', () => {
+    for (const h of ['codex', 'gemini', 'copilot', 'kimi', 'antigravity'] as const) {
+      expect(isFreeTextOption(h, 'Type something.')).toBe(false)
+    }
+    expect(isFreeTextOption(undefined, 'Type something.')).toBe(false)
   })
 })

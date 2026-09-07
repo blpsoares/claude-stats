@@ -13,6 +13,9 @@ in issues and in code comments.
 
 **Never call the web one a cockpit.** That ambiguity is the reason this page exists.
 
+→ [docs/sessions-web.md](sessions-web.md) for the web one, [docs/session-manager.md](session-manager.md)
+for the CLI and the cockpit, [docs/vscode-extension.md](vscode-extension.md) for the editor.
+
 ## Fleet, session, conversation
 
 - A **session** is one conversation with one assistant.

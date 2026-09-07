@@ -9,6 +9,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
+import { closedRowId } from './row-conversation'
 import { capClosedConversations } from './closed-cap'
 import { matchesQuery, type SearchFields } from '@agentistics/tui/control/search-scope'
 import { type HarnessProcess, sessionAtCwd } from '../live-sessions'
@@ -93,6 +94,13 @@ export interface SessionView {
    * is taking. See `approval-spec.ts` and `approvalTail`.
    */
   approvalLines?: string[]
+  /**
+   * The MODE the harness is in — its own word for it, read off the footer. See `mode-spec.ts`.
+   *
+   * Absent for a harness nobody has probed and for a frame that has not drawn its footer yet. A
+   * chip naming the wrong mode is worse than no chip, so absence is the honest answer for both.
+   */
+  mode?: { id: string; label: string }
   /**
    * The OPTIONS that dialog is offering, when they could be read with confidence.
    *
@@ -300,7 +308,47 @@ export function collapseSupersededSessions(managed: readonly SessionView[]): Ses
  * index it does not change when an unrelated process appears or exits.
  */
 export function externalId(p: HarnessProcess): string {
+  // A stated session id is the identity, and it is stable in a way the start time is not: a shim
+  // chain's parent can exit while a child keeps running, and keying on the clock would rename the
+  // row underneath the user at that moment. Falls back to the old key exactly when there is no id.
+  if (p.sessionId) return `external:${p.harness}:${p.sessionId}`
   return `external:${p.harness}:${p.cwd}:${p.startedMs ?? 0}`
+}
+
+/**
+ * ONE ROW PER SESSION, not per process — PURE.
+ *
+ * A CLI installed through a version manager is a CHAIN of processes, and every one of them is a
+ * live assistant as far as `/proc` is concerned. Measured on this machine: `copilot` at `/tmp` ran
+ * as three pids — the volta shim, `node …/bin/copilot`, and the native binary — all three carrying
+ * `--session-id dbd94500-…`. The fleet drew three identical `copilot em tmp` rows for one session,
+ * reported as "direto aparece essas externals".
+ *
+ * The merge key is the STATED session id, never the directory: two assistants of one harness open
+ * in the same folder are two sessions, and collapsing them by `harness + cwd` is exactly the bug
+ * `externalId`'s start time was added to avoid. A process that states NO id is never merged — it
+ * cannot be proven a duplicate, and this errs toward keeping a row (a spurious row is visible and
+ * dismissible; a real session missing from the fleet is not).
+ *
+ * The survivor is the OLDEST, tie-broken by the lowest pid, so the answer is the same on every poll
+ * — a representative that flipped between polls would change the row's pid, and with it what
+ * `harnessSessions.byPid` can say about its name.
+ */
+export function dedupeExternalProcesses(procs: readonly HarnessProcess[]): HarnessProcess[] {
+  const best = new Map<string, HarnessProcess>()
+  const out: HarnessProcess[] = []
+  for (const p of procs) {
+    if (!p.sessionId) { out.push(p); continue }
+    const key = `${p.harness}\u0000${p.sessionId}`
+    const held = best.get(key)
+    if (!held || rankProcess(p) < rankProcess(held)) best.set(key, p)
+  }
+  return [...out, ...best.values()]
+}
+
+/** Lower wins: oldest first, then the lowest pid. Total, so the choice cannot depend on input order. */
+function rankProcess(p: HarnessProcess): number {
+  return (p.startedMs ?? 0) * 1e7 + (p.pid ?? 0)
 }
 
 /**
@@ -388,6 +436,8 @@ export function buildSessionViews(o: {
   chatTails?: ReadonlyMap<string, ChatTurn[]>
   /** The DIALOG a blocked session is showing, keyed by session id — see `SessionView.approvalLines`. */
   approvals?: ReadonlyMap<string, string[]>
+  /** The harness MODE each running session is in, keyed by row id — see `mode-spec.ts`. */
+  modes?: ReadonlyMap<string, { id: string; label: string }>
   /** The options that dialog offers, keyed by session id. Absent where they could not be read. */
   dialogOptions?: ReadonlyMap<string, DialogOption[]>
   /** The ids `crash-group.ts` decided fell together. A set, because the question is about a set. */
@@ -531,6 +581,10 @@ export function buildSessionViews(o: {
       ...(activity === 'waiting-approval' && (o.dialogOptions?.get(r.id)?.length ?? 0) > 0
         ? { dialogOptions: o.dialogOptions!.get(r.id)! }
         : {}),
+      // Unlike the dialog above, the mode is NOT gated on an activity: a session is in a mode while
+      // it works, while it waits, and while it is asking. It is gated on the frame having named
+      // one, which `modeOf` already answers.
+      ...(o.modes?.get(r.id) ? { mode: o.modes.get(r.id)! } : {}),
       ...(o.fell?.has(r.id) ? { fell: true as const } : {}),
       ...(r.managed?.label ? { label: r.managed.label } : {}),
       ...(r.managed?.labelSince !== undefined ? { labelSince: r.managed.labelSince } : {}),
@@ -672,7 +726,9 @@ export function buildSessionViews(o: {
       ...(f.sessionId ? { sessionId: f.sessionId } : {}),
     }))
 
-  const external: SessionView[] = [...o.processes, ...fromRecords].filter(p => !covered(p)).map(p => {
+  const external: SessionView[] = dedupeExternalProcesses(
+    [...o.processes, ...fromRecords].filter(p => !covered(p)),
+  ).map(p => {
     // What the harness says about ITSELF, keyed on the pid `/proc` reported. Exact where every other
     // reading of an external process is an inference from its directory.
     // By pid first — that is the key a SCANNED process arrives with. Falling back to the
@@ -791,7 +847,7 @@ export function buildSessionViews(o: {
       const own = o.harnessSessions?.byConversation.get(c.sessionId)
       const named = chosenName(own)
       return {
-      id: `closed:${c.sessionId}`,
+      id: closedRowId(c.sessionId),
       harness: c.harness,
       cwd: c.cwd,
       status: 'closed' as const,

@@ -32,7 +32,7 @@ import { parseCodexChat } from './codex-chat'
 import { parseCopilotChat } from './copilot-chat'
 import { parseKimiChat } from './kimi-chat'
 import type { ChatTurn } from './chat-turn'
-import { readChatTurns, readChatWindow, readRecentChatTurns, resolveChatTranscriptPath } from './chat-tail'
+import { readChatWindow, readRecentChatTurns, resolveChatTranscriptPath } from './chat-tail'
 import { readTailWindow } from './transcript-window'
 
 /** Everything a reader is told about the session whose conversation is wanted. */
@@ -43,23 +43,50 @@ export interface TranscriptRef {
   cwd?: string
 }
 
+/**
+ * One read of a conversation, and whether the WINDOW cut it short.
+ *
+ * `older` is the honesty `readChatWindow` introduced for Claude and every reader owes: the cap is a
+ * fact about the READ, not about the conversation, and everything built on these turns inherits it
+ * silently — the gallery lists the files of the turns it was given, so on a long transcript it
+ * emptied itself with nothing saying why. A window that hides things has to say it is a window.
+ */
+export interface TranscriptRead {
+  /** The turns, oldest first. */
+  turns: ChatTurn[]
+  /** The read stopped ON the cap with more conversation above it. */
+  older: boolean
+}
+
 export interface HarnessTranscript {
   /** The absolute path to this conversation's transcript here, or `null` when there is none. */
   resolve(ref: TranscriptRef): Promise<string | null>
   /** The conversation, oldest first, capped at `max` turns from the end. */
-  read(path: string, max: number): Promise<ChatTurn[]>
+  read(path: string, max: number): Promise<TranscriptRead>
   /** The last `max` turns only, read from the END of the file. The fleet poll's budget. */
   readRecent(path: string, max: number): Promise<ChatTurn[]>
-  /**
-   * The same read as `read`, plus whether the cap CUT a longer conversation short.
-   *
-   * OPTIONAL, and a reader without one makes no claim. Every list the panel builds is built from
-   * these turns and inherits their cap, so a gallery that empties because of the window has to be
-   * able to say that is why — but only a reader that can answer EXACTLY may say it. Inferring it
-   * from `turns.length === max` would call a conversation of exactly `max` turns a window, which is
-   * a false sentence in the reassuring direction, and absent is the honest answer everywhere else.
-   */
-  readWindow?(path: string, max: number): Promise<{ turns: ChatTurn[]; older: boolean }>
+}
+
+/**
+ * Ask a backward-walking parser for ONE turn more than the window, and the answer says both things.
+ *
+ * Every reader but Claude's walks from the end and stops at its cap, so "did the window cut this
+ * short" is exactly "was there a turn beyond it". Asking for `max + 1` and getting it back IS that
+ * evidence, which is the same question `readChatWindow` answers by hoisting its loop index — one
+ * extra turn parsed instead of a second return channel through four pure parsers and their tests.
+ *
+ * THE `+ 1` IS WHAT MAKES IT EXACT, and it is the whole reason `older` can be REQUIRED of every
+ * reader rather than optional. Inferring the answer from `turns.length === max` would call a
+ * conversation of exactly `max` turns a window — a false sentence in the reassuring direction — so
+ * that inference is refused; this one asks for a turn BEYOND the window and claims `older` only if
+ * one came back. An optional flag would have been the alternative, and it is worse in the direction
+ * that matters: four readers silently answering "nothing was hidden" is the very bug the notice was
+ * written to fix, on a transcript measured at 1239 turns against a 400-turn window.
+ */
+function windowed(all: ChatTurn[], max: number): TranscriptRead {
+  return all.length > max
+    ? { turns: all.slice(all.length - max), older: true }
+    : { turns: all, older: false }
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -96,8 +123,8 @@ const ANTIGRAVITY: HarnessTranscript = {
     // keyed on mtime would miss every time by construction while holding whole transcripts in
     // memory. Same call `chat-tail.ts`'s `readChatTurns` makes, for the same reason.
     let content: string
-    try { content = await readFile(path, 'utf-8') } catch { return [] }
-    return parseAntigravityChat(content.split('\n'), 'antigravity', max)
+    try { content = await readFile(path, 'utf-8') } catch { return { turns: [], older: false } }
+    return windowed(parseAntigravityChat(content.split('\n'), 'antigravity', max + 1), max)
   },
   async readRecent(path, max) {
     return readTailWindow(path, max, lines => parseAntigravityChat(lines, 'antigravity', max))
@@ -166,8 +193,8 @@ const CODEX: HarnessTranscript = {
   resolve: ref => resolveCodexTranscript(ref),
   async read(path, max) {
     let content: string
-    try { content = await readFile(path, 'utf-8') } catch { return [] }
-    return parseCodexChat(content.split('\n'), 'codex', max)
+    try { content = await readFile(path, 'utf-8') } catch { return { turns: [], older: false } }
+    return windowed(parseCodexChat(content.split('\n'), 'codex', max + 1), max)
   },
   async readRecent(path, max) {
     return readTailWindow(path, max, lines => parseCodexChat(lines, 'codex', max))
@@ -195,8 +222,8 @@ const COPILOT: HarnessTranscript = {
   resolve: ref => resolveCopilotTranscript(ref),
   async read(path, max) {
     let content: string
-    try { content = await readFile(path, 'utf-8') } catch { return [] }
-    return parseCopilotChat(content.split('\n'), 'copilot', max)
+    try { content = await readFile(path, 'utf-8') } catch { return { turns: [], older: false } }
+    return windowed(parseCopilotChat(content.split('\n'), 'copilot', max + 1), max)
   },
   async readRecent(path, max) {
     return readTailWindow(path, max, lines => parseCopilotChat(lines, 'copilot', max))
@@ -252,8 +279,8 @@ const KIMI: HarnessTranscript = {
   resolve: ref => resolveKimiTranscript(ref),
   async read(path, max) {
     let content: string
-    try { content = await readFile(path, 'utf-8') } catch { return [] }
-    return parseKimiChat(content.split('\n'), 'kimi', max)
+    try { content = await readFile(path, 'utf-8') } catch { return { turns: [], older: false } }
+    return windowed(parseKimiChat(content.split('\n'), 'kimi', max + 1), max)
   },
   async readRecent(path, max) {
     return readTailWindow(path, max, lines => parseKimiChat(lines, 'kimi', max))
@@ -264,11 +291,8 @@ const CLAUDE: HarnessTranscript = {
   resolve: ref => (ref.cwd === undefined
     ? Promise.resolve(null)
     : resolveChatTranscriptPath(ref.cwd, ref.conversationId)),
-  read: (path, max) => readChatTurns(path, max),
+  read: (path, max) => readChatWindow(path, max),
   readRecent: (path, max) => readRecentChatTurns(path, max),
-  // The only reader that can answer the window question exactly — its walk reports where it
-  // stopped. See `readChatWindow`.
-  readWindow: (path, max) => readChatWindow(path, max),
 }
 
 /**

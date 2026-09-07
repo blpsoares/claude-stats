@@ -1,5 +1,5 @@
-import { test, expect } from 'bun:test'
-import { attachmentName, isImageAttachment, splitMessage } from './messageAttachments'
+import { describe, test, expect } from 'bun:test'
+import { attachmentKind, attachmentName, isImageAttachment, splitMessage } from './messageAttachments'
 
 const A = '/home/u/.agentistics/attachments/abc-image.png'
 const B = '/home/u/.agentistics/attachments/def-shot.jpg'
@@ -39,4 +39,33 @@ test('the name is the last segment, and images are known by extension', () => {
   expect(attachmentName(A)).toBe('abc-image.png')
   expect(isImageAttachment(A)).toBe(true)
   expect(isImageAttachment('/x/.agentistics/attachments/notes.pdf')).toBe(false)
+})
+
+describe('attachmentKind', () => {
+  test('names the three things this product can SHOW', () => {
+    expect(attachmentKind('/x/.agentistics/attachments/a.png')).toBe('image')
+    expect(attachmentKind('/x/.agentistics/attachments/a.MP4')).toBe('video')
+    expect(attachmentKind('/x/.agentistics/attachments/a.pdf')).toBe('pdf')
+  })
+
+  test('THE REPORTED CASE: a PDF and a video are not "other"', () => {
+    // The boolean this replaced could only say "picture or nothing", so an attached PDF or
+    // recording — both of which agentop stores and can serve — were filed under nothing, shown as
+    // "no preview" and could not be opened at all.
+    for (const n of ['notes.pdf', 'demo.mp4', 'clip.mov', 'screen.webm']) {
+      expect(attachmentKind(`/x/${n}`)).not.toBe('other')
+    }
+  })
+
+  test('anything else is `other`, and that is an answer', () => {
+    expect(attachmentKind('/x/notes.txt')).toBe('other')
+    expect(attachmentKind('/x/archive.zip')).toBe('other')
+    expect(attachmentKind('/x/noextension')).toBe('other')
+  })
+
+  test('isImageAttachment is DERIVED, so the two cannot drift', () => {
+    expect(isImageAttachment('/x/a.png')).toBe(true)
+    expect(isImageAttachment('/x/a.mp4')).toBe(false)
+    expect(isImageAttachment('/x/a.pdf')).toBe(false)
+  })
 })

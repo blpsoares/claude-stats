@@ -39,6 +39,58 @@ Consequences that are easy to get wrong:
   `calcCost` arguments with the cache zeroed, and fails the build. Comments and per-field `+=` are
   exempt; a deliberate two-term reading needs `@tokens-intentional` **and a reason**.
 
+## Date filters — what a session contributes to a day
+
+A session is a **span** and its four counters are **lifetime** totals, so a date filter could only
+ever file the whole of it somewhere. Both obvious answers are wrong, and neither is a rounding
+error:
+
+- **on the day it started** — "today" is nearly empty for anyone whose session has been open since
+  Tuesday, which is the normal way this product is used;
+- **on every day it touches** — measured at **86x** on a real machine: with `Today` selected, the
+  repositories page reported **4.446.955.424 tokens** where Claude's own per-day accounting says
+  **51.465.608**, from seven sessions that merely reached into today. That version shipped and was
+  reverted.
+
+**`SessionMeta.daily` is the third answer, and it is a measurement rather than a rule.** The parser
+already walks every turn and every turn carries its own timestamp, so the split is real:
+`Record<'YYYY-MM-DD', { input_tokens, output_tokens, cache_read_input_tokens,
+cache_creation_input_tokens, messages }>`. `packages/web/src/lib/sessionDaySlice.ts` spends it —
+`sliceSession` cuts a session down to the days in range, and every total downstream inherits the cut
+instead of each of twenty call sites having to know.
+
+Three rules hold it together:
+
+- **A session without `daily` keeps the old rule.** The store is full of records written before the
+  field existed and several adapters do not produce it. Falling back to the whole session for those
+  would reintroduce the 86x on exactly the records nobody can check, so they stay filed on their
+  start day. `sliceSession` returns `null` for them — never a zero, because a session that cannot be
+  split is not a session that did nothing.
+- **An unbounded range slices nothing.** `all` wants the lifetime totals, and cutting them against
+  every day is arithmetic with no purpose.
+- **A range too long to enumerate is asked from the other side.** `daysBetween` stops at
+  `MAX_RANGE_DAYS` (400) rather than refusing, and `all` starts at the **epoch** — so its day set
+  was `1970-01-01 … 1971-02-04`, and every session carrying `daily` was tested for membership in a
+  window it could not possibly fall in and dropped: **397 of 662 sessions** on a real machine,
+  silently, because the survivors were exactly the older records with no `daily`. Past the cap the
+  question goes to the SESSION's own days (`activeInWindow`) — a handful of keys whatever the range.
+  A set sitting exactly at the cap is treated as unusable rather than complete: nothing in it says
+  which it is, and the window test is correct either way.
+
+### `Today` is a preset of its own
+
+The calendar's "today" means *up to and including today*; the **`Today` button beside `All`** means
+**only today, in progress**. It ends at the end of the day rather than at this instant, so a session
+whose only recorded activity is a few seconds ahead of the browser's clock is not excluded — every
+other preset already ends there.
+
+### The day rule is UTC
+
+`start_time.slice(0, 10)`, matching `tagSessionDay`, `stats-cache.json`'s own day series and the
+parser that wrote `daily`. **Two day rules exist in this repo** — the other is the local-clock
+`format(parseISO(...))` used for the session-gap count — and mixing them drifts a session across a
+boundary. At UTC-3 the two disagree for roughly 15% of sessions.
+
 ## Pricing table
 
 All prices are in USD per **1 million tokens**:

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { SessionMeta } from '@agentistics/core'
 import {
-  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notifyFleetTransitions,
+  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notificationSupport, notifyFleetTransitions, supportFrom,
   resetNotificationMemory, type SessionActivity,
 } from './sessionNotifications'
 
@@ -154,5 +154,148 @@ describe('the caller that was missing — the live fleet', () => {
     notifyFleetTransitions(snap, row('waiting'), 'en')
     expect(captured[0]?.title).toContain('the migration one')
     expect(captured[0]?.body).toContain('agentistics')
+  })
+})
+
+describe('a row nobody watched arrive is not an event that happened', () => {
+  /**
+   * The report: "notificações de sessões FECHADAS estão disparando para sessões que já fecharam."
+   *
+   * A SECOND rule, composed with the two-poll confirmation above rather than replacing it. That one
+   * settles WHEN a state is believed; this one settles whether believing it is NEWS. Rows join and
+   * leave this list for reasons that are not the session changing state — a short-lived session
+   * born and finished inside one poll interval, a retired predecessor `collapseSupersededSessions`
+   * hides and shows again, a row reading `lost` for one poll (which has no words here, so it leaves
+   * the map) and returning as `exited` on the next. Each arrives with no previous state, and the
+   * confirmation alone only DELAYS the announcement by one poll.
+   *
+   * Every test here polls the same fleet TWICE, because that is what confirmation costs.
+   */
+  /** Poll the same rows twice — one state, confirmed. Returns the snapshot to carry forward. */
+  const settle = (
+    prev: Record<string, SessionActivity> | null,
+    rows: { id: string; state: string }[],
+  ): Record<string, SessionActivity> => {
+    const once = notifyFleetTransitions(prev, rows, 'en')
+    return notifyFleetTransitions(once, rows, 'en')
+  }
+
+  it('does not announce a session first seen already finished', () => {
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'exited' }])
+    expect(captured).toHaveLength(0)
+  })
+
+  it('still announces a session it watched finish', () => {
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Session Closed')
+  })
+
+  it('does not re-announce a finished row that left the list and came back', () => {
+    // `lost` carries no words here, so the row drops out of the activity map and returns with no
+    // previous state — which is exactly the flapping case, and it rang every time it came back.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    const ended = settle(alive, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+    const gone = settle(ended, [{ id: 'a', state: 'lost' }])
+    settle(gone, [{ id: 'a', state: 'exited' }])
+    expect(captured).toHaveLength(1)
+  })
+
+  it('records a first-sighted row so its NEXT change is news', () => {
+    // Withholding the announcement must not withhold the BASELINE, or a row first seen as
+    // `working` could never announce anything it did afterwards.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    const both = settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'working' }])
+    expect(captured).toHaveLength(0)
+    expect(both).toEqual({ a: 'working', b: 'working' })
+    settle(both, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Waiting Input')
+  })
+
+  it('makes the ONE exception for a session blocked on a person', () => {
+    // Silence on `waiting-approval` costs the session itself: it stays blocked until somebody
+    // answers, and there may never be another transition to ring on.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    settle(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting-approval' }])
+    expect(captured).toHaveLength(1)
+    expect(captured[0]!.title).toContain('Needs Approval')
+  })
+
+  it('still waits for the confirmation before making that exception', () => {
+    // The exception is about whether a state is NEWS, never about whether it is real — a
+    // `waiting-approval` seen for a single poll is exactly the flicker the rule above exists for.
+    const alive = settle(null, [{ id: 'a', state: 'working' }])
+    notifyFleetTransitions(alive, [{ id: 'a', state: 'working' }, { id: 'b', state: 'waiting-approval' }], 'en')
+    expect(captured).toHaveLength(0)
+  })
+})
+
+describe('notificationSupport', () => {
+  const g = globalThis as unknown as { window?: unknown; navigator?: unknown }
+  const realWindow = g.window
+  const realNavigator = g.navigator
+
+  afterEach(() => {
+    if (realWindow === undefined) delete g.window; else g.window = realWindow
+    if (realNavigator === undefined) delete g.navigator; else g.navigator = realNavigator
+  })
+
+  it('a browser that HAS the API is simply ok', () => {
+    g.window = { Notification: {} }
+    expect(notificationSupport()).toBe('ok')
+  })
+
+  it('THE REPORTED CASE: an iPhone tab needs the app installed, and says so', () => {
+    // Safari on iPhone exposes `Notification` only to a Home-Screen web app. Reported as "não tá
+    // pedindo permissão" — the button was there and could never do anything.
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari', platform: 'iPhone', maxTouchPoints: 5 }
+    expect(notificationSupport()).toBe('needs-install')
+  })
+
+  it('an iPad reporting itself as a Mac is still an iPad', () => {
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X) Safari', platform: 'MacIntel', maxTouchPoints: 5 }
+    expect(notificationSupport()).toBe('needs-install')
+  })
+
+  it('anything else without the API is unsupported — a different fact, kept separate', () => {
+    // `denied` is a decision the user can reverse from that screen; this is not, and folding them
+    // together is what leaves a reader pressing a button that cannot work.
+    g.window = {}
+    g.navigator = { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox', platform: 'Linux x86_64', maxTouchPoints: 0 }
+    expect(notificationSupport()).toBe('unsupported')
+  })
+})
+
+describe('supportFrom — the four reasons, in the order they must be cleared', () => {
+  const env = (over: Partial<Parameters<typeof supportFrom>[0]>) =>
+    supportFrom({ hasNotification: true, secure: true, standalone: false, ios: false, ...over })
+
+  it('THE REPORTED CASE: an insecure origin outranks everything else', () => {
+    // Reached over Tailscale as `http://100.x.y.z:47292`. Notifications, service workers and
+    // installability all need a secure context, so no amount of asking can ever grant one — and
+    // telling somebody to install the app first sends them to do the second step first.
+    expect(env({ secure: false })).toBe('insecure')
+    expect(env({ secure: false, hasNotification: false, ios: true, standalone: true })).toBe('insecure')
+  })
+
+  it('an iOS app added from CHROME is standalone-shaped and still cannot notify', () => {
+    // Every iOS browser is WebKit underneath, but only a Safari-added web app runs standalone, and
+    // only a standalone one is given the API.
+    expect(env({ hasNotification: false, ios: true, standalone: true })).toBe('needs-safari')
+  })
+
+  it('an iOS tab is told to install it', () => {
+    expect(env({ hasNotification: false, ios: true, standalone: false })).toBe('needs-install')
+  })
+
+  it('anything else with no API is unsupported, and a working one is ok', () => {
+    expect(env({ hasNotification: false })).toBe('unsupported')
+    expect(env({})).toBe('ok')
   })
 })

@@ -141,6 +141,10 @@ interface Props {
 }
 
 const DATE_RANGES: { key: DateRange; labelPt: string; labelEn: string }[] = [
+  // TODAY leads, because it is the one people reach for most and the one the custom range could
+  // never express: the calendar's "Today" fills an END and leaves the start where it was, which is
+  // "up to today" — a different question from "only today".
+  { key: 'today', labelPt: 'Hoje',   labelEn: 'Today'   },
   { key: '7d',  labelPt: '7d',       labelEn: '7d'      },
   { key: '30d', labelPt: '30d',      labelEn: '30d'     },
   { key: '90d', labelPt: '90d',      labelEn: '90d'     },

@@ -124,6 +124,23 @@ export interface Preferences {
    * only load.
    */
   sessionPollMs?: number
+  /** How this machine backs itself up. Absent reads as `schedule: 'off'` — a machine must not
+   *  start writing gigabytes because it was upgraded. See backup/schedule.ts. */
+  backup?: {
+    schedule?: 'off' | 'daily' | 'weekly' | 'custom'
+    /** Hours between runs when `schedule` is `'custom'`. Clamped and defaulted by `intervalMs`
+     *  (backup/schedule.ts), never here — a preferences file is hand-editable. */
+    customHours?: number
+    /** Layers a MANUAL run writes when no `--with-*` flag is given. An explicit flag wins. */
+    layers?: ('metrics' | 'repos' | 'archive' | 'raw')[]
+    /** Layers a SCHEDULED run writes. Deliberately separate: `raw` is 2.4 GB a copy, so a daily
+     *  schedule that inherited a manual run's layers would fill a disk. */
+    scheduleLayers?: ('metrics' | 'repos' | 'archive' | 'raw')[]
+    harnesses?: string[]
+    destDir?: string
+    keep?: number
+    maxBundleBytes?: number
+  }
   /**
    * How the cockpit's fleet list was last arranged.
    *

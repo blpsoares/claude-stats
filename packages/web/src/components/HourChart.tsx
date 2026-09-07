@@ -136,7 +136,16 @@ export function HourChart({ hourCounts, hourMeta, height = 336 }: Props) {
             interval={0}
           />
           <Tooltip content={<CustomTooltip use24={use24} hourMeta={hourMeta} />} cursor={{ fill: 'var(--ag-tint-1)' }} />
-          <Bar dataKey="value" radius={[0, 2, 2, 0]}>
+          {/* AN HOUR YOU WORKED MUST NOT LOOK LIKE AN HOUR YOU DID NOT.
+              Reported: "eu tive conversas ontem às 4 e às 5 e não estão aparecendo". They were
+              there — 347 messages at 04h and 31 at 05h on this machine — and against a 6 PM peak of
+              29.394 that is 1,2 % and 0,1 %, which recharts draws as a sub-pixel sliver and a
+              browser paints as nothing. The row read as a night with no work in it.
+              `minPointSize` gives every non-zero hour 3px of bar and leaves a real zero at zero, so
+              the two are distinguishable at a glance — the same rule this product applies to a
+              metric it cannot measure: never render something as nothing. The FIGURE is untouched;
+              only the floor of its drawing. */}
+          <Bar dataKey="value" radius={[0, 2, 2, 0]} minPointSize={(value: number | null | undefined) => ((value ?? 0) > 0 ? 3 : 0)}>
             {chartData.map(entry => (
               <Cell key={entry.hour} fill={getPeriodColor(parseInt(entry.hour))} fillOpacity={0.8} />
             ))}

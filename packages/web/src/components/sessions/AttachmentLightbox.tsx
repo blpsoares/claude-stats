@@ -11,6 +11,7 @@
 import { useEffect } from 'react'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { attachmentUrl } from '../../lib/attachmentUrl'
+import { attachmentKind } from '../../lib/messageAttachments'
 
 export interface AttachmentLightboxProps {
   paths: readonly string[]
@@ -57,6 +58,24 @@ export function AttachmentLightbox({
   const path = paths[index]
   if (path === undefined) return null
 
+  const src = srcFor ? srcFor(path) : attachmentUrl(path)
+  const kind = attachmentKind(path)
+  const frameStyle: React.CSSProperties = {
+    maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain',
+    borderRadius: 8, boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+  }
+  // The INDEX, not the path: the same file sent in two messages is two entries sharing a path, and
+  // the caller's menu is about the MESSAGE — resolving by path would offer the wrong one.
+  const menuProps = onImageMenu
+    ? {
+        onContextMenu: (e: React.MouseEvent) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onImageMenu(e.clientX, e.clientY, index)
+        },
+      }
+    : {}
+
   return (
     <div
       role="dialog"
@@ -98,25 +117,57 @@ export function AttachmentLightbox({
         </>
       )}
 
-      <img
-        src={srcFor ? srcFor(path) : attachmentUrl(path)}
-        alt=""
-        onClick={e => e.stopPropagation()}
-        {...(onImageMenu ? {
-          onContextMenu: (e: React.MouseEvent) => {
-            e.preventDefault()
-            e.stopPropagation()
-            // The INDEX, not the path: the same file sent in two messages is two entries sharing
-            // a path, and the caller's menu is about the MESSAGE — resolving by path would offer
-            // the wrong one.
-            onImageMenu(e.clientX, e.clientY, index)
-          },
-        } : {})}
-        style={{
-          maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain',
-          borderRadius: 8, boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-        }}
-      />
+      {/* THREE KINDS, ONE FRAME. The component is named for the picture it began as, and it steps
+          across whatever the gallery can show — so what changes here is the ELEMENT, not the
+          stepping, the counter or the menu. A video that could only be a still `<img>` was a black
+          rectangle; a PDF was the same rectangle with a filename under it. */}
+      {kind === 'video' ? (
+        <video
+          src={src}
+          controls
+          autoPlay
+          playsInline
+          onClick={e => e.stopPropagation()}
+          {...menuProps}
+          style={frameStyle}
+        />
+      ) : kind === 'pdf' ? (
+        // The browser's OWN viewer, in an iframe on this origin. `#view=FitH` opens it fitted to
+        // the width rather than at whatever zoom the viewer remembers, which on a phone is the
+        // difference between a page and a corner of one. iOS Safari renders only the first page
+        // inside a frame, which is why the link below it is not a nicety — it is the way to read
+        // the rest, and it says so in words rather than leaving a reader stuck on page one.
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{ ...frameStyle, width: '90vw', height: '86vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-base)' }}
+        >
+          <iframe
+            src={`${src}#view=FitH`}
+            title={pt ? 'Documento' : 'Document'}
+            style={{ flex: 1, width: '100%', border: 'none', borderRadius: '8px 8px 0 0' }}
+          />
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              flexShrink: 0, padding: '9px 12px', textAlign: 'center',
+              fontSize: 12.5, fontWeight: 600, color: 'var(--anthropic-orange)',
+              textDecoration: 'none', borderTop: '1px solid var(--border)',
+            }}
+          >
+            {pt ? 'Abrir em uma aba' : 'Open in a tab'}
+          </a>
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt=""
+          onClick={e => e.stopPropagation()}
+          {...menuProps}
+          style={frameStyle}
+        />
+      )}
 
       {many && (
         <div style={{

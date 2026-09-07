@@ -25,11 +25,13 @@ import remarkGfm from 'remark-gfm'
 // message written across several lines renders as one run-on paragraph — which is what "the
 // messages are not formatted" turned out to mean. `HarnessChat` has always used it.
 import remarkBreaks from 'remark-breaks'
-import { Check, Clock, CornerUpLeft, Loader, User } from 'lucide-react'
+import { Check, Clock, Copy, CornerUpLeft, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { splitSlashLine } from '../../lib/slashLine'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
+import { copyText } from '../../lib/clipboard'
 import { echoStatus } from '../../lib/echoStatus'
+import { messageTime } from '../../lib/messageTime'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { AttachmentLightbox } from './AttachmentLightbox'
 import { HarnessMark } from './HarnessMark'
@@ -58,6 +60,14 @@ export interface ChatTurn {
   tools?: Array<{ name: string; detail?: string }>
   /** Carried by the transcript; deliberately not rendered here. See the header. */
   thinking?: string
+  /**
+   * When this turn was written, ISO, as the transcript recorded it.
+   *
+   * The server has always sent it — 400 of 400 turns on a measured session — and nothing drew it.
+   * Rendered under the message, the way a chat client does. Absent on a turn whose transcript
+   * carried no time; the stamp is then simply not drawn, never replaced by "now".
+   */
+  at?: string
 }
 
 export interface ChatBubbleProps {
@@ -167,6 +177,15 @@ const SYSTEM_NOTE_PT: Record<string, string> = {
 export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId }: ChatBubbleProps) {
   const pt = lang === 'pt'
   const mine = turn.role === 'user'
+  /**
+   * The stamp under this message. `null` when the transcript carried no time for the turn — the
+   * bubble then simply has none, which is the honest answer.
+   *
+   * Computed on every render on purpose: it is one `Date` and a `toLocaleTimeString`, and memoising
+   * it against `Date.now()` would freeze "today" for a page left open across midnight — the one
+   * case the relative wording exists to get right.
+   */
+  const stamp = messageTime(turn.at, pt ? 'pt' : 'en')
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
   /**
    * The RIGHT-CLICK menu, positioned where the click landed inside this bubble.
@@ -175,11 +194,20 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
    * every messaging application has taught, and it is reachable without first finding a 24px
    * button that only appears when the pointer is over the right message.
    *
-   * ONE ENTRY, deliberately. A context menu offered on a conversation invites "copy", "quote",
-   * "open in the terminal" and four more, and each of those is a decision about what a session can
-   * do that has not been made. Reply is the one this file already supports.
+   * TWO ENTRIES. It was one, deliberately — a context menu on a conversation invites "quote",
+   * "open in the terminal" and four more, each a decision about what a session can do that has not
+   * been made. COPY was asked for and is not one of those: it takes text the reader has already
+   * selected and puts it on their own clipboard. It touches no session, decides nothing, and is the
+   * gesture the right-click was reached for in the first place. The rest of the list stays refused.
    */
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null)
+  /** The last copy's outcome, cleared on a timer — see the note beside the button. */
+  const [copied, setCopied] = useState<'ok' | 'fail' | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 2000)
+    return () => clearTimeout(t)
+  }, [copied])
   const bodyRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (menuAt === null) return
@@ -437,13 +465,61 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
                 ? (pt ? 'Responder ao trecho' : 'Reply to excerpt')
                 : (pt ? 'Responder' : 'Reply')}
             </button>
+
+            {/* COPY. What it copies is what the reader can SEE they selected — the excerpt when
+                there is one, the whole message otherwise — so the menu never quietly takes more
+                than the highlight promised. The label says which, because "copy" over a selection
+                that is about to be ignored is the wrong answer given confidently. */}
+            <button
+              role="menuitem"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                const text = excerpt ? excerpt.text : turn.text
+                setMenuAt(null)
+                // Best effort, and SAID either way: `navigator.clipboard` is unavailable over plain
+                // http on a non-localhost origin — which is exactly how this dashboard is reached
+                // from another machine on the LAN — and a menu item that silently does nothing
+                // there is the control-that-reads-as-broken this codebase argues against.
+                void copyText(text).then(ok => setCopied(ok ? 'ok' : 'fail'))
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                minHeight: 34, padding: '6px 8px', borderRadius: 6, border: 'none',
+                background: 'transparent', color: 'var(--text-primary)',
+                fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
+              }}
+            >
+              <Copy size={13} style={{ flexShrink: 0 }} />
+              {excerpt
+                ? (pt ? 'Copiar trecho' : 'Copy excerpt')
+                : (pt ? 'Copiar mensagem' : 'Copy message')}
+            </button>
           </div>
+        )}
+
+        {/* The outcome of a copy, where the copy happened. `role="status"` so it is announced. */}
+        {copied && (
+          <p role="status" style={{
+            margin: '4px 0 0', fontSize: 10.5, lineHeight: 1.4,
+            color: copied === 'ok' ? 'var(--text-tertiary)' : 'var(--accent-red)',
+            alignSelf: mine ? 'flex-end' : 'flex-start',
+          }}>
+            {copied === 'ok'
+              ? (pt ? 'copiado' : 'copied')
+              : (pt ? 'o navegador não liberou a área de transferência aqui' : 'the browser did not allow the clipboard here')}
+          </p>
         )}
 
         {/* Reply to just what is selected. It is the only control that appears ON a selection, so
             it says which of the two replies it is in words — an icon alone here reads as the same
-            button that is already sitting in the bubble's corner. */}
-        {excerpt && onReplyExcerpt && (
+            button that is already sitting in the bubble's corner.
+
+            NOT WHILE THE MENU IS OPEN. The right-click menu offers the very same verb, and both are
+            anchored to the same selection, so they landed on top of each other — two "Reply to
+            excerpt" for one act, one of them half-covered. Reported with a screenshot. The menu
+            wins because it was opened deliberately and carries the other verbs too; the pill is the
+            discoverable route for somebody who never right-clicks. */}
+        {excerpt && onReplyExcerpt && menuAt === null && (
           <button
             onMouseDown={e => {
               // The press must not collapse the selection before the click lands, and must not
@@ -511,6 +587,27 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
               )
             })()}
           </div>
+        )}
+
+        {/* WHEN IT WAS SAID, under the message, the way a chat client does it. Asked for directly.
+            
+            Inside the bubble and aligned to its own side, so it reads as a fact about THIS message
+            rather than as a line between two of them. It is not drawn while the message is still
+            awaiting delivery: the status line below already occupies that spot and says something
+            more urgent, and a message that has not landed has no send time to state. The `title`
+            carries the whole instant — the stamp is abbreviated by design. */}
+        {!awaiting && stamp && (
+          <time
+            dateTime={turn.at}
+            title={stamp.full}
+            style={{
+              fontSize: 9.5, lineHeight: 1.2, color: 'var(--text-tertiary)',
+              alignSelf: mine ? 'flex-end' : 'flex-start',
+              // Never wraps and never widens the bubble: it is four to twelve characters, and a
+              // stamp that pushed a narrow bubble wider would make every short message look long.
+              whiteSpace: 'nowrap', flexShrink: 0, opacity: 0.75,
+            }}
+          >{stamp.label}</time>
         )}
 
         {/* The label sits INSIDE the bubble, under the text: it is a fact about this message, and

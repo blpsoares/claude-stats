@@ -30,7 +30,25 @@ export const MACHINE_FLEET_ROW_KEYS = [
   'task', 'note', 'model', 'conversationId', 'named', 'verbs',
 ] as const
 
-export type MachineFleetRowKey = typeof MACHINE_FLEET_ROW_KEYS[number]
+/**
+ * The keys the SCREEN consent adds, and nothing more.
+ *
+ * A second list rather than a flag on the first, because these are the fields the whole boundary
+ * was drawn around: the session's terminal and the dialog it is blocked on. They travel only when
+ * the machine has said yes to `allowRemoteScreens` — a separate question from "let me rename a
+ * session from my phone", which is exactly why `remoteSessions.ts` made it a separate switch.
+ *
+ * `chatTurns` IS NOT HERE AND HAS NO SWITCH. On-demand chat retrieval was removed from the reverse
+ * channel on purpose and `GET /api/team/session-chat` answers 410; the transcript stays where that
+ * decision put it. A screen is the last frame of a terminal, which a person is watching anyway to
+ * answer the dialog on it; a transcript is the whole conversation, which is a different thing to
+ * hand over and was refused as such.
+ */
+export const MACHINE_FLEET_SCREEN_KEYS = ['lastLines', 'approvalLines', 'dialogOptions'] as const
+
+export type MachineFleetRowKey =
+  | typeof MACHINE_FLEET_ROW_KEYS[number]
+  | typeof MACHINE_FLEET_SCREEN_KEYS[number]
 
 /** One session of another machine, as its owning account may see it. */
 export interface MachineFleetRow {
@@ -49,6 +67,26 @@ export interface MachineFleetRow {
   model?: string
   conversationId?: string
   named?: boolean
+  /**
+   * The last lines of this session's terminal, present ONLY under the screen consent.
+   *
+   * Its ABSENCE is not "the session has drawn nothing": it is "this machine did not send it", and
+   * the two must not be read as one. The central shows a screen when it has one and says the
+   * machine withholds it when it does not — never an empty black pane, which reads as a session
+   * that has stopped.
+   */
+  lastLines?: string[]
+  /** The dialog this session is blocked on, verbatim. Screen consent only. */
+  approvalLines?: string[]
+  /**
+   * The options read OFF that dialog, and the reason the screen consent exists at all.
+   *
+   * Most dialogs are not yes/no — a claude permission prompt is `1. Yes / 2. Yes, always / 3. No`
+   * and an `AskUserQuestion` can offer five answers that do different work. A key that "approves"
+   * takes whichever row is HIGHLIGHTED, which on such a dialog is choosing for the person. So the
+   * options are listed and the PICKED one is sent, exactly as the machine's own UI does it.
+   */
+  dialogOptions?: { number: number; label: string; selected: boolean }[]
   /**
    * What this row may take FROM A CENTRAL, already decided and worded by the machine.
    *
@@ -125,9 +163,21 @@ export interface MachineFleetAnswer {
  * guarded. Only listed keys are copied, and only when they are present — an absent optional stays
  * absent rather than becoming `undefined` on the wire.
  */
-export function reduceMachineFleetRow(row: Record<string, unknown>): MachineFleetRow {
+export function reduceMachineFleetRow(
+  row: Record<string, unknown>,
+  /**
+   * What the machine agreed to. ABSENT READS AS NO SCREEN — the same direction
+   * `resolveRemoteConsent` and `chat-gate.ts` take, and the only safe default for a parameter added
+   * to a function that already had callers: one that forgot to pass it must lose the screen, never
+   * gain it.
+   */
+  consent: { screens: boolean } = { screens: false },
+): MachineFleetRow {
   const out: Record<string, unknown> = {}
-  for (const key of MACHINE_FLEET_ROW_KEYS) {
+  const keys = consent.screens
+    ? [...MACHINE_FLEET_ROW_KEYS, ...MACHINE_FLEET_SCREEN_KEYS]
+    : MACHINE_FLEET_ROW_KEYS
+  for (const key of keys) {
     if (row[key] !== undefined) out[key] = row[key]
   }
   // The four required strings are stated rather than trusted: a row that arrived without them
@@ -146,10 +196,25 @@ export function reduceMachineFleetRow(row: Record<string, unknown>): MachineFlee
     ...(typeof out.model === 'string' ? { model: out.model } : {}),
     ...(typeof out.conversationId === 'string' ? { conversationId: out.conversationId } : {}),
     ...(typeof out.named === 'boolean' ? { named: out.named } : {}),
+    // Rebuilt element by element like the verbs, and for the same reason: these are the only
+    // fields on the wire that carry terminal text, so what lands must be strings this function
+    // put there rather than whatever shape the row happened to hold.
+    ...(Array.isArray(out.lastLines) ? { lastLines: (out.lastLines as unknown[]).filter((l): l is string => typeof l === 'string') } : {}),
+    ...(Array.isArray(out.approvalLines) ? { approvalLines: (out.approvalLines as unknown[]).filter((l): l is string => typeof l === 'string') } : {}),
+    ...(Array.isArray(out.dialogOptions) ? { dialogOptions: (out.dialogOptions as unknown[]).map(reduceOption).filter((o): o is { number: number; label: string; selected: boolean } => o !== null) } : {}),
     // Each verb is rebuilt field by field for the same reason the row is: a `FleetVerb` that grew
     // a field carrying screen text would otherwise ride along inside an object nobody re-checked.
     ...(Array.isArray(out.verbs) ? { verbs: (out.verbs as unknown[]).map(reduceVerb).filter((v): v is MachineFleetVerb => v !== null) } : {}),
   }
+}
+
+/** One dialog option, rebuilt. A half-read option is worse than none — it gets OFFERED. */
+function reduceOption(raw: unknown): { number: number; label: string; selected: boolean } | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.number !== 'number' || !Number.isFinite(o.number)) return null
+  if (typeof o.label !== 'string') return null
+  return { number: o.number, label: o.label, selected: o.selected === true }
 }
 
 function reduceVerb(raw: unknown): MachineFleetVerb | null {

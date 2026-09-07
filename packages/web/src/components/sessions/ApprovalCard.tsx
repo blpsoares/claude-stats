@@ -37,11 +37,45 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
   const options = row.dialogOptions ?? []
   const approve = row.verbs.find(v => v.action === 'approve')
 
-  async function answer(choice?: number) {
+  /**
+   * WHICH DIALOG THIS IS. Its options, as text — the only thing on the row that changes when the
+   * question does, and stays the same while it is still being asked.
+   */
+  const shape = options.map(o => `${o.number}:${o.label}`).join('\n')
+  /** The dialog that has already been answered from here. */
+  const [answeredShape, setAnsweredShape] = useState<string | null>(null)
+
+  /**
+   * ONE ANSWER PER DIALOG, and the second one was doing real damage.
+   *
+   * An option is picked by TYPING ITS DIGIT — that is the only mechanism claude publishes. For an
+   * ordinary option the digit selects and submits, but claude's `AskUserQuestion` has a
+   * WRITE-YOUR-OWN option, and there the digit opens a TEXT FIELD. Every further digit then lands
+   * INSIDE that field: reported with a screenshot where option 3 read `33333333333333333` and the
+   * card cheerfully said `answered: 3333333333333333`.
+   *
+   * The card cannot tell text-entry mode from selection mode — no probed marker distinguishes them,
+   * and inventing one is how a guess ships. What it CAN say is that this dialog has already been
+   * answered from here, so the buttons go inert until the options CHANGE. A dialog still on screen
+   * after an answer is either processing it or has opened a mode this card does not drive; pressing
+   * again helps in neither case.
+   */
+  const alreadyAnswered = answeredShape !== null && answeredShape === shape
+
+  /** The free-text option's draft, while it is open. `null` means it is not open. */
+  const [writing, setWriting] = useState<{ number: number; text: string } | null>(null)
+
+  async function answer(choice?: number, text?: string) {
     setBusy(choice ?? 'confirm')
-    const out = await act({ id: row.id, action: 'approve', ...(choice !== undefined ? { choice } : {}) })
+    const out = await act({
+      id: row.id,
+      action: 'approve',
+      ...(choice !== undefined ? { choice } : {}),
+      ...(text !== undefined ? { text } : {}),
+    })
     setBusy(null)
     setNotice(out.message)
+    if (out.ok) { setAnsweredShape(shape); setWriting(null) }
   }
 
   return (
@@ -86,15 +120,22 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
             {options.map(o => (
               <button
                 key={o.number}
-                onClick={() => void answer(o.number)}
-                disabled={busy !== null}
+                onClick={() => {
+                  // THE FREE-TEXT OPTION OPENS A FIELD instead of answering. Picking it with the
+                  // digit does not submit — it turns the row into one — and every further press
+                  // then types that digit into it, which is how `33333333333333333` happened.
+                  if (o.freeText) { setWriting({ number: o.number, text: '' }); return }
+                  void answer(o.number)
+                }}
+                disabled={busy !== null || alreadyAnswered}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
-                  padding: '10px 12px', borderRadius: 10, cursor: busy === null ? 'pointer' : 'default',
+                  padding: '10px 12px', borderRadius: 10,
+                  cursor: busy === null && !alreadyAnswered ? 'pointer' : 'default',
                   border: `1px solid ${o.selected ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
                   background: 'var(--bg-card)', color: 'var(--text-primary)',
                   fontFamily: 'inherit', fontSize: 13, minWidth: 0,
-                  opacity: busy !== null && busy !== o.number ? 0.5 : 1,
+                  opacity: alreadyAnswered ? 0.5 : (busy !== null && busy !== o.number ? 0.5 : 1),
                 }}
               >
                 <span style={{
@@ -115,6 +156,45 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
                 )}
               </button>
             ))}
+
+            {/* THE FIELD. Shown under the options, so the question and the answers stay readable
+                while it is being written. `Enter` sends because that is what it does in the session
+                itself; `Escape` closes it without answering, which the dialog cannot offer once a
+                digit has been sent. */}
+            {writing && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                <input
+                  autoFocus
+                  value={writing.text}
+                  onChange={e => setWriting({ ...writing, text: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { e.preventDefault(); setWriting(null); return }
+                    if (e.key === 'Enter' && writing.text.trim() !== '') {
+                      e.preventDefault(); void answer(writing.number, writing.text.trim())
+                    }
+                  }}
+                  placeholder={pt ? 'Escreva a sua resposta…' : 'Write your own answer…'}
+                  style={{
+                    flex: 1, minWidth: 0, height: 38, padding: '0 12px', borderRadius: 10,
+                    border: '1px solid var(--anthropic-orange)', background: 'var(--bg-card)',
+                    color: 'var(--text-primary)', fontFamily: 'inherit',
+                    // 16px on a phone or iOS Safari zooms the viewport and breaks the sticky header.
+                    fontSize: 16,
+                  }}
+                />
+                <button
+                  onClick={() => void answer(writing.number, writing.text.trim())}
+                  disabled={busy !== null || writing.text.trim() === ''}
+                  style={{
+                    padding: '0 14px', height: 38, borderRadius: 10, border: 'none', flexShrink: 0,
+                    background: 'var(--anthropic-orange)', color: '#fff',
+                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+                    cursor: writing.text.trim() === '' ? 'default' : 'pointer',
+                    opacity: writing.text.trim() === '' ? 0.5 : 1,
+                  }}
+                >{pt ? 'Responder' : 'Answer'}</button>
+              </div>
+            )}
           </div>
         )
       ) : approve?.enabled ? (
@@ -122,7 +202,7 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
         // survives only here.
         <button
           onClick={() => void answer()}
-          disabled={busy !== null}
+          disabled={busy !== null || alreadyAnswered}
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
             padding: '10px 14px', borderRadius: 10, border: 'none', alignSelf: 'flex-start',
@@ -145,6 +225,17 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
       {notice && (
         <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
           {notice}
+        </p>
+      )}
+
+      {/* WHY THE BUTTONS ARE INERT. A row that stops responding with no sentence is the
+          control-that-reads-as-broken; and the one case a person most needs told about is the
+          write-your-own option, where the answer has to be typed in the session itself. */}
+      {alreadyAnswered && (
+        <p role="status" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--anthropic-orange)' }}>
+          {pt
+            ? 'Já respondido daqui. Se o diálogo continuar na tela, ele abriu um campo para você escrever — isso é feito na própria sessão (attach), porque daqui cada clique digitaria o número da opção dentro do campo.'
+            : 'Already answered from here. If the dialog is still on screen it has opened a field for you to type in — that is done in the session itself (attach), because from here each click would type the option’s number into that field.'}
         </p>
       )}
     </div>

@@ -19,6 +19,8 @@
 import type { HarnessId } from '@agentistics/core'
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
+import { recordPrompt } from './pending-prompts'
+import { conversationOfRow } from './row-conversation'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions' 
@@ -197,10 +199,26 @@ export async function runFleetAction(
   switch (req.action) {
     case 'approve':
       if (!host.answerSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.answerSession(req.id, req.choice)
-    case 'prompt':
+      // `text` rides along for the FREE-TEXT option, where picking is only the first of three
+      // steps — see `answerSession`. Every other option ignores it.
+      return await host.answerSession(req.id, req.choice, text)
+    case 'prompt': {
       if (!host.promptSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.promptSession(req.id, text)
+      const out = await host.promptSession(req.id, text)
+      // RECORDED ONLY ON A CONFIRMED DELIVERY, and recorded HERE rather than in the browser: a
+      // queue held by the tab that sent it is a queue no other device can see, which is the whole
+      // of the report. `conversationOfRow` because a message belongs to the CONVERSATION, not to
+      // the session that happened to host it — reopening one must not lose what is still waiting.
+      if (out.ok) {
+        const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
+        const conv = row ? conversationOfRow(row) : ''
+        if (conv) recordPrompt(conv, text)
+      }
+      return out
+    }
+    case 'cycleMode':
+      if (!host.cycleSessionMode) return { ok: false, message: s.sessionsNoHost }
+      return await host.cycleSessionMode(req.id)
     case 'rename':
       if (!host.renameSession) return { ok: false, message: s.sessionsNoHost }
       return await host.renameSession(req.id, text)
@@ -254,7 +272,20 @@ export async function runFleetAction(
       // start an assistant anywhere on this machine.
       const fleet = await host.sessions()
       const row = fleet.sessions.find(r => r.id === req.id)
-      if (!row?.resume) return { ok: false, message: s.sessionsReopenNone }
+      // TWO DIFFERENT FACTS, and collapsing them sent people to the wrong place.
+      //
+      // `sessionsReopenNone` says "nothing on this machine resolves this row" — a statement about
+      // the CONVERSATION, and the honest answer when the row is here and has no reopen target. It
+      // was also being given when the row was simply GONE from the list, which happens routinely:
+      // `claimResume` hands each conversation to at most one row, so reopening one closed row can
+      // drop a sibling that was showing the same conversation, and any list a person is looking at
+      // is up to one poll old. Measured on a real fleet of 326: a row whose `resume` was ENABLED in
+      // the list refused on the click, with a sentence that reads as "this conversation is lost".
+      //
+      // A stale row is RECOVERABLE — refresh and the list is right — so it gets its own sentence
+      // saying so. Reported as "reabro as sessões pela UI e elas não reabrem".
+      if (!row) return { ok: false, message: s.sessionsRowGone }
+      if (!row.resume) return { ok: false, message: s.sessionsReopenNone }
       const out = await host.resumeSession({
         sessionId: row.resume.sessionId,
         harness: row.harness,

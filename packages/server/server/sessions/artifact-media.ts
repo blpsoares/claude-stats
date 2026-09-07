@@ -25,7 +25,7 @@
  *   the declared type is only honest if the browser is forbidden from guessing another.
  */
 
-export type MediaKind = 'image' | 'pdf'
+export type MediaKind = 'image' | 'video' | 'pdf'
 
 export interface MediaType {
   mime: string
@@ -41,6 +41,14 @@ const TABLE: Record<string, MediaType> = {
   avif: { mime: 'image/avif', kind: 'image' },
   bmp: { mime: 'image/bmp', kind: 'image' },
   pdf: { mime: 'application/pdf', kind: 'pdf' },
+  // A session records screens as often as it draws them. Same closed-table rule as the rest: each
+  // container is named, and a codec the browser cannot decode is the browser's own "cannot play"
+  // rather than a broken tile — which is a sentence, and is what this module owes a reader.
+  mp4: { mime: 'video/mp4', kind: 'video' },
+  m4v: { mime: 'video/mp4', kind: 'video' },
+  mov: { mime: 'video/quicktime', kind: 'video' },
+  webm: { mime: 'video/webm', kind: 'video' },
+  ogv: { mime: 'video/ogg', kind: 'video' },
 }
 
 /** Extensions that LOOK like media and are deliberately refused, with the reason in the UI's words. */

@@ -64,7 +64,7 @@ describe('galleryGroups', () => {
   it('marks a file that cannot be previewed rather than promising a thumbnail', () => {
     const groups = galleryGroups([user(`${notes}\nleia`)])
     expect(groups[0]!.files[0]).toEqual({
-      path: notes, name: 'aa11bb22-notes.txt', image: false, format: 'TXT', origin: 'sent',
+      path: notes, name: 'aa11bb22-notes.txt', kind: 'other', format: 'TXT', origin: 'sent',
     })
   })
 
@@ -153,8 +153,10 @@ describe('what the SESSION produced', () => {
     ])
     expect(out).toHaveLength(1)
     expect(out[0]!.files.map(f => f.name)).toEqual(['shot.png', 'report.pdf'])
-    expect(out[0]!.files[0]!.image).toBe(true)
-    expect(out[0]!.files[1]!.image).toBe(false)   // a PDF has no thumbnail to promise
+    expect(out[0]!.files[0]!.kind).toBe('image')
+    // A PDF has no thumbnail to promise — but it IS showable, which is the distinction the boolean
+    // this replaced could not make: it filed a PDF and a .txt under the same "nothing".
+    expect(out[0]!.files[1]!.kind).toBe('pdf')
     expect(out[0]!.files.every(f => f.origin === 'produced')).toBe(true)
   })
 
@@ -173,8 +175,8 @@ describe('what the SESSION produced', () => {
 })
 
 describe('the two sides of the gallery', () => {
-  const sent = { path: '/a/x.png', name: 'x.png', image: true, format: 'PNG', origin: 'sent' as const }
-  const made = { path: '/b/y.png', name: 'y.png', image: true, format: 'PNG', origin: 'produced' as const }
+  const sent = { path: '/a/x.png', name: 'x.png', kind: 'image' as const, format: 'PNG', origin: 'sent' as const }
+  const made = { path: '/b/y.png', name: 'y.png', kind: 'image' as const, format: 'PNG', origin: 'produced' as const }
   const groups = [
     { index: 0, text: 'veja', files: [sent] },
     { index: -1, text: '', files: [made] },

@@ -19,11 +19,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { ChevronLeft, MessagesSquare, SlidersHorizontal, TerminalSquare } from 'lucide-react'
+import { ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
 import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { FleetOverview } from '../components/sessions/FleetOverview'
+import { SessionStatsMenu } from '../components/sessions/SessionStatsMenu'
+import { MagnifierButton } from '../components/a11y/MagnifierButton'
+import { HideLensesButton } from '../components/a11y/HideLensesButton'
 import { ArtifactsAside } from '../components/sessions/ArtifactsAside'
 import {
   ASIDE_ANIM_MS, ASIDE_EASE, edgeHint, panelWidth, resolveArtifactLayout,
@@ -49,11 +52,19 @@ export default function SessionsPage() {
   const {
     lang, isCentral, theme, filters, setFilters, activeOnly, setActiveOnly,
     availableProjects, sessionCountByProject, models, availableHarnesses, derived,
+    data, currency, brlRate,
   } = ctx
   const pt = lang === 'pt'
   const { sessionId } = useParams()
   const navigate = useNavigate()
   const isMobile = useIsMobile()
+  /**
+   * Which of the phone's two screens is showing when no session is open.
+   *
+   * `list` by default: a phone opens this page to reach a session, and the metrics are the thing
+   * you go and look at. Not in the URL — it is a view preference on one screen, not a place.
+   */
+  const [mobileTab, setMobileTab] = useState<'list' | 'overview'>('list')
   /**
    * The mobile filters live in a SHEET, and this is whether it is open.
    *
@@ -352,6 +363,9 @@ export default function SessionsPage() {
   const artifactsPane = selected === undefined ? null : (
     <ArtifactsAside
       sessionId={selected.id}
+      // The MCP tab's per-directory scopes are resolved against this; with no directory they are
+      // absent from the picker rather than silently widened to "this machine".
+      {...(selected.cwd ? { cwd: selected.cwd } : {})}
       lang={pt ? 'pt' : 'en'}
       // Only what the server confirmed is still a file with content. Until it has answered the
       // list is shown as recorded, so the panel is never empty for the length of a request.
@@ -375,6 +389,9 @@ export default function SessionsPage() {
       theme={theme === 'light' ? 'light' : 'dark'}
       act={act}
       onGone={() => navigate('/sessions')}
+      // Follow a reopen to the row it created. Without it the panel keeps an id the fleet no longer
+      // carries — see `SessionPanel`'s own `onOpened`.
+      onOpened={id => navigate(sessionPath(id))}
       // CONTROLLED on both layouts now. Passing `onViewChange` is what suppresses SessionPanel's
       // own header, and mobile draws the same three things in the row that already holds the back
       // button — one bar instead of two stacked ones saying overlapping things.
@@ -402,24 +419,61 @@ export default function SessionsPage() {
     ].filter(Boolean).length
 
   /** The filter icon both mobile bars carry. Same sheet, same count, same target size. */
+  /**
+   * THE SAME CONTROL THE DESKTOP HAS, said the same way.
+   *
+   * It was a sliders icon, which is the shape every other product uses for SETTINGS — and this page
+   * already has a settings gear elsewhere, so the one control that narrows the list read as the one
+   * that configures it. The desktop bar has always called it `+ Filtro`; asked for, and it is the
+   * cheaper half of "make the two layouts the same feature".
+   *
+   * The 44px height stays — it is the mobile target this repo holds everything to — and the label
+   * only costs width, which this bar has once the sliders icon's dead space is spent on it.
+   */
+  /**
+   * THE MAGNIFIER, IN THE BAR — it was floating over the middle of the conversation.
+   *
+   * `MagnifierLayer` draws its own fixed button at `top: 50%` when no chrome offers it a slot, and
+   * this workspace was the one mobile screen that offered none (`headerHostsMagnifier` excludes it
+   * by name). So on a phone it sat in the vertical centre, over the message somebody was reading —
+   * reported as "ta perdida no meio da tela", with a screenshot of it on top of a paragraph.
+   *
+   * It belongs in the bar for the same reason it is in the desktop's strip, and it costs this bar
+   * nothing when it is not wanted: `MagnifierButton` returns null unless the magnifiers have been
+   * turned on, so a phone that never enabled them never gives up the width.
+   */
+  const magnifierButton = isMobile
+    ? (
+      <>
+        <MagnifierButton ctx={ctx} />
+        {/* Its pair. The floating fallback drew BOTH, and taking over the slot means taking over
+            both — a phone that had opened lenses here would otherwise have no way to hide them,
+            because a pinned lens takes no pointer events of its own. It renders nothing until
+            there is a lens to hide. */}
+        <HideLensesButton ctx={ctx} />
+      </>
+    )
+    : null
+
   const filterButton = (
     <button
       onClick={() => setSheetOpen(true)}
       aria-label={pt ? 'Filtros' : 'Filters'}
       aria-haspopup="dialog"
       style={{
-        position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        width: 44, height: 44, flexShrink: 0, border: 'none', background: 'transparent',
+        display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+        height: 44, padding: '0 10px',
+        border: 'none', background: 'transparent',
         color: filterCount > 0 ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
-        cursor: 'pointer',
+        fontFamily: 'inherit', fontSize: 13, fontWeight: 500, cursor: 'pointer',
       }}
     >
-      <SlidersHorizontal size={18} />
+      <Plus size={15} style={{ flexShrink: 0 }} />
+      <span>{pt ? 'Filtro' : 'Filter'}</span>
       {filterCount > 0 && (
         <span style={{
-          position: 'absolute', top: 5, right: 2,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8,
+          minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8, flexShrink: 0,
           background: 'var(--anthropic-orange)', color: '#fff', fontSize: 10, fontWeight: 700,
         }}>{filterCount}</span>
       )}
@@ -522,6 +576,7 @@ export default function SessionsPage() {
                 chrome, so the filters have to be reachable from it too — the list you go back to
                 is the thing they narrow. */}
             {filterButton}
+            {magnifierButton}
 
             {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
                 the title to about six characters. The `aria-label` carries the name. */}
@@ -556,6 +611,55 @@ export default function SessionsPage() {
               </div>
             )}
 
+            {/* WHAT THIS CONVERSATION HAS SPENT — the same control the desktop strip carries, and it
+                was simply not on this bar: the strip that hosts it is `!isMobile`, so a phone had no
+                way to see a session's tokens, cost, model or context gauge at all. The button is
+                already the compact one (an icon, plus the context percentage when there is one),
+                which is why it fits here beside five other controls; `compact` only asks it for the
+                44px target this bar holds everything else to. */}
+            {selected.conversationId !== undefined && (
+              <SessionStatsMenu
+                harness={selected.harness}
+                sessionId={selected.conversationId}
+                meta={data?.sessions?.find(x => x.session_id === selected.conversationId)}
+                lang={pt ? 'pt' : 'en'}
+                currency={currency}
+                brlRate={brlRate}
+                touch
+                {...(selected.model ? { startedModel: selected.model } : {})}
+                {...(selected.effort ? { startedEffort: selected.effort } : {})}
+              />
+            )}
+
+            {/* THE RIGHT ASIDE, reachable at all.
+                Everything in it — files, docs, the live feed, the gallery, skills, MCPs, subagents,
+                the PRs — was built on the desktop and had no way in on a phone, which is the whole
+                of "essas features nao foram pensadas pro mobile e sao features que precisam estar
+                presentes la". `resolveArtifactLayout` has ALWAYS answered `fullscreen` for a phone;
+                nothing was rendering it. So this opens the very same panel, not a reduced one.
+
+                The count rides the button, because it is the reason to press it: a panel that might
+                be empty is one people stop opening. */}
+            <button
+              onClick={() => (art.open ? closeArtifacts() : openArtifacts())}
+              aria-label={pt ? 'Conteúdos da sessão' : 'Session contents'}
+              aria-expanded={art.open}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                width: 44, height: 44, flexShrink: 0, border: 'none', background: 'transparent',
+                color: art.open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              {/* THE DESKTOP'S ICON, and the desktop's reasoning with it: a panel glyph says
+                  "something opens here" and leaves the reader to find out what, while `FileText`
+                  names what the panel opens on nine times out of ten. And NO count — it counts
+                  everything the session ever touched, past fifty on an ordinary afternoon, and a
+                  figure nobody acts on is furniture with a number on it. Two layouts wearing two
+                  icons for one panel is the same feature learnt twice. */}
+              <FileText size={18} />
+            </button>
+
             {rowIndex.get(selected.id) && (
               <SessionActions
                 row={rowIndex.get(selected.id)!}
@@ -576,6 +680,28 @@ export default function SessionsPage() {
               because the box that was supposed to scroll had no bounded height to scroll within.
               `flex: 1` on a child means nothing until its PARENT is a flex container. */}
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>{panel}</div>
+
+          {/* FULLSCREEN, over everything, with its own close.
+              A phone has one column: the panel and the conversation cannot share 390px, and
+              `resolveArtifactLayout` already says so. It sits above the bar too — the bar's back
+              arrow would leave the session entirely, and the way out of the panel is the panel's
+              own close, which `ArtifactsAside` draws. */}
+          {/* IT SLIDES, and that needs it MOUNTED while it moves — a conditional render returns a
+              different tree and there is nothing left to animate, which is why it appeared instantly
+              and the desktop's does not. Same easing and duration as the "more" sheet, so the two
+              surfaces on this layout move alike. `visibility` is what keeps a closed panel out of
+              the tab order without taking the transition with it. */}
+          {artifactsPane && (
+            <div style={{
+              position: 'fixed', inset: 0, zIndex: 70,
+              display: 'flex', flexDirection: 'column',
+              paddingTop: 'var(--safe-top)',
+              background: 'var(--bg-surface)',
+              transform: artLayout.layout === 'fullscreen' ? 'translateX(0)' : 'translateX(100%)',
+              visibility: artLayout.layout === 'fullscreen' ? 'visible' : 'hidden',
+              transition: 'transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0.28s',
+            }}>{artifactsPane}</div>
+          )}
           {filtersSheet}
         </div>
       )
@@ -598,6 +724,7 @@ export default function SessionsPage() {
             {pt ? 'Sessões' : 'Sessions'}
           </span>
           {filterButton}
+          {magnifierButton}
         </div>
         {/* `display: flex` again, and for the third time in this file's history the SAME rule:
             `flex: 1` on a child means nothing until its PARENT is a flex container. This div had
@@ -608,20 +735,66 @@ export default function SessionsPage() {
             inactive rows sat below the fold with no way to reach them. The band heading counted
             them correctly the whole time, which is what made it read as "the rows are missing"
             rather than "the list cannot scroll". */}
+        {/* TWO SCREENS, one bar. The list is what a phone opens on — it is why you came — and the
+            OVERVIEW is the same cards the desktop draws in the centre when nothing is selected.
+            Asked for: "a tela inicial de quando n tem sessao selecionada que mostra as metricas,
+            quero isso tbm na versao mobile".
+
+            A segmented control rather than a scroll: the cards are tall, and putting them above 300
+            rows would make the list unreachable on the screen whose whole problem is height. Both
+            read the SAME `overviewRows` the desktop uses, so the two layouts can never count
+            different sets — the defect this page has already hit twice. */}
+        <div role="tablist" style={{
+          display: 'flex', gap: 2, padding: '6px 12px 0', flexShrink: 0,
+        }}>
+          {([
+            ['list', pt ? 'Sessões' : 'Sessions'],
+            ['overview', pt ? 'Métricas' : 'Metrics'],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={mobileTab === id}
+              onClick={() => setMobileTab(id)}
+              style={{
+                flex: 1, minHeight: 40, borderRadius: 9, border: 'none', cursor: 'pointer',
+                background: mobileTab === id ? 'var(--bg-elevated)' : 'transparent',
+                color: mobileTab === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                fontFamily: 'inherit', fontSize: 13,
+                fontWeight: mobileTab === id ? 650 : 400,
+              }}
+            >{label}</button>
+          ))}
+        </div>
+
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: '10px 12px' }}>
-          <SessionsAside
-            lang={pt ? 'pt' : 'en'}
-            rows={fleet.rows}
-            finishedTasks={fleet.finishedTasks}
-            loading={loading}
-            unsupported={unsupported}
-            filters={filters}
-            activeOnly={activeOnly}
-            {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
-            stale={stale}
-            rowsById={rowIndex}
-            act={req => act({ ...req, action: req.action as FleetActionId })}
-          />
+          {mobileTab === 'overview' ? (
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
+              <FleetOverview
+                lang={pt ? 'pt' : 'en'}
+                rows={overviewRows}
+                loading={loading}
+                unsupported={unsupported}
+                heatmap={derived.heatmapData}
+                heatmapByHarness={derived.heatmapByHarness}
+                {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
+              />
+            </div>
+          ) : (
+            <SessionsAside
+              lang={pt ? 'pt' : 'en'}
+              rows={fleet.rows}
+              finishedTasks={fleet.finishedTasks}
+              loading={loading}
+              unsupported={unsupported}
+              filters={filters}
+              activeOnly={activeOnly}
+              {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
+              stale={stale}
+              rowsById={rowIndex}
+              act={req => act({ ...req, action: req.action as FleetActionId })}
+            />
+          )}
         </div>
         {filtersSheet}
       </div>
@@ -740,7 +913,7 @@ export default function SessionsPage() {
             : 'That session is no longer in this machine’s list.'}
         </p>
       )}
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
         <FleetOverview
           lang={pt ? 'pt' : 'en'}
           // THE SAME ROWS THE ASIDE IS SHOWING, through the same `filterFleet`.

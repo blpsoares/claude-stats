@@ -6,6 +6,12 @@
  * than a split because the panel is already the narrow column: a list and a document sharing 440px
  * would give the document less room than the conversation it was opened from.
  *
+ * EVERY SCROLLING REGION HERE IS `overscroll-behavior: contain`. On a phone this panel is a
+ * full-screen layer over a workspace whose document is deliberately locked (`lib/mobileViewport.ts`),
+ * so a flick that runs off the end of a list must stop where it began rather than chain outward and
+ * drag the layer under it. It was reported the other way round — "ele roda a página inteira e não
+ * deixa scrollar" — with the whole page rubber-banding out from under the header.
+ *
  * IT NEVER CHANGES WHAT IT SHOWS ON ITS OWN. The list updates with each poll of the conversation —
  * that is the "in real time" half — but the OPEN FILE changes only on a click. There is deliberately
  * no effect here that selects an artifact from incoming data: a panel that swaps the document you
@@ -27,8 +33,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
 import {
   FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
-  BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, GitPullRequest,
-  ExternalLink,
+  BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
+  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X, Workflow,
 } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -41,6 +47,27 @@ import remarkGfm from 'remark-gfm'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { agoLabel, isDoc, liveEvents, writeStatus, type LiveEvent, type LiveTurn, type WriteStatus } from '../../lib/artifactTabs'
 import {
+  stepNotice, stepOpenable, stepPollMs, stepUrl,
+  type StepPayload, type StepState,
+} from '../../lib/stepDetail'
+import {
+  SUBAGENT_PAGE, appendPage, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
+  subagentsStateOf, unmeasuredText, unpricedText,
+  type SubagentRow, type SubagentsPayload, type SubagentsState,
+} from '../../lib/subagents'
+import {
+  liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
+  workflowCount, workflowsPollMs, workflowsStateOf,
+  type WorkflowRunRow, type WorkflowsPayload, type WorkflowsState,
+} from '../../lib/workflows'
+import { ConfirmModal } from '../../pages/settings/primitives'
+import {
+  cannotWriteText, offerableScopes, runText, runningMcpCount, scopeText,
+  type McpEntry, type McpListPayload, type McpScope,
+} from '../../lib/mcpPanel'
+import { splitAsideTabs } from '../../lib/asideTabs'
+import { fmt, fmtCost } from '@agentistics/core'
+import {
   galleryFileCount, galleryGroups, parseGalleryScope, parseGalleryView, producedGroups,
   type GalleryScope, type GalleryTurn, type GalleryView,
 } from '../../lib/gallery'
@@ -48,7 +75,7 @@ import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
@@ -56,6 +83,14 @@ const GALLERY_SCOPE_KEY = 'agentistics:gallery-scope'
 const SKILL_FORMAT_KEY = 'agentistics:skill-format'
 
 export interface ArtifactsAsideProps {
+  /**
+   * The session's own directory.
+   *
+   * Only the MCP tab uses it, and it uses it for a decision rather than a label: the `local` and
+   * `project` scopes are resolved against a directory, so without one they are ABSENT from the
+   * picker rather than present and silently widened to "this machine".
+   */
+  cwd?: string
   /**
    * A tab an OPENER asked for, with the stamp that makes it a request rather than a setting.
    *
@@ -105,6 +140,142 @@ export interface ArtifactsAsideProps {
   facts?: ReadonlyMap<string, { bytes: number; scope: 'project' | 'temp' }>
 }
 
+/** The gap between two tabs. Shared by the bar and the ruler, or the measurement is of a different
+ *  row from the one it is measuring for. */
+const TAB_GAP = 2
+
+/** Something is RUNNING behind this tab — the reason to look now. Drawn identically wherever a tab
+ *  is, so the bar and the grid can never disagree about which ones are live. */
+function RunningDot() {
+  return (
+    <span
+      aria-hidden
+      style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }}
+    />
+  )
+}
+
+/**
+ * EVERY TAB, as a grid of labelled tiles.
+ *
+ * Every tab and not only the ones that did not fit: a grid whose contents change as the panel
+ * resizes puts the same tab in a different place each time somebody looks for it. The current one
+ * is marked, so this reads as a launcher rather than a leftovers menu.
+ *
+ * It is a POPOVER, not permanent chrome. That is the whole reason this design was chosen over a
+ * vertical icon rail: a rail costs 46px in the one dimension this panel is poor in (440px on
+ * desktop, ~343px on a phone), while this costs nothing while it is closed.
+ */
+function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
+  tabs: readonly { id: TabId; label: string; icon: React.ReactNode; count: number | null }[]
+  active: TabId
+  pt: boolean
+  isMobile: boolean
+  /**
+   * The control that opened this.
+   *
+   * It has to be excluded from the outside-click, and NOT because of tidiness: a `mousedown` on it
+   * is outside this element, so the dismiss fired, and then the same gesture's `click` toggled the
+   * grid straight back open. Pressing the button to close it made it BLINK and stay — reported as
+   * exactly that. A popover has to know what opened it.
+   */
+  anchor: React.RefObject<HTMLButtonElement | null>
+  onPick: (id: TabId) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+
+  // `esc` closes and the focus goes back to the control that opened it — the same rule the
+  // restriction table's maximized view keeps.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (anchor.current?.contains(t)) return   // the toggle answers for itself
+      if (ref.current && !ref.current.contains(t)) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    // `mousedown` and not `click`: the control that opened this would otherwise reopen it on the
+    // same gesture that closed it.
+    document.addEventListener('mousedown', onDown)
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('mousedown', onDown) }
+  }, [onClose, anchor])
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={pt ? 'Todas as abas' : 'All tabs'}
+      style={{
+        position: 'absolute', top: 'calc(100% - 1px)', left: 6, right: 6, zIndex: 40,
+        padding: 10, borderRadius: 11, background: 'var(--bg-surface)',
+        border: '1px solid var(--anthropic-orange)',
+        boxShadow: '0 12px 30px -10px rgba(0,0,0,0.45)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase',
+          color: 'var(--text-tertiary)',
+        }}>{pt ? 'Todas as abas' : 'All tabs'}</span>
+        <button
+          onClick={onClose}
+          aria-label={pt ? 'Fechar' : 'Close'}
+          style={{
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+            border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
+          }}
+        ><X size={13} /></button>
+      </div>
+      <div style={{
+        display: 'grid', gap: 6,
+        // Four across on a desktop aside, three on the narrower one a phone gets — a tile below
+        // ~74px cannot hold a word, and a truncated label is the ambiguity this design avoids.
+        gridTemplateColumns: `repeat(${isMobile ? 3 : 4}, minmax(0, 1fr))`,
+      }}>
+        {tabs.map(t => {
+          const on = t.id === active
+          return (
+            <button
+              key={t.id}
+              onClick={() => onPick(t.id)}
+              aria-current={on}
+              style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                padding: isMobile ? '10px 3px' : '9px 3px 8px',
+                minHeight: isMobile ? 66 : undefined,
+                borderRadius: 9, cursor: 'pointer', fontFamily: 'inherit',
+                border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
+                background: on ? 'rgba(232,105,11,0.10)' : 'var(--bg-card)',
+                color: on ? 'var(--text-primary)' : 'var(--text-secondary)',
+              }}
+            >
+              <span style={{ display: 'inline-flex', position: 'relative' }}>
+                {t.icon}
+              </span>
+              <span style={{
+                fontSize: 10, fontWeight: on ? 700 : 500, lineHeight: 1.25, maxWidth: '100%',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{t.label}</span>
+              {/* The count travels to the grid too — a tile that dropped it would say less than the
+                  bar cell it replaces. A tab NOBODY HAS OPENED has no count, and says so with a
+                  dash and a reason on hover: "not asked yet" and "there are none" are different
+                  facts, and a `0` would claim the second one. */}
+              <span
+                title={t.count === null
+                  ? (pt ? 'Ainda não lido — abra a aba para contar.' : 'Not read yet — open the tab to count.')
+                  : undefined}
+                style={{ fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}
+              >{t.count === null ? '—' : t.count}</span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 /** `new` and `edited` read at a glance from the glyph; the word is beside it for everyone else. */
 function KindIcon({ kind }: { kind: Artifact['kind'] }) {
   return kind === 'new'
@@ -113,13 +284,35 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 }
 
 export function ArtifactsAside({
-  sessionId, lang, artifacts, loading, unavailable, older, unlistedWrites, turns, facts, onClose,
+  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, turns, facts, onClose,
   tabRequest,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
   const [open, setOpen] = useState<Artifact | null>(null)
   const [tab, setTab] = useState<TabId>('files')
+  /** The SUBAGENTS tab's own state — declared here because the tab BAR reads its count. */
+  /**
+   * Seeded from `asideCache` for the same reason the Skills and PRs tabs are: closing the panel and
+   * coming back is not a reason to re-read anything. What a session's subagents DID is a fact about
+   * the session, not about this mount — and this is the most expensive tab of the lot, since the
+   * list costs a full read of the parent transcript.
+   */
+  const [wfState, setWfState] = useState<WorkflowsState | null>(
+    () => asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null,
+  )
+  const [openRun, setOpenRun] = useState<string | null>(null)
+  const [agentsState, setAgentsState] = useState<SubagentsState | null>(
+    () => asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null,
+  )
+  const [openAgent, setOpenAgent] = useState<SubagentRow | null>(null)
+  /** The MCP tab's own state — declared here because the tab BAR reads its count. */
+  const [mcp, setMcp] = useState<McpListPayload | null>(
+    () => asideCache.read<McpListPayload>(asideKey(sessionId, 'mcps', cwd ?? '')).value ?? null,
+  )
+  const [mcpError, setMcpError] = useState<string | null>(null)
+  const [mcpNonce, setMcpNonce] = useState(0)
+
   /**
    * Honour a requested tab, once per request.
    *
@@ -132,7 +325,8 @@ export function ArtifactsAside({
   const askedAt = tabRequest?.at
   useEffect(() => {
     const t = tabRequest?.tab
-    if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills' || t === 'prs') setTab(t)
+    if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
+      || t === 'agents' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -238,8 +432,27 @@ export function ArtifactsAside({
     () => groupSkills(skills ?? [], skillQuery, pt ? 'pt' : 'en'),
     [skills, skillQuery, pt],
   )
+  const [gridOpen, setGridOpen] = useState(false)
+  /**
+   * OPENING THE ASIDE ASKS EVERY TAB FOR ITS NUMBER.
+   *
+   * Skills, PRs, Subagents and MCPs each fetch for themselves, and each used to wait for its own
+   * tab to be opened — so the bar and the grid could only draw a dash until somebody had walked
+   * into all four, one at a time. Asked for directly: "abrir a sessao ja deve disparar a busca".
+   *
+   * THE MOUNT IS THE RIGHT MOMENT, and it is the aside's OWN open rather than the session's: this
+   * component is unmounted while the panel is shut (`SessionsPage` drops it once the closing
+   * animation ends), so mounting IS the panel appearing. With it shut there is no bar and no grid,
+   * so a count nobody can see would be a multi-MB transcript read, a `/proc` scan and a GitHub call
+   * spent on every session somebody clicks past.
+   *
+   * What stays lazy is the RE-READ, not the first one. A finished tab's answer cannot change, and
+   * `asideCache` serves the second open of the same session for free — so this costs one request
+   * per tab per session, once. Only the tab actually on screen keeps polling; see the subagents
+   * effect, where the poll is scheduled against `tab` and not against this.
+   */
+
   useEffect(() => {
-    if (tab !== 'skills') return
     // The cached list is already on screen; this refreshes BEHIND it and only when it has aged out.
     // A fetch on every mount is the reload being fixed; never fetching would pin the list forever.
     const key = asideKey(sessionId, 'skills')
@@ -257,7 +470,7 @@ export function ArtifactsAside({
       })
       .catch(() => { if (alive) setSkills(s => s ?? []) })
     return () => { alive = false }
-  }, [tab, skills, sessionId, pt])
+  }, [skills, sessionId, pt])
 
   /** The repository's pull requests. Read when the tab opens, then cached — see `github-prs.ts`. */
   type PrAnswer = {
@@ -269,7 +482,6 @@ export function ArtifactsAside({
   }
   const [prs, setPrs] = useState<PrAnswer | null>(() => asideCache.read<PrAnswer>(asideKey(sessionId, 'prs')).value ?? null)
   useEffect(() => {
-    if (tab !== 'prs') return
     const key = asideKey(sessionId, 'prs')
     const hit = asideCache.read<PrAnswer>(key)
     if (hit.value && !hit.stale) return
@@ -279,7 +491,7 @@ export function ArtifactsAside({
       .then((d: PrAnswer) => { asideCache.write(key, d); if (alive) setPrs(d) })
       .catch(() => { if (alive) setPrs(p => p ?? { pulls: [], unavailable: 'failed' }) })
     return () => { alive = false }
-  }, [tab, prs, sessionId, pt])
+  }, [prs, sessionId, pt])
 
   const feedRef = useRef<HTMLDivElement>(null)
   /** A clock, so "3m ago" ages while the panel is open rather than freezing at its first render. */
@@ -333,53 +545,479 @@ export function ArtifactsAside({
   )
 
   /** The three tabs. A count rides each one, so the panel says what is behind a tab unopened. */
-  const tabs: { id: TabId; label: string; icon: React.ReactNode; count: number }[] = [
-    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: artifacts.length },
-    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: docs.length },
-    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: feed.length },
+  /**
+   * EVERY COUNT IS `null` UNTIL SOMEBODY HAS ASKED. It is never a `0`.
+   *
+   * On the BAR a zero was invisible — `count > 0` hid it — so the lie sat in the data for as long
+   * as the bar was the only reader. The grid shows every tile's number, including a zero, and the
+   * moment it did, `Skills 0` and `Subagents 0` appeared on tabs nobody had opened. Reported
+   * exactly that way: "mostra os itens zerados, mas quando eu entro dai ele mostra o numero real".
+   *
+   * The comment that used to sit on the Skills line called `?? 0` "honest rather than lazy" and
+   * then, one clause later, stated the rule it was breaking — a number the panel has not measured
+   * is the thing this codebase refuses to print everywhere else. A control that has not asked and
+   * a thing that is empty are different facts, and only the second one is about the session.
+   *
+   * `loading` is the conversation's own signal, so the four counts derived from its turns wait on
+   * it; the three tabs that fetch for themselves wait on their own answer.
+   */
+  const tabs: { id: TabId; label: string; icon: React.ReactNode; count: number | null }[] = [
+    { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: loading ? null : artifacts.length },
+    { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: loading ? null : docs.length },
+    { id: 'live', label: 'Live', icon: <Activity size={12} />, count: loading ? null : feed.length },
     {
       id: 'gallery',
       label: pt ? 'Galeria' : 'Gallery',
       icon: <Image size={12} />,
-      count: galleryFiles,
+      count: loading ? null : galleryFiles,
     },
-    // The count is 0 until the tab is opened, and that is honest rather than lazy: the panel has
-    // not asked the host yet, and a number it has not measured is the thing this codebase refuses
-    // to print everywhere else.
-    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills?.length ?? 0 },
-    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs?.pulls.length ?? 0 },
+    { id: 'skills', label: 'Skills', icon: <Sparkles size={12} />, count: skills === null ? null : skills.length },
+    {
+      id: 'agents',
+      label: pt ? 'Subagentes' : 'Subagents',
+      icon: <Bot size={12} />,
+      count: subagentCount(agentsState),
+    },
+    {
+      id: 'workflows',
+      label: pt ? 'Workflows' : 'Workflows',
+      icon: <Workflow size={12} />,
+      count: workflowCount(wfState),
+    },
+    { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp === null ? null : mcp.servers.length },
+    { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs === null ? null : prs.pulls.length },
   ]
 
+  /**
+   * THE BAR KEEPS WHAT FITS; the grid holds the rest — and every other tab with it.
+   *
+   * Eight tabs do not fit 440px, and less of them fit the `min(440px, 88%)` the aside gets on a
+   * phone. The bar used to scroll sideways, which put the tabs past the fold out of sight with
+   * nothing on screen saying they existed. The split is the pure `asideTabs.ts`; what lives here is
+   * the MEASURING, because the labels are words in two languages and a width estimated from
+   * character counts is wrong in one of them.
+   *
+   * The ruler below is how they are measured: an aria-hidden row holding every tab at its real
+   * size, laid out but never painted. Measuring the visible bar instead would only ever report the
+   * tabs that already fit, which is the answer this is trying to compute.
+   */
+  const barRef = useRef<HTMLDivElement | null>(null)
+  const rulerRef = useRef<HTMLDivElement | null>(null)
+  const [tabWidths, setTabWidths] = useState<Record<string, number>>({})
+  const [barWidth, setBarWidth] = useState(0)
+  const [overflowWidth, setOverflowWidth] = useState(0)
+  const gridBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // Re-measured when the LABELS can change (language) or the set does — not on every render.
+  const tabSig = tabs.map(t => `${t.id}:${t.label}:${t.count ?? ''}`).join('|')
+  useEffect(() => {
+    const measure = () => {
+      const ruler = rulerRef.current
+      if (ruler) {
+        const next: Record<string, number> = {}
+        let ctrl = 0
+        for (const el of Array.from(ruler.children)) {
+          const id = (el as HTMLElement).dataset.tabId
+          const w = el.getBoundingClientRect().width
+          if (id) next[id] = w
+          else ctrl = w
+        }
+        setTabWidths(next)
+        setOverflowWidth(ctrl)
+      }
+      const bar = barRef.current
+      // `clientWidth` minus the padding the bar draws its tabs inside of.
+      if (bar) setBarWidth(Math.max(0, bar.clientWidth - 16))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    if (barRef.current) ro.observe(barRef.current)
+    return () => ro.disconnect()
+  }, [tabSig, isMobile])
+
+  const split = splitAsideTabs(
+    tabs.map(t => ({ id: t.id, width: tabWidths[t.id] ?? 0 })),
+    tab,
+    { container: barWidth, overflowWidth, gap: TAB_GAP },
+  )
+  const onBar = tabs.filter(t => split.bar.includes(t.id))
+
+  /** A tab's own cell. One renderer for the bar and the ruler, so they can never measure apart. */
+  const tabCell = (t: (typeof tabs)[number], forRuler: boolean) => {
+    const on = !forRuler && tab === t.id
+    return (
+      <button
+        key={t.id}
+        {...(forRuler ? { 'data-tab-id': t.id, tabIndex: -1 } : { role: 'tab', 'aria-selected': on })}
+        onClick={forRuler ? undefined : () => { setTab(t.id); setGridOpen(false) }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 5, padding: '4px 9px',
+          borderRadius: 7, border: 'none', cursor: forRuler ? 'default' : 'pointer',
+          fontFamily: 'inherit', fontSize: 11.5, fontWeight: on ? 700 : 500,
+          background: on ? 'var(--bg-elevated)' : 'transparent',
+          color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
+          // 44px is the MOBILE number; applying it on desktop turns the bar into a row of buttons.
+          minHeight: isMobile ? 44 : undefined, flexShrink: 0, whiteSpace: 'nowrap',
+        }}
+      >
+        {t.icon}
+        {t.label}
+        {/* THE COUNTS STAY ON THE BAR. `Subagentes 64` is what says what is behind a tab without
+            opening it, and it is the whole reason this design was chosen over a vertical rail. */}
+        {t.count !== null && t.count > 0 && (
+          <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{t.count}</span>
+        )}
+        {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
+        {t.id === 'mcps' && runningMcpCount(mcp?.servers ?? null) > 0 && <RunningDot />}
+        {t.id === 'agents' && runningCount(agentsState) > 0 && <RunningDot />}
+        {t.id === 'workflows' && liveRunCount(wfState) > 0 && <RunningDot />}
+      </button>
+    )
+  }
+
   const tabBar = (
-    <div role="tablist" style={{
-      display: 'flex', gap: 2, padding: '6px 8px', flexShrink: 0,
-      borderBottom: '1px solid var(--border)',
-    }}>
-      {tabs.map(t => {
-        const on = tab === t.id
-        return (
+    <div style={{ position: 'relative', flexShrink: 0 }}>
+      <div ref={barRef} role="tablist" style={{
+        display: 'flex', gap: TAB_GAP, padding: '6px 8px', alignItems: 'center',
+        borderBottom: '1px solid var(--border)',
+        // NO horizontal scroll any more: what does not fit is in the grid, where it can be SEEN.
+        // `hidden` stays as the backstop for the one frame before the first measurement lands.
+        overflow: 'hidden',
+      }}>
+        {onBar.map(t => tabCell(t, false))}
+        {split.overflow && (
           <button
-            key={t.id}
-            role="tab"
-            aria-selected={on}
-            onClick={() => setTab(t.id)}
+            ref={gridBtnRef}
+            onClick={() => setGridOpen(v => !v)}
+            aria-expanded={gridOpen}
+            aria-haspopup="true"
+            title={pt ? 'Todas as abas' : 'All tabs'}
             style={{
-              display: 'flex', alignItems: 'center', gap: 5, padding: '4px 9px',
-              borderRadius: 7, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-              fontSize: 11.5, fontWeight: on ? 700 : 500,
-              background: on ? 'var(--bg-elevated)' : 'transparent',
-              color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 'auto',
+              padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: 11.5, fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap',
+              minHeight: isMobile ? 44 : undefined,
+              // A real control, not a placeholder. It was a dashed outline in the tertiary colour
+              // and read as the disabled remains of something — the same thing that made the MCP
+              // tab's add button disappear into the cards under it.
+              border: '1px solid var(--anthropic-orange)',
+              background: gridOpen ? 'var(--anthropic-orange)' : 'rgba(232,105,11,0.10)',
+              color: gridOpen ? '#fff' : 'var(--anthropic-orange)',
             }}
           >
-            {t.icon}
-            {t.label}
-            {t.count > 0 && (
-              <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{t.count}</span>
+            <LayoutGrid size={12} />
+            <span>{pt ? 'Todas' : 'All'}</span>
+            {/* `+5`, never `5`. A bare number here sits beside tiles and tabs whose numbers count
+                ITEMS — `MCPs 5` and `All 5` on one row meant two different things. The `+` says
+                "five more of these", which is what it is. */}
+            {split.hidden.length > 0 && (
+              <span style={{ fontSize: 10, opacity: 0.85, fontVariantNumeric: 'tabular-nums' }}>
+                +{split.hidden.length}
+              </span>
             )}
           </button>
-        )
-      })}
+        )}
+      </div>
+
+      {/* THE RULER — every tab at its real size, laid out and never painted. `visibility: hidden`
+          rather than `display: none`, which measures nothing at all. */}
+      <div
+        ref={rulerRef}
+        aria-hidden
+        style={{
+          position: 'absolute', top: 0, left: 0, display: 'flex', gap: TAB_GAP,
+          visibility: 'hidden', pointerEvents: 'none', height: 0, overflow: 'hidden',
+        }}
+      >
+        {tabs.map(t => tabCell(t, true))}
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 9px',
+          fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0,
+        }}>
+          <LayoutGrid size={12} />{pt ? 'Todas' : 'All'}<span style={{ fontSize: 10 }}>+88</span>
+        </span>
+      </div>
+
+      {gridOpen && (
+        <TabGrid
+          tabs={tabs}
+          active={tab}
+          pt={pt}
+          isMobile={isMobile}
+          anchor={gridBtnRef}
+          onPick={id => { setTab(id); setGridOpen(false); gridBtnRef.current?.focus() }}
+          onClose={() => { setGridOpen(false); gridBtnRef.current?.focus() }}
+        />
+      )}
     </div>
+  )
+
+  /**
+   * THE SUBAGENTS TAB — every subagent this conversation ran, running or finished.
+   *
+   * Fetched when the tab is opened and re-fetched only while one is still RUNNING: a finished
+   * agent's numbers cannot change, and the list costs a full read of the parent transcript (that is
+   * where the outcomes are recorded). All of those rules are in `lib/subagents.ts`.
+   */
+  useEffect(() => {
+    // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
+    const key = asideKey(sessionId, 'subagents')
+    const hit = asideCache.read<SubagentsState>(key)
+    // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
+    // running agent's numbers move. Pages already asked for are merged, never replaced.
+    const loaded = hit.value?.phase === 'ready' ? hit.value.rows.length : 0
+    // A fresh answer with nothing RUNNING behind it cannot change; anything else is refreshed, and
+    // a stale answer stays on screen while it is (`AsideRead.stale`).
+    if (hit.value && !hit.stale && subagentsPollMs(hit.value) === null) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Only a tab with NOTHING to draw waits. With a cached answer on screen the refresh happens
+    // behind it — a spinner over an answer we already have is the reload the cache exists to remove.
+    let first = hit.value === undefined
+    const read = async () => {
+      if (first) setAgentsState({ phase: 'loading' })
+      try {
+        const res = await fetch(`/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&limit=${Math.max(SUBAGENT_PAGE, loaded)}&lang=${pt ? 'pt' : 'en'}`)
+        if (!alive) return
+        if (!res.ok) {
+          setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
+          return
+        }
+        const fresh = subagentsStateOf(await res.json() as SubagentsPayload)
+        // Merge onto what is already on screen, so a poll never drops the pages somebody loaded.
+        const next: SubagentsState = fresh.phase === 'ready'
+          ? { ...fresh, rows: appendPage(hit.value?.phase === 'ready' ? hit.value.rows : [], fresh.rows) }
+          : fresh
+        asideCache.write(key, next)
+        if (!alive) return
+        setAgentsState(next)
+        // POLLED ONLY WHILE THE TAB IS ON SCREEN. The list costs a full read of the parent
+        // transcript, and re-reading it every five seconds for a count in a corner of a bar is the
+        // disk-burner `chat-tail.ts` documents, moved one panel over.
+        const wait = tab === 'agents' ? subagentsPollMs(next) : null
+        if (wait !== null) timer = setTimeout(read, wait)
+      } catch {
+        if (alive) setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
+      } finally { first = false }
+    }
+    void read()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [tab, sessionId, pt])
+
+  /**
+   * The session's DYNAMIC WORKFLOW runs.
+   *
+   * Fetched when the tab is opened and re-fetched only while a run is still going — a finished
+   * run's numbers cannot change, and the list costs a read of the parent transcript plus every
+   * agent's. Both halves are memoized server-side on their own file stamps; the rule for when to
+   * ask at all is `lib/workflows.ts`.
+   */
+  useEffect(() => {
+    const key = asideKey(sessionId, 'workflows')
+    const hit = asideCache.read<WorkflowsState>(key)
+    if (hit.value && !hit.stale && workflowsPollMs(hit.value) === null) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Only a tab with NOTHING to draw waits — a spinner over an answer already on screen is the
+    // reload `asideCache` exists to remove.
+    let first = hit.value === undefined
+    const read = async () => {
+      if (first) setWfState({ phase: 'loading' })
+      try {
+        const res = await fetch(`/api/fleet/workflows?id=${encodeURIComponent(sessionId)}&lang=${pt ? 'pt' : 'en'}`)
+        if (!alive) return
+        if (!res.ok) {
+          setWfState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os workflows.' : 'The workflows could not be read.' })
+          return
+        }
+        const next = workflowsStateOf(await res.json() as WorkflowsPayload)
+        asideCache.write(key, next)
+        if (!alive) return
+        setWfState(next)
+        const wait = tab === 'workflows' ? workflowsPollMs(next) : null
+        if (wait !== null) timer = setTimeout(read, wait)
+      } catch {
+        if (alive) setWfState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os workflows.' : 'The workflows could not be read.' })
+      } finally { first = false }
+    }
+    void read()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [tab, sessionId, pt])
+
+  /**
+   * A different session is a different fleet of subagents — but it may be one this panel already
+   * read. Re-SEED from the cache rather than blanking: a hit here is the difference between coming
+   * back to an answer and coming back to a spinner, which is the whole point of `asideCache`.
+   */
+  useEffect(() => {
+    setAgentsState(asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null)
+    setOpenAgent(null)
+    setWfState(asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null)
+    setOpenRun(null)
+    setMcp(asideCache.read<McpListPayload>(asideKey(sessionId, 'mcps', cwd ?? '')).value ?? null)
+    setMcpError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, cwd])
+
+  /** Loading the NEXT page — its own flag, so the button spins without the list going blank. */
+  const [agentsMore, setAgentsMore] = useState(false)
+  const loadMoreAgents = async () => {
+    const st = agentsState
+    if (st?.phase !== 'ready' || agentsMore) return
+    setAgentsMore(true)
+    try {
+      const res = await fetch(
+        `/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&offset=${st.rows.length}&limit=${SUBAGENT_PAGE}&lang=${pt ? 'pt' : 'en'}`,
+      )
+      if (!res.ok) return
+      const page = subagentsStateOf(await res.json() as SubagentsPayload)
+      if (page.phase !== 'ready') return
+      const next: SubagentsState = { ...page, rows: appendPage(st.rows, page.rows) }
+      asideCache.write(asideKey(sessionId, 'subagents'), next)
+      setAgentsState(next)
+    } catch { /* the list stays as it is; the button can be pressed again */ }
+    finally { setAgentsMore(false) }
+  }
+
+
+  const workflowsBody = (): React.ReactNode => {
+    const st = wfState
+    if (st === null || st.phase === 'loading') {
+      return <Note icon={<Spinner />} text={pt
+        ? 'Lendo os workflows desta conversa… isso abre a transcrição de cada agente.'
+        : 'Reading this conversation’s workflows… this opens each agent’s transcript.'} />
+    }
+    // FOUR SENTENCES, never one shared empty box: the harness runs none, the read failed, this
+    // conversation launched none, or here they are.
+    if (st.phase === 'unsupported') return <Note icon={<Workflow size={16} />} text={st.message} />
+    if (st.phase === 'failed') return <Note text={st.message} />
+    if (st.rows.length === 0) {
+      return <Note icon={<Workflow size={16} />} text={pt
+        ? 'Esta conversa não lançou nenhum Dynamic Workflow.'
+        : 'This conversation has not launched a Dynamic Workflow.'} />
+    }
+    return (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+        {st.rows.map(r => (
+          <WorkflowCard
+            key={r.runId} row={r} pt={pt} now={now}
+            open={openRun === r.runId}
+            onToggle={() => setOpenRun(openRun === r.runId ? null : r.runId)}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  const agentsBody = (): React.ReactNode => {
+    // One open agent replaces the list, exactly as an open FILE does — 440px cannot hold a list and
+    // a conversation side by side.
+    if (openAgent) {
+      return (
+        <SubagentActivity
+          sessionId={sessionId} row={openAgent} pt={pt} now={now}
+          onBack={() => setOpenAgent(null)}
+        />
+      )
+    }
+    const st = agentsState
+    if (st === null || st.phase === 'loading') {
+      return <Note icon={<Spinner />} text={pt
+        ? 'Lendo os subagentes desta conversa… isso lê a transcrição de cada um.'
+        : 'Reading this conversation’s subagents… this opens each one’s transcript.'} />
+    }
+    // FOUR SENTENCES, and never one shared empty box: the harness cannot report them, the read
+    // failed, this conversation ran none, or here they are.
+    if (st.phase === 'unsupported') return <Note icon={<Bot size={16} />} text={st.message} />
+    if (st.phase === 'failed') return <Note text={st.message} />
+    if (st.rows.length === 0) {
+      return <Note icon={<Bot size={16} />} text={pt
+        ? 'Esta conversa não delegou nada a um subagente.'
+        : 'This conversation has not delegated anything to a subagent.'} />
+    }
+    return (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
+        {/* A PAGE SAYS IT IS A PAGE. Newest first, by each agent's last activity. */}
+        {st.total > st.rows.length && (
+          <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {pt
+              ? `Mostrando os ${st.rows.length} mais recentes de ${st.total}.`
+              : `Showing the ${st.rows.length} most recent of ${st.total}.`}
+          </p>
+        )}
+        {st.rows.map(r => (
+          <SubagentCard key={r.agentId} row={r} pt={pt} now={now} onOpen={() => setOpenAgent(r)} />
+        ))}
+        {st.hasMore && (
+          <button
+            onClick={() => void loadMoreAgents()}
+            disabled={agentsMore}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%', justifyContent: 'center',
+              minHeight: isMobile ? 44 : 30, borderRadius: 8, marginTop: 2, fontFamily: 'inherit',
+              fontSize: 11.5, fontWeight: 600, cursor: agentsMore ? 'default' : 'pointer',
+              border: '1px dashed var(--border)', background: 'transparent', color: 'var(--text-secondary)',
+            }}
+          >
+            {agentsMore ? <Spinner size={13} /> : null}
+            {agentsMore
+              ? (pt ? 'Lendo mais…' : 'Reading more…')
+              : (pt ? `Carregar mais ${Math.min(SUBAGENT_PAGE, st.total - st.rows.length)}` : `Load ${Math.min(SUBAGENT_PAGE, st.total - st.rows.length)} more`)}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  /**
+   * THE MCP TAB — what this machine has configured, what is actually running, and the two writes.
+   *
+   * Re-read on `mcpNonce`, which a write bumps: the list after an install must be the list the
+   * harness's own command produced, not the one this panel guessed it would produce.
+   */
+  useEffect(() => {
+    // The DIRECTORY is part of the key: the `local` and `project` scopes are read against it, so
+    // two sessions in different repositories have genuinely different answers.
+    const key = asideKey(sessionId, 'mcps', cwd ?? '')
+    const hit = asideCache.read<McpListPayload>(key)
+    // Never skipped on a fresh hit alone: a running MCP server can stop between two openings, and
+    // `mcpNonce` — bumped by a write — must always re-read. The TTL is what bounds it.
+    if (hit.value && !hit.stale && mcpNonce === 0) return
+    let alive = true
+    const read = async () => {
+      try {
+        const q = cwd ? `?projectPath=${encodeURIComponent(cwd)}` : ''
+        const res = await fetch(`/api/mcp/servers${q}`)
+        if (!alive) return
+        if (!res.ok) {
+          // 403 is the exposure profile refusing host power, and it is a different fact from a
+          // machine with no MCPs — the same rule the live-sessions panel keeps.
+          setMcpError(res.status === 403
+            ? (pt ? 'Este perfil de exposição não permite ler nem mudar a configuração de MCP desta máquina.'
+              : 'This exposure profile does not allow reading or changing this machine’s MCP configuration.')
+            : (pt ? 'Não foi possível ler os MCPs.' : 'The MCP servers could not be read.'))
+          return
+        }
+        setMcpError(null)
+        const payload = await res.json() as McpListPayload
+        asideCache.write(key, payload)
+        if (alive) setMcp(payload)
+      } catch {
+        if (alive) setMcpError(pt ? 'Não foi possível ler os MCPs.' : 'The MCP servers could not be read.')
+      }
+    }
+    void read()
+    return () => { alive = false }
+  }, [sessionId, cwd, pt, mcpNonce])
+
+  const mcpBody = (): React.ReactNode => (
+    <McpTab
+      lang={lang}
+      list={mcp}
+      error={mcpError}
+      {...(cwd ? { cwd } : {})}
+      onChanged={() => setMcpNonce(n => n + 1)}
+    />
   )
 
   const liveBody = (): React.ReactNode => {
@@ -389,7 +1027,7 @@ export function ArtifactsAside({
         : 'Nothing has happened in this conversation yet.'} />
     }
     return (
-      <div ref={feedRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+      <div ref={feedRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
         {/* THE DIRECTION, said rather than inferred. A reader arriving at a scrolled list cannot
             tell which end is the newest, and asked exactly that. It sits at the TOP because that is
             the end somebody scrolls away from — the bottom explains itself by being where the view
@@ -404,7 +1042,7 @@ export function ArtifactsAside({
         </p>
         {feed.map((e, i) => (
           <EventRow
-            key={i} e={e} pt={pt} now={now}
+            key={i} e={e} pt={pt} now={now} sessionId={sessionId}
             // A WROTE row is a link to the file it names. Only when that file is actually in the
             // Files list: the feed shows every write the transcript recorded, while Files shows the
             // ones still readable on disk, and offering to open a deleted file would be a row whose
@@ -438,7 +1076,7 @@ export function ArtifactsAside({
     const liveOnes = list.filter(a => a.live)
     const pastOnes = list.filter(a => !a.live)
     return (
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
         {liveOnes.length > 0 && (
           <Band label={pt ? 'agora' : 'now'}>
             {liveOnes.map(a => <Row key={a.path} a={a} pt={pt} fact={facts?.get(a.path)} onOpen={() => setOpen(a)} />)}
@@ -513,7 +1151,7 @@ export function ArtifactsAside({
               <Sparkles size={12} />{pt ? 'Usar esta skill' : 'Use this skill'}
             </button>
           </div>
-          <div style={{ padding: '10px 12px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+          <div style={{ padding: '10px 12px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
             {sk?.description && (
               <p style={{ margin: '0 0 10px', fontSize: 11.5, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
                 {sk.description}
@@ -621,7 +1259,7 @@ export function ArtifactsAside({
             />
           </div>
         )}
-        <div style={{ padding: '0 12px 10px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+        <div style={{ padding: '0 12px 10px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
           {skills === null ? (
             <Note text={pt ? 'Lendo as skills desta sessão…' : 'Reading this session’s skills…'} />
           ) : skills.length === 0 ? (
@@ -705,7 +1343,7 @@ export function ArtifactsAside({
   }
 
   const prsBody = () => (
-    <div style={{ padding: '10px 12px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+    <div style={{ padding: '10px 12px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
       {prs === null ? (
         <Note icon={<Loader size={13} className="ag-working-spin" />}
           text={pt ? 'Lendo os pull requests…' : 'Reading the pull requests…'} />
@@ -836,6 +1474,9 @@ export function ArtifactsAside({
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()
+            : tab === 'agents' ? agentsBody()
+            : tab === 'workflows' ? workflowsBody()
+            : tab === 'mcps' ? mcpBody()
             : tab === 'prs' ? prsBody()
             : body()}
         </>
@@ -923,9 +1564,88 @@ function Row({ a, pt, fact, onOpen }: {
  * three kinds that carry a path or a command — those are read character by character — and left in
  * the reading face for the two that carry prose.
  */
-function EventRow({ e, pt, now, onOpen, status }: {
+/**
+ * ONE STEP, opened.
+ *
+ * `local` needs nothing (the text is already in the payload — `stepOpenable`'s rule 2); `remote`
+ * asks `/api/fleet/step`, and asks AGAIN only while the server says the step is still running,
+ * which is the whole of "expanding in real time". Every rule here is in `lib/stepDetail.ts`.
+ */
+function useStepDetail(
+  sessionId: string, e: LiveEvent, open: boolean, pt: boolean, agentId?: string,
+): StepState | null {
+  const kind = stepOpenable(e)
+  const [state, setState] = useState<StepState | null>(null)
+
+  useEffect(() => {
+    if (!open || kind === null) { setState(null); return }
+    if (kind === 'local') { setState({ phase: 'local', text: e.full ?? '' }); return }
+
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // The FIRST read shows a spinner; every later one replaces the content in place, so a running
+    // step's pane does not blink back to "loading" twice a second while somebody is reading it.
+    let first = true
+
+    const read = async () => {
+      if (first) setState({ phase: 'loading' })
+      try {
+        const res = await fetch(stepUrl(sessionId, e.ref!, pt ? 'pt' : 'en', agentId))
+        if (!alive) return
+        if (!res.ok) {
+          setState({ phase: 'failed', message: pt ? 'Não foi possível abrir este passo.' : 'This step could not be opened.' })
+          return
+        }
+        const body = await res.json() as StepPayload
+        if (!alive) return
+        const next: StepState = body.ok ? { phase: 'ready', step: body } : { phase: 'failed', message: body.message }
+        setState(next)
+        const wait = stepPollMs(next)
+        if (wait !== null) timer = setTimeout(read, wait)
+      } catch {
+        if (alive) setState({ phase: 'failed', message: pt ? 'Não foi possível abrir este passo.' : 'This step could not be opened.' })
+      } finally {
+        first = false
+      }
+    }
+    void read()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, kind, sessionId, e.ref, e.full, pt, agentId])
+
+  return state
+}
+
+/** A block of the session's own bytes — a command, its output, a written file. Scrolls itself. */
+function StepBlock({ label, text, tone }: { label: string; text: string; tone?: 'error' }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+        color: tone === 'error' ? '#ef4444' : 'var(--text-tertiary)', marginBottom: 3,
+      }}>{label}</div>
+      {/* Wide output scrolls INSIDE its own box; the panel body must never scroll sideways. */}
+      <pre style={{
+        margin: 0, padding: '6px 8px', borderRadius: 6, maxHeight: 260, overflow: 'auto',
+        background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+        fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10.5, lineHeight: 1.5,
+        color: 'var(--text-secondary)', whiteSpace: 'pre', tabSize: 2,
+      }}>{text}</pre>
+    </div>
+  )
+}
+
+function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
   e: LiveEvent; pt: boolean; now: number; onOpen?: () => void; status?: WriteStatus
+  sessionId: string
+  /** Set inside a SUBAGENT's activity: its refs live in its own transcript, not the parent's. */
+  agentId?: string
 }) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const openable = stepOpenable(e)
+  const detail = useStepDetail(sessionId, e, open, pt, agentId)
+  const notice = detail ? stepNotice(detail, pt) : null
   const meta: Record<LiveEvent['kind'], { icon: React.ReactNode; color: string; label: string }> = {
     wrote: { icon: <FileEdit size={11} />, color: 'var(--anthropic-orange)', label: pt ? 'escreveu' : 'wrote' },
     read: { icon: <Eye size={11} />, color: 'var(--text-tertiary)', label: pt ? 'leu' : 'read' },
@@ -935,22 +1655,42 @@ function EventRow({ e, pt, now, onOpen, status }: {
   }
   const m = meta[e.kind]
   const mono = e.kind === 'wrote' || e.kind === 'read' || e.kind === 'ran'
-  const Tag = onOpen ? 'button' : 'div'
+  /**
+   * THE ROW'S OWN CLICK EXPANDS IT; opening the FILE is a separate control on the right.
+   *
+   * The row used to be a link to the file, and expanding is now what people actually asked the feed
+   * for ("as linhas de execução devem ser clicáveis e EXPANDIR abaixo delas, em tempo real"). Both
+   * are kept, and they are two controls rather than one that guesses: on a `wrote` row of a shell
+   * command, "show me what ran" and "take me to the file" are different questions and the row
+   * cannot know which one was meant.
+   */
+  const Tag = openable ? 'button' : 'div'
   return (
+    <div style={{ borderRadius: 7, background: open ? 'var(--bg-elevated)' : 'transparent' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start' }}>
     <Tag
-      {...(onOpen ? { onClick: onOpen, title: e.text } : {})}
+      {...(openable ? {
+        onClick: () => setOpen(v => !v),
+        title: e.text,
+        'aria-expanded': open,
+      } : {})}
       style={{
-        display: 'flex', alignItems: 'flex-start', gap: 7, padding: '5px 8px',
+        display: 'flex', alignItems: 'flex-start', gap: 7,
+        padding: isMobile ? '10px 8px' : '5px 8px', minHeight: isMobile && openable ? 44 : undefined,
         opacity: e.live ? 1 : 0.92,
         width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
-        borderRadius: 7, fontFamily: 'inherit',
-        cursor: onOpen ? 'pointer' : 'default',
+        borderRadius: 7, fontFamily: 'inherit', minWidth: 0,
+        cursor: openable ? 'pointer' : 'default',
       }}
-      {...(onOpen ? {
+      {...(openable ? {
         onMouseEnter: (ev: React.MouseEvent<HTMLElement>) => { ev.currentTarget.style.background = 'var(--bg-elevated)' },
         onMouseLeave: (ev: React.MouseEvent<HTMLElement>) => { ev.currentTarget.style.background = 'transparent' },
       } : {})}
     >
+      {/* The chevron is drawn ONLY where the row opens — rule 1 of `stepDetail.ts`. */}
+      <span style={{ color: 'var(--text-tertiary)', paddingTop: 2, flexShrink: 0, width: 11 }}>
+        {openable ? (open ? <ChevronDown size={11} /> : <ChevronRight size={11} />) : null}
+      </span>
       <span style={{ color: m.color, paddingTop: 2, flexShrink: 0 }}>{m.icon}</span>
       <span style={{ minWidth: 0, flex: 1 }}>
         <span style={{
@@ -988,7 +1728,807 @@ function EventRow({ e, pt, now, onOpen, status }: {
         }}>{agoLabel(e.at, now, pt)}</span>
       )}
     </Tag>
+    {/* Take me to the FILE — the other question this row can answer, and only where the file is
+        actually in the Files list. */}
+    {onOpen && (
+      <button
+        onClick={onOpen}
+        title={pt ? 'Abrir o arquivo' : 'Open the file'}
+        aria-label={pt ? 'Abrir o arquivo' : 'Open the file'}
+        style={{
+          flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, margin: '4px 4px 0 0',
+          borderRadius: 6, padding: 0,
+          // THE TOUCH TARGET GREW AND THE ICON DID NOT. At 44px this was an 11px tertiary glyph in
+          // an empty square — present, hit-testable, and invisible on a phone: reported as "só
+          // falta colocar um ícone que me leve até o arquivo" about a button that was already
+          // there. Measured on a 390px viewport: sixteen of them rendered at x=336, 44px wide, and
+          // the reader saw none. The target is a rule; the icon has to be read at the same size.
+          border: `1px solid ${isMobile ? 'color-mix(in srgb, var(--anthropic-orange) 40%, transparent)' : 'var(--border-subtle)'}`,
+          background: 'transparent',
+          color: isMobile ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+          cursor: 'pointer',
+        }}
+      >
+        <ExternalLink size={isMobile ? 17 : 11} />
+      </button>
+    )}
+    </div>
+    {open && (
+      <div style={{ padding: '0 8px 8px 26px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+        {detail === null || detail.phase === 'loading' ? (
+          <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+            {pt ? 'Abrindo o passo…' : 'Opening the step…'}
+          </span>
+        ) : detail.phase === 'failed' ? (
+          // The server's OWN sentence, verbatim: "I cannot open this one" and "there is nothing
+          // here" are different facts and this panel does not reword either.
+          <span role="status" style={{ fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+            {detail.message}
+          </span>
+        ) : detail.phase === 'local' ? (
+          <StepBlock label={pt ? 'raciocínio' : 'reasoning'} text={detail.text} />
+        ) : (
+          <>
+            <StepBlock label={detail.step.name} text={detail.step.input} />
+            {detail.step.output !== null && detail.step.output !== '' && (
+              <StepBlock
+                label={detail.step.isError ? (pt ? 'erro' : 'error') : (pt ? 'saída' : 'output')}
+                text={detail.step.output}
+                {...(detail.step.isError ? { tone: 'error' as const } : {})}
+              />
+            )}
+            {/* A step that produced nothing SAYS so — an empty pane and "it printed nothing" are
+                different facts, and only one of them is about the command. */}
+            {!detail.step.running && (detail.step.output === null || detail.step.output === '') && (
+              <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+                {pt ? 'Este passo não imprimiu nada.' : 'This step printed nothing.'}
+              </span>
+            )}
+          </>
+        )}
+        {notice && (
+          <span style={{ fontSize: 10, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{notice}</span>
+        )}
+      </div>
+    )}
+    </div>
   )
+}
+
+/**
+ * ONE SUBAGENT, as a row.
+ *
+ * The numbers are the point: tokens (ALL FOUR counters — the server sums them through `tokens.ts`)
+ * and the cost of them. Where a number does not exist it is REPLACED by the sentence that says why,
+ * never printed as a zero — a subagent measured here read 123,6 M cached tokens against 698 fresh
+ * ones, so a zero on this row is not a rounding error, it is a wrong answer by a factor of a
+ * hundred thousand.
+ */
+
+/**
+ * One workflow RUN.
+ *
+ * The row says its state in a WORD and a colour — never a colour alone — and every figure that
+ * does not exist is an absence with a reason beside it, not a zero. Opening it lists the agents it
+ * ran, grouped by the phase the script declared, because "14 agents" is a number and "the extract
+ * phase ran 8 of them" is the thing somebody is actually watching.
+ */
+function WorkflowCard({ row, pt, now, open, onToggle }: {
+  row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
+}) {
+  const isMobile = useIsMobile()
+  const st = runStatusText(row.status, pt)
+  const note = runStatusNote(row.status, pt)
+  const unmeasured = unmeasuredRunText(row, pt)
+  const dur = runDurationText(row.durationMs, row.live, pt)
+  return (
+    <div style={{
+      border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 6, minWidth: 0,
+    }}>
+      <button
+        onClick={onToggle}
+        style={{
+          display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
+          padding: isMobile ? '10px 10px' : '7px 9px', cursor: 'pointer', fontFamily: 'inherit',
+          minWidth: 0, minHeight: isMobile ? 44 : undefined, borderRadius: 8,
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+          <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+            color: st.color, flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4,
+          }}>
+            {row.live && (
+              <span aria-hidden style={{
+                width: 6, height: 6, borderRadius: '50%', background: st.color,
+                animation: 'ag-agent-pulse 1.6s ease-in-out infinite',
+              }} />
+            )}
+            {st.text}
+          </span>
+          <span style={{
+            fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{row.name}</span>
+          {agoLabel(row.startedAt, now, pt) !== '' && (
+            <span style={{
+              marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)',
+              fontVariantNumeric: 'tabular-nums',
+            }}>{agoLabel(row.startedAt, now, pt)}</span>
+          )}
+        </div>
+        <div style={{
+          marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: '2px 10px',
+          fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+        }}>
+          <span>{fmt(row.agentCount)} {pt ? 'agentes' : 'agents'}</span>
+          {row.phases.length > 0 && (
+            <span>{fmt(row.phases.length)} {pt ? (row.phases.length === 1 ? 'fase' : 'fases') : (row.phases.length === 1 ? 'phase' : 'phases')}</span>
+          )}
+          {dur !== null && <span style={{ fontVariantNumeric: 'tabular-nums' }}>{dur}</span>}
+          {/* TOKENS: every counter. The breakdown rides the title so the headline can be accounted
+              for without spending a row on four numbers. */}
+          {row.totalTokens !== null ? (
+            <span title={row.tokens
+              ? `${pt ? 'entrada' : 'input'} ${fmt(row.tokens.input)} · ${pt ? 'saída' : 'output'} ${fmt(row.tokens.output)} · ${pt ? 'cache lido' : 'cache read'} ${fmt(row.tokens.cacheRead)} · ${pt ? 'cache escrito' : 'cache written'} ${fmt(row.tokens.cacheWrite)}`
+              : undefined}>
+              <strong style={{ color: 'var(--text-secondary)' }}>{fmt(row.totalTokens)}</strong> tok
+            </span>
+          ) : unmeasured !== null ? <span style={{ fontStyle: 'italic' }}>{unmeasured}</span> : null}
+          {row.costUSD !== null && (
+            <span><strong style={{ color: 'var(--text-secondary)' }}>{fmtCost(row.costUSD)}</strong></span>
+          )}
+        </div>
+        {/* A state a reader cannot be expected to infer is explained in a sentence. */}
+        {note !== null && (
+          <p style={{ margin: '3px 0 0', fontSize: 10, lineHeight: 1.45, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+            {note}
+          </p>
+        )}
+      </button>
+      {open && (
+        <div style={{ borderTop: '1px solid var(--border-subtle)', padding: '5px 9px 7px' }}>
+          {row.agents.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 10.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+              {row.live
+                ? (pt ? 'Nenhum agente escreveu ainda.' : 'No agent has written yet.')
+                : (pt ? 'Nenhuma transcrição de agente ficou no disco.' : 'No agent transcript was left on disk.')}
+            </p>
+          ) : row.agents.map((a, i) => (
+            <div key={`${a.label}-${i}`} style={{
+              display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, padding: '2px 0',
+              fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+            }}>
+              <span style={{
+                minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                color: 'var(--text-secondary)',
+              }}>{a.label}</span>
+              {/* The phase is the script's own word for what this agent was doing. A transcript the
+                  matcher could not pair carries none, and says nothing rather than guessing one. */}
+              {a.phase !== '' && (
+                <span style={{ flexShrink: 0, opacity: 0.75 }}>{a.phase}</span>
+              )}
+              <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                {a.totalTokens !== null ? `${fmt(a.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
+                {a.costUSD !== null ? ` · ${fmtCost(a.costUSD)}` : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SubagentCard({ row, pt, now, onOpen }: {
+  row: SubagentRow; pt: boolean; now: number; onOpen: () => void
+}) {
+  const isMobile = useIsMobile()
+  const st = subagentStatusText(row.status, pt)
+  const unmeasured = unmeasuredText(row, pt)
+  const unpriced = unpricedText(row, pt)
+  const title = row.description ?? row.agentType ?? row.agentId
+  return (
+    <button
+      onClick={onOpen}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left', border: '1px solid var(--border-subtle)',
+        background: 'transparent', borderRadius: 8, padding: isMobile ? '10px 10px' : '7px 9px',
+        marginBottom: 6, cursor: 'pointer', fontFamily: 'inherit', minWidth: 0,
+        minHeight: isMobile ? 44 : undefined,
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+          color: st.color, flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4,
+        }}>
+          {row.status === 'running' && (
+            <span aria-hidden style={{
+              width: 6, height: 6, borderRadius: '50%', background: st.color,
+              animation: 'ag-agent-pulse 1.6s ease-in-out infinite',
+            }} />
+          )}
+          {st.text}
+        </span>
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{title}</span>
+        {agoLabel(row.lastAt ?? row.startedAt, now, pt) !== '' && (
+          <span style={{
+            marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)',
+            fontVariantNumeric: 'tabular-nums',
+          }}>{agoLabel(row.lastAt ?? row.startedAt, now, pt)}</span>
+        )}
+      </div>
+      <div style={{
+        marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: '2px 10px',
+        fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+      }}>
+        {/* TOKENS: every counter. The breakdown rides the title attribute so the headline can be
+            accounted for without spending a row on four numbers. */}
+        {row.totalTokens !== null ? (
+          <span
+            title={row.tokens
+              ? `${pt ? 'entrada' : 'input'} ${fmt(row.tokens.input)} · ${pt ? 'saída' : 'output'} ${fmt(row.tokens.output)} · ${pt ? 'cache lido' : 'cache read'} ${fmt(row.tokens.cacheRead)} · ${pt ? 'cache escrito' : 'cache written'} ${fmt(row.tokens.cacheWrite)}`
+              : undefined}
+          >
+            <strong style={{ color: 'var(--text-secondary)' }}>{fmt(row.totalTokens)}</strong> tok
+          </span>
+        ) : (
+          <span>{unmeasured}</span>
+        )}
+        {row.costUSD !== null
+          ? <span><strong style={{ color: 'var(--text-secondary)' }}>{fmtCost(row.costUSD)}</strong></span>
+          : unpriced && <span>{unpriced}</span>}
+        {row.toolCalls > 0 && <span>{fmt(row.toolCalls)} {pt ? 'chamadas' : 'calls'}</span>}
+        {row.modelId && <span style={{ fontFamily: 'var(--font-mono, monospace)' }}>{row.modelId}</span>}
+        {row.spawnDepth !== undefined && row.spawnDepth > 1 && (
+          <span>{pt ? `nível ${row.spawnDepth}` : `depth ${row.spawnDepth}`}</span>
+        )}
+      </div>
+      <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+    </button>
+  )
+}
+
+/**
+ * ONE SUBAGENT'S OWN ACTIVITY — what it is doing, or what it did.
+ *
+ * It is the very feed the Live tab draws, over the subagent's own turns, so a subagent's work is
+ * read by one implementation rather than a second one that would drift. Its rows open the same way,
+ * against the subagent's transcript (`stepUrl`'s `agentId`).
+ */
+function SubagentActivity({ sessionId, row, pt, now, onBack }: {
+  sessionId: string; row: SubagentRow; pt: boolean; now: number; onBack: () => void
+}) {
+  const [turns, setTurns] = useState<readonly LiveTurn[] | null>(null)
+  /** The read stopped on its cap — this feed is a window, and says so. */
+  const [older, setOlder] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const tailRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const read = async () => {
+      try {
+        const res = await fetch(
+          `/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&agent=${encodeURIComponent(row.agentId)}&lang=${pt ? 'pt' : 'en'}`,
+        )
+        if (!alive) return
+        const body = await res.json() as { ok: boolean; turns?: LiveTurn[]; older?: boolean; message?: string }
+        if (!alive) return
+        if (!body.ok) { setFailed(body.message ?? (pt ? 'Não foi possível ler este subagente.' : 'This subagent could not be read.')); return }
+        setFailed(null)
+        setTurns(body.turns ?? [])
+        setOlder(body.older === true)
+        // A RUNNING agent is still writing; a finished one cannot change, so it is read once.
+        if (row.status === 'running') timer = setTimeout(read, 3000)
+      } catch {
+        if (alive) setFailed(pt ? 'Não foi possível ler este subagente.' : 'This subagent could not be read.')
+      }
+    }
+    void read()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [sessionId, row.agentId, row.status, pt])
+
+  const feed = useMemo(() => liveEvents(turns ?? []), [turns])
+  // Follow the tail while it is running — the newest step is the one being watched.
+  useEffect(() => { if (row.status === 'running') tailRef.current?.scrollIntoView({ block: 'end' }) }, [feed.length, row.status])
+
+  const st = subagentStatusText(row.status, pt)
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', flexShrink: 0,
+        borderBottom: '1px solid var(--border-subtle)',
+      }}>
+        <button
+          onClick={onBack}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 3, border: 'none', background: 'transparent',
+            color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11,
+            padding: 0, minHeight: 44, flexShrink: 0,
+          }}
+        >
+          <ChevronLeft size={13} /> {pt ? 'Subagentes' : 'Subagents'}
+        </button>
+        <span style={{
+          fontSize: 11.5, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{row.description ?? row.agentType ?? row.agentId}</span>
+        <span style={{
+          marginLeft: 'auto', flexShrink: 0, fontSize: 9, fontWeight: 700, letterSpacing: 0.4,
+          textTransform: 'uppercase', color: st.color,
+        }}>{st.text}</span>
+      </div>
+      {failed !== null ? (
+        <Note text={failed} />
+      ) : turns === null ? (
+        <Note icon={<Loader size={16} />} text={pt ? 'Lendo…' : 'Reading…'} />
+      ) : feed.length === 0 ? (
+        <Note icon={<Bot size={16} />} text={row.status === 'running'
+          ? (pt ? 'Este subagente começou e ainda não fez nada.' : 'This subagent has started and has not done anything yet.')
+          : (pt ? 'Este subagente não registrou nenhuma ação.' : 'This subagent recorded no actions.')} />
+      ) : (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
+          {/* A feed that silently starts in the middle reads as an agent that began there. */}
+          {older && (
+            <p style={{
+              margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)',
+              borderBottom: '1px solid var(--border-subtle)', paddingBottom: 6,
+            }}>
+              {pt
+                ? 'Este subagente fez mais do que cabe aqui — isto é o final do que ele fez, não tudo.'
+                : 'This subagent did more than fits here — this is the end of what it did, not all of it.'}
+            </p>
+          )}
+          {feed.map((e, i) => (
+            <EventRow key={i} e={e} pt={pt} now={now} sessionId={sessionId} agentId={row.agentId} />
+          ))}
+          <div ref={tailRef} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The MCP panel: the servers, and the one form that adds another.
+ *
+ * WRITING IS AN EXPLICIT ACT, and its SCOPE is the user's choice — `user` reaches every project on
+ * this machine, `project` is written into a repository other people pull. So the picker states what
+ * each one does (`scopeText`), a scope that cannot work here is ABSENT rather than present and
+ * failing (`offerableScopes`), and a removal names the scope it is removing from, because that is
+ * the exact inverse of the install and nothing else is.
+ */
+function McpTab({ lang, list, error, cwd, onChanged }: {
+  lang: 'pt' | 'en'
+  list: McpListPayload | null
+  error: string | null
+  cwd?: string
+  onChanged: () => void
+}) {
+  const pt = lang === 'pt'
+  const isMobile = useIsMobile()
+  const [adding, setAdding] = useState(false)
+  const [paste, setPaste] = useState('')
+  const [name, setName] = useState('')
+  const [scope, setScope] = useState<McpScope>('user')
+  const [busy, setBusy] = useState(false)
+  const [said, setSaid] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null)
+  /**
+   * The row a removal is being confirmed for.
+   *
+   * A CENTRED modal rather than an inline row, and the row is held here rather than in the card: a
+   * destructive act should take the screen, not appear beside twelve other controls where a
+   * mis-click reaches it.
+   */
+  const [removing, setRemoving] = useState<McpEntry | null>(null)
+  /** Which row is mid-write, so the card can say so — a removal takes a second or two. */
+  const [working, setWorking] = useState<string | null>(null)
+  /** The row being edited, and the JSON as it is being typed. */
+  const [editing, setEditing] = useState<McpEntry | null>(null)
+  const scopes = offerableScopes(cwd)
+
+  const write = async (path: string, body: Record<string, unknown>, row?: string) => {
+    setBusy(true)
+    setWorking(row ?? null)
+    setSaid(null)
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, lang, ...(cwd ? { projectPath: cwd } : {}) }),
+      })
+      const out = await res.json() as { ok: boolean; names?: string[]; message?: string }
+      if (out.ok) {
+        setSaid({ tone: 'ok', text: (out.names ?? []).join(', ') })
+        setPaste(''); setName(''); setAdding(false); setEditing(null)
+        onChanged()
+      } else {
+        // The SERVER's own sentence, verbatim — including the harness command's own error, which
+        // says far more about a refused config than any wording invented here.
+        setSaid({ tone: 'bad', text: out.message ?? (pt ? 'não deu certo' : 'that did not work') })
+      }
+    } catch {
+      setSaid({ tone: 'bad', text: pt ? 'não foi possível falar com o servidor' : 'the server could not be reached' })
+    } finally { setBusy(false); setWorking(null) }
+  }
+
+  if (error !== null) return <Note icon={<Plug size={16} />} text={error} />
+  if (list === null) return <Note icon={<Spinner />} text={pt ? 'Lendo os MCPs…' : 'Reading the MCP servers…'} />
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
+      {/* The one thing a machine without the harness's CLI cannot do, said before anything offers
+          to do it. */}
+      {!list.canWrite && (
+        <p style={{
+          margin: '0 2px 8px', fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)',
+          border: '1px solid var(--border-subtle)', borderRadius: 7, padding: '6px 8px',
+        }}>{cannotWriteText(pt)}</p>
+      )}
+
+      {list.servers.length === 0 && (
+        <Note icon={<Plug size={16} />} text={pt
+          ? 'Nenhum servidor MCP configurado para esta máquina ou este projeto.'
+          : 'No MCP server is configured for this machine or this project.'} />
+      )}
+
+      {list.servers.map(s => (
+        <McpRow
+          key={`${s.scope}:${s.name}`} entry={s} pt={pt} canWrite={list.canWrite} busy={busy}
+          working={working === `${s.scope}:${s.name}`}
+          onRemove={() => setRemoving(s)}
+          onEdit={() => { setEditing(s); setSaid(null) }}
+        />
+      ))}
+
+      {/* THE REMOVAL, centred, and never armed by the click that opened it. `ConfirmModal` is the
+          one this codebase already uses for a destructive act; a second one would be a second set
+          of rules about what a confirmation looks like. */}
+      <ConfirmModal
+        open={removing !== null}
+        title={pt ? 'Remover este servidor MCP?' : 'Remove this MCP server?'}
+        message={removing === null ? '' : (pt
+          ? `"${removing.name}" sai de: ${scopeText(removing.scope, pt).label} — ${scopeText(removing.scope, pt).reach}. Isso roda \`claude mcp remove\` e altera a configuração de verdade.`
+          : `"${removing.name}" leaves: ${scopeText(removing.scope, pt).label} — ${scopeText(removing.scope, pt).reach}. This runs \`claude mcp remove\` and changes the real configuration.`)}
+        confirmLabel={pt ? 'Remover' : 'Remove'}
+        cancelLabel={pt ? 'Cancelar' : 'Cancel'}
+        onCancel={() => setRemoving(null)}
+        onConfirm={() => {
+          const target = removing
+          setRemoving(null)
+          if (target) void write('/api/mcp/remove', { name: target.name, scope: target.scope }, `${target.scope}:${target.name}`)
+        }}
+      />
+
+      {/* THE PRIMARY ACTION OF THIS TAB, drawn like one. It was a dashed grey outline under a list of
+          grey cards and disappeared into them — reported as "ficou escondido". */}
+      {/* THE EDITOR — what is configured, shown, and changeable.
+          `claude mcp add-json` refuses a name that already exists, so applying this is a removal
+          followed by an addition; the ORIGINAL travels with the request so the server can put it
+          back if the addition fails. See `replaceMcp`. */}
+      {editing && (
+        <McpEditor
+          entry={editing}
+          pt={pt}
+          busy={busy}
+          onCancel={() => setEditing(null)}
+          onApply={next => void write('/api/mcp/replace', {
+            name: editing.name, scope: editing.scope, paste: next, original: editing.config,
+          }, `${editing.scope}:${editing.name}`)}
+        />
+      )}
+
+      {list.canWrite && !adding && !editing && (
+        <button
+          onClick={() => { setAdding(true); setSaid(null) }}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            width: '100%', marginTop: 6,
+            minHeight: isMobile ? 44 : 32,
+            padding: isMobile ? '0 14px' : '0 12px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+            fontSize: 12, fontWeight: 700, border: '1px solid var(--anthropic-orange)',
+            background: 'var(--anthropic-orange)', color: '#fff',
+          }}
+        >
+          <Plus size={13} /> {pt ? 'Adicionar um MCP' : 'Add an MCP'}
+        </button>
+      )}
+
+      {adding && (
+        <form
+          onSubmit={e => { e.preventDefault(); void write('/api/mcp/install', { paste, scope, ...(name ? { name } : {}) }) }}
+          style={{
+            marginTop: 8, padding: 8, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 7,
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {pt
+              ? 'Cole o JSON do servidor — o bloco `mcpServers` inteiro, uma entrada nomeada, ou só a configuração (aí o nome é obrigatório).'
+              : 'Paste the server’s JSON — the whole `mcpServers` block, one named entry, or just the config (then the name is required).'}
+          </p>
+          <textarea
+            value={paste}
+            onChange={e => setPaste(e.target.value)}
+            rows={5}
+            spellCheck={false}
+            placeholder={'{"mcpServers":{"sentry":{"type":"http","url":"https://mcp.sentry.dev/mcp"}}}'}
+            style={{
+              width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 6, resize: 'vertical',
+              border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11, lineHeight: 1.5,
+            }}
+          />
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder={pt ? 'Nome (só se o JSON não trouxer um)' : 'Name (only if the JSON carries none)'}
+            style={{
+              width: '100%', boxSizing: 'border-box', minHeight: 30, padding: '0 8px', borderRadius: 6,
+              border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+              fontFamily: 'inherit',
+            }}
+          />
+          {/* THE SCOPE, with what it MEANS beside it. A scope that cannot work here is absent. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {scopes.map(sc => {
+              const t = scopeText(sc, pt)
+              const on = scope === sc
+              return (
+                <label
+                  key={sc}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 7, borderRadius: 6,
+                    minHeight: isMobile ? 44 : undefined, padding: isMobile ? '9px 8px' : '5px 7px',
+                    cursor: 'pointer', border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
+                  }}
+                >
+                  <input
+                    type="radio" name="mcp-scope" checked={on} onChange={() => setScope(sc)}
+                    style={{ marginTop: 2, accentColor: 'var(--anthropic-orange)' }}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: 'var(--text-primary)' }}>{t.label}</span>
+                    <span style={{ display: 'block', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>{t.reach}</span>
+                  </span>
+                </label>
+              )
+            })}
+            {!cwd && (
+              <span style={{ fontSize: 10, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
+                {pt
+                  ? 'Esta sessão não tem um diretório registrado, então só o escopo desta máquina pode ser oferecido.'
+                  : 'This session has no recorded directory, so only the machine-wide scope can be offered.'}
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              type="submit"
+              disabled={busy || paste.trim() === ''}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 7,
+                minHeight: isMobile ? 44 : undefined, padding: isMobile ? '0 14px' : '5px 11px',
+                fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600,
+                cursor: busy || paste.trim() === '' ? 'default' : 'pointer',
+                opacity: busy || paste.trim() === '' ? 0.5 : 1,
+                border: '1px solid var(--anthropic-orange)', background: 'var(--anthropic-orange)', color: '#fff',
+              }}
+            >
+              <Plus size={12} /> {busy ? (pt ? 'Adicionando…' : 'Adding…') : (pt ? 'Adicionar' : 'Add')}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAdding(false); setSaid(null) }}
+              style={{
+                minHeight: isMobile ? 44 : undefined, padding: isMobile ? '0 14px' : '5px 11px',
+                borderRadius: 7, fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600,
+                cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--bg-card)',
+                color: 'var(--text-secondary)',
+              }}
+            >{pt ? 'Cancelar' : 'Cancel'}</button>
+          </div>
+        </form>
+      )}
+
+      {said && (
+        <p role="status" style={{
+          margin: '8px 2px 0', fontSize: 10.5, lineHeight: 1.5,
+          color: said.tone === 'ok' ? '#22c55e' : '#ef4444',
+        }}>
+          {said.tone === 'ok'
+            ? (pt ? `Pronto: ${said.text}` : `Done: ${said.text}`)
+            : said.text}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One server's configuration, open for reading and changing.
+ *
+ * It exists because "editar um MCP, dai eu consigo ver o json dele" is two things at once and the
+ * first is the load-bearing one: a person cannot decide whether a server is configured right
+ * without seeing how it is configured. The env VALUES are not here — the server strips them and
+ * keeps the keys, so what is on screen shows which variables exist without putting a credential on
+ * it. Leaving a key empty sends it empty; that is a real edit, and it is the person's to make.
+ */
+function McpEditor({ entry, pt, busy, onCancel, onApply }: {
+  entry: McpEntry; pt: boolean; busy: boolean; onCancel: () => void; onApply: (json: string) => void
+}) {
+  const isMobile = useIsMobile()
+  const [draft, setDraft] = useState(entry.config)
+  // A different row is a different document; the draft must not follow the reader to it.
+  useEffect(() => { setDraft(entry.config) }, [entry.scope, entry.name, entry.config])
+  const changed = draft.trim() !== entry.config.trim()
+  const sc = scopeText(entry.scope, pt)
+  return (
+    <div style={{
+      marginTop: 8, padding: 8, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 7,
+      border: '1px solid var(--anthropic-orange)',
+    }}>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--text-primary)' }}>
+        {entry.name}
+        <span style={{ marginLeft: 6, fontWeight: 500, fontSize: 10.5, color: 'var(--text-tertiary)' }}>
+          · {sc.label}
+        </span>
+      </div>
+      <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+        {pt
+          ? 'Os valores das variáveis de ambiente não aparecem aqui — só os nomes. Deixar um vazio grava vazio.'
+          : 'Environment variable VALUES are not shown here — only their names. Leaving one empty writes it empty.'}
+      </p>
+      <textarea
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        rows={10}
+        spellCheck={false}
+        disabled={busy}
+        style={{
+          width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 6, resize: 'vertical',
+          border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+          fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 11, lineHeight: 1.5,
+          opacity: busy ? 0.6 : 1,
+        }}
+      />
+      {/* What applying actually DOES, said before it is pressed — it is not an in-place edit. */}
+      <p style={{ margin: 0, fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+        {pt
+          ? 'Salvar remove e adiciona de novo, porque é assim que o `claude mcp` altera um servidor. Se a segunda etapa falhar, a versão atual é restaurada.'
+          : 'Saving removes and re-adds, because that is how `claude mcp` changes a server. If the second step fails, the current version is restored.'}
+      </p>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button
+          onClick={() => onApply(draft)}
+          disabled={busy || !changed || draft.trim() === ''}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 7,
+            minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '0 12px',
+            fontFamily: 'inherit', fontSize: 11.5, fontWeight: 700,
+            cursor: busy || !changed ? 'default' : 'pointer', opacity: busy || !changed ? 0.5 : 1,
+            border: '1px solid var(--anthropic-orange)', background: 'var(--anthropic-orange)', color: '#fff',
+          }}
+        >
+          {busy ? <Spinner size={12} /> : null}
+          {busy ? (pt ? 'Salvando…' : 'Saving…') : (pt ? 'Salvar' : 'Save')}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={busy}
+          style={{
+            minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '0 12px', borderRadius: 7,
+            fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600, cursor: busy ? 'default' : 'pointer',
+            border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+          }}
+        >{pt ? 'Fechar' : 'Close'}</button>
+      </div>
+    </div>
+  )
+}
+
+/** One configured server: what it is, where it is configured, and what it is doing right now. */
+function McpRow({ entry, pt, canWrite, busy, working, onRemove, onEdit }: {
+  entry: McpEntry; pt: boolean; canWrite: boolean; busy: boolean
+  /** This row is mid-write. A removal takes a second or two and must not look inert. */
+  working: boolean
+  onRemove: () => void
+  onEdit: () => void
+}) {
+  const isMobile = useIsMobile()
+  const run = runText(entry.run, pt)
+  const sc = scopeText(entry.scope, pt)
+  return (
+    <div style={{
+      border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '7px 9px', marginBottom: 6,
+      minWidth: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+        <span style={{
+          fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+          color: run.color, flexShrink: 0,
+        }}>{run.text}</span>
+        <span style={{
+          fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{entry.name}</span>
+        <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)' }}>{sc.label}</span>
+        {canWrite && (
+          <>
+            <button
+              onClick={onEdit}
+              disabled={busy}
+              title={pt ? 'Ver e editar o JSON' : 'View and edit the JSON'}
+              aria-label={pt ? 'Editar' : 'Edit'}
+              style={{
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+                cursor: busy ? 'default' : 'pointer',
+                border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-tertiary)',
+              }}
+            >
+              <Pencil size={11} />
+            </button>
+            <button
+              onClick={onRemove}
+              disabled={busy}
+              title={pt ? 'Remover' : 'Remove'}
+              aria-label={pt ? 'Remover' : 'Remove'}
+              style={{
+                flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+                cursor: busy ? 'default' : 'pointer',
+                border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-tertiary)',
+              }}
+            >
+              {/* The wait is SHOWN. `claude mcp remove` takes a second or two, and a button that
+                  did nothing visible for that long reads as one that did not work. */}
+              {working ? <Spinner size={11} /> : <Trash2 size={11} />}
+            </button>
+          </>
+        )}
+      </div>
+      {/* WHY the status says what it says — the sentence, never a colour alone. */}
+      {run.detail && (
+        <div style={{ marginTop: 3, fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>{run.detail}</div>
+      )}
+      <div style={{
+        marginTop: 3, fontSize: 10.5, color: 'var(--text-tertiary)', wordBreak: 'break-word',
+        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+      }}>
+        {entry.url ?? [entry.command, ...(entry.args ?? [])].filter(Boolean).join(' ')}
+      </div>
+      {/* Environment VARIABLE NAMES only. One configured server here holds a database URI with
+          credentials in it, and a value that reaches this panel is on a screen forever. */}
+      {entry.envKeys && entry.envKeys.length > 0 && (
+        <div style={{ marginTop: 3, fontSize: 10, color: 'var(--text-tertiary)' }}>
+          {pt ? 'variáveis: ' : 'env: '}{entry.envKeys.join(', ')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * A spinner that actually SPINS, through the class this file already uses everywhere else.
+ *
+ * The new tabs drew lucide's `Loader` glyph STILL, which on a read that takes several seconds reads
+ * as a frozen icon rather than as work in progress — reported as "não teve nenhum loader
+ * indicando". Motion is the whole signal, and `ag-working-spin` is where this codebase keeps it.
+ */
+function Spinner({ size = 16 }: { size?: number }) {
+  return <Loader size={size} className="ag-working-spin" />
 }
 
 function Note({ text, icon }: { text: string; icon?: React.ReactNode }) {

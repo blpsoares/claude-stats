@@ -216,6 +216,75 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   return await Notification.requestPermission()
 }
 
+/**
+ * CAN THIS BROWSER NOTIFY AT ALL, and if not, why not — so the screen can say it.
+ *
+ * iOS is the case that forced this. Safari on iPhone exposes `Notification` **only to a web app
+ * installed on the Home Screen** (16.4+); in an ordinary tab the API is simply absent, so a
+ * settings screen that only knows `granted` / `denied` / `default` shows a permission button that
+ * can never do anything, and the honest answer — "install it first" — is the one thing it cannot
+ * say. That is the whole of "não tá pedindo permissão".
+ *
+ * `'unsupported'` is deliberately not folded into `'denied'`: one is a decision the user can
+ * reverse from this screen, the other is a step they have to take somewhere else.
+ */
+export type NotificationSupport = 'ok' | 'insecure' | 'needs-safari' | 'needs-install' | 'unsupported'
+
+/**
+ * A window this module can read without asserting a DOM in a test. Only the four things it asks.
+ */
+export interface SupportEnv {
+  hasNotification: boolean
+  secure: boolean
+  standalone: boolean
+  ios: boolean
+}
+
+/**
+ * Which of the four reasons this browser cannot notify — PURE, so each one can be pinned.
+ *
+ * The order is the order the obstacles have to be cleared in, and it matters: telling somebody to
+ * add the app to their Home Screen while they are on `http://` sends them to do the second step
+ * first and land in the same place.
+ *
+ *  1. `insecure` — **the one that was actually happening.** Notifications, service workers and
+ *     installability all require a SECURE CONTEXT. Reached over Tailscale as `http://100.x.y.z:47292`
+ *     the origin is not one, so `navigator.serviceWorker` is undefined and the permission can never
+ *     be granted however many times it is asked for. Tailscale hands out a real certificate —
+ *     `tailscale serve` — and that is the whole fix; nothing in this app can substitute for it.
+ *  2. `needs-safari` — an iOS home-screen app added from CHROME. Every browser on iOS is WebKit
+ *     underneath, but only a web app added from SAFARI runs standalone, and only a standalone one is
+ *     given the Notification API. A shortcut added from Chrome opens inside Chrome and never will be.
+ *  3. `needs-install` — iOS, in a browser tab. Add it to the Home Screen (from Safari) and it works.
+ *  4. `unsupported` — anything else with no API. Sound alerts still work; nothing else will.
+ *
+ * `denied` is deliberately none of these: it is a decision the user made and can reverse in the
+ * system's own settings, and folding it in here would send them to fix the wrong thing.
+ */
+export function supportFrom(env: SupportEnv): NotificationSupport {
+  if (!env.secure) return 'insecure'
+  if (env.hasNotification) return 'ok'
+  if (env.ios) return env.standalone ? 'needs-safari' : 'needs-install'
+  return 'unsupported'
+}
+
+export function notificationSupport(): NotificationSupport {
+  if (typeof window === 'undefined') return 'unsupported'
+  const nav = navigator as Navigator & { standalone?: boolean }
+  // iPadOS reports itself as a Mac, hence the touch check.
+  const ios = /iPad|iPhone|iPod/.test(nav.userAgent)
+    || (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1)
+  return supportFrom({
+    hasNotification: 'Notification' in window,
+    secure: window.isSecureContext !== false,
+    // `navigator.standalone` is iOS's own flag for a Safari-added web app; the media query catches
+    // the installed case on every other platform. Either one means "not in a tab".
+    standalone: nav.standalone === true
+      || (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches),
+    ios,
+  })
+}
+
 export function getBrowserNotificationPermission(): NotificationPermission {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'denied'
@@ -238,16 +307,39 @@ export function triggerSessionNotification(options: {
     playNotificationSound(options.soundPreset ?? settings.soundPreset, options.soundVolume ?? settings.soundVolume)
   }
 
-  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-    try {
-      new Notification(options.title, {
-        body: options.body,
-        icon: '/favicon.ico',
-        tag: options.tag,
-      })
-    } catch {
-      /* ignore notification errors */
-    }
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+
+  const opts: NotificationOptions = {
+    body: options.body,
+    // The app's own icon, at the size a notification actually renders. `/favicon.ico` was a 16px
+    // image blown up to 48 on a phone.
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192-maskable.png',
+    ...(options.tag ? { tag: options.tag } : {}),
+  }
+
+  // THE SERVICE WORKER IS THE PATH, NOT A FALLBACK. `new Notification()` is unimplemented in an
+  // installed iOS web app — the constructor exists and throws — so on the one platform this
+  // feature was reported broken on, the only thing that works is asking the registration to show
+  // it. It also works everywhere else, which is why it is tried FIRST rather than kept for iOS:
+  // one path that works in four places beats a branch that has to guess which place it is in.
+  const sw = typeof navigator !== 'undefined' ? navigator.serviceWorker : undefined
+  if (sw) {
+    void sw.ready
+      .then(reg => reg.showNotification(options.title, opts))
+      .catch(() => { legacyNotification(options.title, opts) })
+    return
+  }
+  legacyNotification(options.title, opts)
+}
+
+/** The constructor, for a browser with no service worker registration (a dev server, an old one). */
+function legacyNotification(title: string, opts: NotificationOptions): void {
+  try {
+    new Notification(title, opts)
+  } catch {
+    /* A platform that has the constructor and refuses to run it — nothing left to try. */
   }
 }
 
@@ -410,13 +502,39 @@ export function notifyFleetTransitions(
    * The cost is stated: a state that lasts less than one poll interval is never announced. That is
    * the right trade for a channel whose whole job is to interrupt a person.
    */
+  /*
+   * …AND A ROW THIS PAGE HAS NEVER SEEN IN ANOTHER STATE IS A LEVEL, NOT A TRANSITION.
+   *
+   * The rule above settles WHEN a state is believed; this one settles whether believing it is
+   * NEWS. They are different bugs and both were live: the flicker announced a state that was never
+   * really there, and this one announced a state that was there all along before anyone looked.
+   *
+   * Rows join and leave the fleet for reasons that are not a session changing state — a short-lived
+   * session born and finished inside one poll interval, a retired predecessor
+   * `collapseSupersededSessions` hides and shows again, a row reading `lost` for one poll (which
+   * has no words here, so it leaves the map) and returning as `exited` on the next. Each arrived
+   * with no previous state and each rang "[Session Closed]" for a session nobody had watched close:
+   * "notificações de sessões FECHADAS estão disparando para sessões que já fecharam". The
+   * two-poll confirmation alone only DELAYS that by one poll.
+   *
+   * It is the same rule the FIRST SNAPSHOT already applies, at the scale of one session instead of
+   * a whole page. The one exception is stated rather than inferred: `waiting-approval`. Every other
+   * sentence here reports a CHANGE ("it finished its turn", "it was closed", "it started working")
+   * and is only true if the state before it was seen; that one reports a session BLOCKED ON A
+   * PERSON, stays true until they answer, and may have no later transition to ring on — so silence
+   * there costs the session itself rather than one notification.
+   *
+   * The state is RECORDED either way. Withholding the announcement must not withhold the baseline,
+   * or a row first seen as `working` could never announce anything it did afterwards.
+   */
   const next: Record<string, SessionActivity> = { ...prev }
   const announce: Record<string, SessionActivity> = {}
   for (const [id, state] of Object.entries(seen)) {
     if (prev[id] === state) continue          // already announced, nothing new
     if (unconfirmed[id] !== state) continue   // first sighting — wait for the next poll
+    const firstSight = prev[id] === undefined
     next[id] = state
-    announce[id] = state
+    if (!firstSight || state === 'waiting-approval') announce[id] = state
   }
   // A row that vanished from the fleet stops being tracked, or its last state would be re-announced
   // if it came back to the same one.
@@ -431,8 +549,10 @@ export function notifyFleetTransitions(
       ...(r.harness ? { harness: r.harness } : {}),
     })
   }
-  // Only what was CONFIRMED this poll — `prev` is passed as the baseline so the handler's own
-  // "has it changed" check still holds for each of them.
+  // Only what was CONFIRMED this poll AND is a transition — `prev` is passed as the baseline so the
+  // handler's own "has it changed" check still holds for each of them. `next` is what the caller
+  // keeps, withheld rows included: a row seen for the first time now is not news, and must be a
+  // baseline the moment it changes.
   handleSessionStateTransitions(prev, announce, map, lang)
   return next
 }

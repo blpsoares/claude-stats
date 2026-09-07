@@ -22,6 +22,19 @@
  *
  * - It is STALE after `STALE_MS`. A process killed between acquire and release leaves the directory
  *   behind, and without expiry the next start of agentop would hang forever on a lock nobody holds.
+ *
+ * **A BLOCKED ACQUIRER MAY NEVER DELETE THE LOCK IT IS BLOCKED ON, and the first version did.** On
+ * a failed `mkdir` it stat'd the directory, and a stat that threw `ENOENT` — the lock released in
+ * the instant between the two calls — was treated as "stale" and answered with
+ * `rm(dir, {recursive: true})`. By the time that `rm` ran another process could already hold a NEW
+ * lock in that same path, and deleting it left BOTH of them believing they held it. Measured with
+ * six concurrent processes taking the lock 25 times each: **31 overlapping acquisitions out of
+ * 150**, with the age-based expiry never once firing (`staleOld: 0`) — the destructive `rm` was the
+ * whole of it. That is the residual loss behind sessions whose registry record disappeared.
+ *
+ * So a vanished lock is answered by RETRYING, which touches nothing, and a genuinely abandoned one
+ * is taken over by `rename` — the one operation where exactly one racer can win. Whoever renames it
+ * aside owns the right to remove it; everyone else fails the rename and goes back to racing.
  * - The wait is BOUNDED. Past `WAIT_MS` the caller runs anyway — because the alternative is
  *   refusing to record a session that has already been spawned, and a lost label is a smaller harm
  *   than a live session with no record at all. It says so through `contended`, so a caller can log
@@ -29,7 +42,7 @@
  * - Release NEVER throws. A failed cleanup becomes a stale lock, which the next acquirer clears.
  */
 
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /** A lock older than this is assumed abandoned. Longer than any write; far shorter than a coffee. */
@@ -48,14 +61,23 @@ export interface LockHandle {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-/** Is this lock directory old enough to be treated as abandoned? */
-async function isStale(dir: string, nowMs: number): Promise<boolean> {
+/**
+ * How a failed `mkdir` should be answered.
+ *
+ *   `retry`  the lock is gone — race for it again, and TOUCH NOTHING.
+ *   `steal`  it is old enough to be abandoned; try to take it over, atomically.
+ *   `wait`   somebody holds it and is alive.
+ */
+type Blocked = 'retry' | 'steal' | 'wait'
+
+async function inspectLock(dir: string, nowMs: number): Promise<Blocked> {
   try {
     const st = await stat(dir)
-    return nowMs - st.mtimeMs > STALE_MS
+    return nowMs - st.mtimeMs > STALE_MS ? 'steal' : 'wait'
   } catch {
-    // Gone between the failed mkdir and this stat — whoever held it released it.
-    return true
+    // Gone between the failed mkdir and this stat — whoever held it released it. RETRY, never
+    // delete: see the header's second rule.
+    return 'retry'
   }
 }
 
@@ -75,8 +97,18 @@ export async function lockFile(file: string, nowMs = () => Date.now()): Promise<
       void writeFile(join(dir, 'pid'), String(process.pid), 'utf-8').catch(() => undefined)
       return { contended: false, release: () => rm(dir, { recursive: true, force: true }).catch(() => undefined) }
     } catch {
-      if (await isStale(dir, nowMs())) {
-        await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+      const blocked = await inspectLock(dir, nowMs())
+      // The lock vanished under us. Just race for it again — the old code DELETED here, which is
+      // the bug this rewrite exists for.
+      if (blocked === 'retry') continue
+      if (blocked === 'steal') {
+        // ATOMIC TAKEOVER. `rename` is the one operation that lets exactly one racer win: whoever
+        // renames the abandoned lock aside owns the right to remove it, and everybody else fails
+        // and goes back to racing for a fresh `mkdir`. A plain `rm` here is what let two processes
+        // hold the lock at once.
+        const aside = `${dir}.stale-${process.pid}-${Date.now()}`
+        try { await rename(dir, aside) } catch { continue }
+        await rm(aside, { recursive: true, force: true }).catch(() => undefined)
         continue
       }
       if (nowMs() >= deadline) {

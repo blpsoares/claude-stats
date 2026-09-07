@@ -40,10 +40,42 @@ export function attachmentName(path: string): string {
   return path.split('/').pop() ?? path
 }
 
-/** Is this an image, by extension? Decides whether a preview is possible at all. */
-export function isImageAttachment(path: string): boolean {
+/**
+ * What KIND of thing this attachment is, by extension — the one table the browser side reads.
+ *
+ * It mirrors the server's `attachmentMediaType` on purpose, and the two must be changed together: a
+ * client that believes it can preview what the route refuses shows a broken tile, which is the one
+ * thing the gallery may not do. `'other'` is the honest answer for everything else, and the UI says
+ * it in words rather than promising a thumbnail it cannot produce.
+ *
+ * VIDEO AND PDF WERE MISSING and that was the whole of a report: a person attaches a PDF or a
+ * recording, and the gallery showed "no preview" beside a file agentop had itself stored, with no
+ * way to open it. They are not images and never will be — a video's preview is a decoded frame and
+ * a PDF's is a rendered page — but both can be SHOWN, which is what was actually being asked for.
+ */
+export type AttachmentKind = 'image' | 'video' | 'pdf' | 'other'
+
+const KIND_BY_EXT: Record<string, AttachmentKind> = {
+  png: 'image', jpg: 'image', jpeg: 'image', gif: 'image',
+  webp: 'image', avif: 'image', bmp: 'image', svg: 'image',
+  mp4: 'video', m4v: 'video', mov: 'video', webm: 'video', ogv: 'video',
+  pdf: 'pdf',
+}
+
+export function attachmentKind(path: string): AttachmentKind {
   const ext = attachmentName(path).split('.').pop()?.toLowerCase() ?? ''
-  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg'].includes(ext)
+  return KIND_BY_EXT[ext] ?? 'other'
+}
+
+/**
+ * Is this an image, by extension?
+ *
+ * Kept because two callers ask exactly that — the composer's preview and the chat bubble's
+ * thumbnail, neither of which can render a video or a PDF — and derived from the table above rather
+ * than restated, so they cannot drift.
+ */
+export function isImageAttachment(path: string): boolean {
+  return attachmentKind(path) === 'image'
 }
 
 /**

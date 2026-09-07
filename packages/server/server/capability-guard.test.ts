@@ -57,6 +57,17 @@ describe('routeCapability', () => {
     expect(routeCapability('/api/fleetwide')).toBeNull()
   })
 
+  it('maps the backup routes, and any sub-path added later', () => {
+    // The status read walks the metrics layer and the run spawns `git` across every known
+    // repository and, depending on layers, copies raw harness directories to disk — the same
+    // shell-and-filesystem power /api/exec carries.
+    expect(routeCapability('/api/backup/status')).toBe('localShell')
+    expect(routeCapability('/api/backup/run')).toBe('localShell')
+    // A PREFIX, so a future backup route is guarded by having been added at all.
+    expect(routeCapability('/api/backup/anything-added-later')).toBe('localShell')
+    expect(routeCapability('/api/backupwide')).toBeNull()
+  })
+
   it('maps the local chat routes', () => {
     expect(routeCapability('/api/chat-tty')).toBe('localChat')
     expect(routeCapability('/api/chat-harnesses')).toBe('localChat')
@@ -85,8 +96,19 @@ describe('routeCapability', () => {
   })
 
   it('maps the mcp admin routes', () => {
-    expect(routeCapability('/api/mcp-action')).toBe('mcpAdmin')
-    expect(routeCapability('/api/mcp-list')).toBe('mcpAdmin')
+    // `/api/mcp-list` and `/api/mcp-action` are GONE: they had no client and read two files that
+    // hold no MCP servers at all, so their entries went with them rather than guarding nothing.
+    expect(routeCapability('/api/mcp-action')).toBeNull()
+    expect(routeCapability('/api/mcp-list')).toBeNull()
+    // The MCP PANEL rides a prefix, so the next route under it is guarded by having been added at
+    // all — the same reason `/api/fleet` is a prefix. Both writes run `claude mcp` on this host.
+    expect(routeCapability('/api/mcp')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/servers')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/install')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/remove')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/anything-added-later')).toBe('mcpAdmin')
+    // …and it may not swallow a neighbour that merely starts with the same letters.
+    expect(routeCapability('/api/mcpanything')).toBeNull()
   })
 
   it('returns null for ordinary metric routes', () => {

@@ -1,3 +1,4 @@
+import { runStatusText } from '../lib/workflows'
 import React, { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { Workflow as WorkflowIcon, ChevronDown, ChevronRight, Search, FileCode, GitBranch } from 'lucide-react'
@@ -183,7 +184,10 @@ function RunBlock({ run, pt, rate, currency, groupBy, query, sessionById }: {
   run: WorkflowRun; pt: boolean; rate: number; currency: 'USD' | 'BRL'; groupBy: GroupBy; query: string; sessionById: Map<string, SessionMeta>
 }) {
   const [open, setOpen] = useState(true)
-  const statusColor = run.status === 'completed' ? '#22c55e' : run.status === 'partial' ? '#eab308' : '#ef4444'
+  // Same palette as the sessions aside and the repo page. The old expression painted anything that
+  // was not completed/partial red, so a RUNNING workflow read as a failure.
+  const runState = runStatusText(run.status, pt)
+  const statusColor = runState.color
   const s = sessionById.get(run.sessionId)
   const sessionDisplay = s ? sessionLabel(s) : run.sessionId.slice(0, 8)
   const project = s?.project_path ? formatProjectName(s.project_path) : ''
@@ -227,7 +231,8 @@ function RunBlock({ run, pt, rate, currency, groupBy, query, sessionById }: {
       title={
         <span onClick={() => setOpen(o => !o)} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer', flexWrap: 'wrap' }}>
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor }} />
+          {/* A colour alone cannot carry five states — the word rides the title. */}
+          <span title={runState.text} style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor }} />
           <span style={{ fontWeight: 700 }}>{run.name}</span>
           {run.user && (
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--anthropic-orange)', background: 'var(--anthropic-orange-dim)', border: '1px solid rgba(217,119,6,0.3)', borderRadius: 5, padding: '1px 7px' }}>{run.user}</span>
