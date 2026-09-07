@@ -885,8 +885,50 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     setAtTail(el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_SLACK)
   }, [])
 
+  /**
+   * IS THE PERSON TYPING RIGHT NOW.
+   *
+   * It exists for one rule, asked for in these words: "enquanto eu estiver digitando no input NADA
+   * tira o foco dele". A `disabled` attribute is not a style — the browser BLURS an element the
+   * moment it becomes disabled — and this field was disabled from `canPrompt`, which is recomputed
+   * on every 5s fleet poll. So a poll that briefly reported the session blocked, or not live, or
+   * mid-send took the caret out from under someone mid-sentence, and they had to tap back in. "Do
+   * nada o foco sai do input."
+   *
+   * DECLARED HERE, above everything that reads it, because it now guards more than `disabled`:
+   * `showReopen` reads it too, and a rule about the caret that half the file cannot see is a rule
+   * that gets forgotten by the next thing that hides the composer.
+   */
+  const [typing, setTyping] = useState(false)
+
   const blocked = (session.approvalLines?.length ?? 0) > 0
   const loading = payload === null
+
+  /**
+   * ANSWERING THE QUESTION IN THE COMPOSER, rather than in a field of its own.
+   *
+   * Asked for in these words: "ao clicar na opção de digitar o input fica disponível pro usuário
+   * usar (pq daí consigo usar recurso de voz, ctrl+v, anexos etc.)". The card used to grow its own
+   * one-line `<input>`, which is a second composer with none of the composer's features — no
+   * dictation, no paste-an-image, no attachments, no auto-grow, and its own separate rules about
+   * what Enter does.
+   *
+   * It holds the option's NUMBER because that is what the server needs (`approve` with a `choice`),
+   * its LABEL so the banner can name what is being answered, and the dialog's SHAPE so the mode
+   * cannot outlive the question: a dialog that changes under it would leave the composer sending an
+   * answer to a question nobody asked.
+   */
+  const [answering, setAnswering] = useState<{ number: number; label: string; shape: string } | null>(null)
+  /** The dialog's identity — the same string `ApprovalCard` compares, for the same reason. */
+  const dialogShape = useMemo(
+    () => (row?.dialogOptions ?? []).map(o => `${o.number}:${o.label}`).join('\n'),
+    [row?.dialogOptions],
+  )
+  useEffect(() => {
+    // The question went away, or became a different question. Either way this is no longer an
+    // answer to it, and the composer goes back to being a composer.
+    setAnswering(a => (a === null || (blocked && a.shape === dialogShape) ? a : null))
+  }, [blocked, dialogShape])
 
   /**
    * Hand the artifact list to whoever is drawing the panel.
@@ -906,7 +948,17 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     })
   }, [artifacts, loading, turns, payload?.unavailable, payload?.older, onArtifacts])
 
-  const canPrompt = !loading && session.actionable && !blocked && payload.live !== false
+  /**
+   * The composer is being used to answer the dialog, so it must accept text.
+   *
+   * `blocked` normally denies `canPrompt`, and that rule stays exactly as it was: a PROMPT typed
+   * into a session sitting on a dialog goes into that dialog's own filter and the submit takes the
+   * highlighted option. This is not a prompt. `send()` routes an answer through `approve` with the
+   * option's number, which is the one path the server has verified for it — the invariant is kept,
+   * and what changes is only which field the words are typed into.
+   */
+  const answeringNow = blocked && answering !== null
+  const canPrompt = !loading && session.actionable && (!blocked || answeringNow) && payload.live !== false
   /**
    * The `/` picker is open.
    *
@@ -926,6 +978,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * a reply queued while it works is not blocked on stopping it first. Absent unless the row can
    * take it, since a stop control on an idle session would send Escape into its prompt.
    */
+  /**
+   * WHILE THE FIELD HAS THE CARET, NOTHING MAY REPLACE IT — the rule `typing` was invented for,
+   * applied to the one place it did not reach.
+   *
+   * `typing` already stops `disabled` blurring the field on a poll. It did NOT stop the composer's
+   * whole row being `display: none`'d, and `display: none` on an ANCESTOR blurs just as hard —
+   * harder, because the node leaves the layout with the half-written draft in it. The condition was
+   * `!canPrompt && !blocked && reopen`, and every term of `canPrompt` is recomputed on the 5s fleet
+   * poll (`loading`, `session.actionable`, `payload.live`), while `reopen` is a `find` that never
+   * checks `.enabled` — so any single poll reporting the session momentarily not live swapped the
+   * focused composer for the reopen block. Reported, again, as "do nada o foco sai do input".
+   *
+   * ONE expression decides it, read by BOTH the reopen block and the composer's `display`, so the
+   * two can never be shown at once or hidden at once.
+   */
+  const showReopen = !canPrompt && !blocked && !!reopen && !typing
+
   const stopVerb = row?.verbs.find(v => v.action === 'interrupt')
   const [stopping, setStopping] = useState(false)
   async function stopNow() {
@@ -1034,25 +1103,32 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     pick(e.dataTransfer.files)
   }
 
-  /**
-   * IS THE PERSON TYPING RIGHT NOW.
-   *
-   * It exists for one rule, asked for in these words: "enquanto eu estiver digitando no input NADA
-   * tira o foco dele". A `disabled` attribute is not a style — the browser BLURS an element the
-   * moment it becomes disabled — and this field was disabled from `canPrompt`, which is recomputed
-   * on every 5s fleet poll. So a poll that briefly reported the session blocked, or not live, or
-   * mid-send took the caret out from under someone mid-sentence, and they had to tap back in. "Do
-   * nada o foco sai do input."
-   */
-  const [typing, setTyping] = useState(false)
-
   async function send() {
     const text = draft.trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
     // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
     // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
     // about what may be DELIVERED, not about what may be typed.
-    if ((text === '' && attached.length === 0) || sending || !canPrompt) return
+    if ((text === '' && attached.length === 0) || sending) return
+    /**
+     * A REFUSAL IS SAID, NEVER RETURNED IN SILENCE.
+     *
+     * This read `|| !canPrompt) return`, so pressing Enter on a session the poll had just reported
+     * not-live, not-actionable or newly blocked did NOTHING AT ALL — no send, no sentence, the text
+     * still sitting there. That is indistinguishable from a broken key, and it is the same
+     * complaint the approval card produced from its own side ("simplesmente não envia"). There is
+     * nothing to say when the field is EMPTY — that is not a refusal, it is nothing to send.
+     */
+    if (!canPrompt) {
+      setNotice(blocked
+        ? (pt
+          ? 'Esta sessão está esperando uma resposta à pergunta acima. Escolha uma opção, ou a opção de escrever, para responder daqui.'
+          : 'This session is waiting on an answer to the question above. Pick an option, or the write-your-own one, to answer from here.')
+        : (pt
+          ? 'Esta sessão não está aceitando mensagens agora. Se ela parou, use Reabrir.'
+          : 'This session is not taking messages right now. If it has stopped, use Reopen.'))
+      return
+    }
     // Paths first, on their own lines, then what was typed — the assistant reads the files it is
     // pointed at, and burying the paths inside a sentence makes them easy to miss.
     // Quote first, then the paths, then what was typed. The quote is trimmed to a few lines: a
@@ -1060,7 +1136,21 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     const quote = replyTo ? quoteFor(replyTo) : ''
     const full = [quote, ...attached.map(a => a.path), text].filter(x => x !== '').join('\n')
     setSending(true)
-    const out = await act({ id: session.id, action: 'prompt', text: full })
+    /**
+     * AN ANSWER IS NOT A PROMPT, and it goes down the route the server verified for it.
+     *
+     * `approve` with the option's `choice` AND the text: the digit selects the write-your-own row
+     * and turns it into a field, then the words go in, then the return. Those three steps are the
+     * server's (`answerSession`), reproduced against a live dialog — sending this as a `prompt`
+     * would type it into the dialog's own filter instead, which is exactly what `canPrompt`'s
+     * `blocked` rule exists to prevent.
+     *
+     * The ATTACHMENTS still ride along, because that is half of why the composer is the field here:
+     * their paths are part of the answer's text.
+     */
+    const out = answeringNow && answering
+      ? await act({ id: session.id, action: 'approve', choice: answering.number, text: full })
+      : await act({ id: session.id, action: 'prompt', text: full })
     setSending(false)
     if (out.ok) {
       // Echoed straight away. It is already in the session; the transcript catches up in a poll or
@@ -1078,6 +1168,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       setAtTail(true)
       toTail()
       setNotice(null)
+      // The question has been answered; the composer stops being an answer field. The card itself
+      // goes when the row stops reporting the dialog, which is the server's answer and not ours.
+      setAnswering(null)
       return
     }
     setNotice(out.message)
@@ -1190,7 +1283,21 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
           {/* The question, at the BOTTOM of the conversation, where the next thing to happen goes.
               It is not in the transcript — a dialog lives on the screen and is never written to the
               JSONL — so it arrives on the fleet row instead. */}
-          {blocked && row && <ApprovalCard row={row} lang={lang} act={act} />}
+          {blocked && row && (
+            <ApprovalCard
+              row={row}
+              lang={lang}
+              act={act}
+              answering={answering?.number ?? null}
+              onWrite={o => {
+                setAnswering({ ...o, shape: dialogShape })
+                // The point of handing the composer over is that it is READY — the caret in it, on
+                // the next frame, so the next thing the person does is type. Same call the skill
+                // picker and the reply buttons already make, for the same reason.
+                requestAnimationFrame(() => textareaRef.current?.focus())
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -1482,7 +1589,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   way BACK INTO it. The verb is the row's own `resume`, which the server enables only
                   when it has a conversation to reopen — where it does not, the sentence says why
                   rather than a button that fails. */}
-              {!canPrompt && !blocked && reopen && (
+              {showReopen && reopen && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
                   padding: '10px 12px', borderRadius: 12,
@@ -1518,11 +1625,54 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                 </div>
               )}
 
+              {/* WHAT THIS FIELD IS ABOUT TO DO. While the composer is answering a dialog, the
+                  Enter key does something different from what it does every other minute of the
+                  day, and a field that changes meaning without saying so is how somebody sends an
+                  answer they meant as a message. It names the option by NUMBER and LABEL — the same
+                  two things the card shows — and carries the way out. */}
+              {answeringNow && answering && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
+                  padding: '7px 10px', borderRadius: 10, minWidth: 0,
+                  border: '1px solid var(--anthropic-orange)',
+                  background: 'var(--anthropic-orange-dim)',
+                }}>
+                  <span style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0,
+                    background: 'var(--anthropic-orange)', color: '#fff',
+                    fontSize: 10, fontWeight: 700,
+                  }}>{answering.number}</span>
+                  <span style={{
+                    minWidth: 0, flex: 1, fontSize: 11.5, lineHeight: 1.45,
+                    color: 'var(--anthropic-orange)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {pt
+                      ? `Respondendo à pergunta — ${answering.label}`
+                      : `Answering the question — ${answering.label}`}
+                  </span>
+                  <button
+                    onClick={() => setAnswering(null)}
+                    aria-label={pt ? 'Cancelar a resposta' : 'Cancel answering'}
+                    title={pt ? 'Cancelar (Esc)' : 'Cancel (Esc)'}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 24, height: 24, borderRadius: 6, border: 'none', flexShrink: 0,
+                      background: 'transparent', color: 'var(--anthropic-orange)', cursor: 'pointer',
+                    }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
+
               {/* Loose on the composer's own surface — no second card behind it. It used to sit in
                   its own `--bg-base` box with a border, which read as a field floating inside the
                   field that holds it; dropping both leaves it the same colour as its container. */}
               <div style={{
-                display: (!canPrompt && !blocked && reopen) ? 'none' : 'flex',
+                // NEVER hidden while the field has the caret — see `showReopen`.
+                display: showReopen ? 'none' : 'flex',
                 // A COLUMN: the text gets the whole width, the controls sit under it.
                 //
                 // As one row the buttons and the field competed for the same line and the buttons
@@ -1620,6 +1770,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // rule is the opposite one and unchanged — enter sends, shift+enter breaks —
                     // and the picker above follows the same split for the same reason.
                     if (e.key === 'Enter' && !e.shiftKey && !isMobile) { e.preventDefault(); void send() }
+                    // ANSWERING MODE LETS GO FIRST. Escape here means "I am not answering with my
+                    // own words after all" — the draft is kept, because it is what was typed and
+                    // may well be the next message. Only once that is off does Escape reach the
+                    // stop verb; a single key doing both at once is the double-booking the tab bar
+                    // was fixed for.
+                    if (e.key === 'Escape' && answeringNow) { e.preventDefault(); setAnswering(null); return }
                     // The composer's own "esc": stops the CURRENT turn without touching the draft
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
@@ -1631,9 +1787,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   // mid-word costs the sentence.
                   disabled={!typing && (!canPrompt || sending)}
                   rows={1}
-                  placeholder={canPrompt
-                    ? (pt ? 'Escreva para esta sessão…' : 'Write to this session…')
-                    : (pt ? 'Indisponível para esta sessão' : 'Not available for this session')}
+                  placeholder={answeringNow
+                    ? (pt ? 'Escreva a sua resposta…' : 'Write your own answer…')
+                    : canPrompt
+                      ? (pt ? 'Escreva para esta sessão…' : 'Write to this session…')
+                      : (pt ? 'Indisponível para esta sessão' : 'Not available for this session')}
                   style={{
                     // NO `flex: 1`. In a COLUMN container that sets `flex-basis: 0` on the HEIGHT
                     // axis, which beats the explicit height the auto-grow effect writes — so the
@@ -1753,7 +1911,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     ABSENT when the row carries no mode: a harness nobody has probed, or a frame
                     whose footer has not been read. A chip naming the wrong mode is worse than no
                     chip — it is read at a glance and believed. */}
-                {row?.mode && (
+                {/* NOT WHILE ANSWERING A QUESTION. Asked for: the mode, the model and the last
+                    prompt come off the row for as long as the composer is an answer field. They are
+                    about the next TURN, and this is not one — cycling the harness's mode with a
+                    dialog open sends a keystroke into that dialog. */}
+                {row?.mode && !answeringNow && (
                   <button
                     onClick={() => void act({ id: session.id, action: 'cycleMode' })
                       .then(out => setNotice(out.message))}
@@ -1814,7 +1976,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting
                     group because it is about what you have already sent, not about composing. */}
-                {lastSent && (
+                {lastSent && !answeringNow && (
                   <button
                     onClick={() => setRecall('ask')}
                     aria-label={pt ? 'Sua última mensagem' : 'Your last message'}
@@ -1955,8 +2117,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       })()}
 
                       {/* MODEL. Same treatment: where it cannot work, the menu says why instead of
-                          offering a control that answers nothing. */}
-                      {modelReason ? (
+                          offering a control that answers nothing.
+                          ABSENT WHILE ANSWERING A QUESTION, with the mode chip and the recall
+                          button: choosing a model is a decision about the next turn, and this is an
+                          answer to a dialog that is already open. */}
+                      {answeringNow ? null : modelReason ? (
                         <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
                           {modelReason}
                         </p>
