@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
-  agentIdFromFile, pageOfAgents, parseSubagentMeta, parseTaskOutcomes, subagentCost, subagentStatus,
-  summarizeSubagent,
+  agentIdFromFile, isForkMeta, pageOfAgents, parseSubagentMeta, parseTaskOutcomes, subagentCost,
+  subagentStatus, summarizeSubagent,
 } from './subagents'
 
 const line = (o: unknown) => JSON.stringify(o)
@@ -136,7 +136,7 @@ describe('subagentCost — a price needs both halves', () => {
 })
 
 describe('pageOfAgents — the page is chosen before anything is opened', () => {
-  const f = (agentId: string, mtimeMs: number) => ({ agentId, mtimeMs })
+  const f = (agentId: string, mtimeMs: number, isFork = false) => ({ agentId, mtimeMs, isFork })
 
   it('orders by LAST ACTIVITY, newest first', () => {
     // From the file's mtime, not `startedAt`: that one is inside the transcript, so ordering by it
@@ -161,6 +161,68 @@ describe('pageOfAgents — the page is chosen before anything is opened', () => 
     const all = [f('a', 1), f('b', 2)]
     expect(pageOfAgents(all, 10, -5).files).toHaveLength(2)
     expect(pageOfAgents(all, 0, 0).files).toHaveLength(1)
-    expect(pageOfAgents(all, 10, 99)).toEqual({ files: [], total: 2, hasMore: false })
+    expect(pageOfAgents(all, 10, 99)).toEqual({ files: [], total: 2, agents: 2, forks: 0, hasMore: false })
+  })
+
+  /**
+   * The split the tab's badge is counted from, and the reason it is counted HERE.
+   *
+   * A conversation FORK is listed and is not a subagent — nothing dispatched it — so the badge
+   * counts `agents` while the list shows `total`. It cannot be counted by the client, which holds
+   * one page: that is what left the badge summing forks after the row was already labelled one.
+   */
+  it('counts forks apart from the agents, over EVERYTHING and never over the page', () => {
+    const all = [f('a', 5), f('fork1', 4, true), f('b', 3), f('fork2', 2, true), f('c', 1)]
+    const first = pageOfAgents(all, 2, 0)
+    expect(first.files).toHaveLength(2)
+    // Two of the five are forks — read off the whole set, though only two rows went out.
+    expect(first.total).toBe(5)
+    expect(first.agents).toBe(3)
+    expect(first.forks).toBe(2)
+    // The same answer from a page that holds neither fork.
+    const tail = pageOfAgents(all, 2, 4)
+    expect(tail.files.map(x => x.agentId)).toEqual(['c'])
+    expect(tail.agents).toBe(3)
+    expect(tail.forks).toBe(2)
+  })
+
+  it('adds up: agents + forks is every row', () => {
+    const all = [f('a', 3), f('b', 2, true), f('c', 1)]
+    const p = pageOfAgents(all, 20, 0)
+    expect(p.agents + p.forks).toBe(p.total)
+  })
+})
+
+describe('isForkMeta — the harness says so, and nothing here infers it', () => {
+  it('reads the harness\'s own boolean', () => {
+    expect(isForkMeta({ isFork: true })).toBe(true)
+    expect(isForkMeta({ isFork: false })).toBe(false)
+    expect(isForkMeta({})).toBe(false)
+  })
+
+  it('accepts the agentType the row is already labelled by', () => {
+    expect(isForkMeta({ agentType: 'fork' })).toBe(true)
+    expect(isForkMeta({ agentType: 'general-purpose' })).toBe(false)
+  })
+
+  /**
+   * The inference a reader reaches for, and why it is not here.
+   *
+   * Measured over 542 metas on one machine: 12 of the 17 forks carry a `toolUseId` and 2
+   * `general-purpose` agents carry none, so "nothing claimed it with a tool_use" separates neither
+   * direction. `parseSubagentMeta` therefore keeps `isFork` and this predicate never looks at
+   * `toolUseId`.
+   */
+  it('does not treat a missing toolUseId as a fork, nor a present one as an agent', () => {
+    expect(isForkMeta(parseSubagentMeta('a', JSON.stringify({
+      agentType: 'general-purpose', toolUseId: null, spawnDepth: 1,
+    })))).toBe(false)
+    expect(isForkMeta(parseSubagentMeta('b', JSON.stringify({
+      agentType: 'fork', isFork: true, toolUseId: 'toolu_01RkfWyZyJb5jQn43wZ1TwpV', spawnDepth: 1,
+    })))).toBe(true)
+  })
+
+  it('an unreadable meta is not a fork — the count is only ever raised by what was written', () => {
+    expect(isForkMeta(parseSubagentMeta('c', 'not json'))).toBe(false)
   })
 })

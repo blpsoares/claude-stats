@@ -23,7 +23,7 @@ import type { CliLang } from '../cli-lang'
 import { readChatWindow, resolveChatTranscriptPath, type ChatTurn } from './chat-tail'
 import { conversationOfRow } from './row-conversation'
 import {
-  DEFAULT_AGENT_PAGE, agentIdFromFile, pageOfAgents, parseSubagentMeta, parseTaskOutcomes,
+  DEFAULT_AGENT_PAGE, agentIdFromFile, isForkMeta, pageOfAgents, parseSubagentMeta, parseTaskOutcomes,
   subagentCost, subagentStatus, summarizeSubagent,
   type AgentFile, type SubagentMeta, type SubagentStatus, type SubagentUsage,
 } from './subagents'
@@ -44,6 +44,8 @@ export interface SubagentRow {
   /** The parent's `tool_use` id — the same `ref` the Live feed's row carries. */
   toolUseId?: string
   spawnDepth?: number
+  /** This row is a conversation FORK, not an agent this conversation dispatched. */
+  isFork: boolean
   /** The four counters, or `null` when the agent has not answered yet. NEVER a zeroed breakdown. */
   tokens: TokenBreakdown | null
   /** Every counter summed — the number the word "tokens" means here. `null` with `tokens`. */
@@ -61,8 +63,18 @@ export type SubagentsPayload =
       ok: true
       supported: true
       rows: SubagentRow[]
-      /** How many agents exist in all, so a page can say it is a page. */
+      /** How many rows exist in all, so a page can say it is a page. Agents AND forks. */
       total: number
+      /**
+       * How many of them this conversation DISPATCHED — the number "subagents" means.
+       *
+       * Reported apart from `total` because the two answer different questions and the client
+       * cannot derive one from the other: it holds a PAGE, so it can label the rows in front of it
+       * and cannot recount the ones behind. `agents + forks === total`.
+       */
+      agents: number
+      /** How many of them are conversation FORKS — real work, dispatched by nothing. */
+      forks: number
       /** There are older ones behind this page. */
       hasMore: boolean
     }
@@ -158,22 +170,38 @@ export async function readSessionSubagents(
   let names: string[]
   // A conversation that ran no subagents has no directory at all — a real empty list, and a
   // different fact from the harness not recording them.
-  try { names = await readdir(dir) } catch { return { ok: true, supported: true, rows: [], total: 0, hasMore: false } }
+  try { names = await readdir(dir) } catch {
+    return { ok: true, supported: true, rows: [], total: 0, agents: 0, forks: 0, hasMore: false }
+  }
 
   /**
-   * ONE `stat` PER AGENT, and nothing opened yet.
+   * ONE `stat` AND ONE META PER AGENT, and no transcript opened yet.
    *
    * This is the whole point of paging here: choosing which twenty to show costs a stat each, while
    * SUMMARISING one costs reading its transcript. 57 agents over 35 MB is what made this tab take
    * long enough to look broken.
+   *
+   * The META joins that pass because the FORK/AGENT split has to be counted over everything, not
+   * over the page — a client holding twenty of fifty-seven rows cannot recount the rest. It is a
+   * cheap read and measured rather than assumed: 542 metas on this machine average 150 bytes and
+   * the largest single conversation's 111 of them come to 17 kB, against the 4,4 MB transcript scan
+   * `readOutcomes` already does on this same request. The meta is kept and handed to the page's
+   * rows below, so it is read ONCE either way.
    */
   const files: AgentFile[] = []
+  const metas = new Map<string, SubagentMeta>()
   await Promise.all(names.map(async name => {
     const agentId = agentIdFromFile(name)
     if (!agentId) return
     const st = await stat(`${dir}/${name}`).catch(() => null)
+    const meta = await readFile(`${dir}/agent-${agentId}.meta.json`, 'utf-8')
+      .then(raw => parseSubagentMeta(agentId, raw))
+      .catch((): SubagentMeta => ({ agentId }))
+    metas.set(agentId, meta)
     // A file we cannot stat still EXISTS and is still an agent; it simply sorts oldest.
-    files.push({ agentId, mtimeMs: st?.mtimeMs ?? 0 })
+    // A meta we cannot READ leaves `isFork` false — an unreadable record is not evidence of a fork,
+    // and this count may only ever be raised by something the harness actually wrote.
+    files.push({ agentId, mtimeMs: st?.mtimeMs ?? 0, isFork: isForkMeta(meta) })
   }))
   const chosen = pageOfAgents(files, page.limit ?? DEFAULT_AGENT_PAGE, page.offset ?? 0)
 
@@ -181,9 +209,7 @@ export async function readSessionSubagents(
 
   const rows: SubagentRow[] = []
   for (const { agentId } of chosen.files) {
-    const meta = await readFile(`${dir}/agent-${agentId}.meta.json`, 'utf-8')
-      .then(raw => parseSubagentMeta(agentId, raw))
-      .catch((): SubagentMeta => ({ agentId }))
+    const meta = metas.get(agentId) ?? { agentId }
     const usage = await summarize(`${dir}/agent-${agentId}.jsonl`)
     const tokens = usage.tokens
     rows.push({
@@ -194,6 +220,7 @@ export async function readSessionSubagents(
       ...(usage.model ? { modelId: usage.model } : {}),
       ...(meta.toolUseId ? { toolUseId: meta.toolUseId } : {}),
       ...(meta.spawnDepth !== undefined ? { spawnDepth: meta.spawnDepth } : {}),
+      isFork: isForkMeta(meta),
       status: subagentStatus(outcomes.get(agentId), r.live),
       tokens,
       totalTokens: tokens ? totalTokens(tokens) : null,
@@ -207,7 +234,10 @@ export async function readSessionSubagents(
 
   // The ORDER was already decided by `pageOfAgents`, from the files' own last-write times — not
   // re-sorted here on `startedAt`, or page 2 would interleave with page 1.
-  return { ok: true, supported: true, rows, total: chosen.total, hasMore: chosen.hasMore }
+  return {
+    ok: true, supported: true, rows,
+    total: chosen.total, agents: chosen.agents, forks: chosen.forks, hasMore: chosen.hasMore,
+  }
 }
 
 export type SubagentActivityPayload =

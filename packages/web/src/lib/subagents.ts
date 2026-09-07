@@ -31,6 +31,8 @@ export interface SubagentRow {
   status: SubagentStatus
   toolUseId?: string
   spawnDepth?: number
+  /** This row is a conversation FORK, not an agent this conversation dispatched. */
+  isFork: boolean
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
   totalTokens: number | null
   costUSD: number | null
@@ -41,21 +43,36 @@ export interface SubagentRow {
 }
 
 export type SubagentsPayload =
-  | { ok: true; supported: true; rows: SubagentRow[]; total: number; hasMore: boolean }
+  | {
+      ok: true; supported: true; rows: SubagentRow[]
+      /** Every row — agents AND forks, because the list shows both. */
+      total: number
+      /** The rows this conversation DISPATCHED. `agents + forks === total`. */
+      agents: number
+      /** The rows that are conversation FORKS. */
+      forks: number
+      hasMore: boolean
+    }
   | { ok: true; supported: false; message: string }
   | { ok: false; message: string }
 
 /** What the panel holds while the tab is open. */
 export type SubagentsState =
   | { phase: 'loading' }
-  | { phase: 'ready'; rows: SubagentRow[]; total: number; hasMore: boolean }
+  | {
+      phase: 'ready'; rows: SubagentRow[]
+      total: number; agents: number; forks: number; hasMore: boolean
+    }
   | { phase: 'unsupported'; message: string }
   | { phase: 'failed'; message: string }
 
 export function subagentsStateOf(payload: SubagentsPayload): SubagentsState {
   if (!payload.ok) return { phase: 'failed', message: payload.message }
   if (!payload.supported) return { phase: 'unsupported', message: payload.message }
-  return { phase: 'ready', rows: payload.rows, total: payload.total, hasMore: payload.hasMore }
+  return {
+    phase: 'ready', rows: payload.rows,
+    total: payload.total, agents: payload.agents, forks: payload.forks, hasMore: payload.hasMore,
+  }
 }
 
 /** How many are loaded at a time. Matches the server's own default. */
@@ -83,9 +100,41 @@ export function appendPage(have: readonly SubagentRow[], page: readonly Subagent
  *
  * `null` is what stops the tab reading `0` on a harness that simply does not record subagents —
  * the same N/A-versus-a-confident-0 rule the dashboard applies to every capability-gated metric.
+ *
+ * It is `agents`, NOT `total`: a conversation FORK is listed here and is not a subagent, because
+ * nothing dispatched it. The row was already labelled `fork` while the badge above it went on
+ * counting it, so the aside said "Subagents 1" beside a metrics card that said none had run — the
+ * two halves of one screen contradicting each other, which is the complaint this answers. The split
+ * has to come from the server: the rows are PAGED, so this side can label what it holds and cannot
+ * recount what it has never seen.
  */
 export function subagentCount(state: SubagentsState | null): number | null {
-  return state?.phase === 'ready' ? state.total : null
+  return state?.phase === 'ready' ? state.agents : null
+}
+
+/** How many rows are forks — 0 when there are none, `null` when nothing can be counted. */
+export function forkCount(state: SubagentsState | null): number | null {
+  return state?.phase === 'ready' ? state.forks : null
+}
+
+/**
+ * The sentence that keeps the badge and the list from reading as a contradiction.
+ *
+ * The badge counts agents; the list shows forks too. With no line saying so, a badge reading 3 over
+ * four rows is the same "two halves of one screen disagreeing" the count itself was fixed for — so
+ * whenever a fork is in the list, the list says what it is holding. Absent when there are none.
+ */
+export function forkNote(state: SubagentsState | null, pt: boolean): string | null {
+  if (state?.phase !== 'ready' || state.forks === 0) return null
+  const n = state.forks
+  if (pt) {
+    return n === 1
+      ? 'Um destes é um fork desta conversa, não um subagente: nada o despachou. Ele conta na lista e fora da contagem.'
+      : `${n} destes são forks desta conversa, não subagentes: nada os despachou. Contam na lista e fora da contagem.`
+  }
+  return n === 1
+    ? 'One of these is a fork of this conversation, not a subagent: nothing dispatched it. It is in the list and outside the count.'
+    : `${n} of these are forks of this conversation, not subagents: nothing dispatched them. They are in the list and outside the count.`
 }
 
 /** How many are running right now — the number worth putting on the tab beside the total. */

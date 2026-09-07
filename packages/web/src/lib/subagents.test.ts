@@ -1,19 +1,31 @@
 import { describe, expect, it } from 'bun:test'
 import {
-  SUBAGENT_POLL_MS, appendPage, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
-  subagentsStateOf, unmeasuredText, unpricedText, type SubagentRow,
+  SUBAGENT_POLL_MS, appendPage, forkCount, forkNote, runningCount, subagentCount,
+  subagentStatusText, subagentsPollMs, subagentsStateOf, unmeasuredText, unpricedText,
+  type SubagentRow, type SubagentsState,
 } from './subagents'
 
 const row = (o: Partial<SubagentRow> = {}): SubagentRow => ({
-  agentId: 'a1', status: 'finished', tokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+  agentId: 'a1', status: 'finished', isFork: false,
+  tokens: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
   totalTokens: 4, costUSD: 0.01, toolCalls: 2, turns: 3, ...o,
 })
+
+/** A ready state, with the split the server sends. `total` defaults to agents + forks. */
+const ready = (o: Partial<Extract<SubagentsState, { phase: 'ready' }>> = {}): SubagentsState => {
+  const agents = o.agents ?? 0
+  const forks = o.forks ?? 0
+  return {
+    phase: 'ready', rows: o.rows ?? [], agents, forks,
+    total: o.total ?? agents + forks, hasMore: o.hasMore ?? false,
+  }
+}
 
 describe('subagentsStateOf — three answers, never one empty box', () => {
   it('keeps "this harness cannot report them" apart from "it ran none"', () => {
     expect(subagentsStateOf({ ok: true, supported: false, message: 'codex does not…' }).phase).toBe('unsupported')
-    expect(subagentsStateOf({ ok: true, supported: true, rows: [], total: 0, hasMore: false }))
-      .toEqual({ phase: 'ready', rows: [], total: 0, hasMore: false })
+    expect(subagentsStateOf({ ok: true, supported: true, rows: [], total: 0, agents: 0, forks: 0, hasMore: false }))
+      .toEqual({ phase: 'ready', rows: [], total: 0, agents: 0, forks: 0, hasMore: false })
   })
 
   it('keeps a refusal apart from both', () => {
@@ -23,9 +35,23 @@ describe('subagentsStateOf — three answers, never one empty box', () => {
 
 describe('subagentCount — the tab never says 0 for something it cannot count', () => {
   it('counts a supported session', () => {
-    // The TOTAL, not what is loaded — a paged tab would otherwise say 20 for 57.
-    expect(subagentCount({ phase: 'ready', rows: [row()], total: 57, hasMore: true })).toBe(57)
-    expect(subagentCount({ phase: 'ready', rows: [], total: 0, hasMore: false })).toBe(0)
+    // Every agent, not what is loaded — a paged tab would otherwise say 20 for 57.
+    expect(subagentCount(ready({ rows: [row()], agents: 57, hasMore: true }))).toBe(57)
+    expect(subagentCount(ready())).toBe(0)
+  })
+
+  /**
+   * A FORK IS NOT A SUBAGENT, and the badge is where that had gone on being wrong.
+   *
+   * The row was already labelled `fork`; the NUMBER above it kept summing them, because it read
+   * the route's `total` and the rows are paged, so this side could not recount. The server now
+   * sends the split and this reads the half that means "dispatched".
+   */
+  it('leaves forks out of the badge — nothing dispatched them', () => {
+    expect(subagentCount(ready({ rows: [row({ isFork: true })], agents: 0, forks: 1 }))).toBe(0)
+    expect(subagentCount(ready({ agents: 3, forks: 2 }))).toBe(3)
+    // The list still holds both — the badge is the only place they are separated.
+    expect(forkCount(ready({ agents: 3, forks: 2 }))).toBe(2)
   })
 
   it('answers null wherever a count would be a claim', () => {
@@ -33,17 +59,39 @@ describe('subagentCount — the tab never says 0 for something it cannot count',
     expect(subagentCount({ phase: 'failed', message: 'x' })).toBe(null)
     expect(subagentCount({ phase: 'loading' })).toBe(null)
     expect(subagentCount(null)).toBe(null)
+    expect(forkCount({ phase: 'loading' })).toBe(null)
+    expect(forkCount(null)).toBe(null)
+  })
+})
+
+describe('forkNote — the list says what the badge left out', () => {
+  /**
+   * Without it a badge reading 3 over four rows is the same two-halves-of-one-screen disagreement
+   * the count itself was fixed for.
+   */
+  it('names the forks in the list, in both languages', () => {
+    const one = ready({ rows: [row({ isFork: true })], agents: 0, forks: 1 })
+    expect(forkNote(one, false)).toContain('One of these is a fork')
+    expect(forkNote(one, true)).toContain('Um destes é um fork')
+    expect(forkNote(ready({ agents: 3, forks: 2 }), false)).toContain('2 of these are forks')
+    expect(forkNote(ready({ agents: 3, forks: 2 }), true)).toContain('2 destes são forks')
+  })
+
+  it('is absent when there is no fork to explain', () => {
+    expect(forkNote(ready({ agents: 3 }), false)).toBe(null)
+    expect(forkNote({ phase: 'unsupported', message: 'x' }, false)).toBe(null)
+    expect(forkNote(null, false)).toBe(null)
   })
 })
 
 describe('subagentsPollMs — only what can still change', () => {
   it('polls while an agent is running', () => {
-    expect(subagentsPollMs({ phase: 'ready', rows: [row({ status: 'running' }), row()], total: 0, hasMore: false })).toBe(SUBAGENT_POLL_MS)
-    expect(runningCount({ phase: 'ready', rows: [row({ status: 'running' })], total: 0, hasMore: false })).toBe(1)
+    expect(subagentsPollMs(ready({ rows: [row({ status: 'running' }), row()] }))).toBe(SUBAGENT_POLL_MS)
+    expect(runningCount(ready({ rows: [row({ status: 'running' })] }))).toBe(1)
   })
 
   it('stops once everything has stopped — the list costs a full read of the parent', () => {
-    expect(subagentsPollMs({ phase: 'ready', rows: [row(), row({ status: 'failed' })], total: 0, hasMore: false })).toBe(null)
+    expect(subagentsPollMs(ready({ rows: [row(), row({ status: 'failed' })] }))).toBe(null)
     expect(subagentsPollMs({ phase: 'unsupported', message: 'x' })).toBe(null)
     expect(subagentsPollMs(null)).toBe(null)
   })

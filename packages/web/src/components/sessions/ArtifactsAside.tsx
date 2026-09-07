@@ -51,7 +51,7 @@ import {
   type StepPayload, type StepState,
 } from '../../lib/stepDetail'
 import {
-  SUBAGENT_PAGE, appendPage, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
+  SUBAGENT_PAGE, appendPage, forkNote, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
   subagentsStateOf, unmeasuredText, unpricedText,
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
@@ -935,8 +935,17 @@ export function ArtifactsAside({
         ? 'Esta conversa não delegou nada a um subagente.'
         : 'This conversation has not delegated anything to a subagent.'} />
     }
+    const forks = forkNote(st, pt)
     return (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
+        {/* THE LIST SAYS WHAT THE BADGE LEFT OUT. The badge counts agents and the list shows forks
+            too, so without this line a badge reading 3 over four rows is the same two-halves-
+            disagreeing the count was fixed for. Absent when there is no fork here. */}
+        {forks !== null && (
+          <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {forks}
+          </p>
+        )}
         {/* A PAGE SAYS IT IS A PAGE. Newest first, by each agent's last activity. */}
         {st.total > st.rows.length && (
           <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
@@ -1936,15 +1945,19 @@ function SubagentCard({ row, pt, now, onOpen }: {
    *
    * Reported as the two halves of one screen contradicting each other: this panel showed
    * "Subagents 1" while the session's own metrics card said none had run. The card was RIGHT. What
-   * is listed here is a conversation FORK — `agentType: 'fork'`, no `toolUseId`, claimed by no
-   * `tool_use` anywhere — and `agent-metrics.ts` deliberately files those outside the invocation
-   * list for exactly that reason: nothing dispatched it, so counting it as an agent this session
-   * ran would make the totals wrong in the direction that reads as work you did not do.
+   * is listed here is a conversation FORK, and `agent-metrics.ts` deliberately files those outside
+   * the invocation list: nothing dispatched it, so counting it as an agent this session ran would
+   * make the totals wrong in the direction that reads as work you did not do.
    *
    * It is still SHOWN, because it is real work with real tokens against this conversation and
    * finding it any other way means a file manager. It is shown as what it is.
+   *
+   * `isFork` comes from the SERVER, which reads the harness's own `isFork` boolean out of the meta.
+   * This side used to re-derive it from `agentType`, which worked and was a second implementation
+   * of one rule — and it is the server's copy that has to be right anyway, because the BADGE is
+   * counted there over rows this side never receives.
    */
-  const isFork = row.agentType === 'fork'
+  const isFork = row.isFork
   return (
     <button
       onClick={onOpen}
