@@ -2196,18 +2196,18 @@ harness must not break.
   - **`FiltersBar` `compact` prop** (used on mobile): hides the vestigial vertical dividers and tightens padding. On mobile the controls also stretch to fill each row (date presets `flex:1`, custom range full-width, the ＋ Filtro button full-width).
   - **`FiltersBar` "＋ Filtro" model**: the top bar shows only the date presets + custom range + a single dashed **＋ Filtro** button (with an active-dimension count badge). It opens a menu of the *available* dimensions (Members/Harnesses/Presence shown only on central-with-data; Repos only when a repo dimension exists; Projects/Models when present); picking one opens that dimension's inline value picker (Projects opens the full `ProjectsModal`). The selected values are NOT shown in the top bar — they render in the animated per-category chip rows below (`AnimatedRow`/`ChipRow`/`FilterChip`, one row per dimension incl. Presence). Do not re-add always-visible dimension dropdowns to the top bar.
   - **Full-screen modals on mobile**: ProjectsModal, SessionDrilldownModal, PreferencesModal, the transcript viewer, etc. render full-screen (overlay padding 0, width/height 100%, `borderRadius: 0`) — iOS Safari pushes centered fixed-width modals off-screen when the page overflows horizontally.
-  - **THE SESSIONS WORKSPACE LOCKS THE DOCUMENT ON A PHONE, AND NOTHING ELSE DOES.** It is a
-    fixed-height column whose conversation, list and aside each scroll inside themselves, so every
-    pixel of document scroll there is spurious — a rubber-band chained off an inner scroller, or a
-    keyboard scroll iOS never undid (which is why the composer and the nav came back higher than
-    they went). `html.ag-viewport-locked` (a fixed body) + `overscroll-behavior: contain` on every
-    scroller. The keyboard is then MEASURED (`lib/mobileViewport.ts`, `hooks/useVisualViewport.ts`)
-    and **spent as PADDING on a `100dvh` shell — never as a shorter box**: a box sized to the
-    visible band ends above the bottom of the screen, and since `#root` clips, every
-    `position: fixed` descendant anchors to THAT edge — the bar and the composer came up already
-    floating, before any keyboard. The visible band is also not reliably the screen at rest
-    (collapsing toolbars, a non-zero `offsetTop`). Every other page keeps the window as its
-    scroller: they are columns of cards that grow past the fold.
+  - **THE SESSIONS WORKSPACE STOPS THE DOCUMENT BOUNCING, AND NEVER BY RE-ANCHORING IT.** It is a
+    fixed-height column whose conversation, list and aside each scroll inside themselves, so a flick
+    off the end of one chains to the document and rubber-bands the page; and iOS scrolls the page
+    for the caret and does not always undo it (which is why the composer and the nav came back
+    higher than they went). The fixes are `overscroll-behavior: none` on the document there plus
+    `contain` on every inner scroller — PAINT-ONLY — and putting the scroll back when the keyboard
+    closes. **`position: fixed` on the body was tried TWICE and reverted both times**: it moves the
+    initial containing block onto the SMALL viewport, so `100dvh` overflows the locked box and
+    `#root`'s clip takes the foot of the column off screen, while sizing the shell to
+    `visualViewport.height` instead ends it above the floor with the fixed nav anchored to that
+    edge. Three position reports in an hour. `lib/mobileViewport.ts` measures ONE thing (is the
+    keyboard up) and sizes NOTHING: a measurement may inform a decision, it may not become a box.
   - **`Enter` breaks the line on a phone and sends on a hardware keyboard.** `shift+enter` needs a
     shift key a software keyboard does not have. `TtyChat` already split this way; gate on
     `isMobile`, never on the harness or the field.

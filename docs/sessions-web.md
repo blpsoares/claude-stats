@@ -133,27 +133,32 @@ Full parity, not a subset — the aside, the metrics screen and the filters are 
   desktop's `FileText` icon with **no count**.
 - **The magnifier button lives in the bar**, not floating over the conversation.
 
-### The document is LOCKED on this screen, and only this screen
+### The document must not bounce here, and the keyboard must not strand it
 
 The workspace is a fixed-height column whose conversation, list and aside each scroll inside
-themselves — so it has nothing to scroll, and every pixel the document moved was spurious: a
-rubber-band chained off the end of an inner scroller, or a keyboard scroll iOS never undid. Both
-were reported together, which is what named the cause.
+themselves — so a flick that runs off the end of one of them has nowhere to chain but the document,
+which bounces the whole page (the header dragged out from under the status bar). And iOS scrolls
+the page to bring the caret into view when the keyboard opens, which is the part that WORKS — the
+composer riding up with it — but does not always undo it, so the composer and the fixed bar both
+come back a little higher than they went. Both were reported together.
 
-`html.ag-viewport-locked` (a fixed body) plus `overscroll-behavior: contain` on every scroller stops
-both. The keyboard is then handled by **measurement, not by scrolling**: `mobileViewport.ts` reads
-`visualViewport` and the shell spends the **`keyboardInset` as padding** while keeping
-`height: 100dvh`.
+Both fixes are **non-structural**, and that is the point:
 
-**The inset is padding and never a shorter box** — that was tried and reverted within the hour. A
-box sized to the visible band ends above the bottom of the screen, and because `#root` clips on a
-phone, every `position: fixed` descendant anchors to THAT edge: the bottom bar and the composer came
-up already floating, before any keyboard. The visible band is also not reliably the screen at rest
-(Safari's collapsing toolbars, a non-zero `offsetTop`), which is exactly when a shell must be right
-with nothing having happened yet.
+- `overscroll-behavior: none` on the document in this workspace (`html.ag-viewport-locked`), plus
+  `contain` on every inner scroller. Paint-only: no box, no containing block, no unit changes.
+- The scroll is **put back when the keyboard closes**. iOS keeps doing the caret scroll.
+
+**Preventing the scroll structurally was tried twice and reverted.** `position: fixed` on the body
+is the usual iOS scroll-lock recipe, and it also moves the initial containing block onto the SMALL
+viewport — so every viewport unit and every `position: fixed` descendant in the tree starts
+measuring against a different box. `100dvh` then overflowed the locked box and `#root`'s clip took
+the foot of the column off the screen; sizing the shell to `visualViewport.height` instead ended it
+above the floor with the bottom bar anchored to that edge. Three position reports in an hour, from
+two different numbers and one wrong idea: **a layout that is correct must not be re-anchored to fix
+a scroll.** `mobileViewport.ts` now measures one thing — is the keyboard up — and sizes nothing.
 
 Every other page keeps the window as its scroller, deliberately: they are columns of cards that grow
-past the fold, and locking them would strand the reader on the first screenful.
+past the fold.
 
 ---
 
