@@ -166,6 +166,12 @@ export interface CliStrings {
   sessChooseUnknown: (harness: string) => string
   /** The chosen option went in — and the sentence names WHICH, because that is the whole point. */
   sessAnswered: (label: string) => string
+  /** The answer landed and the session immediately asked something ELSE. */
+  sessAnsweredNewQuestion: (label: string) => string
+  /** The keystroke was delivered and the dialog did not react to it. */
+  sessAnswerStuck: (label: string) => string
+  /** The write-your-own row was picked and no text field opened for it. */
+  sessAnswerNoField: (label: string) => string
   /** Nothing fell, or everything that did has already been picked back up. */
   sessNoFell: string
   sessFellOpened: (opened: number, skipped: number, held: number) => string
@@ -550,6 +556,17 @@ const EN: CliStrings = {
   sessChooseUnknown: (harness: string) =>
     `agentop has no verified way to pick an option on ${harness}, and will not confirm the highlighted one for you — attach to answer it there.`,
   sessAnswered: (label: string) => `answered: ${label}`,
+  sessAnsweredNewQuestion: (label: string) =>
+    `answered: ${label} — and the session is already asking something else, which is why a question `
+    + 'is still on screen. Nothing was pressed into the new one.',
+  sessAnswerStuck: (label: string) =>
+    `the key for "${label}" was delivered and the dialog did not move. Nothing else was pressed — `
+    + 'answer it in the session itself (attach), because pressing again could act on a row you did '
+    + 'not choose.',
+  sessAnswerNoField: (label: string) =>
+    `"${label}" did not open a field to type into, so nothing was typed — the words would have gone `
+    + 'wherever the session was listening and the return would have submitted whatever was '
+    + 'highlighted. Answer it in the session itself (attach).',
   sessNoFell: 'nothing fell — no session was lost with the machine still on record.',
   sessFellOpened: (opened: number, skipped: number, held: number) =>
     `reopened ${opened} session(s) that fell.`
@@ -848,6 +865,17 @@ const PT: CliStrings = {
   sessChooseUnknown: (harness: string) =>
     `o agentop não tem forma verificada de escolher uma opção no ${harness}, e não vai confirmar a destacada por você — anexe para responder lá.`,
   sessAnswered: (label: string) => `respondido: ${label}`,
+  sessAnsweredNewQuestion: (label: string) =>
+    `respondido: ${label} — e a sessão já está perguntando outra coisa, que é por isso que ainda há `
+    + 'uma pergunta na tela. Nada foi enviado para a nova.',
+  sessAnswerStuck: (label: string) =>
+    `a tecla de "${label}" foi entregue e o diálogo não se moveu. Nada mais foi enviado — responda `
+    + 'na própria sessão (attach), porque apertar de novo poderia agir sobre uma opção que você não '
+    + 'escolheu.',
+  sessAnswerNoField: (label: string) =>
+    `"${label}" não abriu um campo para escrever, então nada foi digitado — as palavras iriam para `
+    + 'onde a sessão estivesse ouvindo e o enter submeteria o que estivesse em foco. Responda na '
+    + 'própria sessão (attach).',
   sessNoFell: 'nada caiu — nenhuma sessão foi perdida com registro de que estava viva.',
   sessFellOpened: (opened: number, skipped: number, held: number) =>
     `${opened} sessão(ões) que caíram reabertas.`

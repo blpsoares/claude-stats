@@ -269,18 +269,6 @@ export const tmuxBackend: SessionBackend = {
    * know a submit showed. A frame that never moves still gets the text: the budget is spent, not
    * the answer, exactly as it is there.
    */
-  async sendChoiceText(id: string, key: string, text: string): Promise<boolean> {
-    const before = await captureFrame(id)
-    if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return false
-    // The option turning into a field IS a frame change; waiting for it is waiting for the mode to
-    // switch. Bounded, because a pane that will not move must not hold the request open.
-    await paneMoved(id, before)
-    await sleep(SUBMIT_SETTLE_MS)
-    if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return false
-    await sleep(SUBMIT_SETTLE_MS)
-    return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
-  },
-
   async sendTextRaw(id: string, text: string) {
     // Literal only, NO Enter — the first half of `sendTextTo`. This is what the browser's key-by-key
     // channel needs: a character appears without submitting a turn.

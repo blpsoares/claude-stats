@@ -401,14 +401,7 @@ export interface SessionBackend {
    * poll and the keystroke is an ordinary outcome, not an error to crash a caller with.
    */
   sendText(id: string, text: string): Promise<boolean>
-  /**
-   * Pick a numbered option and write into the FIELD it opens — see the tmux implementation.
-   *
-   * One call rather than three, because the wait between the keystrokes is the whole point: sent as
-   * a burst, the option's digit lands inside the field it just opened.
-   */
-  sendChoiceText?(id: string, key: string, text: string): Promise<boolean>
-  /**
+    /**
    * Type literal text into the session WITHOUT submitting — the first half of `sendText`, exposed on
    * its own for the browser's key-by-key write channel (`input-web.ts`), where an implicit `Enter`
    * would turn every keystroke into a submitted turn.
