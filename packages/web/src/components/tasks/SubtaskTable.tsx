@@ -16,6 +16,7 @@ import { Plus, Terminal, Trash2, X } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { COLUMN_ORDER, STATUS, field, microLabel, pill, surface, type BoardStatus } from './board'
 import { SessionPicker } from './SessionPicker'
+import { DatePicker } from '../DatePicker'
 import type { Subtask, TaskStatus } from '../../lib/tasks'
 
 function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStatus) => void }) {
@@ -145,18 +146,20 @@ export function SubtaskTable(p: SubtaskTableProps) {
                   style={bare}
                 />
               </td>
+              {/* The dashboard's own picker, not `<input type="date">`: one calendar in the app,
+                  and a control that fits the column instead of overflowing it. The label is empty
+                  because the column heading above already says which date this is. */}
               <td style={cell}>
-                <input
-                  type="date" defaultValue={t.startDate ?? ''}
-                  onChange={e => void p.onPatch(t.id, { startDate: e.target.value })}
-                  style={{ ...bare, colorScheme: 'dark', color: t.startDate ? 'var(--text-secondary)' : 'var(--text-tertiary)' }}
+                <DatePicker
+                  value={t.startDate ?? ''} label="" placeholder="—" lang="en"
+                  onChange={v => void p.onPatch(t.id, { startDate: v })}
                 />
               </td>
               <td style={cell}>
-                <input
-                  type="date" defaultValue={t.dueDate ?? ''}
-                  onChange={e => void p.onPatch(t.id, { dueDate: e.target.value })}
-                  style={{ ...bare, colorScheme: 'dark', color: t.dueDate ? 'var(--text-secondary)' : 'var(--text-tertiary)' }}
+                <DatePicker
+                  value={t.dueDate ?? ''} label="" placeholder="—" lang="en"
+                  min={t.startDate || undefined}
+                  onChange={v => void p.onPatch(t.id, { dueDate: v })}
                 />
               </td>
               <td style={cell}>

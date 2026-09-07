@@ -10,7 +10,8 @@
  * in the grid and another in the columns is two boards.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ArrowDownUp, LayoutList, Rows3, X } from 'lucide-react'
 import { PRIORITY_ORDER, type SortKey, type SortSpec } from '@agentistics/core'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -54,12 +55,58 @@ export interface BoardArrangeProps {
 export function BoardArrange(p: BoardArrangeProps) {
   const isMobile = useIsMobile()
   const [menu, setMenu] = useState<'sort' | 'lanes' | 'wip' | null>(null)
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null)
+  const bar = useRef<HTMLDivElement>(null)
 
-  const box: React.CSSProperties = {
-    position: 'absolute', top: 34, right: 0, zIndex: 41, width: 230,
-    ...surface, background: 'var(--bg-elevated)', padding: 8, display: 'grid', gap: 3,
-    boxShadow: 'var(--shadow-elevated)', maxHeight: 340, overflowY: 'auto',
+  /**
+   * The panels are FIXED and live in a portal, and they open to the RIGHT of their button.
+   *
+   * Both halves were wrong before. `position: absolute` put them in the page's own stacking
+   * context, so the sidebar — which is fixed and higher — drew straight over them; and `right: 0`
+   * hung them off the button's right edge, so they opened LEFTWARD, across the nav and off the
+   * screen. `fixed` + a portal means no ancestor's overflow or z-index can clip them, and
+   * left-aligning to the trigger opens them into the board, which is where the space is.
+   *
+   * They close on scroll rather than chasing the button: a panel that drifts away from the control
+   * it belongs to is worse than one that closed. Same rule the settings popovers follow.
+   */
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [menu])
+
+  const openAt = (which: 'sort' | 'lanes' | 'wip') => (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (menu === which) { setMenu(null); return }
+    const r = e.currentTarget.getBoundingClientRect()
+    const width = which === 'wip' ? 260 : 230
+    setAt({
+      // Clamped to the viewport, so a button near the right edge does not open a panel half off it.
+      left: Math.min(r.left, window.innerWidth - width - 12),
+      top: r.bottom + 6,
+    })
+    setMenu(which)
   }
+
+  const panel = (which: 'sort' | 'lanes' | 'wip', width: number, body: React.ReactNode) =>
+    menu === which && at
+      ? createPortal(
+        <>
+          <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 1199 }} />
+          <div style={{
+            position: 'fixed', left: at.left, top: at.top, width, zIndex: 1200,
+            ...surface, background: 'var(--bg-elevated)', padding: 8, display: 'grid', gap: 3,
+            boxShadow: 'var(--shadow-elevated)', maxHeight: 340, overflowY: 'auto',
+          }}>{body}</div>
+        </>,
+        document.body,
+      )
+      : null
   const row = (on: boolean): React.CSSProperties => ({
     display: 'flex', gap: 8, alignItems: 'center', textAlign: 'left', width: '100%',
     padding: '6px 8px', borderRadius: 5, cursor: 'pointer', fontSize: 12,
@@ -72,17 +119,15 @@ export function BoardArrange(p: BoardArrangeProps) {
   const limited = Object.keys(p.wip).length
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <div style={{ position: 'relative' }}>
-        <button style={trigger} onClick={() => setMenu(m => (m === 'sort' ? null : 'sort'))}>
+    <div ref={bar} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div>
+        <button style={trigger} onClick={openAt('sort')}>
           <ArrowDownUp size={13} />
           {BOARD_SORTS.find(s => s.key === p.sort.key)?.label ?? 'Order'}
           {p.sort.key !== 'manual' && <span>{p.sort.dir === 'asc' ? '↑' : '↓'}</span>}
         </button>
-        {menu === 'sort' && (
+        {panel('sort', 230, (
           <>
-            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-            <div style={box}>
               <div style={{ ...microLabel, marginBottom: 3 }}>Order cards by</div>
               {BOARD_SORTS.map(s => (
                 <button
@@ -106,19 +151,16 @@ export function BoardArrange(p: BoardArrangeProps) {
               }}>
                 A card nothing could price sorts last whichever way the arrow points.
               </div>
-            </div>
           </>
-        )}
+        ))}
       </div>
 
-      <div style={{ position: 'relative' }}>
-        <button style={trigger} onClick={() => setMenu(m => (m === 'lanes' ? null : 'lanes'))}>
+      <div>
+        <button style={trigger} onClick={openAt('lanes')}>
           <Rows3 size={13} /> {LANE_LABEL[p.lanes]}
         </button>
-        {menu === 'lanes' && (
+        {panel('lanes', 230, (
           <>
-            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-            <div style={box}>
               <div style={{ ...microLabel, marginBottom: 3 }}>Swimlanes</div>
               {LANE_KEYS.map(k => (
                 <button key={k} onClick={() => { setMenu(null); p.onLanes(k) }} style={row(p.lanes === k)}>
@@ -132,19 +174,16 @@ export function BoardArrange(p: BoardArrangeProps) {
                 A lane per value, each holding the whole pipeline — which repository, which agent,
                 which harness is doing what.
               </div>
-            </div>
           </>
-        )}
+        ))}
       </div>
 
-      <div style={{ position: 'relative' }}>
-        <button style={trigger} onClick={() => setMenu(m => (m === 'wip' ? null : 'wip'))}>
+      <div>
+        <button style={trigger} onClick={openAt('wip')}>
           <LayoutList size={13} /> WIP{limited > 0 ? ` · ${limited}` : ''}
         </button>
-        {menu === 'wip' && (
+        {panel('wip', 260, (
           <>
-            <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
-            <div style={{ ...box, width: 260 }}>
               <div style={{ ...microLabel, marginBottom: 3 }}>Cards per column</div>
               {COLUMN_ORDER.map(st => {
                 const c = STATUS[st]
@@ -177,9 +216,8 @@ export function BoardArrange(p: BoardArrangeProps) {
                 A limit WARNS, it never blocks a drop. It is an agreement you make with yourself —
                 a board that refuses work teaches people to route around it.
               </div>
-            </div>
           </>
-        )}
+        ))}
       </div>
 
       {p.lanes === 'priority' && (

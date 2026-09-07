@@ -147,13 +147,26 @@ export const pill = (color?: string): CSSProperties => ({
   color: color ?? 'var(--text-tertiary)',
 })
 
+/**
+ * An input, in the shape every other form in this app draws one.
+ *
+ * It used to be its own thing — `--bg-surface`, a different radius, no focus treatment — which is
+ * why the board's fields read as a different product from the settings screens beside them. The
+ * typeface was never the problem (`index.css` makes controls inherit it); the BOX was.
+ *
+ * `boxSizing: border-box` is load-bearing rather than tidy: `width: 100%` plus padding plus a
+ * border is WIDER than the column that holds it, which is exactly how a date field ends up hanging
+ * out of the rail it lives in.
+ */
 export const field = (mobile: boolean): CSSProperties => ({
   width: '100%',
-  padding: '8px 11px',
-  borderRadius: 'var(--radius-sm)',
+  boxSizing: 'border-box',
+  padding: mobile ? '10px 11px' : '7px 10px',
+  borderRadius: 7,
   border: '1px solid var(--border)',
-  background: 'var(--bg-surface)',
+  background: 'var(--bg-elevated)',
   color: 'var(--text-primary)',
+  fontFamily: 'inherit',
   // 16px on mobile or iOS Safari zooms the viewport and breaks the sticky header.
   fontSize: mobile ? 16 : 13,
   // …and 44px tall, the touch target every control on a phone owes a thumb. The padding alone gave

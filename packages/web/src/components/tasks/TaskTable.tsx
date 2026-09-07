@@ -37,7 +37,9 @@ import {
   type SortKey, type SortSpec, type TaskPriorityId,
 } from '@agentistics/core'
 import { readBoardPrefs, writeBoardPrefs } from './boardPrefs'
+import { ConfirmModal } from '../../pages/settings/primitives'
 import { SessionPicker } from './SessionPicker'
+import { DatePicker } from '../DatePicker'
 import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
 
 /** The words the "sorted by" note uses. Kept beside `COLUMNS`, whose labels they mirror. */
@@ -379,24 +381,18 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
               style={bare}
             />
           </td>
+          {/* See `SubtaskTable`: one date picker in this app, and it fits its column. */}
           <td style={{ padding: cellPad }}>
-            <input
-              type="date" value={t.startDate ?? ''}
-              onChange={e => onPatch(t.id, { startDate: e.target.value })}
-              style={{
-                ...bare, colorScheme: 'dark',
-                color: t.startDate ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-              }}
+            <DatePicker
+              value={t.startDate ?? ''} label="" placeholder="—" lang="en"
+              onChange={v => onPatch(t.id, { startDate: v })}
             />
           </td>
           <td style={{ padding: cellPad }}>
-            <input
-              type="date" value={t.dueDate ?? ''}
-              onChange={e => onPatch(t.id, { dueDate: e.target.value })}
-              style={{
-                ...bare, colorScheme: 'dark',
-                color: t.dueDate ? 'var(--text-secondary)' : 'var(--text-tertiary)',
-              }}
+            <DatePicker
+              value={t.dueDate ?? ''} label="" placeholder="—" lang="en"
+              min={t.startDate || undefined}
+              onChange={v => onPatch(t.id, { dueDate: v })}
             />
           </td>
           <td style={{ padding: cellPad }}>
@@ -480,6 +476,8 @@ export function TaskTable(p: TaskTableProps) {
   const [subDraft, setSubDraft] = useState<Record<string, string>>({})
   /** Which subtask is being given a session — `taskId/subtaskId`, so the patch knows both. */
   const [linkingSub, setLinkingSub] = useState<{ task: string; sub: string } | null>(null)
+  // The board's own dialog, never `window.confirm` — see the note on the detail page's delete.
+  const [confirmBatch, setConfirmBatch] = useState(false)
 
   const cols = useMemo(
     () => COLUMNS.filter(c => shown.includes(c.id)).sort(
@@ -849,6 +847,24 @@ export function TaskTable(p: TaskTableProps) {
         )
       })}
 
+      <ConfirmModal
+        open={confirmBatch}
+        title={`Delete ${selected.size} task${selected.size === 1 ? '' : 's'}?`}
+        message="Their comments, subtasks, files and links go with them. The SESSIONS filed under them are kept — deleting a board entry never deletes work."
+        confirmLabel={`Delete ${selected.size}`}
+        cancelLabel="Keep them"
+        // Typing the count is the guard against a muscle-memory delete of a whole selection: the
+        // one gesture on this board that can take many rows at once.
+        requireText={selected.size > 1 ? String(selected.size) : undefined}
+        requireTextHint={selected.size > 1 ? `Type ${selected.size} to confirm` : undefined}
+        onCancel={() => setConfirmBatch(false)}
+        onConfirm={() => {
+          setConfirmBatch(false)
+          p.onBatchDelete([...selected])
+          setSelected(new Set())
+        }}
+      />
+
       {linkingSub && (
         <SessionPicker
           multiple={false}
@@ -890,11 +906,7 @@ export function TaskTable(p: TaskTableProps) {
             )
           })}
           <button
-            onClick={() => {
-              if (confirm(`Delete ${selected.size} task(s)? Their sessions are kept.`)) {
-                p.onBatchDelete([...selected]); setSelected(new Set())
-              }
-            }}
+            onClick={() => setConfirmBatch(true)}
             style={{ ...button(isMobile), color: 'var(--accent-red)', height: isMobile ? 34 : 26 }}
           ><Trash2 size={13} /></button>
           <button

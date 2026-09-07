@@ -36,12 +36,30 @@ export interface BoardPrefs {
   groups: BoardStatus[] | null
   /** Groups the user folded shut. */
   collapsed: BoardStatus[]
+  /** Which sections of the task detail's right rail are OPEN, by their stable id. */
+  rail: Record<string, boolean>
 }
 
 /** The metrics view is the default, because "what did it cost" is the question the board answers. */
 export const DEFAULT_PREFS: BoardPrefs = {
   view: 'overview', sort: DEFAULT_SORT, lanes: 'none', wip: {},
-  columns: null, groups: null, collapsed: [],
+  columns: null, groups: null, collapsed: [], rail: {},
+}
+
+/**
+ * Is this rail section open?
+ *
+ * Read through a function rather than off the object, because a section the user has never touched
+ * must fall back to the CALLER's default — "not stored" and "stored as shut" are different, and
+ * treating them alike would open every section on a rail somebody deliberately folded.
+ */
+export function railOpen(id: string, fallback: boolean): boolean {
+  const v = readBoardPrefs().rail[id]
+  return typeof v === 'boolean' ? v : fallback
+}
+
+export function setRailOpen(id: string, open: boolean): void {
+  writeBoardPrefs({ rail: { ...readBoardPrefs().rail, [id]: open } })
 }
 
 /** What the kanban's rows are grouped by. `none` is one lane holding everything. */
@@ -85,6 +103,10 @@ export function readBoardPrefs(): BoardPrefs {
       columns: Array.isArray(p.columns) ? (p.columns as ColumnId[]) : null,
       groups: statuses(p.groups),
       collapsed: statuses(p.collapsed) ?? [],
+      rail: p.rail && typeof p.rail === 'object'
+        ? Object.fromEntries(Object.entries(p.rail as Record<string, unknown>)
+          .filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean>
+        : {},
     }
   } catch { return DEFAULT_PREFS }
 }

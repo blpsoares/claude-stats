@@ -21,7 +21,8 @@ import {
   ArrowLeft, BarChart3, Bot, CheckCircle2, ClipboardList, ExternalLink, FileText, Link2,
   Filter, LayoutGrid, MessageSquare, Pencil, Plus, Rows3, Search, Trash2, X, XCircle,
 } from 'lucide-react'
-import { PRIORITY_ORDER, type SortSpec } from '@agentistics/core'
+import { PRIORITY_ORDER, type SortSpec, type TaskPriorityId } from '@agentistics/core'
+import { ChevronDown } from 'lucide-react'
 import { useIsMobile } from '../hooks/useIsMobile'
 import type { AppContext } from '../lib/app-context'
 import { useFleet } from '../lib/fleet'
@@ -38,6 +39,9 @@ import {
   readBoardPrefs, writeBoardPrefs, type BoardView as ViewId, type LaneKey,
 } from '../components/tasks/boardPrefs'
 import { BoardArrange } from '../components/tasks/BoardArrange'
+import { RailSection } from '../components/tasks/RailSection'
+import { ConfirmModal } from './settings/primitives'
+import { DatePicker } from '../components/DatePicker'
 import { AgentsView } from '../components/tasks/AgentsView'
 import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
@@ -53,7 +57,7 @@ import {
   claimTask, editTask, moveTask, setBlockedBy, uploadFile, useNextTasks, useTaskActivity,
   useTaskDetail, useTaskList,
   type AttemptRollup, type AttemptView, type TaskDetail, type TaskFieldPatch, type TaskFile,
-  type TaskListRow, type TaskRecord, type TasksError,
+  type TaskListRow, type TaskRecord, type TasksError, type TaskStatus,
 } from '../lib/tasks'
 
 function EmptyNotice({ error }: { error: TasksError }) {
@@ -120,10 +124,11 @@ function ActivityTab({ id }: { id: string }) {
   )
 }
 
-function PlanCard({ task, busy, onPatch, onClaim }: {
+function PlanCard({ task, busy, onPatch, onStatus, onClaim }: {
   task: TaskRecord
   busy: boolean
   onPatch: (patch: TaskFieldPatch) => void | Promise<void>
+  onStatus: (s: TaskStatus) => void | Promise<void>
   onClaim: (release: boolean) => void | Promise<void>
 }) {
   const isMobile = useIsMobile()
@@ -135,34 +140,41 @@ function PlanCard({ task, busy, onPatch, onClaim }: {
   const lease = task.claim ? claimLeft(task.claim.expiresAt, nowMs) : null
 
   return (
-    <div style={{ ...surface, padding: 14, display: 'grid', gap: 12 }}>
-      <div style={microLabel}>Plan</div>
-
-      <div style={{ display: 'grid', gap: 6 }}>
-        <span style={{ ...microLabel, fontSize: 9 }}>Priority</span>
-        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-          {PRIORITY_ORDER.map(id => {
-            const c = PRIORITY[id]!
-            const on = (task.priority ?? 'none') === id
-            return (
-              <button
-                key={id}
-                disabled={busy}
-                onClick={() => void onPatch({ priority: id })}
-                style={{
-                  padding: '3px 9px', borderRadius: 5, fontSize: 10.5, fontWeight: 600,
-                  cursor: 'pointer', minHeight: isMobile ? 44 : 26,
-                  background: on ? c.dim : 'transparent',
-                  color: on ? c.color : 'var(--text-tertiary)',
-                  border: `1px solid ${on ? c.color : 'var(--border)'}`,
-                }}
-              >{c.label}</button>
-            )
-          })}
+    <div style={{ ...surface, padding: 14, display: 'grid', gap: 11 }}>
+      {/*
+       * Status and priority as two PICKERS on one row, not two grids of chips.
+       *
+       * Seven statuses and five priorities as buttons wrapped to four rows and pushed the claim —
+       * the control people actually reach for — below the fold. A picker states the current value
+       * in one row and costs one click to change, which is the same number of clicks a chip grid
+       * costs once you have found it.
+       */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 120px', display: 'grid', gap: 5, minWidth: 0 }}>
+          <span style={{ ...microLabel, fontSize: 9 }}>Status</span>
+          <ChipSelect
+            value={task.status}
+            disabled={busy}
+            options={COLUMN_ORDER.map(st => ({
+              value: st, label: STATUS[st].label, color: STATUS[st].color, dim: STATUS[st].dim,
+            }))}
+            onPick={v => void onStatus(v as TaskStatus)}
+          />
+        </div>
+        <div style={{ flex: '1 1 120px', display: 'grid', gap: 5, minWidth: 0 }}>
+          <span style={{ ...microLabel, fontSize: 9 }}>Priority</span>
+          <ChipSelect
+            value={task.priority ?? 'none'}
+            disabled={busy}
+            options={PRIORITY_ORDER.map(id => ({
+              value: id, label: PRIORITY[id]!.label, color: PRIORITY[id]!.color, dim: PRIORITY[id]!.dim,
+            }))}
+            onPick={v => void onPatch({ priority: v as TaskPriorityId })}
+          />
         </div>
       </div>
 
-      <div style={{ display: 'grid', gap: 6 }}>
+      <div style={{ display: 'grid', gap: 5 }}>
         <span style={{ ...microLabel, fontSize: 9 }}>Owner</span>
         <input
           defaultValue={task.assignee ?? ''} placeholder="a person, or an agent"
@@ -173,14 +185,49 @@ function PlanCard({ task, busy, onPatch, onClaim }: {
         />
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {([['startDate', 'Start'], ['dueDate', 'Due']] as const).map(([key, label]) => (
-          <div key={key} style={{ display: 'grid', gap: 6, flex: 1, minWidth: 110 }}>
-            <span style={{ ...microLabel, fontSize: 9 }}>{label}</span>
-            <input
-              type="date" defaultValue={(key === 'dueDate' ? task.dueDate : task.startDate) ?? ''}
-              onChange={e => void onPatch({ [key]: e.target.value } as TaskFieldPatch)}
-              style={{ ...field(isMobile), colorScheme: 'dark' }}
+      {/*
+       * The dashboard's OWN date picker, not `<input type="date">`.
+       *
+       * The native control brings the browser's calendar, the browser's locale and a width that
+       * ignores its container — it hung out of this rail — and it looks like nothing else in the
+       * app. One picker, drawn the same way here as in the filter bar.
+       */}
+      <div style={{ display: 'grid', gap: 5 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ ...microLabel, fontSize: 9, flex: 1 }}>Dates</span>
+          {(task.startDate || task.dueDate) && (
+            <button
+              onClick={() => void onPatch({ startDate: '', dueDate: '' })}
+              title="Clear both dates"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', display: 'flex',
+                color: 'var(--text-tertiary)', padding: 0,
+              }}
+            ><X size={12} /></button>
+          )}
+        </div>
+        {/*
+         * One picker per ROW, not two side by side.
+         *
+         * The pair fits the filter bar, which is as wide as the page; in a 280px rail they came out
+         * 9px over the card and the second one hung into the gutter. Stacking also lets each keep
+         * its own label, which is what a person reads when the two are a month apart.
+         */}
+        {([['Start', task.startDate ?? ''], ['Due', task.dueDate ?? '']] as const).map(([label, value]) => (
+          <div
+            key={label}
+            style={{
+              display: 'flex', alignItems: 'center', ...surface,
+              background: 'var(--bg-elevated)', borderRadius: 7, padding: '1px 4px',
+            }}
+          >
+            <DatePicker
+              value={value}
+              label={label}
+              placeholder="DD/MM/YY"
+              lang="en"
+              {...(label === 'Due' && task.startDate ? { min: task.startDate } : {})}
+              onChange={v => void onPatch(label === 'Start' ? { startDate: v } : { dueDate: v })}
             />
           </div>
         ))}
@@ -221,6 +268,67 @@ function PlanCard({ task, busy, onPatch, onClaim }: {
             </div>
           )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * A value that is a COLOURED WORD, chosen from a short closed list.
+ *
+ * Not the settings screens' `Select`: this one carries the status/priority colour into the trigger,
+ * which is the whole legibility trick the board rests on — you learn a colour once and then read it
+ * everywhere without reading the word.
+ */
+function ChipSelect({ value, options, disabled, onPick }: {
+  value: string
+  options: Array<{ value: string; label: string; color: string; dim: string }>
+  disabled?: boolean
+  onPick: (v: string) => void
+}) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const current = options.find(o => o.value === value) ?? options[options.length - 1]!
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        disabled={disabled}
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: '100%', boxSizing: 'border-box', cursor: disabled ? 'default' : 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between',
+          padding: isMobile ? '10px 11px' : '6px 10px', borderRadius: 7,
+          border: `1px solid ${current.color}`, background: current.dim, color: current.color,
+          fontSize: 12, fontWeight: 600, minHeight: isMobile ? 44 : undefined,
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {current.label}
+        </span>
+        <ChevronDown size={12} style={{ flexShrink: 0, opacity: 0.8 }} />
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 61, marginTop: 4,
+            ...surface, background: 'var(--bg-elevated)', padding: 4, display: 'grid', gap: 2,
+            boxShadow: 'var(--shadow-elevated)',
+          }}>
+            {options.map(o => (
+              <button
+                key={o.value}
+                onClick={() => { setOpen(false); if (o.value !== value) onPick(o.value) }}
+                style={{
+                  border: 'none', cursor: 'pointer', textAlign: 'left', padding: '6px 9px',
+                  borderRadius: 5, background: o.value === value ? o.dim : 'transparent',
+                  color: o.color, fontSize: 11.5, fontWeight: 600,
+                  minHeight: isMobile ? 44 : undefined,
+                }}
+              >{o.label}</button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -555,10 +663,12 @@ function AttemptCard({ a }: { a: AttemptView }) {
 }
 
 /** Links out — a PR, an issue, a doc. Only http(s) reaches here; the server refuses the rest. */
-function LinksPanel({ id, task, onChanged }: {
+function LinksPanel({ id, task, onChanged, bare }: {
   id: string
   task: TaskListRow['task']
   onChanged: () => Promise<void> | void
+  /** Drawn inside a `RailSection`, which already supplies the card and the heading. */
+  bare?: boolean
 }) {
   const isMobile = useIsMobile()
   const [url, setUrl] = useState('')
@@ -572,8 +682,8 @@ function LinksPanel({ id, task, onChanged }: {
     await onChanged()
   }
   return (
-    <div style={{ ...surface, padding: 14, display: 'grid', gap: 9 }}>
-      <div style={microLabel}>Links</div>
+    <div style={bare ? { display: 'grid', gap: 9 } : { ...surface, padding: 14, display: 'grid', gap: 9 }}>
+      {!bare && <div style={microLabel}>Links</div>}
       {links.length === 0 && (
         <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>No PR or document linked.</div>
       )}
@@ -610,10 +720,12 @@ function LinksPanel({ id, task, onChanged }: {
  * A blocker that is already closed is struck through rather than removed: the record of what held
  * the work up is part of the delivery's story, and silently dropping it rewrites that story.
  */
-function BlockedBy({ id, task, onChanged }: {
+function BlockedBy({ id, task, onChanged, bare }: {
   id: string
   task: TaskListRow['task']
   onChanged: () => Promise<void> | void
+  /** See `LinksPanel`. */
+  bare?: boolean
 }) {
   const isMobile = useIsMobile()
   const { rows } = useTaskList()
@@ -626,13 +738,15 @@ function BlockedBy({ id, task, onChanged }: {
   const set = async (ids: string[]) => { await setBlockedBy(id, ids); await onChanged() }
 
   return (
-    <div style={{ ...surface, padding: 14, display: 'grid', gap: 9 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={microLabel}>Blocked by</span>
-        {openBlockers.length > 0 && (
-          <span style={pill('var(--accent-red)')}>{openBlockers.length} open</span>
-        )}
-      </div>
+    <div style={bare ? { display: 'grid', gap: 9 } : { ...surface, padding: 14, display: 'grid', gap: 9 }}>
+      {(!bare || openBlockers.length > 0) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {!bare && <span style={microLabel}>Blocked by</span>}
+          {openBlockers.length > 0 && (
+            <span style={pill('var(--accent-red)')}>{openBlockers.length} open</span>
+          )}
+        </div>
+      )}
       {blockers.length === 0 && (
         <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>Nothing is blocking this.</div>
       )}
@@ -836,6 +950,7 @@ function CommentsTab({ id, detail, onChanged }: {
   const [draft, setDraft] = useState('')
   const [attached, setAttached] = useState<CommentAttachment[]>([])
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -887,7 +1002,7 @@ function CommentsTab({ id, detail, onChanged }: {
                     style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
                   ><Pencil size={13} /></button>
                   <button
-                    onClick={() => { if (confirm('Delete this comment?')) void run(() => removeComment(id, c.id)) }}
+                    onClick={() => setRemoving(c.id)}
                     disabled={busy} title="Delete"
                     style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
                   ><Trash2 size={13} /></button>
@@ -981,6 +1096,19 @@ function CommentsTab({ id, detail, onChanged }: {
             ))}
           </div>
         )}
+        <ConfirmModal
+          open={removing !== null}
+          title="Delete this comment?"
+          message="It goes for everyone reading this task. Any file pasted into it stays on the task — the Files tab is where those are removed."
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => {
+            const target = removing
+            setRemoving(null)
+            if (target) void run(() => removeComment(id, target))
+          }}
+        />
         <button
           style={{ ...button(isMobile, 'primary'), justifySelf: 'start' }}
           disabled={busy || (!draft.trim() && attached.length === 0)}
@@ -1006,6 +1134,9 @@ function TaskDetailView({ id }: { id: string }) {
   const [tab, setTab] = useState<Tab>('overview')
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState('')
+  // The board's own dialog, never `window.confirm`: the browser's box carries the page's URL and
+  // none of the app's words, and on a phone it is a system sheet that reads as a site error.
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   if (error === 'missing') return <div style={{ padding: 18 }}><EmptyNotice error={null} /></div>
   if (error) return <div style={{ padding: 18 }}><EmptyNotice error={error} /></div>
@@ -1130,20 +1261,28 @@ function TaskDetailView({ id }: { id: string }) {
           )}
         </div>
 
-        {/* The facts column — Jira's right rail. */}
-        <aside style={{ display: 'grid', gap: 12, minWidth: 0 }}>
+        {/*
+         * The facts column — Jira's right rail, FOLDED.
+         *
+         * Seven cards all open at once made the page a scroll whose bottom half you learn to skip,
+         * and put the two controls people actually reach for (status, claim) below the fold. Plan
+         * stays open because it is what you came to change; the rest state their name and their
+         * count shut, and remember which of them you opened.
+         */}
+        <aside style={{ display: 'grid', gap: 10, minWidth: 0 }}>
           <PlanCard
             task={detail.task}
             busy={busy}
             onPatch={async patch => { await run(() => editTask(id, patch)) }}
+            onStatus={async st => { await run(() => markTask(id, st)) }}
             onClaim={async release => {
               // `force` on a release: this is a person at the board, and the whole reason the lease
               // is visible here is so a stale one can be cleared without hunting down the agent.
               await run(() => claimTask(id, { by: 'you', ...(release ? { release: true, force: true } : { takeover: true }) }))
             }}
           />
-          <div style={{ ...surface, padding: 14, display: 'grid', gap: 12 }}>
-            <div style={{ ...microLabel }}>Details</div>
+
+          <RailSection id="details" title="Delivery" badge={duration ?? NA} defaultOpen>
             <div style={{ display: 'grid', gap: 10 }}>
               <Stat label="Delivery time" value={duration ?? NA} />
               {duration === null && (
@@ -1163,54 +1302,30 @@ function TaskDetailView({ id }: { id: string }) {
                   ? NA : `+${stats.linesAdded ?? 0} / −${stats.linesRemoved ?? 0}`}
               />
             </div>
-            {stats.tokens && (
-              <div style={{ display: 'grid', gap: 6, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
-                <div style={microLabel}>Tokens</div>
-                {([['Input', stats.tokens.input], ['Output', stats.tokens.output],
-                   ['Cache read', stats.tokens.cacheRead], ['Cache write', stats.tokens.cacheWrite]] as const)
-                  .map(([k, v]) => (
-                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
-                      <span style={{ color: 'var(--text-tertiary)' }}>{k}</span>
-                      <span style={numeric}>{v.toLocaleString()}</span>
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
+          </RailSection>
 
-          <div style={{ ...surface, padding: 14, display: 'grid', gap: 9 }}>
-            <div style={microLabel}>Status</div>
-            {/* Every status is one click. Only `done` stamps a delivery — see `markTask`. */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {COLUMN_ORDER.map(st => {
-                const on = detail.task.status === st
-                const c = STATUS[st]
-                return (
-                  <button
-                    key={st} disabled={busy || on}
-                    onClick={() => void run(() => markTask(id, st))}
-                    style={{
-                      padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: on ? 'default' : 'pointer',
-                      background: on ? c.dim : 'transparent',
-                      color: on ? c.color : 'var(--text-tertiary)',
-                      border: `1px solid ${on ? c.color : 'var(--border)'}`,
-                      // 44px on mobile, like every other control here. This row was 34px while
-                      // the tab strip beside it was 44 — the rule applied to one group and not the
-                      // other, which is exactly the kind of gap a person only finds with a thumb.
-                      minHeight: isMobile ? 44 : 26,
-                    }}
-                  >{c.label}</button>
-                )
-              })}
-            </div>
-          </div>
+          {stats.tokens && (
+            <RailSection id="tokens" title="Tokens" badge={fmtTokens(detail.rollup.tokens)}>
+              {([['Input', stats.tokens.input], ['Output', stats.tokens.output],
+                 ['Cache read', stats.tokens.cacheRead], ['Cache write', stats.tokens.cacheWrite]] as const)
+                .map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5 }}>
+                    <span style={{ color: 'var(--text-tertiary)' }}>{k}</span>
+                    <span style={numeric}>{v.toLocaleString()}</span>
+                  </div>
+                ))}
+            </RailSection>
+          )}
 
-          <LinksPanel id={id} task={detail.task} onChanged={reload} />
+          <RailSection id="links" title="Links" badge={detail.task.links?.length ?? 0}>
+            <LinksPanel id={id} task={detail.task} onChanged={reload} bare />
+          </RailSection>
 
-          <BlockedBy id={id} task={detail.task} onChanged={reload} />
+          <RailSection id="blocked" title="Blocked by" badge={detail.task.blockedBy?.length ?? 0}>
+            <BlockedBy id={id} task={detail.task} onChanged={reload} bare />
+          </RailSection>
 
-          <div style={{ ...surface, padding: 14, display: 'grid', gap: 8 }}>
-            <div style={microLabel}>Actions</div>
+          <RailSection id="actions" title="Actions">
             <button style={button(isMobile)} disabled={busy} onClick={() => void run(() => markTask(id, 'done'))}>
               <CheckCircle2 size={14} /> Mark delivered
             </button>
@@ -1219,17 +1334,30 @@ function TaskDetailView({ id }: { id: string }) {
             </button>
             <button
               style={{ ...button(isMobile), color: 'var(--accent-red)' }} disabled={busy}
-              onClick={() => { if (confirm('Delete this task? Its sessions are kept.')) void run(async () => { await deleteTask(id); navigate('/tasks') }) }}
+              onClick={() => setConfirmDelete(true)}
             >
               <Trash2 size={14} /> Delete task
             </button>
-          </div>
+          </RailSection>
         </aside>
       </div>
 
       <p style={{ margin: 0, fontSize: 11, color: 'var(--text-tertiary)' }}>
         These are cost, rounds and time. Whether the work is any good is not measured here.
       </p>
+
+      <ConfirmModal
+        open={confirmDelete}
+        title="Delete this task?"
+        message={`"${detail.task.title}" and its comments, subtasks, files and links go. The SESSIONS filed under it are kept — deleting a board entry never deletes work.`}
+        confirmLabel="Delete task"
+        cancelLabel="Keep it"
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          setConfirmDelete(false)
+          void run(async () => { await deleteTask(id); navigate('/tasks') })
+        }}
+      />
     </div>
   )
 }
