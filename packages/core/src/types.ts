@@ -332,6 +332,16 @@ export interface SessionAgentMetrics {
 export interface WorkflowAgent {
   label: string
   phase: string
+  /** The id its transcript is named after (`agent-<id>.jsonl`) — what a detail view asks for.
+   *  Optional because a doc written by an older central predates it. */
+  agentId?: string
+  /** Where `label`/`phase` came from. `record` is the run's own `workflowProgress` and is exact;
+   *  `matched` is `workflow-match.ts` pairing by prompt; `none` means neither could say, and the
+   *  label is the file name. A view may say which — a guessed label and a recorded one look
+   *  identical on screen, and only one of them is worth trusting. */
+  labelSource?: 'record' | 'matched' | 'none'
+  /** Every tool call the agent made. Optional for the same backward-compatibility reason. */
+  toolCalls?: number
   model: string
   status: 'completed' | 'failed' | 'skipped'
   tokensIn: number

@@ -24,8 +24,12 @@
 export type WorkflowStatus = 'running' | 'completed' | 'partial' | 'failed' | 'abandoned' | 'killed'
 
 export interface WorkflowAgentRow {
+  agentId?: string
   label: string
+  /** Where the label and phase came from — `record` is the run's own, and exact. */
+  labelSource?: 'record' | 'matched' | 'none'
   phase: string
+  toolCalls: number | null
   model: string
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
   totalTokens: number | null
@@ -140,4 +144,95 @@ export function unmeasuredRunText(row: WorkflowRunRow, pt: boolean): string | nu
   return row.live
     ? (pt ? 'ainda não gastou nada mensurável' : 'nothing measurable spent yet')
     : (pt ? 'sem transcrições para medir' : 'no transcripts to measure')
+}
+
+
+/** One phase, and the agents that ran in it. */
+export interface PhaseGroup {
+  /** `''` is the group for agents no source could place — rendered in words, never as a blank. */
+  title: string
+  agents: WorkflowAgentRow[]
+}
+
+/**
+ * A run's agents, grouped under the phase each ran in.
+ *
+ * A flat list of `contract:fleet-first-data`, `critique:fleet-first-data`, … is the run's shape
+ * flattened away: the phases ARE the plan, and which agent ran in which is the thing somebody
+ * opens a run to see. The order is the run's own recorded phase order, because that is the order
+ * they ran in.
+ *
+ * **No agent is ever dropped.** One the sources could not place lands in a final `''` group, which
+ * the view names in words — silently omitting it would make the phase counts disagree with the
+ * agent count on the card above them.
+ */
+export function groupAgentsByPhase(run: WorkflowRunRow): PhaseGroup[] {
+  const groups: PhaseGroup[] = []
+  const index = new Map<string, PhaseGroup>()
+  // Declared phases first, in their recorded order — an EMPTY phase is still a phase that was
+  // planned, and saying it ran nothing is information.
+  for (const p of run.phases) {
+    if (index.has(p.title)) continue
+    const g: PhaseGroup = { title: p.title, agents: [] }
+    index.set(p.title, g)
+    groups.push(g)
+  }
+  const unplaced: WorkflowAgentRow[] = []
+  for (const a of run.agents) {
+    if (a.phase === '') { unplaced.push(a); continue }
+    let g = index.get(a.phase)
+    if (!g) { g = { title: a.phase, agents: [] }; index.set(a.phase, g); groups.push(g) }
+    g.agents.push(a)
+  }
+  if (unplaced.length > 0) groups.push({ title: '', agents: unplaced })
+  return groups
+}
+
+/** The sentence for the group holding agents nothing could place. */
+export function unplacedPhaseText(pt: boolean): string {
+  return pt ? 'sem fase registrada' : 'no phase recorded'
+}
+
+/**
+ * Whether a label is the run's own word for this agent, or a guess.
+ *
+ * They look identical on screen and only one is worth trusting: `matched` is `workflow-match.ts`
+ * pairing transcripts to `agent()` calls by prompt, and `none` means the label IS the file name.
+ * Returns null for `record`, which needs no caveat.
+ */
+export function labelCaveat(a: WorkflowAgentRow, pt: boolean): string | null {
+  if (a.labelSource === 'matched') {
+    return pt ? 'nome deduzido pelo prompt' : 'name inferred from the prompt'
+  }
+  if (a.labelSource === 'none') {
+    return pt ? 'a run não registrou o nome deste agente' : 'the run did not record this agent’s name'
+  }
+  return null
+}
+
+// --- one agent, opened up ---------------------------------------------------
+
+export type WorkflowAgentDetail =
+  | {
+      ok: true; agentId: string; label: string; phase: string; model: string; prompt: string
+      toolCalls: number; tools: Record<string, number>; commands: string[]; commandsClipped: boolean
+    }
+  | { ok: false; message: string }
+
+export type AgentDetailState =
+  | { phase: 'loading' }
+  | { phase: 'ready'; detail: Extract<WorkflowAgentDetail, { ok: true }> }
+  | { phase: 'failed'; message: string }
+
+export function agentDetailStateOf(payload: WorkflowAgentDetail): AgentDetailState {
+  return payload.ok ? { phase: 'ready', detail: payload } : { phase: 'failed', message: payload.message }
+}
+
+export function agentDetailUrl(sessionId: string, runId: string, agentId: string, pt: boolean): string {
+  return `/api/fleet/workflows?id=${encodeURIComponent(sessionId)}&run=${encodeURIComponent(runId)}&agent=${encodeURIComponent(agentId)}&lang=${pt ? 'pt' : 'en'}`
+}
+
+/** An agent whose transcript is gone cannot be opened; the row must not offer it. */
+export function agentOpenable(a: WorkflowAgentRow): boolean {
+  return typeof a.agentId === 'string' && a.agentId !== ''
 }
