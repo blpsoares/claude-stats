@@ -113,7 +113,7 @@ test('retention only ever deletes releases it can prove are THIS machine\'s', ()
   // `keepRemote`: a laptop backing up daily filled the window and the desktop's only backup fell
   // out of it and was DELETED — by the laptop, silently. A machine may delete its own history; it
   // may never delete another machine's.
-  const rel = (tag: string, at: string, host: string | null) => ({ tag, createdAt: at, host })
+  const rel = (tag: string, at: string, host: string | null) => ({ tag, publishedAt: at, host })
   const plan = selectForPruning([
     rel('backup-laptop-2026-09-05T10-00-00Z', '2026-09-05T10:00:00Z', 'laptop'),
     rel('backup-laptop-2026-09-04T10-00-00Z', '2026-09-04T10:00:00Z', 'laptop'),
@@ -133,9 +133,9 @@ test('a legacy tag is attributed by the release BODY, and never deleted when it 
   // the only safe reading is that it might be another machine's: keeping a release too long costs
   // storage, deleting one that was somebody's only copy costs the backup.
   const plan = selectForPruning([
-    { tag: 'backup-2026-09-05T10-00-00Z', createdAt: '2026-09-05T10:00:00Z', host: 'laptop' },
-    { tag: 'backup-2026-09-04T10-00-00Z', createdAt: '2026-09-04T10:00:00Z', host: 'laptop' },
-    { tag: 'backup-2026-09-03T10-00-00Z', createdAt: '2026-09-03T10:00:00Z', host: null },
+    { tag: 'backup-2026-09-05T10-00-00Z', publishedAt: '2026-09-05T10:00:00Z', host: 'laptop' },
+    { tag: 'backup-2026-09-04T10-00-00Z', publishedAt: '2026-09-04T10:00:00Z', host: 'laptop' },
+    { tag: 'backup-2026-09-03T10-00-00Z', publishedAt: '2026-09-03T10:00:00Z', host: null },
   ], 1, 'laptop')
   expect(plan.remove).toEqual(['backup-2026-09-04T10-00-00Z'])
   expect(plan.unattributable).toEqual(['backup-2026-09-03T10-00-00Z'])
@@ -143,15 +143,15 @@ test('a legacy tag is attributed by the release BODY, and never deleted when it 
 
 test('a release the user made by hand is not a backup and is never touched', () => {
   const plan = selectForPruning([
-    { tag: 'v1.2.3', createdAt: '2026-09-05T10:00:00Z', host: null },
-    { tag: 'backup-laptop-2026-09-05T10-00-00Z', createdAt: '2026-09-05T10:00:00Z', host: 'laptop' },
+    { tag: 'v1.2.3', publishedAt: '2026-09-05T10:00:00Z', host: null },
+    { tag: 'backup-laptop-2026-09-05T10-00-00Z', publishedAt: '2026-09-05T10:00:00Z', host: 'laptop' },
   ], 0, 'laptop')
   expect(plan.remove).toEqual([])
 })
 
 test('keepRemote of zero keeps everything — a config typo is not a way to wipe a repository', () => {
   const plan = selectForPruning(
-    [{ tag: 'backup-laptop-2026-09-05T10-00-00Z', createdAt: '2026-09-05T10:00:00Z', host: 'laptop' }],
+    [{ tag: 'backup-laptop-2026-09-05T10-00-00Z', publishedAt: '2026-09-05T10:00:00Z', host: 'laptop' }],
     0, 'laptop')
   expect(plan.remove).toEqual([])
 })

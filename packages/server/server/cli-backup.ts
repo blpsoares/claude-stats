@@ -922,7 +922,7 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
           const newest = g.releases[0]
           console.error(g.machine === null
             ? `  (unnamed machine) — use --release ${newest?.tagName ?? ''}`
-            : `  --from ${g.machine}   (${g.releases.length} backup(s), newest ${newest?.createdAt ?? '?'})`)
+            : `  --from ${g.machine}   (${g.releases.length} backup(s), newest ${newest?.publishedAt ?? '?'})`)
         }
         return 1
       }

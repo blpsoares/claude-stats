@@ -34,7 +34,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { gh, type FetchLike } from './github-api'
-import { isBackupTag, labelSlug, parseReleaseBody, tagLabel, type ReleaseSummary } from './backup-github'
+import { isBackupTag, labelSlug, parseReleaseBody, releaseMadeAt, tagLabel, type ReleaseSummary } from './backup-github'
 
 export interface GithubReleaseAsset {
   id: number
@@ -45,7 +45,8 @@ export interface GithubReleaseAsset {
 export interface GithubReleaseInfo {
   id: number
   tagName: string
-  createdAt: string
+  /** When the release was PUBLISHED — never GitHub's `created_at`. See `releaseMadeAt`. */
+  publishedAt: string
   /** Raw markdown — `parseReleaseBody` is what turns this into something a caller can act on. */
   body: string
   assets: GithubReleaseAsset[]
@@ -55,6 +56,7 @@ interface RawGithubRelease {
   id: number
   tag_name: string
   created_at: string
+  published_at: string | null
   body: string | null
   assets: { id: number; name: string; size: number }[]
 }
@@ -73,7 +75,7 @@ export async function listGithubReleases(
   const releases = res.data.map(r => ({
     id: r.id,
     tagName: r.tag_name,
-    createdAt: r.created_at,
+    publishedAt: releaseMadeAt(r),
     body: r.body ?? '',
     assets: r.assets.map(a => ({ id: a.id, name: a.name, size: a.size })),
   }))
@@ -99,7 +101,10 @@ export function pickBackupRelease(releases: GithubReleaseInfo[], tag?: string): 
   }
   const backups = [...releases]
     .filter(r => isBackupTag(r.tagName))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    // By PUBLICATION. `created_at` is the tag's commit date and is identical on every release of a
+    // backup repository, so sorting by it made "the newest" whatever order GitHub returned — and
+    // this is the function that picks what a bare `restore` overwrites your machine with.
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
   const newest = backups[0]
   return newest
     ? { ok: true, release: newest }
@@ -301,7 +306,8 @@ export async function downloadBackupRelease(
  *  first, decoded where possible. Never downloads anything. */
 export interface ListedBackupRelease {
   tagName: string
-  createdAt: string
+  /** When it was PUBLISHED — see `releaseMadeAt`. */
+  publishedAt: string
   summary: ReleaseSummary | null
 }
 
@@ -312,8 +318,8 @@ export async function listBackupReleases(
   if (!listed.ok) return { ok: false, message: listed.message }
   const releases = listed.releases
     .filter(r => isBackupTag(r.tagName))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(r => ({ tagName: r.tagName, createdAt: r.createdAt, summary: parseReleaseBody(r.body) }))
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+    .map(r => ({ tagName: r.tagName, publishedAt: r.publishedAt, summary: parseReleaseBody(r.body) }))
   return { ok: true, releases }
 }
 
@@ -352,13 +358,13 @@ export function groupReleasesByMachine(releases: ListedBackupRelease[]): Machine
   }
   const groups = [...byMachine.entries()].map(([machine, list]) => ({
     machine,
-    releases: [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    releases: [...list].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)),
   }))
   return groups.sort((a, b) => {
     // The unattributable group is last whatever its dates: it is the one a person cannot act on
     // with confidence.
     if ((a.machine === null) !== (b.machine === null)) return a.machine === null ? 1 : -1
-    return (b.releases[0]?.createdAt ?? '').localeCompare(a.releases[0]?.createdAt ?? '')
+    return (b.releases[0]?.publishedAt ?? '').localeCompare(a.releases[0]?.publishedAt ?? '')
   })
 }
 

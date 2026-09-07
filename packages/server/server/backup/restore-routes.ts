@@ -10,7 +10,7 @@
  * staging and verification rules live and where they are tested against real archives.
  */
 import { formatBytes } from './backup-size'
-import { isBackupTag, labelSlug, parseReleaseBody } from './backup-github'
+import { isBackupTag, labelSlug, parseReleaseBody, releaseMadeAt } from './backup-github'
 import { ghToken, type GhTokenResult } from './github-cli'
 import { parseRepoUrl, gh, type FetchLike } from './github-api'
 import { groupReleasesByMachine, type ListedBackupRelease } from './github-restore'
@@ -43,7 +43,7 @@ export async function restoreCredential(
  *  copy — with what is unknown said rather than invented. */
 export interface RestoreCandidate {
   tagName: string
-  createdAt: string
+  publishedAt: string
   sizeLabel: string | null
   layers: BackupLayer[] | null
   harnesses: string[] | null
@@ -71,6 +71,7 @@ export interface RestoreMachine {
 interface RawRelease {
   tag_name: string
   created_at: string
+  published_at?: string | null
   body?: string
 }
 
@@ -104,7 +105,9 @@ export async function restoreListing(
 
   const listed: ListedBackupRelease[] = res.data.map(r => ({
     tagName: r.tag_name,
-    createdAt: r.created_at,
+    // `releaseMadeAt`, never `created_at` — that one is the tag's COMMIT date, identical on every
+    // release of a backup repository, and it is what made every card in this list show one date.
+    publishedAt: releaseMadeAt(r),
     summary: parseReleaseBody(r.body ?? ''),
   }))
 
@@ -115,7 +118,7 @@ export async function restoreListing(
       thisMachine: mine !== null && g.machine === mine,
       releases: g.releases.map<RestoreCandidate>(r => ({
         tagName: r.tagName,
-        createdAt: r.createdAt,
+        publishedAt: r.publishedAt,
         // `formatBytes` here and not on the client: the same figure, in the same words, as every
         // other size this product prints.
         sizeLabel: r.summary ? formatBytes(r.summary.archiveBytes) : null,

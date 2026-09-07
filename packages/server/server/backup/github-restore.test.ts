@@ -84,9 +84,9 @@ async function withDestDir(fn: (destDir: string) => Promise<void>): Promise<void
 
 describe('pickBackupRelease', () => {
   const releases = (): GithubReleaseInfo[] => [
-    { id: 1, tagName: 'backup-2026-09-01T00-00-00Z', createdAt: '2026-09-01T00:00:00Z', body: '', assets: [] },
-    { id: 2, tagName: 'backup-2026-09-03T00-00-00Z', createdAt: '2026-09-03T00:00:00Z', body: '', assets: [] },
-    { id: 3, tagName: 'v1.0.0', createdAt: '2026-09-04T00:00:00Z', body: '', assets: [] }, // hand-made, newer!
+    { id: 1, tagName: 'backup-2026-09-01T00-00-00Z', publishedAt: '2026-09-01T00:00:00Z', body: '', assets: [] },
+    { id: 2, tagName: 'backup-2026-09-03T00-00-00Z', publishedAt: '2026-09-03T00:00:00Z', body: '', assets: [] },
+    { id: 3, tagName: 'v1.0.0', publishedAt: '2026-09-04T00:00:00Z', body: '', assets: [] }, // hand-made, newer!
   ]
 
   test('without --release, picks the newest release whose tag isBackupTag recognises', () => {
@@ -120,7 +120,7 @@ describe('pickBackupRelease', () => {
 
 describe('pickBackupAsset', () => {
   const release = (assets: { id: number; name: string; size: number }[]): GithubReleaseInfo => (
-    { id: 1, tagName: 'backup-x', createdAt: '2026-01-01T00:00:00Z', body: '', assets }
+    { id: 1, tagName: 'backup-x', publishedAt: '2026-01-01T00:00:00Z', body: '', assets }
   )
 
   test('matches the single asset whose size equals the summary archiveBytes', () => {
@@ -420,8 +420,8 @@ test('releases are grouped by MACHINE, and a machineless one is its own group', 
   // and telling them apart means opening each release. The machine comes from the TAG where there
   // is one and from the body's `- host:` otherwise, so a release predating labels still lands
   // under its own machine instead of a bucket named "unknown".
-  const r = (tagName: string, createdAt: string, host: string | null) =>
-    ({ tagName, createdAt, summary: host === null ? null : ({ hostname: host } as never) })
+  const r = (tagName: string, publishedAt: string, host: string | null) =>
+    ({ tagName, publishedAt, summary: host === null ? null : ({ hostname: host } as never) })
   const groups = groupReleasesByMachine([
     r('backup-laptop-2026-09-05T10-00-00Z', '2026-09-05T10:00:00Z', 'laptop'),
     r('backup-desktop-2026-09-04T10-00-00Z', '2026-09-04T10:00:00Z', 'desktop'),
@@ -439,8 +439,8 @@ test('releases are grouped by MACHINE, and a machineless one is its own group', 
 })
 
 test('the newest release OF A GIVEN MACHINE is selectable', () => {
-  const r = (tagName: string, createdAt: string, host: string) =>
-    ({ tagName, createdAt, summary: { hostname: host } as never })
+  const r = (tagName: string, publishedAt: string, host: string) =>
+    ({ tagName, publishedAt, summary: { hostname: host } as never })
   const list = [
     r('backup-laptop-2026-09-05T10-00-00Z', '2026-09-05T10:00:00Z', 'laptop'),
     r('backup-desktop-2026-09-04T10-00-00Z', '2026-09-04T10:00:00Z', 'desktop'),

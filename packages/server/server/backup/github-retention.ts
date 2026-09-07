@@ -12,12 +12,13 @@
  * separate asset-delete call to make.
  */
 import { gh, type FetchLike } from './github-api'
-import { isBackupTag, labelSlug, tagLabel } from './backup-github'
+import { isBackupTag, labelSlug, releaseMadeAt, tagLabel } from './backup-github'
 
 interface GithubReleaseListItem {
   id: number
   tag_name: string
   created_at: string
+  published_at?: string | null
   body?: string
 }
 
@@ -25,7 +26,9 @@ interface GithubReleaseListItem {
  *  attributable to (`null` = nothing said so). */
 export interface PrunableRelease {
   tag: string
-  createdAt: string
+  /** When it was PUBLISHED — see `releaseMadeAt`. Sorting by GitHub's `created_at` here could
+   *  delete the NEWEST backups: it is the tag's commit date, identical on every release. */
+  publishedAt: string
   /** The `- host: NAME` line of the release body, for a tag minted before labels existed. */
   host: string | null
 }
@@ -77,7 +80,7 @@ export function selectForPruning(
     return plan
   }
 
-  candidates.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  candidates.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
   plan.keep = candidates.slice(0, keepRemote).map(r => r.tag)
   plan.remove = candidates.slice(keepRemote).map(r => r.tag)
   return plan
@@ -113,7 +116,7 @@ export async function pruneRemoteReleases(
   }
 
   const plan = selectForPruning(
-    listed.data.map(r => ({ tag: r.tag_name, createdAt: r.created_at, host: hostOf(r.body) })),
+    listed.data.map(r => ({ tag: r.tag_name, publishedAt: releaseMadeAt(r), host: hostOf(r.body) })),
     keepRemote, label,
   )
   // Said, never silently skipped: a user who can see other machines' releases on the page needs to
