@@ -26,7 +26,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, FolderGit2, Folder, Loader, Paperclip, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, FolderClock, FolderGit2, Folder, Loader, Paperclip, Search, X } from 'lucide-react'
+import { projectKind, type ProjectKind } from '@agentistics/core'
+import {
+  KIND_TABS, SEARCH_DEBOUNCE_MS, kindEmpty, kindHint, kindLabel, type ProjectTab,
+} from '../../lib/projectTabs'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { effortColor, effortSteps } from '../../lib/effortScale'
@@ -79,6 +83,20 @@ export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalPro
   const [projects, setProjects] = useState<ProjectOption[]>([])
   const [tasks, setTasks] = useState<string[]>([])
   const [query, setQuery] = useState('')
+  /**
+   * The query the SEARCH is actually run with, one debounce behind the field.
+   *
+   * The field itself stays uncontrolled-fast — every keystroke shows immediately — while the fetch
+   * waits for a pause. Before this, every character fired a full `/api/fleet/new`, which rebuilds
+   * the harness list AND reads every harness's settings files AND walks `$HOME` when the 60s cache
+   * has expired: measured at 400ms cold, so a fast typist watched the list arrive for a prefix they
+   * had already finished typing. That is the "not in real time" half of the report.
+   */
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  /** Which kind of place the list is showing. `all` is the default — see `projectKind`. */
+  const [kindTab, setKindTab] = useState<ProjectTab>('all')
+  /** A search is in flight for a query the list has not caught up with yet. */
+  const [searching, setSearching] = useState(false)
 
   const [harness, setHarness] = useState<HarnessOption | null>(null)
   const [cwd, setCwd] = useState('')
@@ -110,25 +128,59 @@ export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalPro
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  /**
+   * The field runs ahead; the search follows after a pause.
+   *
+   * `SEARCH_DEBOUNCE_MS` is short enough to read as immediate and long enough that typing a word is
+   * one request rather than one per letter. The FIRST value is applied with no wait, so opening the
+   * wizard does not sit empty for a fifth of a second.
+   */
+  useEffect(() => {
+    if (query === debouncedQuery) return
+    setSearching(true)
+    const t = window.setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(t)
+  }, [query, debouncedQuery])
+
   useEffect(() => {
     let alive = true
     const load = async () => {
       try {
-        const res = await fetch(`/api/fleet/new?lang=${lang}&q=${encodeURIComponent(query)}`)
+        const res = await fetch(`/api/fleet/new?lang=${lang}&q=${encodeURIComponent(debouncedQuery)}`)
         if (!res.ok || !alive) return
         const json = await res.json() as {
           harnesses: HarnessOption[]; projects: ProjectOption[]; tasks: string[]
         }
+        if (!alive) return
         setHarnesses(json.harnesses)
         setProjects(json.projects)
         setTasks(json.tasks)
         // Pre-select the only assistant there is. A one-item picker is a question with one answer.
         setHarness(h => h ?? (json.harnesses.length === 1 ? json.harnesses[0]! : null))
-      } catch { /* transient — the picker keeps what it had */ }
+      } catch {
+        /* transient — the picker keeps what it had, which is better than an empty list */
+      } finally {
+        if (alive) setSearching(false)
+      }
     }
     void load()
     return () => { alive = false }
-  }, [lang, query])
+  }, [lang, debouncedQuery])
+
+  /**
+   * The rows, split by KIND, and the counts the tabs carry.
+   *
+   * `projectKind` is `@agentistics/core`'s — the same function the server caps its results with, so
+   * a row can never be counted under one kind here and budgeted under another there.
+   */
+  const byKind = useMemo(() => {
+    const out: Record<ProjectKind, ProjectOption[]> = { repo: [], project: [], folder: [] }
+    for (const p of projects) out[projectKind({ source: p.source, remote: p.repo })].push(p)
+    return out
+  }, [projects])
+
+  /** What the list is showing. `all` keeps the server's ranking, which is the useful default. */
+  const shownProjects = kindTab === 'all' ? projects : byKind[kindTab]
 
   // Reset the answers a DIFFERENT assistant does not accept. Carrying `effort: 'high'` across to a
   // harness whose set does not contain it would send a flag the CLI rejects at spawn.
@@ -619,17 +671,76 @@ export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalPro
               <input
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                placeholder={pt ? 'Buscar projeto ou pasta…' : 'Search project or folder…'}
+                placeholder={pt ? 'Buscar repositório, projeto ou pasta…' : 'Search repository, project or folder…'}
                 style={inputStyle}
               />
+              {/* THE SEARCH SAYS IT IS RUNNING. The field answers instantly and the list follows a
+                  debounce behind it, so without this the two disagree for a moment and the list
+                  reads as stale rather than as catching up. */}
+              {searching && (
+                <Loader size={13} className="ag-working-spin" style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  color: 'var(--text-tertiary)', pointerEvents: 'none',
+                }} />
+              )}
             </div>
+
+            {/* THE THREE KINDS, AND ALL. A repository, a project and a plain folder were one list
+                separated by an icon; the tabs are the division said in words, and the counts are
+                what make an empty tab readable as "nothing of this kind matched" rather than as a
+                broken filter. `projectKind` is `@agentistics/core`'s, so these buckets and the
+                server's per-kind budget can never disagree about what a row is.
+                All is the default and keeps the server's own ranking — the tabs FILTER it, they
+                never re-order it. */}
+            <div role="tablist" style={{
+              display: 'flex', gap: 3, marginBottom: 8, padding: 3, borderRadius: 9,
+              background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+            }}>
+              {KIND_TABS.map(id => {
+                const on = kindTab === id
+                const n = id === 'all' ? projects.length : byKind[id].length
+                return (
+                  <button
+                    key={id}
+                    role="tab"
+                    aria-selected={on}
+                    onClick={() => setKindTab(id)}
+                    style={{
+                      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      gap: 5, minHeight: 30, borderRadius: 7, border: 'none', cursor: 'pointer',
+                      background: on ? 'var(--bg-surface)' : 'transparent',
+                      color: on ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                      fontFamily: 'inherit', fontSize: 11.5, fontWeight: on ? 650 : 500,
+                      minWidth: 0,
+                    }}
+                  >
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {kindLabel(id, pt)}
+                    </span>
+                    {/* The count is DIMMED and never coloured: it is a size, not a state. */}
+                    <span style={{ fontSize: 10, color: 'var(--text-tertiary)', flexShrink: 0 }}>{n}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* WHAT THIS TAB HOLDS, in a sentence. The tab names the kind and this says what the
+                kind IS — which is the whole of the report: an icon separated a repository from a
+                folder and nothing on screen ever said what the difference was. */}
+            <p style={{
+              margin: '0 0 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)',
+            }}>{kindHint(kindTab, pt)}</p>
+
             <div style={{
               maxHeight: 190, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
               border: '1px solid var(--border-subtle)', borderRadius: 10, padding: 6,
             }}>
-              {projects.length === 0 ? (
-                <Muted text={pt ? 'Nenhuma pasta encontrada.' : 'No folder found.'} />
-              ) : projects.map(p => {
+              {shownProjects.length === 0 ? (
+                /* A SENTENCE PER REASON. "Nothing matched this search" and "nothing of this kind is
+                   here" send a reader to two different actions — clear the box, or switch tab —
+                   and one shared empty box would name neither. */
+                <Muted text={kindEmpty(kindTab, query, projects.length > 0, pt)} />
+              ) : shownProjects.map(p => {
                 const on = cwd === p.path
                 return (
                   <button
@@ -642,11 +753,17 @@ export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalPro
                       color: 'var(--text-primary)', cursor: 'pointer', fontFamily: 'inherit',
                     }}
                   >
-                    {/* A repository and a plain directory are different things, and the mark says
-                        which. Read from the store's own answer, never guessed from the path. */}
-                    {p.repo
-                      ? <FolderGit2 size={15} style={{ color: 'var(--accent-purple)', flexShrink: 0 }} />
-                      : <Folder size={15} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />}
+                    {/* THE MARK IS THE KIND, and it is the same `projectKind` the tabs file by —
+                        so the icon and the tab a row sits under can never say different things.
+                        It used to be `p.repo ? git : folder`, which drew a repository the home walk
+                        found as a plain folder: that one has a `.git` and no RECORDED remote, and
+                        the absence of a remote is not the absence of a repository. */}
+                    {(() => {
+                      const kind = projectKind({ source: p.source, remote: p.repo })
+                      if (kind === 'repo') return <FolderGit2 size={15} style={{ color: 'var(--accent-purple)', flexShrink: 0 }} />
+                      if (kind === 'project') return <FolderClock size={15} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
+                      return <Folder size={15} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                    })()}
                     <span style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
                       <span style={{ fontSize: 12.5, fontWeight: on ? 650 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {p.label}
