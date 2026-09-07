@@ -193,7 +193,16 @@ export default function NotificationsSettings() {
               ) : permission === 'denied' ? (
                 <>
                   <AlertCircle size={12} style={{ color: '#ef4444' }} />
-                  <span>{pt ? 'Bloqueada nas configurações do navegador' : 'Blocked in browser settings'}</span>
+                  {/* A DENIED PERMISSION CANNOT BE ASKED FOR AGAIN. The browser resolves
+                      `requestPermission()` straight to `denied` without showing anything, so a
+                      button here is one that does nothing when pressed — which is exactly what
+                      "não tá pedindo permissão" looked like from the other side. The way back is
+                      the system's own settings, and the sentence says where. */}
+                  <span>
+                    {pt
+                      ? 'Bloqueada. O navegador não pergunta de novo — libere em Ajustes › Notificações › agentistics (ou remova o app da tela de início e adicione outra vez).'
+                      : 'Blocked. The browser will not ask again — allow it in Settings › Notifications › agentistics (or remove the app from the Home Screen and add it again).'}
+                  </span>
                 </>
               ) : (
                 <>
@@ -208,7 +217,9 @@ export default function NotificationsSettings() {
         {/* Absent rather than disabled where it cannot work: a button that does nothing when
             pressed is indistinguishable from a broken one, and the sentence above already says
             what to do instead. */}
-        {support === 'ok' && permission !== 'granted' && (
+        {/* Only where pressing it can actually do something: `default` is the one state the
+            browser will still show a prompt for. */}
+        {support === 'ok' && permission === 'default' && (
           <button
             onClick={handleRequestPermission}
             style={{

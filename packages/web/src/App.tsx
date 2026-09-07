@@ -22,7 +22,6 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
-import { useVisualViewport } from './hooks/useVisualViewport'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -1593,71 +1592,52 @@ export default function AppLayout() {
    * Every other page keeps the window as its scroller, and nothing here changes that.
    */
   const lockViewport = isMobile && inSessionsWorkspace
-  const viewport = useVisualViewport(lockViewport)
   useEffect(() => {
     if (!lockViewport) return
     const root = document.documentElement
     root.classList.add('ag-viewport-locked')
-    window.scrollTo(0, 0)
     return () => { root.classList.remove('ag-viewport-locked') }
   }, [lockViewport])
   /**
-   * THE KEYBOARD CLOSED — PUT THE SCROLL BACK.
+   * PUT THE PAGE BACK WHEN THE FIELD IS LEFT — and do NOTHING else about the keyboard.
    *
-   * iOS scrolls the PAGE to bring the caret into view and is supposed to undo it on dismissal.
-   * Routinely it does not, and the document is then left permanently scrolled: the composer and the
-   * fixed bottom bar both come back a little higher than they went, which is the second half of the
-   * report. This is the whole fix for it, and it is deliberately the smallest one — iOS keeps doing
-   * the scroll, because the composer riding up with the keyboard is the part that WORKED.
+   * iOS scrolls the page to bring the caret into view, and that is the half that has always
+   * WORKED: the composer rides up with the keyboard by itself. What it does not reliably do is undo
+   * that scroll on dismissal, and since this shell is exactly one viewport tall, the leftover shows
+   * as a band of nothing at the foot — the composer and the bottom bar both sitting higher than
+   * they started. That, and only that, is what this fixes.
    *
-   * Preventing the scroll instead (a fixed body) was tried and reverted: it moves the initial
-   * containing block onto the small viewport, and every viewport unit and `position: fixed`
-   * descendant in the tree then measures against a different box. Three position reports came out
-   * of that. A layout that is correct must not be re-anchored to fix a scroll.
-   */
-  const keyboardUp = viewport.keyboard
-  /**
-   * THE DOCUMENT IS PINNED AT 0 ON THIS SCREEN, FOR AS LONG AS THE KEYBOARD IS DOWN.
+   * FIVE ATTEMPTS TO DO MORE WERE REVERTED, and the reason is worth keeping. Each tried to take
+   * the keyboard over from iOS — a fixed body, a shell sized to the visible band, a shell sized to
+   * the locked box, the keyboard's height reserved as padding, that height measured against a
+   * remembered resting one. Every version was correct in a headless emulation and wrong on the
+   * device, in a different way each time: a bar floating off the floor, a composer under the fold,
+   * a composer that never rose, a composer pushed to the top of the screen. The measurements those
+   * versions rest on — `window.innerHeight`, `visualViewport.height` — do not mean the same thing
+   * in a Safari tab and in an installed web app, and this repo has no way to test the second.
    *
-   * A single reset was tried and was not enough, which is what the fourth report was: the shell is
-   * exactly one viewport tall, so ANY document scroll shows as a band of nothing at the foot —
-   * the composer and the bottom bar both lifted by however many pixels the page is scrolled by,
-   * which is precisely "tanto o input como o menu estão desgrudados". iOS keeps adjusting that
-   * scroll across the keyboard's dismissal animation, so a reset fired once at 120ms lands in the
-   * middle of it and is overwritten a frame later.
-   *
-   * So this is not a timing guess any more, it is an INVARIANT: on this screen the document has
-   * nothing to scroll — the conversation, the list and the aside all scroll inside themselves — so
-   * a non-zero `scrollY` is by definition spurious and is put back. Listening to `scroll` makes it
-   * hold however long the animation takes and whatever else tries to move it.
-   *
-   * WHILE THE KEYBOARD IS UP, IT IS LEFT ALONE. iOS scrolls to reveal the caret and fighting it
-   * mid-gesture is how a page ends up juddering; the padding above is what lifts the composer
-   * there, and this pins the page again the moment the keyboard is gone.
+   * So the rule is the one this file already states for the desktop: do not re-anchor a layout that
+   * is correct. `focusout` is a fact, not a measurement, and putting a scroll back is not a layout
+   * change.
    */
   useEffect(() => {
-    if (!lockViewport || keyboardUp) return
-    const pin = () => {
-      // NEVER WHILE SOMETHING IS BEING TYPED INTO. The caret scroll iOS performs on focus is the
-      // one document scroll on this screen that is not spurious, and cancelling it is exactly how
-      // the composer ends up behind the keyboard. `keyboardUp` is supposed to cover this and did
-      // not in an installed PWA, where the window resizes with the keyboard and the shrink cannot
-      // be told from the window simply being smaller — so the guard is stated a second time
-      // against the one fact that is never ambiguous: is a field focused.
-      const el = document.activeElement as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
-      if (window.scrollY !== 0) window.scrollTo(0, 0)
+    if (!lockViewport) return
+    const editable = (el: EventTarget | null): boolean => {
+      const e = el as HTMLElement | null
+      return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
     }
-    pin()
-    window.addEventListener('scroll', pin, { passive: true })
-    // The listener covers everything iOS does noisily; these cover a settle that moves the page
-    // without firing one, which WebKit has been observed to do on the last frame of the animation.
-    const timers = [60, 180, 400].map(ms => window.setTimeout(pin, ms))
-    return () => {
-      window.removeEventListener('scroll', pin)
-      for (const t of timers) window.clearTimeout(t)
+    const onBlur = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      // The keyboard's dismissal is animated and iOS keeps adjusting the scroll across it, so one
+      // reset lands mid-animation and is overwritten. These cover the whole of it, and each is a
+      // no-op once the page is already home.
+      for (const ms of [0, 120, 300, 600]) {
+        window.setTimeout(() => { if (window.scrollY !== 0) window.scrollTo(0, 0) }, ms)
+      }
     }
-  }, [lockViewport, keyboardUp])
+    window.addEventListener('focusout', onBlur)
+    return () => window.removeEventListener('focusout', onBlur)
+  }, [lockViewport])
 
   /**
    * The fixed strip is ONE row again.
@@ -3405,25 +3385,8 @@ export default function AppLayout() {
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
-      // THE KEYBOARD'S BAND, AS PADDING — the border box stays `100dvh` and still reaches the floor,
-      // so nothing anchors anywhere new; only the CONTENT box shrinks, which lifts the composer at
-      // the foot of the column clear of the keyboard.
-      //
-      // It has to be done here because iOS cannot do it: the document has no scrollable overflow on
-      // this screen, so there is nothing for the caret scroll to move, and the composer simply sat
-      // behind the keyboard with the accessory bar floating over the conversation. That is the
-      // whole of the video that reported it.
-      //
-      // This is NOT the reverted fix. What was reverted was `position: fixed` on the body, which
-      // re-anchors the initial containing block; padding changes no box's outer edge and no
-      // containing block, so the resting layout is byte-for-byte what it was — the inset is 0 until
-      // a keyboard is actually up.
-      //
-      // Never both bands at once: the bar steps aside for the keyboard (see its own note).
-      ...(inSessionsWorkspace && isMobile
-        ? (viewport.keyboard
-            ? { paddingBottom: viewport.keyboardInset }
-            : (!sessionOpen ? { paddingBottom: 'var(--mobile-nav-h)' } : {}))
+      ...(inSessionsWorkspace && isMobile && !sessionOpen
+        ? { paddingBottom: 'var(--mobile-nav-h)' }
         : {}),
       background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
       paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth),
@@ -3863,11 +3826,8 @@ export default function AppLayout() {
           was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
           its own back arrow in the top bar, which is the way out and the only one a reader needs
           while they are in it. The root's height drops the matching subtraction — see its note.
-
-          AND HIDDEN WHILE THE KEYBOARD IS UP: it is `position: fixed` at the foot of the shell's
-          border box, which the keyboard is covering, so it is behind it either way — and five
-          destinations wedged into what is left is chrome crowding out the thing it wraps. */}
-      {isMobile && !sessionOpen && !viewport.keyboard && (
+ */}
+      {isMobile && !sessionOpen && (
         <MobileBottomNav
           lang={lang}
           harnesses={data.harnesses}
