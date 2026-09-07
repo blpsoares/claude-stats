@@ -40,6 +40,8 @@ export interface NotificationSettings {
   soundVolume: number // 0.0 to 1.0
 }
 
+import { createSharedPref } from './sharedPref'
+
 const STORAGE_KEY = 'agentistics-notification-settings'
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
@@ -62,35 +64,70 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   soundVolume: 0.8,
 }
 
-export function getNotificationSettings(): NotificationSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return DEFAULT_NOTIFICATION_SETTINGS
-    const parsed = JSON.parse(raw)
-    return {
-      ...DEFAULT_NOTIFICATION_SETTINGS,
-      ...parsed,
-      events: {
-        ...DEFAULT_NOTIFICATION_SETTINGS.events,
-        ...(parsed.events || {}),
-      },
-      eventSounds: {
-        ...DEFAULT_NOTIFICATION_SETTINGS.eventSounds,
-        ...(parsed.eventSounds || {}),
-      },
-    }
-  } catch {
-    return DEFAULT_NOTIFICATION_SETTINGS
+/**
+ * PURE: whatever was stored, read as settings.
+ *
+ * Total by construction — the defaults are spread UNDER the parsed blob, per group, so a document
+ * written before a field existed still yields a complete object rather than an `undefined` the
+ * settings screen would render as a blank switch.
+ */
+export function readNotificationSettings(raw: unknown): NotificationSettings {
+  const parsed = (raw ?? {}) as Partial<NotificationSettings>
+  return {
+    ...DEFAULT_NOTIFICATION_SETTINGS,
+    ...parsed,
+    events: { ...DEFAULT_NOTIFICATION_SETTINGS.events, ...(parsed.events ?? {}) },
+    eventSounds: { ...DEFAULT_NOTIFICATION_SETTINGS.eventSounds, ...(parsed.eventSounds ?? {}) },
   }
 }
 
-export function saveNotificationSettings(settings: NotificationSettings): void {
+/**
+ * WHAT NOTIFIES ME IS SHARED; WHETHER THIS BROWSER HAS BEEN ASKED IS NOT.
+ *
+ * The choice — notify me when a session needs me, with this sound, at this volume — is about the
+ * work, so switching it off at the desk must switch it off on the phone. `askedPrompt` is the
+ * opposite: it records that THIS browser was shown the permission dialog, and the permission it
+ * tracks is per device (an iOS home-screen app and a desktop Chrome each grant their own). Sharing
+ * it would suppress the prompt on a device that has never been asked, which is the one way to make
+ * notifications silently impossible to enable.
+ */
+const ASKED_KEY = 'agentistics-notification-asked'
+
+const store = createSharedPref<NotificationSettings>({
+  key: STORAGE_KEY,
+  prefKey: 'notificationSettings',
+  fallback: DEFAULT_NOTIFICATION_SETTINGS,
+  parse: raw => (raw === null || typeof raw !== 'object' ? null : readNotificationSettings(raw)),
+})
+
+function readAsked(): boolean {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+    const own = localStorage.getItem(ASKED_KEY)
+    if (own !== null) return own === '1'
+    // Before the split, `askedPrompt` lived inside the settings blob. Adopt it once so a browser
+    // that HAS been asked is not asked again the day this ships.
+    return store.get().askedPrompt === true
+  } catch {
+    return false
+  }
+}
+
+export function getNotificationSettings(): NotificationSettings {
+  return { ...store.get(), askedPrompt: readAsked() }
+}
+
+export function saveNotificationSettings(settings: NotificationSettings): void {
+  try { localStorage.setItem(ASKED_KEY, settings.askedPrompt ? '1' : '0') } catch { /* private mode */ }
+  store.set({ ...settings, askedPrompt: false })
+  try {
     window.dispatchEvent(new CustomEvent('agentistics:notification-settings-changed', { detail: settings }))
   } catch {
-    /* ignore quota/disabled */
+    /* no window (a test, a worker) — the store is written either way */
   }
+}
+
+export function subscribeNotificationSettings(fn: () => void): () => void {
+  return store.subscribe(fn)
 }
 
 // ----------------------------------------------------------------------------

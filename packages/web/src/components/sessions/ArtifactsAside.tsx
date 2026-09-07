@@ -74,13 +74,32 @@ import {
 import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
+import { createSharedPref } from '../../lib/sharedPref'
 
 type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
-const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
-const GALLERY_SCOPE_KEY = 'agentistics:gallery-scope'
-const SKILL_FORMAT_KEY = 'agentistics:skill-format'
+// SHARED. How a person reads the gallery and a skill is about the work, not about the screen —
+// picking "list" on the desktop and finding "grid" on the tablet is the same application answering
+// twice. See `sharedPref.ts` for the first-paint and arming rules.
+const galleryViewStore = createSharedPref<'grid' | 'list'>({
+  key: 'agentistics:gallery-view',
+  prefKey: 'galleryView',
+  fallback: 'grid',
+  parse: raw => (raw === 'grid' || raw === 'list' ? raw : null),
+})
+const galleryScopeStore = createSharedPref<GalleryScope>({
+  key: 'agentistics:gallery-scope',
+  prefKey: 'galleryScope',
+  fallback: 'all',
+  parse: raw => (typeof raw === 'string' ? parseGalleryScope(raw) : null),
+})
+const skillFormatStore = createSharedPref<'md' | 'text'>({
+  key: 'agentistics:skill-format',
+  prefKey: 'skillFormat',
+  fallback: 'md',
+  parse: raw => (raw === 'md' || raw === 'text' ? raw : null),
+})
 
 export interface ArtifactsAsideProps {
   /**
@@ -378,19 +397,19 @@ export function ArtifactsAside({
   const galleryFiles = useMemo(() => galleryFileCount(gallery), [gallery])
   /** LIST or GRID, remembered. A private window that refuses storage simply keeps the default. */
   const [galleryView, setGalleryView] = useState<GalleryView>(() => {
-    try { return parseGalleryView(localStorage.getItem(GALLERY_VIEW_KEY)) } catch { return 'grid' }
+    return galleryViewStore.get()
   })
   /** WHOSE files — remembered like the view is. A private window that refuses storage keeps `all`. */
   const [galleryScope, setGalleryScope] = useState<GalleryScope>(() => {
-    try { return parseGalleryScope(localStorage.getItem(GALLERY_SCOPE_KEY)) } catch { return 'all' }
+    return galleryScopeStore.get()
   })
   const chooseGalleryScope = (v: GalleryScope) => {
     setGalleryScope(v)
-    try { localStorage.setItem(GALLERY_SCOPE_KEY, v) } catch { /* private mode */ }
+    galleryScopeStore.set(v)
   }
   const chooseGalleryView = (v: GalleryView) => {
     setGalleryView(v)
-    try { localStorage.setItem(GALLERY_VIEW_KEY, v) } catch { /* private mode */ }
+    galleryViewStore.set(v)
   }
   /**
    * The skills this session can invoke, read ONCE and only when the tab is opened.
@@ -416,11 +435,11 @@ export function ArtifactsAside({
   const [openSkill, setOpenSkill] = useState<string | null>(null)
   /** How the skill's file is shown. Remembered, because it is a preference and not a per-skill one. */
   const [skillFormat, setSkillFormat] = useState<'md' | 'text'>(() => {
-    try { return localStorage.getItem(SKILL_FORMAT_KEY) === 'text' ? 'text' : 'md' } catch { return 'md' }
+    return skillFormatStore.get()
   })
   const chooseSkillFormat = (v: 'md' | 'text') => {
     setSkillFormat(v)
-    try { localStorage.setItem(SKILL_FORMAT_KEY, v) } catch { /* private mode */ }
+    skillFormatStore.set(v)
   }
   const [skillBody, setSkillBody] = useState<
     { ok: true; text: string; truncated: boolean } | { ok: false; message: string } | null

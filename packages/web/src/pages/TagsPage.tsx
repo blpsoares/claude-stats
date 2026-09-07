@@ -13,6 +13,15 @@ import { DatePicker } from '../components/DatePicker'
 // /api/tags response shapes. Aggregate-only by design (spec rule 2): the server never sends the
 // session rows behind a tag, so everything rendered here is a number the server already computed.
 import { tagSourceTypes, type TagSourceType } from '../lib/tagSourceTypes'
+import { createSharedPref } from '../lib/sharedPref'
+
+/** SHARED: how a person reads their tags is about the work, not about the screen. */
+const tagsLayoutStore = createSharedPref<'grid' | 'list'>({
+  key: 'agentistics-tags-layout',
+  prefKey: 'tagsLayout',
+  fallback: 'grid',
+  parse: raw => (raw === 'grid' || raw === 'list' ? raw : null),
+})
 interface TagSource { type: TagSourceType; value: string }
 interface TagAggregate {
   sessions: number
@@ -296,7 +305,7 @@ export default function TagsPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   // Grid (compact cards) vs list (dense rows with more metrics). Persisted across reloads.
   const [layout, setLayout] = useState<'grid' | 'list'>(() => {
-    try { return localStorage.getItem('agentistics-tags-layout') === 'list' ? 'list' : 'grid' } catch { return 'grid' }
+    try { return tagsLayoutStore.get() === 'list' ? 'list' : 'grid' } catch { return 'grid' }
   })
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -530,7 +539,7 @@ export default function TagsPage() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
           <TabSelect
             value={layout}
-            onChange={v => { setLayout(v); try { localStorage.setItem('agentistics-tags-layout', v) } catch { /* ignore */ } }}
+            onChange={v => { setLayout(v); try { tagsLayoutStore.set(v) } catch { /* ignore */ } }}
             options={[
               { value: 'grid', label: pt ? 'Grade' : 'Grid' },
               { value: 'list', label: pt ? 'Lista' : 'List' },

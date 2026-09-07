@@ -99,6 +99,19 @@ export interface Preferences {
    *  showed three different pinned bands — one application, three answers. The browser copy stays
    *  as the first paint (see `pinnedSessions.ts`); this is the one that is true. */
   pinnedSessions?: string[]
+  /** Health warnings this person waved away. Shared for the same reason: the warnings are about
+   *  THIS machine, which is the same machine from every device. */
+  dismissedHealth?: string[]
+  /** What notifies, with which sound, at which volume. `askedPrompt` is deliberately NOT here — it
+   *  records that one BROWSER was shown the permission dialog, and that permission is per device;
+   *  sharing it would suppress the prompt on a device that has never been asked. */
+  notificationSettings?: Record<string, unknown>
+  /** How a person reads their own lists. About the work, not about the screen. */
+  tagsLayout?: 'grid' | 'list'
+  galleryView?: 'grid' | 'list'
+  galleryScope?: string
+  skillFormat?: 'md' | 'text'
+  pricingGroupBy?: string
   /** Magnifier lenses and their settings, for a MACHINE. On a central the same object lives per
    *  account in the `userPrefs` collection instead — see a11y-prefs.ts, which owns that choice. */
   accessibility?: AccessibilityPrefs
