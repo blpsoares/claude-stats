@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { mkdtemp, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listExistingArtifacts, resolveArtifactPath } from './artifact-list'
@@ -27,7 +27,7 @@ test('only files that exist, have content, and sit inside the session directory'
   await writeFile(join(dir, 'empty.txt'), '')
 
   const out = await listExistingArtifacts(
-    ['real.ts', 'sub/deep.md', 'empty.txt', 'gone.ts', '/etc/hostname'],
+    ['real.ts', 'sub/deep.md', 'empty.txt', 'gone.ts'],
     dir,
   )
   expect(out.map(o => o.raw)).toEqual(['real.ts', 'sub/deep.md'])
@@ -46,19 +46,45 @@ test('the transcript order survives, and one file is listed once', async () => {
   expect(out.map(o => o.raw)).toEqual(['b.ts', 'a.ts'])
 })
 
-test('a file OUTSIDE the session folder is not listed, temp directory included', async () => {
-  // Admitting the system temp directory as a second root was tried and reverted: it is shared, and
-  // widening the guard to all of it defeats the symlink-escape check for any session whose own
-  // folder sits under it — which every probe session here does. The list must not offer what the
-  // read route will refuse.
+/**
+ * OUTSIDE THE FOLDER IS NOT THE SAME AS OUT OF REACH, and this is the change the rule was asked
+ * for. Writing a memory in this product IS writing to `~/.claude/projects/<project>/memory/`, and
+ * the panel listed those while the reader refused them — two halves of one screen disagreeing.
+ * Gate 1 still stands: the path is here only because the session wrote it.
+ */
+test('a file outside the session folder IS listed when nothing redirected it', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'artscope-'))
-  const scratch = join(tmpdir(), `probe-${Date.now()}.txt`)
-  await writeFile(scratch, 'note')
-  expect(await listExistingArtifacts([scratch], dir)).toEqual([])
+  const elsewhere = await mkdtemp(join(tmpdir(), 'artmem-'))
+  const memory = join(elsewhere, 'MEMORY.md')
+  await writeFile(memory, '# memory\n')
+  expect((await listExistingArtifacts([memory], dir)).map(o => o.raw)).toEqual([memory])
 })
 
-test('anywhere ELSE is refused — writing a path is not a reason to serve it', async () => {
+/**
+ * THE HOLE THAT MUST STAY CLOSED, and the reason the widening is a comparison rather than a second
+ * root. Adding the system temp directory as one was tried and reverted precisely because it let a
+ * link inside a session's own folder reach anything else under `/tmp` — and every probe session
+ * here sits there. The new rule does not reopen it: the link's NAME and its REAL path disagree, and
+ * the real one is not inside the folder, so it is dropped.
+ */
+test('a link inside the folder pointing OUT of it is still dropped', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'artscope2-'))
-  // The allowlist proves the session wrote it; that alone must not open the whole filesystem.
-  expect(await listExistingArtifacts(['/etc/hostname'], dir)).toEqual([])
+  const outside = await mkdtemp(join(tmpdir(), 'artout-'))
+  const secret = join(outside, 'secret.txt')
+  await writeFile(secret, 'no')
+  const link = join(dir, 'looks-local.txt')
+  await symlink(secret, link)
+  // Named inside the session's folder, really somewhere else entirely.
+  expect(await listExistingArtifacts(['looks-local.txt'], dir)).toEqual([])
+})
+
+/**
+ * A link that stays INSIDE the folder is ordinary and must keep working — this is the second half
+ * of the union, and without it a machine whose project sits behind a symlink lists nothing.
+ */
+test('a link that resolves back inside the folder is kept', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'artscope3-'))
+  await writeFile(join(dir, 'real.md'), '# x\n')
+  await symlink(join(dir, 'real.md'), join(dir, 'alias.md'))
+  expect((await listExistingArtifacts(['alias.md'], dir)).map(o => o.raw)).toEqual(['alias.md'])
 })

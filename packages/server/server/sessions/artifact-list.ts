@@ -20,7 +20,7 @@
  */
 
 import { resolve, isAbsolute } from 'node:path'
-import { stat } from 'node:fs/promises'
+import { realpath, stat } from 'node:fs/promises'
 import { withinDirectory } from './artifact-file'
 
 export interface ListedArtifact {
@@ -66,11 +66,18 @@ export async function listExistingArtifacts(
   for (const raw of paths) {
     const path = resolveArtifactPath(raw, cwd)
     if (!path || seen.has(path)) continue
-    // ONE ROOT: the session's own folder. Adding the system temp directory as a second was tried
-    // and reverted — it is shared, and widening the guard to all of it defeats the symlink-escape
-    // check for any session whose folder is itself under it. The list must not offer what the read
-    // route will refuse, so it applies the identical rule.
-    if (!withinDirectory(path, cwd)) continue
+    // THE IDENTICAL RULE THE READ ROUTE APPLIES, and it has to stay identical: a list that offers
+    // what the reader refuses is the control-that-reads-as-broken, which is exactly how this was
+    // reported — the panel listed `~/.claude/.../memory/MEMORY.md` and the reader said it was
+    // outside the session's folder.
+    //
+    // So: where the transcript NAMED it, or inside the session's folder. `realpath` is what makes
+    // the first half meaningful — without following the links there is nothing to compare `named`
+    // against, and every path would trivially equal itself. One extra syscall per path, on a list
+    // that already stats each one.
+    const real = await realpath(path).catch(() => null)
+    if (real === null) continue
+    if (real !== path && !withinDirectory(real, cwd)) continue
     seen.add(path)
     try {
       const st = await stat(path)
