@@ -32,6 +32,27 @@ export interface SessionActionsProps {
    * the action still runs, it simply does not navigate.
    */
   onOpened?: (id: string) => void
+  /**
+   * SURFACE CONTROLS THAT SHARE THIS MENU, drawn above the row's own verbs.
+   *
+   * On a phone the session bar had six controls and no room left for the TITLE — the one thing on
+   * it that says which session you are looking at. Reported as exactly that. They come in here
+   * rather than into a second popover beside this one, because two menus on a 390px bar is the
+   * accumulation being complained about, rearranged.
+   *
+   * They are the CALLER's: this component knows the row's verbs and nothing about filters, panels
+   * or metrics. Each carries its own `onSelect`, and the menu closes after it.
+   */
+  extra?: {
+    id: string
+    label: string
+    icon?: React.ReactNode
+    /** A count or a figure the row would otherwise have shown on the bar (`1`, `59%`). */
+    badge?: string
+    /** Marks the one that is currently showing, so the menu says where you are. */
+    on?: boolean
+    onSelect: () => void
+  }[]
 }
 
 /** The verbs that take a line of text before they can run. */
@@ -40,7 +61,7 @@ const TEXT_VERBS = new Set<string>(['rename', 'note', 'task'])
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
 
-export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActionsProps) {
+export function SessionActions({ row, lang, act, onGone, onOpened, extra = [] }: SessionActionsProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState<FleetVerb | null>(null)
@@ -96,7 +117,7 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
         title={pt ? 'Ações da sessão' : 'Session actions'}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 32, height: 32, borderRadius: 9, cursor: 'pointer',
+          width: 32, height: 32, borderRadius: 9, cursor: 'pointer', flexShrink: 0,
           border: '1px solid var(--border-subtle)', background: 'transparent',
           color: 'var(--text-secondary)',
         }}
@@ -116,6 +137,46 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
             background: 'var(--bg-surface)', border: '1px solid var(--border)',
             borderRadius: 12, padding: 5, boxShadow: 'var(--ag-shadow-menu)',
           }}>
+            {/* THE SURFACE'S OWN CONTROLS, first: they are what the bar gave up to make room for the
+                title, and burying them under the row's verbs would make the trade a bad one. A rule
+                separates them because they act on THIS SCREEN while the verbs act on the SESSION. */}
+            {!asking && !confirming && extra.length > 0 && (
+              <div style={{
+                display: 'flex', flexDirection: 'column',
+                marginBottom: 4, paddingBottom: 4, borderBottom: '1px solid var(--border-subtle)',
+              }}>
+                {extra.map(x => (
+                  <button
+                    key={x.id}
+                    onClick={() => { setOpen(false); x.onSelect() }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left',
+                      // 44px: this menu is opened with a thumb, and the rule this repo holds every
+                      // other mobile target to.
+                      minHeight: 44, padding: '6px 10px', borderRadius: 8,
+                      border: 'none', background: 'transparent',
+                      color: x.on ? 'var(--anthropic-orange)' : 'var(--text-primary)',
+                      cursor: 'pointer', fontFamily: 'inherit', fontSize: 12.5,
+                      fontWeight: x.on ? 650 : 400,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                  >
+                    {x.icon && <span style={{ display: 'flex', flexShrink: 0 }}>{x.icon}</span>}
+                    <span style={{ minWidth: 0, flex: 1 }}>{x.label}</span>
+                    {/* The figure the bar used to print. It is why some of these are worth opening
+                        at all — a metrics row saying nothing is one nobody presses. */}
+                    {x.badge && (
+                      <span style={{
+                        flexShrink: 0, fontSize: 11, fontWeight: 600,
+                        color: x.on ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                      }}>{x.badge}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {asking ? (
               <form
                 onSubmit={e => { e.preventDefault(); void run(asking.action as FleetActionId, draft.trim()) }}

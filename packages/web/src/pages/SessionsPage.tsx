@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
+import { BarChart3, ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
 import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -455,6 +455,14 @@ export default function SessionsPage() {
     )
     : null
 
+  /**
+   * The metrics card's open state, held HERE because its trigger moved into the bar's menu — see
+   * the bar's own note. `contextLabel` is the figure that used to ride that trigger; the menu row
+   * shows it, or the row says nothing and nobody presses it.
+   */
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [contextLabel, setContextLabel] = useState<string | null>(null)
+
   const filterButton = (
     <button
       onClick={() => setSheetOpen(true)}
@@ -572,12 +580,17 @@ export default function SessionsPage() {
               </span>
             </div>
 
-            {/* The same filter icon the list carries. This bar is the whole of this screen's
-                chrome, so the filters have to be reachable from it too — the list you go back to
-                is the thing they narrow. */}
-            {filterButton}
-            {magnifierButton}
-
+            {/* ONE MENU, AND THE TITLE GETS THE ROOM BACK.
+                This bar carried the back arrow, `+ Filtro` with its word, the view toggle, the
+                metrics with their percentage, the panel button and the verbs — about 382px of a
+                390px screen, so the title block (`flex: 1, minWidth: 0`) was squeezed to nothing
+                and the one thing saying WHICH session you are looking at was not on screen at all.
+                Reported as exactly that.
+                The three that do not need to be a permanent target moved into the verbs' own menu
+                (`SessionActions.extra`) — not into a second popover beside it, which would be the
+                same accumulation rearranged. The toggle STAYS: it is this screen's primary control,
+                it is already icons-only, and putting the view switch two taps away costs something
+                every minute. */}
             {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
                 the title to about six characters. The `aria-label` carries the name. */}
             {selected.conversationBlind === undefined && (
@@ -660,6 +673,26 @@ export default function SessionsPage() {
               <FileText size={18} />
             </button>
 
+
+            {magnifierButton}
+            {/* The metrics card, with no button of its own: the row that opens it is in the menu.
+                Rendered here regardless, because it IS the card — only its trigger moved. */}
+            {selected.conversationId !== undefined && (
+              <SessionStatsMenu
+                harness={selected.harness}
+                sessionId={selected.conversationId}
+                meta={data?.sessions?.find(x => x.session_id === selected.conversationId)}
+                lang={pt ? 'pt' : 'en'}
+                currency={currency}
+                brlRate={brlRate}
+                touch
+                controlled={{ open: statsOpen, onClose: () => setStatsOpen(false) }}
+                onContextLabel={setContextLabel}
+                {...(selected.model ? { startedModel: selected.model } : {})}
+                {...(selected.effort ? { startedEffort: selected.effort } : {})}
+              />
+            )}
+
             {rowIndex.get(selected.id) && (
               <SessionActions
                 row={rowIndex.get(selected.id)!}
@@ -667,6 +700,30 @@ export default function SessionsPage() {
                 act={act}
                 onGone={() => navigate('/sessions')}
                 onOpened={id => navigate(sessionPath(id))}
+                extra={[
+                  {
+                    id: 'filters',
+                    label: pt ? 'Filtros' : 'Filters',
+                    icon: <Plus size={15} />,
+                    ...(filterCount > 0 ? { badge: String(filterCount) } : {}),
+                    on: filterCount > 0,
+                    onSelect: () => setSheetOpen(true),
+                  },
+                  ...(selected.conversationId !== undefined ? [{
+                    id: 'stats',
+                    label: pt ? 'Métricas da sessão' : 'Session metrics',
+                    icon: <BarChart3 size={15} />,
+                    ...(contextLabel ? { badge: contextLabel } : {}),
+                    onSelect: () => setStatsOpen(true),
+                  }] : []),
+                  {
+                    id: 'artifacts',
+                    label: pt ? 'Conteúdos da sessão' : 'Session contents',
+                    icon: <FileText size={15} />,
+                    on: art.open,
+                    onSelect: () => (art.open ? closeArtifacts() : openArtifacts()),
+                  },
+                ]}
               />
             )}
           </div>

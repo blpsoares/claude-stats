@@ -49,13 +49,34 @@ export interface SessionStatsMenuProps {
    * panel with a piece off the screen.
    */
   touch?: boolean
+  /**
+   * DRIVEN FROM SOMEWHERE ELSE, with no trigger of its own.
+   *
+   * The phone's session bar had six controls and no room left for the TITLE, so the metrics moved
+   * into the bar's one menu. This card still has to be able to OPEN — it is the thing that menu
+   * row opens — so the state comes in and the button is not drawn. `null` (the default) keeps the
+   * component exactly as it was: its own button, its own state.
+   *
+   * `contextLabel` is the other half: the percentage rode the button, and the menu row it moved
+   * into has to be able to show the same figure or it becomes a row nobody presses.
+   */
+  controlled?: { open: boolean; onClose: () => void } | null
+  /** Called with the context figure (`59%`) whenever it changes, or `null` when there is none. */
+  onContextLabel?: (label: string | null) => void
 }
 
 export function SessionStatsMenu({
   harness, sessionId, meta, lang, currency, brlRate, startedModel, startedEffort, touch = false,
+  controlled = null, onContextLabel,
 }: SessionStatsMenuProps) {
   const pt = lang === 'pt'
-  const [open, setOpen] = useState(false)
+  const [ownOpen, setOwnOpen] = useState(false)
+  // ONE `open` for both modes, so every `open &&` below is untouched and the two cannot drift.
+  const open = controlled ? controlled.open : ownOpen
+  const setOpen = (next: boolean | ((v: boolean) => boolean)) => {
+    if (controlled) { if (!(typeof next === 'function' ? next(open) : next)) controlled.onClose(); return }
+    setOwnOpen(next)
+  }
 
   /**
    * How many times this conversation has been COMPACTED — read only when the card is opened, and
@@ -98,6 +119,15 @@ export function SessionStatsMenu({
 
   const h = harness as HarnessId
   const s = sessionStats(h, sessionId, meta)
+
+  /**
+   * THE FIGURE FOLLOWS THE CONTROL. The percentage used to ride this component's own button; where
+   * the button is not drawn, whoever draws the row that opens it needs the same number, or the row
+   * says nothing and nobody presses it. `null` is "there is none", never `0%` — the same rule the
+   * gauge itself keeps.
+   */
+  const contextLabel = s.context ? `${Math.floor(s.context.fraction * 100)}%` : null
+  useEffect(() => { onContextLabel?.(contextLabel) }, [contextLabel, onContextLabel])
   const money = (usd: number) => fmtCost(usd, currency, brlRate)
   const label = (HARNESS_LABELS as Record<string, string>)[harness] ?? harness
 
@@ -109,7 +139,7 @@ export function SessionStatsMenu({
 
   return (
     <div ref={boxRef} style={{ position: 'relative', flexShrink: 0 }}>
-      <button
+      {!controlled && <button
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         aria-label={pt ? 'Métricas desta sessão' : 'This session’s metrics'}
@@ -129,7 +159,7 @@ export function SessionStatsMenu({
             you do next — a conversation near its window is one to finish rather than extend. It is
             absent, not zero, when it cannot be known. */}
         {s.context && <span style={{ fontWeight: 650 }}>{Math.floor(s.context.fraction * 100)}%</span>}
-      </button>
+      </button>}
 
       {open && (
         <div style={{
