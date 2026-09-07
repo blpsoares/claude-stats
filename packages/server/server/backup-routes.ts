@@ -22,7 +22,7 @@ import {
 import { BACKUP_LAYERS, omittedSecrets, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
 import { githubFitVerdict, type GithubFitVerdict } from './backup/backup-github'
-import { lastBackup, lastPerHarness, loadBackupHistory, type BackupPresence } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastRun, loadBackupHistory, type BackupPresence } from './backup/backup-store'
 import { SCHEDULE_IDS, scheduleStatus, type ScheduleId } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 
@@ -154,11 +154,18 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
     }
   })
 
+  // What you can RESTORE from — files still on disk. Unchanged, and deliberately not `lastRun`:
+  // this is the card that says you are covered, and a timestamp pointing at a file that is gone is
+  // the difference between knowing you are unprotected and believing you are not.
   const last = lastBackup(entries)
+  // The SCHEDULE's question is "when did one last run", which a pruned file still answers — see
+  // `lastRun`. Reading `lastBackup` here made "next run" say `now` forever on any machine that
+  // uploads to GitHub and deletes the local copy.
+  const lastAt = lastRun(entries)?.at ?? null
   const st = scheduleStatus({
     schedule: prefs.schedule,
     customHours: prefs.customHours,
-    lastAt: last?.at ?? null,
+    lastAt,
     nowMs: Date.now(),
     serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
   })

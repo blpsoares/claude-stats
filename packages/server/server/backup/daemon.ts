@@ -10,7 +10,7 @@
  */
 import { readPreferences } from '../preferences'
 import { performBackup, readBackupPrefs } from '../cli-backup'
-import { lastBackup, loadBackupHistory } from './backup-store'
+import { lastRun, loadBackupHistory } from './backup-store'
 import { isDue } from './schedule'
 
 const CHECK_MS = 15 * 60_000
@@ -30,7 +30,12 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
     try {
       const prefs = readBackupPrefs(await readPreferences())
       const entries = await loadBackupHistory()
-      const last = lastBackup(entries)
+      // `lastRun`, NOT `lastBackup`. The two answer different questions and this one is temporal:
+      // a run that happened and was later pruned still happened. `lastBackup` counts only files
+      // still on disk, and with `deleteLocalAfterUpload` the archive goes to GitHub and the local
+      // copy is deleted seconds later — so every check read "never backed up", `isDue` fired, and
+      // a DAILY schedule ran every fifteen minutes, which is this tick and not a schedule.
+      const last = lastRun(entries)
       // serverRunning is true by construction: this code only runs inside the daemon.
       const verdict = isDue({
         schedule: prefs.schedule, customHours: prefs.customHours,

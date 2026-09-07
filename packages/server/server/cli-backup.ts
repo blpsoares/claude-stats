@@ -20,7 +20,7 @@ import { CURRENT_VERSION } from './version'
 import { cliStrings, resolveLang, type CliStrings } from './cli-i18n'
 import { BACKUP_LAYERS, planSources, withMetrics, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backup/backup-size'
-import { lastBackup, lastPerHarness, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastRun, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
 import { runBackup, walkSources } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, assetRel, type RepoEntry } from './backup/repo-manifest'
@@ -654,9 +654,11 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     }
     const per = lastPerHarness(entries)
     for (const h of HARNESS_ORDER) log(`  ${h.padEnd(12)} ${per[h] ?? 'never'}`)
+    // `last` above is what you can RESTORE from; the schedule asks when one last RAN, and a
+    // pruned backup still answers that. See `lastRun`.
     const st = scheduleStatus({
       schedule: prefs.schedule, customHours: prefs.customHours,
-      lastAt: last?.at ?? null, nowMs: Date.now(),
+      lastAt: lastRun(entries)?.at ?? null, nowMs: Date.now(),
       serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
     })
     log(st.kind === 'inactive-no-server'

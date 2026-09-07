@@ -85,7 +85,7 @@ import {
 import { readGithubSection } from './backup-routes'
 import { omittedSecrets } from './backup/backup-plan'
 import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
-import { lastBackup, lastPerHarness, loadBackupHistory } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastRun, loadBackupHistory } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
@@ -2558,10 +2558,12 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         }
       })
 
+      // What you can RESTORE from. Unchanged — see the same note in `backup-routes.ts`.
       const last = lastBackup(entries)
+      // The SCHEDULE asks when one last RAN, which a pruned file still answers — see `lastRun`.
       const st = scheduleStatus({
         schedule: prefs.schedule, customHours: prefs.customHours,
-        lastAt: last?.at ?? null, nowMs: Date.now(),
+        lastAt: lastRun(entries)?.at ?? null, nowMs: Date.now(),
         serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
       })
 

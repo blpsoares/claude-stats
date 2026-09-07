@@ -128,6 +128,31 @@ export function lastBackup(entries: BackupHistoryEntry[]): BackupHistoryEntry | 
 }
 
 /**
+ * WHEN A BACKUP LAST RAN — a different question from `lastBackup`, and the one a SCHEDULE asks.
+ *
+ * `lastBackup` answers "what can I still restore from", so it counts only files that are on disk.
+ * That is right for a status line and catastrophic for a schedule, because a run that happened and
+ * was later pruned still happened. Every rule in this module is built on records OUTLIVING their
+ * files — `markPresence` marks rather than drops, precisely so history survives retention — and a
+ * scheduler reading the present-only answer throws that away.
+ *
+ * Measured on a real machine, and it is not an edge case: with `deleteLocalAfterUpload` the archive
+ * goes to GitHub and the local copy is deleted SECONDS later (17:20:13 written, 17:20:20 pruned).
+ * Every record is then absent, `lastBackup` is null on every check, `isDue` reads that as "never
+ * backed up" and fires — so a schedule set to DAILY ran every fifteen minutes, which is the
+ * daemon's polling interval and not a schedule at all. Reported as exactly that. Nine runs in one
+ * afternoon, each one uploading and re-downloading a hundred-megabyte archive to verify it.
+ *
+ * So this counts EVERY record, present, pruned or missing. It is deliberately order-independent
+ * rather than trusting `markPresence`'s sort, for the reason `lastPerHarness` gives.
+ */
+export function lastRun(entries: BackupHistoryEntry[]): BackupHistoryEntry | null {
+  let best: BackupHistoryEntry | null = null
+  for (const e of entries) if (best === null || e.at > best.at) best = e
+  return best
+}
+
+/**
  * When each harness was last covered by a backup that still exists.
  *
  * Deliberately order-INDEPENDENT: it keeps the maximum rather than the first hit. `markPresence`
