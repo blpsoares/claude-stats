@@ -30,7 +30,7 @@ import {
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
   COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens, fmtUSD,
-  harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
+  harnessColor, microLabel, numeric, pill, surface, type BoardStatus, type ColumnId,
 } from './board'
 import {
   DEFAULT_SORT, nextSort, PRIORITY_ORDER, sortRows,
@@ -50,10 +50,7 @@ const SORT_LABEL: Record<string, string> = {
 
 // ---------------------------------------------------------------------------- columns
 
-export type ColumnId =
-  | 'status' | 'priority' | 'assignee' | 'due' | 'claim' | 'attempts' | 'sessions' | 'rounds'
-  | 'tokens' | 'cost' | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links' | 'blockedBy'
-  | 'created' | 'updated'
+export type { ColumnId }
 
 export interface ColumnDef {
   id: ColumnId

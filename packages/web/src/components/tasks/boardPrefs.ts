@@ -16,9 +16,8 @@
  * remember which columns were shown is worse than one that opens on the defaults.
  */
 
-import { COLUMN_ORDER, type BoardStatus } from './board'
+import { COLUMN_ORDER, type BoardStatus, type ColumnId } from './board'
 import { DEFAULT_SORT, type SortSpec } from '@agentistics/core'
-import type { ColumnId } from './TaskTable'
 
 const KEY = 'agentistics-task-board-v1'
 

@@ -18,6 +18,22 @@ export type BoardStatus =
   | 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'in_review' | 'done' | 'abandoned'
 
 /**
+ * The table's columns, named HERE rather than in `TaskTable`.
+ *
+ * `boardPrefs` stores which of them are shown, so it needs the name — and importing it from
+ * `TaskTable`, which imports `boardPrefs` back, made the two modules a CYCLE. Today it is erased
+ * (the import is `import type`, so nothing of it survives the bundle), but that safety rests
+ * entirely on one keyword: the day somebody imports a VALUE across it, `boardPrefs`'s module-scope
+ * `DEFAULT_PREFS` can be evaluated before the constants it reads, which is a temporal-dead-zone
+ * crash at load with no clue in it pointing here. `board.ts` imports nothing local, so a name that
+ * lives here can never close a loop.
+ */
+export type ColumnId =
+  | 'status' | 'priority' | 'assignee' | 'due' | 'claim' | 'attempts' | 'sessions' | 'rounds'
+  | 'tokens' | 'cost' | 'harnesses' | 'subtasks' | 'comments' | 'files' | 'links' | 'blockedBy'
+  | 'created' | 'updated'
+
+/**
  * A status has a colour and it is the SAME colour everywhere — the column header, the card's stripe
  * and the table's status cell. Monday's whole legibility trick is that a status is a colour you
  * learn once.
