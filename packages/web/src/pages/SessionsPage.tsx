@@ -588,53 +588,22 @@ export default function SessionsPage() {
               </span>
             </div>
 
-            {/* The same filter icon the list carries. This bar is the whole of this screen's
-                chrome, so the filters have to be reachable from it too — the list you go back to
-                is the thing they narrow. */}
-            {filterButton}
+            {/* ONLY THE TITLE AND THE METRICS, and that is the whole of this bar's rule.
+                It carried the back arrow, `+ Filtro` with its word and badge, the view toggle, the
+                metrics with their percentage, the panel button and the verbs — about 382px of a
+                390px screen. The title block is `flex: 1, minWidth: 0`, so it was squeezed to
+                nothing and the one thing saying WHICH session you are looking at was not on screen.
+
+                Everything that is not the title or the metrics moved into the verbs' OWN menu —
+                not a second popover beside it, which would be the same accumulation rearranged.
+                The METRICS stay out here because the context percentage is read at a GLANCE and
+                changes what you do next: a conversation near its window is one to finish rather
+                than extend, and a figure you have to open a menu for is a figure nobody watches.
+                The view toggle went in with the rest: asked for directly, after it had been left
+                out here on the argument that two taps per switch was too many. */}
             {magnifierButton}
-
-            {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
-                the title to about six characters. The `aria-label` carries the name. */}
-            {/* Not on a central — see the same gate in App.tsx's strip. The conversation is not
-                relayed, so a Chat tab there cannot do what it says. */}
-            {!isCentral && selected.conversationBlind === undefined && (
-              <div role="tablist" style={{
-                display: 'flex', gap: 2, padding: 2, borderRadius: 9, flexShrink: 0,
-                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-              }}>
-                {([
-                  ['chat', <MessagesSquare key="c" size={15} />, pt ? 'Conversa' : 'Chat'],
-                  ['terminal', <TerminalSquare key="t" size={15} />, 'Terminal'],
-                ] as const).map(([id, icon, label]) => (
-                  <button
-                    key={id}
-                    role="tab"
-                    aria-selected={sessionView === id}
-                    aria-label={label}
-                    onClick={() => setSessionView(id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      // 44px, the mobile figure this repo holds everything else to. They were
-                      // 38x34 — under the rule, in the one bar this screen has, on the control
-                      // that switches between its two halves.
-                      width: 44, height: 40, borderRadius: 7, border: 'none', cursor: 'pointer',
-                      background: sessionView === id ? 'var(--bg-surface)' : 'transparent',
-                      color: sessionView === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
-                    }}
-                  >
-                    {icon}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* WHAT THIS CONVERSATION HAS SPENT — the same control the desktop strip carries, and it
-                was simply not on this bar: the strip that hosts it is `!isMobile`, so a phone had no
-                way to see a session's tokens, cost, model or context gauge at all. The button is
-                already the compact one (an icon, plus the context percentage when there is one),
-                which is why it fits here beside five other controls; `compact` only asks it for the
-                44px target this bar holds everything else to. */}
+            {/* THE ONE CONTROL THAT STAYS BESIDE THE TITLE. Its own button, its own percentage —
+                the figure is the reason it is out here rather than in the menu. */}
             {selected.conversationId !== undefined && (
               <SessionStatsMenu
                 harness={selected.harness}
@@ -649,35 +618,6 @@ export default function SessionsPage() {
               />
             )}
 
-            {/* THE RIGHT ASIDE, reachable at all.
-                Everything in it — files, docs, the live feed, the gallery, skills, MCPs, subagents,
-                the PRs — was built on the desktop and had no way in on a phone, which is the whole
-                of "essas features nao foram pensadas pro mobile e sao features que precisam estar
-                presentes la". `resolveArtifactLayout` has ALWAYS answered `fullscreen` for a phone;
-                nothing was rendering it. So this opens the very same panel, not a reduced one.
-
-                The count rides the button, because it is the reason to press it: a panel that might
-                be empty is one people stop opening. */}
-            <button
-              onClick={() => (art.open ? closeArtifacts() : openArtifacts())}
-              aria-label={pt ? 'Conteúdos da sessão' : 'Session contents'}
-              aria-expanded={art.open}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 44, height: 44, flexShrink: 0, border: 'none', background: 'transparent',
-                color: art.open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
-                cursor: 'pointer',
-              }}
-            >
-              {/* THE DESKTOP'S ICON, and the desktop's reasoning with it: a panel glyph says
-                  "something opens here" and leaves the reader to find out what, while `FileText`
-                  names what the panel opens on nine times out of ten. And NO count — it counts
-                  everything the session ever touched, past fifty on an ordinary afternoon, and a
-                  figure nobody acts on is furniture with a number on it. Two layouts wearing two
-                  icons for one panel is the same feature learnt twice. */}
-              <FileText size={18} />
-            </button>
-
             {rowIndex.get(selected.id) && (
               <SessionActions
                 row={rowIndex.get(selected.id)!}
@@ -685,6 +625,67 @@ export default function SessionsPage() {
                 act={act}
                 onGone={() => navigate('/sessions')}
                 onOpened={id => navigate(sessionPath(id))}
+                /* THE VIEW SWITCH, AS THE SWITCH IT IS. It came off the bar and was briefly two
+                   rows in this list, which is a different statement: two rows read as two things
+                   you could pick, while a segmented control says they are ALTERNATIVES and which
+                   one you are in. It is the same control the bar carried, with its labels back —
+                   there is room for words in a 240px menu and there was none in a 390px bar.
+                   Absent for a harness that can never name its conversation, exactly as before. */
+                /* `!isCentral` is dev's gate, kept: on a central the conversation is not relayed, so a
+                   Chat tab there cannot do what it says. It moves with the control. */
+                {...(!isCentral && selected.conversationBlind === undefined ? {
+                  extraTop: (close: () => void) => (
+                    <div role="tablist" style={{
+                      display: 'flex', gap: 3, padding: 3, borderRadius: 10,
+                      background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                    }}>
+                      {([
+                        ['chat', pt ? 'Conversa' : 'Chat', <MessagesSquare key="c" size={15} />],
+                        ['terminal', 'Terminal', <TerminalSquare key="t" size={15} />],
+                      ] as const).map(([id, label, icon]) => (
+                        <button
+                          key={id}
+                          role="tab"
+                          aria-selected={sessionView === id}
+                          onClick={() => { setSessionView(id); close() }}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                            // 44px, the figure this repo holds every mobile target to — and this
+                            // menu is opened with a thumb.
+                            flex: 1, minHeight: 44, borderRadius: 8, border: 'none',
+                            cursor: 'pointer', minWidth: 0,
+                            background: sessionView === id ? 'var(--bg-surface)' : 'transparent',
+                            color: sessionView === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                            fontFamily: 'inherit', fontSize: 12.5,
+                            fontWeight: sessionView === id ? 650 : 400,
+                          }}
+                        >
+                          {icon}
+                          <span style={{
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ),
+                } : {})}
+                extra={[
+                  {
+                    id: 'filters',
+                    label: pt ? 'Filtros' : 'Filters',
+                    icon: <Plus size={15} />,
+                    ...(filterCount > 0 ? { badge: String(filterCount) } : {}),
+                    on: filterCount > 0,
+                    onSelect: () => setSheetOpen(true),
+                  },
+                  {
+                    id: 'artifacts',
+                    label: pt ? 'Conteúdos da sessão' : 'Session contents',
+                    icon: <FileText size={15} />,
+                    on: art.open,
+                    onSelect: () => (art.open ? closeArtifacts() : openArtifacts()),
+                  },
+                ]}
               />
             )}
           </div>

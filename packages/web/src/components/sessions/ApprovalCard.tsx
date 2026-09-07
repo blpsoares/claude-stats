@@ -27,12 +27,33 @@ export interface ApprovalCardProps {
   lang: 'pt' | 'en'
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
     => Promise<{ ok: boolean; message: string; id?: string }>
+  /**
+   * THE FREE-TEXT OPTION HANDS THE COMPOSER OVER, rather than growing a field of its own.
+   *
+   * Asked for: "ao clicar na opção de digitar o input fica disponível pro usuário usar (pq daí
+   * consigo usar recurso de voz, ctrl+v, anexos etc.)". The one-line `<input>` this replaced was a
+   * second composer with none of the composer's features — no dictation, no paste-an-image, no
+   * attachments, no auto-grow — and its own separate idea of what Enter does.
+   */
+  onWrite?: (option: { number: number; label: string }) => void
+  /** Which option the composer is currently answering, so the row can say so. */
+  answering?: number | null
 }
 
-export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
+export function ApprovalCard({ row, lang, act, onWrite, answering = null }: ApprovalCardProps) {
   const pt = lang === 'pt'
   const [busy, setBusy] = useState<number | 'confirm' | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /**
+   * Did the last attempt FAIL? A refusal and a confirmation are not the same sentence and must not
+   * look alike.
+   *
+   * The notice was one dim 11.5px line in `--text-tertiary` at the bottom of a card tall enough to
+   * scroll — so a server refusal ("the question changed", "this needs text", "the session is not
+   * asking any more") was, to a reader, indistinguishable from the button doing nothing at all.
+   * Reported as exactly that: "simplesmente não envia".
+   */
+  const [failed, setFailed] = useState(false)
 
   const options = row.dialogOptions ?? []
   const approve = row.verbs.find(v => v.action === 'approve')
@@ -62,9 +83,6 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
    */
   const alreadyAnswered = answeredShape !== null && answeredShape === shape
 
-  /** The free-text option's draft, while it is open. `null` means it is not open. */
-  const [writing, setWriting] = useState<{ number: number; text: string } | null>(null)
-
   async function answer(choice?: number, text?: string) {
     setBusy(choice ?? 'confirm')
     const out = await act({
@@ -75,18 +93,19 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
     })
     setBusy(null)
     setNotice(out.message)
-    if (out.ok) { setAnsweredShape(shape); setWriting(null) }
+    setFailed(!out.ok)
+    if (out.ok) setAnsweredShape(shape)
   }
 
   return (
     <div style={{
       border: '1px solid var(--anthropic-orange)',
       background: 'var(--anthropic-orange-dim)',
-      borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
+      borderRadius: 14, padding: 14, display: 'flex', flexDirection: 'column', gap: 10,
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+        fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
         color: 'var(--anthropic-orange)',
       }}>
         <AlertCircle size={14} />
@@ -100,7 +119,7 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
           margin: 0, padding: '10px 12px', borderRadius: 10,
           background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
           fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
-          fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-secondary)',
+          fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)',
           whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 260, overflowY: 'auto',
         }}>
           {row.approvalLines!.join('\n')}
@@ -121,32 +140,49 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
               <button
                 key={o.number}
                 onClick={() => {
-                  // THE FREE-TEXT OPTION OPENS A FIELD instead of answering. Picking it with the
-                  // digit does not submit — it turns the row into one — and every further press
-                  // then types that digit into it, which is how `33333333333333333` happened.
-                  if (o.freeText) { setWriting({ number: o.number, text: '' }); return }
+                  // THE FREE-TEXT OPTION ANSWERS NOTHING BY ITSELF — it hands the COMPOSER over.
+                  // In the session the digit does not submit either: it turns that row into a
+                  // field, and every further press types the digit INTO it, which is how
+                  // `33333333333333333` happened. So the digit and the words travel together,
+                  // once, when the composer sends — see `answerSession`.
+                  if (o.freeText) { onWrite?.({ number: o.number, label: o.label }); return }
                   void answer(o.number)
                 }}
-                disabled={busy !== null || alreadyAnswered}
+                // Picking the free-text option SENDS NOTHING — it hands the composer over — so it
+                // stays live even once something has been answered from here. Everything else is
+                // an answer and obeys `alreadyAnswered`.
+                disabled={!o.freeText && (busy !== null || alreadyAnswered)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
-                  padding: '10px 12px', borderRadius: 10,
-                  cursor: busy === null && !alreadyAnswered ? 'pointer' : 'default',
-                  border: `1px solid ${o.selected ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
-                  background: 'var(--bg-card)', color: 'var(--text-primary)',
-                  fontFamily: 'inherit', fontSize: 13, minWidth: 0,
-                  opacity: alreadyAnswered ? 0.5 : (busy !== null && busy !== o.number ? 0.5 : 1),
+                  padding: '9px 11px', borderRadius: 10,
+                  cursor: o.freeText || (busy === null && !alreadyAnswered) ? 'pointer' : 'default',
+                  border: `1px solid ${answering === o.number || o.selected ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
+                  background: answering === o.number ? 'var(--anthropic-orange-dim)' : 'var(--bg-card)',
+                  color: 'var(--text-primary)',
+                  // 12.5, matching the conversation's own body text. It was 13 and read as the
+                  // largest thing on a card whose question is set at 11.5 — reported as the font
+                  // being too big, and the option rows were the half that could come down.
+                  fontFamily: 'inherit', fontSize: 12.5, minWidth: 0,
+                  opacity: o.freeText ? 1 : (alreadyAnswered ? 0.5 : (busy !== null && busy !== o.number ? 0.5 : 1)),
                 }}
               >
                 <span style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  width: 22, height: 22, borderRadius: 6, flexShrink: 0,
-                  background: 'var(--bg-elevated)', color: 'var(--text-tertiary)',
-                  fontSize: 11, fontWeight: 700,
+                  width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                  background: answering === o.number ? 'var(--anthropic-orange)' : 'var(--bg-elevated)',
+                  color: answering === o.number ? '#fff' : 'var(--text-tertiary)',
+                  fontSize: 10.5, fontWeight: 700,
                 }}>
                   {o.number}
                 </span>
                 <span style={{ minWidth: 0, flex: 1 }}>{o.label}</span>
+                {/* THE COMPOSER IS THE FIELD, and the row has to say where the answer goes — a row
+                    that highlights and grows nothing reads as a click that did nothing. */}
+                {o.freeText && answering === o.number && (
+                  <span style={{ fontSize: 10.5, color: 'var(--anthropic-orange)', flexShrink: 0 }}>
+                    {pt ? 'escreva abaixo ↓' : 'write below ↓'}
+                  </span>
+                )}
                 {/* Which row the dialog currently has highlighted. Shown because it is a fact about
                     the screen, never because it is a recommendation. */}
                 {o.selected && (
@@ -157,44 +193,6 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
               </button>
             ))}
 
-            {/* THE FIELD. Shown under the options, so the question and the answers stay readable
-                while it is being written. `Enter` sends because that is what it does in the session
-                itself; `Escape` closes it without answering, which the dialog cannot offer once a
-                digit has been sent. */}
-            {writing && (
-              <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
-                <input
-                  autoFocus
-                  value={writing.text}
-                  onChange={e => setWriting({ ...writing, text: e.target.value })}
-                  onKeyDown={e => {
-                    if (e.key === 'Escape') { e.preventDefault(); setWriting(null); return }
-                    if (e.key === 'Enter' && writing.text.trim() !== '') {
-                      e.preventDefault(); void answer(writing.number, writing.text.trim())
-                    }
-                  }}
-                  placeholder={pt ? 'Escreva a sua resposta…' : 'Write your own answer…'}
-                  style={{
-                    flex: 1, minWidth: 0, height: 38, padding: '0 12px', borderRadius: 10,
-                    border: '1px solid var(--anthropic-orange)', background: 'var(--bg-card)',
-                    color: 'var(--text-primary)', fontFamily: 'inherit',
-                    // 16px on a phone or iOS Safari zooms the viewport and breaks the sticky header.
-                    fontSize: 16,
-                  }}
-                />
-                <button
-                  onClick={() => void answer(writing.number, writing.text.trim())}
-                  disabled={busy !== null || writing.text.trim() === ''}
-                  style={{
-                    padding: '0 14px', height: 38, borderRadius: 10, border: 'none', flexShrink: 0,
-                    background: 'var(--anthropic-orange)', color: '#fff',
-                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
-                    cursor: writing.text.trim() === '' ? 'default' : 'pointer',
-                    opacity: writing.text.trim() === '' ? 0.5 : 1,
-                  }}
-                >{pt ? 'Responder' : 'Answer'}</button>
-              </div>
-            )}
           </div>
         )
       ) : approve?.enabled ? (
@@ -222,9 +220,28 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
         </p>
       )}
 
+      {/* A REFUSAL IS NOT A CONFIRMATION AND MUST NOT LOOK LIKE ONE.
+          Every one of these sentences was rendered the same dim 11.5px grey at the bottom of a card
+          tall enough to scroll — so "the question changed", "this needs text" and "the session is
+          not asking any more" all reached the reader as silence. Reported as "simplesmente não
+          envia, o componente fica visível eternamente": the card WAS answering, in a colour and a
+          place nobody looks. A failure now carries the alert colour, an icon, a border and
+          `role="alert"`; a confirmation stays quiet, because it is the expected outcome. */}
       {notice && (
-        <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
-          {notice}
+        <p
+          role={failed ? 'alert' : 'status'}
+          style={failed
+            ? {
+              margin: 0, display: 'flex', alignItems: 'flex-start', gap: 7,
+              padding: '8px 10px', borderRadius: 9,
+              border: '1px solid var(--accent-red)',
+              background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
+              fontSize: 12, lineHeight: 1.5, color: 'var(--accent-red)',
+            }
+            : { margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}
+        >
+          {failed && <AlertCircle size={14} style={{ flexShrink: 0, marginTop: 1 }} />}
+          <span style={{ minWidth: 0 }}>{notice}</span>
         </p>
       )}
 
@@ -234,8 +251,8 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
       {alreadyAnswered && (
         <p role="status" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--anthropic-orange)' }}>
           {pt
-            ? 'Já respondido daqui. Se o diálogo continuar na tela, ele abriu um campo para você escrever — isso é feito na própria sessão (attach), porque daqui cada clique digitaria o número da opção dentro do campo.'
-            : 'Already answered from here. If the dialog is still on screen it has opened a field for you to type in — that is done in the session itself (attach), because from here each click would type the option’s number into that field.'}
+            ? 'Já respondido daqui. Se o diálogo continuar na tela, a sessão ainda está processando — ou ele abriu um campo, e aí a opção de escrever acima entrega o campo de mensagem para você responder.'
+            : 'Already answered from here. If the dialog is still on screen the session is still processing it — or it has opened a field, in which case the write-your-own option above hands the message box over so you can answer there.'}
         </p>
       )}
     </div>

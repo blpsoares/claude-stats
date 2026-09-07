@@ -1,6 +1,7 @@
 import { test, expect } from 'bun:test'
 import {
   headerFit, stripPadding, COST_BASIS_W, FULL_BAR_W, COMPACT_DATE_BAR_W, ICON_ACTIVE_BAR_W, ICON_BOTH_BAR_W,
+  MIN_BAR_W,
   DATE_FULL_W, DATE_COMPACT_W, ACTIVE_W, ACTIVE_ICON_W, ADD_FILTER_W, ADD_FILTER_ICON_W,
 } from './headerFit'
 
@@ -95,4 +96,35 @@ test('budgets the cost-basis toggle when the page offers one', () => {
 
 test('reserves nothing for a toggle that is not there — a central has none', () => {
   expect(headerFit(FULL_BAR_W, 0)).toEqual(headerFit(FULL_BAR_W))
+})
+
+/**
+ * THE FLOOR, which is what the slot hosting the bar must not go below.
+ *
+ * `headerFit` promises the bar shrinks rather than clips, and that promise ends at the narrowest
+ * tier: below it there is no tier left, and the bar — `flexWrap: nowrap`, `maxWidth: 100%` — can
+ * neither wrap nor clip, so its controls crush into each other. Reported from a tablet with eleven
+ * filters on, against a slot whose `minWidth` was 90 — 122px under what the narrowest tier draws.
+ */
+test('IS the narrowest tier, so the floor and the tier can never disagree', () => {
+  expect(MIN_BAR_W).toBe(ICON_BOTH_BAR_W)
+})
+
+test('is enough for the tier chosen AT it — the floor is self-consistent', () => {
+  // At exactly the floor, `headerFit` picks the layout the floor was measured from. Anything else
+  // would mean the slot reserves one layout's width and the bar draws another's.
+  expect(headerFit(MIN_BAR_W)).toEqual({ date: 'compact', activeFilters: 'icon', addFilter: 'icon' })
+})
+
+test('budgets for the CROWDED case, like every tier here', () => {
+  // "See active filters" exists only while something is filtering. A floor that fits only an
+  // unfiltered bar fails the moment somebody filters — which is when the bar is at its widest and
+  // the only time the count badge, the thing that crushed, is even drawn.
+  expect(MIN_BAR_W).toBeGreaterThanOrEqual(DATE_COMPACT_W + ACTIVE_ICON_W + ADD_FILTER_ICON_W)
+})
+
+test('is below every wider tier, so it never forces a compaction that was not needed', () => {
+  expect(MIN_BAR_W).toBeLessThan(ICON_ACTIVE_BAR_W)
+  expect(MIN_BAR_W).toBeLessThan(COMPACT_DATE_BAR_W)
+  expect(MIN_BAR_W).toBeLessThan(FULL_BAR_W)
 })

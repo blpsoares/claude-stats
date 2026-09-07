@@ -85,7 +85,7 @@ import {
 import { readGithubSection } from './backup-routes'
 import { omittedSecrets } from './backup/backup-plan'
 import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
-import { lastBackup, lastPerHarness, loadBackupHistory } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastBackupRun, loadBackupHistory } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
@@ -131,6 +131,7 @@ import { approvalFor, choiceKey, isFreeTextOption} from './sessions/approval-spe
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
 import { needsChoice, parseDialogOptions } from './sessions/dialog-choice'
+import { answerFollowUp } from './sessions/answer-followup'
 import { liveTranscriptDeps, runTranscriptSearch } from './sessions/transcript-run'
 import { rulesFor } from './sessions/attention-rules'
 import { planCrashGroup, planFellOffer } from './sessions/crash-group'
@@ -163,6 +164,14 @@ export type StartResult = number | 'foreground'
  * an open menu.
  */
 const SEND_CAPTURE_LINES = 60
+/**
+ * How long to let a pane react to a typed digit before reading it back.
+ *
+ * The same figure `backend-tmux.ts` uses between its own keystrokes (`SUBMIT_SETTLE_MS`), doubled:
+ * this read has to be right rather than quick, and reading a frame mid-repaint is how a dialog that
+ * did move gets reported as stuck.
+ */
+const ANSWER_SETTLE_MS = 240
 
 
 // ANSI, for the output this module still writes to the REAL terminal: the suspended commands,
@@ -2558,11 +2567,13 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         }
       })
 
+      // What you can RESTORE from. Unchanged — see the same note in `backup-routes.ts`.
       const last = lastBackup(entries)
+      // The SCHEDULE asks when one last RAN, which a pruned file still answers — see `lastBackupRun`.
       const st = scheduleStatus({
         schedule: prefs.schedule, customHours: prefs.customHours,
         atHour: prefs.atHour, tzOffsetMinutes: new Date().getTimezoneOffset(),
-        lastAt: last?.at ?? null, nowMs: Date.now(),
+        lastAt: lastBackupRun(entries)?.at ?? null, nowMs: Date.now(),
         serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
       })
 
@@ -3273,11 +3284,69 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
           const answer = (text ?? '').trim()
           if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
           if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
-          return (await backend.sendChoiceText(id, key, answer))
+          /**
+           * DID THE FIELD ACTUALLY OPEN? The three steps used to run with nothing checked between
+           * them — digit, words, return — on the reasoning that the digit turns that row into a
+           * field, which is true of the dialog it was verified against.
+           *
+           * Where the digit only moves the HIGHLIGHT, that sequence is worse than the plain one it
+           * replaced: the words go wherever the session is listening and the Enter then submits the
+           * row that happens to be highlighted. So the frame is read back, and the signal is the
+           * option LIST — a field that has opened replaces it, while a highlight that merely moved
+           * leaves it exactly as it was (`submit`).
+           *
+           * The check is passed INTO the backend rather than run between three calls of our own,
+           * because `writeToPane` locks per pane: three locked calls leave two gaps another writer
+           * can land in, which is the collision `pane-writer.ts` exists to prevent — and its own
+           * note names this path as the harder version of it.
+           */
+          const out = await backend.sendChoiceText(id, key, answer, frame => {
+            const step = answerFollowUp({
+              stillAsking: rules.approval.some(re => re.test(frame.join('\n'))),
+              before: options, after: parseDialogOptions(frame), choice,
+            })
+            // Only a dialog we no longer recognise means a field replaced the option list. `done`
+            // (it closed on the digit alone), `submit` and `stuck` all mean no field opened.
+            return step.kind === 'changed'
+          })
+          if (out === 'no-field') return { ok: false, message: s.sessAnswerNoField(picked.label) }
+          return out === 'sent'
             ? { ok: true, message: s.sessAnswered(answer) }
             : { ok: false, message: s.sessSendFailed(id) }
         }
-        return (await backend.sendKey(id, key))
+        /**
+         * THE DIGIT IS NOT ALWAYS THE WHOLE ANSWER, and this reads the screen rather than assuming.
+         *
+         * On claude's PERMISSION PROMPT — `1. Yes / 2. Yes, always / 3. No`, the dialog this path
+         * was verified against — the digit selects AND submits. On a dialog where it only MOVES THE
+         * HIGHLIGHT nothing is submitted, tmux still reports the key delivered, and the question
+         * stays on screen forever while the card says it was answered. Reported as exactly that.
+         *
+         * A table saying "this dialog submits on the digit" is what must not be written: nobody has
+         * probed every dialog the harness draws (CLAUDE.md records three for claude and warns there
+         * is probably another), and a wrong entry sends a second keystroke into a dialog that has
+         * ALREADY CLOSED — landing on whatever the session put up next. That is the only error here
+         * that does damage.
+         *
+         * So the frame is READ BACK and `answerFollowUp` decides, with the option list as the
+         * guard: Enter is sent only when the SAME dialog is still up and the row we picked is the
+         * highlighted one. Everything else is reported in words.
+         */
+        if (!await backend.sendKey(id, key)) return { ok: false, message: s.sessSendFailed(id) }
+        await new Promise(r => setTimeout(r, ANSWER_SETTLE_MS))
+        const after = await backend.capture(id, SEND_CAPTURE_LINES).catch(() => [] as string[])
+        const stillAsking = rules.approval.some(re => re.test(after.join('\n')))
+        const next = answerFollowUp({
+          stillAsking, before: options, after: parseDialogOptions(after), choice,
+        })
+        if (next.kind === 'done') return { ok: true, message: s.sessAnswered(picked.label) }
+        if (next.kind === 'changed') {
+          return { ok: true, message: s.sessAnsweredNewQuestion(picked.label) }
+        }
+        if (next.kind === 'stuck') return { ok: false, message: s.sessAnswerStuck(picked.label) }
+        // `submit`: the same dialog, our row highlighted. Enter finishes what the digit began, and
+        // it can only act on the option that was chosen.
+        return (await backend.sendKey(id, 'Enter'))
           ? { ok: true, message: s.sessAnswered(picked.label) }
           : { ok: false, message: s.sessSendFailed(id) }
       }

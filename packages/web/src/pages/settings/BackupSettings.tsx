@@ -158,7 +158,7 @@ type GithubSectionJson =
  */
 interface RestoreCandidate {
   tagName: string
-  createdAt: string
+  publishedAt: string
   sizeLabel: string | null
   layers: BackupLayer[] | null
   harnesses: string[] | null
@@ -2802,7 +2802,7 @@ function RestoreRelease({ release, pt, disabled, onRestore }: {
       marginBottom: 8, background: 'var(--bg-elevated)',
     }}>
       <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
-        {new Date(release.createdAt).toLocaleString()}
+        {new Date(release.publishedAt).toLocaleString()}
       </div>
       <div style={{
         display: 'flex', flexWrap: 'wrap', gap: '2px 14px', margin: '4px 0 0',
@@ -2895,7 +2895,7 @@ function RestoreConfirmModal({ release, machine, pt, starting, error, onCancel, 
         ? 'nenhum nome de máquina registrado no release'
         : 'no machine name recorded in the release'),
     },
-    { label: pt ? 'Data' : 'Date', value: new Date(release.createdAt).toLocaleString() },
+    { label: pt ? 'Data' : 'Date', value: new Date(release.publishedAt).toLocaleString() },
     ...facts,
   ]
 

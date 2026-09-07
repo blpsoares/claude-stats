@@ -13,11 +13,13 @@
  */
 import { gh, type FetchLike } from './github-api'
 import { isBackupTag, labelSlug, tagLabel } from './backup-github'
+import { releaseInstant } from './github-restore'
 
 interface GithubReleaseListItem {
   id: number
   tag_name: string
   created_at: string
+  published_at?: string | null
   body?: string
 }
 
@@ -25,7 +27,11 @@ interface GithubReleaseListItem {
  *  attributable to (`null` = nothing said so). */
 export interface PrunableRelease {
   tag: string
+  /** GitHub's `created_at` — the TAG'S COMMIT date. Kept because it is what the API said; the
+   *  ordering goes through `releaseInstant`, never through this. */
   createdAt: string
+  /** GitHub's `published_at` — when the release actually appeared. */
+  publishedAt: string
   /** The `- host: NAME` line of the release body, for a tag minted before labels existed. */
   host: string | null
 }
@@ -77,7 +83,14 @@ export function selectForPruning(
     return plan
   }
 
-  candidates.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  // By `releaseInstant`, never `created_at`: that one is the TAG'S COMMIT date and is identical on
+  // every release of a backup repository, so sorting by it is a no-op — and this is the function
+  // that decides which releases `keepRemote` DELETES.
+  // `tag` here is the tag NAME — which is the field `releaseInstant` trusts most, because it is the
+  // timestamp agentop itself stamped in.
+  const instant = (r: PrunableRelease): string =>
+    releaseInstant({ tagName: r.tag, createdAt: r.createdAt, publishedAt: r.publishedAt })
+  candidates.sort((a, b) => instant(b).localeCompare(instant(a)))
   plan.keep = candidates.slice(0, keepRemote).map(r => r.tag)
   plan.remove = candidates.slice(keepRemote).map(r => r.tag)
   return plan
@@ -113,7 +126,10 @@ export async function pruneRemoteReleases(
   }
 
   const plan = selectForPruning(
-    listed.data.map(r => ({ tag: r.tag_name, createdAt: r.created_at, host: hostOf(r.body) })),
+    listed.data.map(r => ({
+      tag: r.tag_name, createdAt: r.created_at, publishedAt: r.published_at ?? '',
+      host: hostOf(r.body),
+    })),
     keepRemote, label,
   )
   // Said, never silently skipped: a user who can see other machines' releases on the page needs to
