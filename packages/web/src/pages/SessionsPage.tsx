@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
-import { BarChart3, ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
+import { ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
 import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -455,14 +455,6 @@ export default function SessionsPage() {
     )
     : null
 
-  /**
-   * The metrics card's open state, held HERE because its trigger moved into the bar's menu — see
-   * the bar's own note. `contextLabel` is the figure that used to ride that trigger; the menu row
-   * shows it, or the row says nothing and nobody presses it.
-   */
-  const [statsOpen, setStatsOpen] = useState(false)
-  const [contextLabel, setContextLabel] = useState<string | null>(null)
-
   const filterButton = (
     <button
       onClick={() => setSheetOpen(true)}
@@ -580,103 +572,22 @@ export default function SessionsPage() {
               </span>
             </div>
 
-            {/* ONE MENU, AND THE TITLE GETS THE ROOM BACK.
-                This bar carried the back arrow, `+ Filtro` with its word, the view toggle, the
+            {/* ONLY THE TITLE AND THE METRICS, and that is the whole of this bar's rule.
+                It carried the back arrow, `+ Filtro` with its word and badge, the view toggle, the
                 metrics with their percentage, the panel button and the verbs — about 382px of a
-                390px screen, so the title block (`flex: 1, minWidth: 0`) was squeezed to nothing
-                and the one thing saying WHICH session you are looking at was not on screen at all.
-                Reported as exactly that.
-                The three that do not need to be a permanent target moved into the verbs' own menu
-                (`SessionActions.extra`) — not into a second popover beside it, which would be the
-                same accumulation rearranged. The toggle STAYS: it is this screen's primary control,
-                it is already icons-only, and putting the view switch two taps away costs something
-                every minute. */}
-            {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
-                the title to about six characters. The `aria-label` carries the name. */}
-            {selected.conversationBlind === undefined && (
-              <div role="tablist" style={{
-                display: 'flex', gap: 2, padding: 2, borderRadius: 9, flexShrink: 0,
-                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-              }}>
-                {([
-                  ['chat', <MessagesSquare key="c" size={15} />, pt ? 'Conversa' : 'Chat'],
-                  ['terminal', <TerminalSquare key="t" size={15} />, 'Terminal'],
-                ] as const).map(([id, icon, label]) => (
-                  <button
-                    key={id}
-                    role="tab"
-                    aria-selected={sessionView === id}
-                    aria-label={label}
-                    onClick={() => setSessionView(id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      // 44px, the mobile figure this repo holds everything else to. They were
-                      // 38x34 — under the rule, in the one bar this screen has, on the control
-                      // that switches between its two halves.
-                      width: 44, height: 40, borderRadius: 7, border: 'none', cursor: 'pointer',
-                      background: sessionView === id ? 'var(--bg-surface)' : 'transparent',
-                      color: sessionView === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
-                    }}
-                  >
-                    {icon}
-                  </button>
-                ))}
-              </div>
-            )}
+                390px screen. The title block is `flex: 1, minWidth: 0`, so it was squeezed to
+                nothing and the one thing saying WHICH session you are looking at was not on screen.
 
-            {/* WHAT THIS CONVERSATION HAS SPENT — the same control the desktop strip carries, and it
-                was simply not on this bar: the strip that hosts it is `!isMobile`, so a phone had no
-                way to see a session's tokens, cost, model or context gauge at all. The button is
-                already the compact one (an icon, plus the context percentage when there is one),
-                which is why it fits here beside five other controls; `compact` only asks it for the
-                44px target this bar holds everything else to. */}
-            {selected.conversationId !== undefined && (
-              <SessionStatsMenu
-                harness={selected.harness}
-                sessionId={selected.conversationId}
-                meta={data?.sessions?.find(x => x.session_id === selected.conversationId)}
-                lang={pt ? 'pt' : 'en'}
-                currency={currency}
-                brlRate={brlRate}
-                touch
-                {...(selected.model ? { startedModel: selected.model } : {})}
-                {...(selected.effort ? { startedEffort: selected.effort } : {})}
-              />
-            )}
-
-            {/* THE RIGHT ASIDE, reachable at all.
-                Everything in it — files, docs, the live feed, the gallery, skills, MCPs, subagents,
-                the PRs — was built on the desktop and had no way in on a phone, which is the whole
-                of "essas features nao foram pensadas pro mobile e sao features que precisam estar
-                presentes la". `resolveArtifactLayout` has ALWAYS answered `fullscreen` for a phone;
-                nothing was rendering it. So this opens the very same panel, not a reduced one.
-
-                The count rides the button, because it is the reason to press it: a panel that might
-                be empty is one people stop opening. */}
-            <button
-              onClick={() => (art.open ? closeArtifacts() : openArtifacts())}
-              aria-label={pt ? 'Conteúdos da sessão' : 'Session contents'}
-              aria-expanded={art.open}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 44, height: 44, flexShrink: 0, border: 'none', background: 'transparent',
-                color: art.open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
-                cursor: 'pointer',
-              }}
-            >
-              {/* THE DESKTOP'S ICON, and the desktop's reasoning with it: a panel glyph says
-                  "something opens here" and leaves the reader to find out what, while `FileText`
-                  names what the panel opens on nine times out of ten. And NO count — it counts
-                  everything the session ever touched, past fifty on an ordinary afternoon, and a
-                  figure nobody acts on is furniture with a number on it. Two layouts wearing two
-                  icons for one panel is the same feature learnt twice. */}
-              <FileText size={18} />
-            </button>
-
-
+                Everything that is not the title or the metrics moved into the verbs' OWN menu —
+                not a second popover beside it, which would be the same accumulation rearranged.
+                The METRICS stay out here because the context percentage is read at a GLANCE and
+                changes what you do next: a conversation near its window is one to finish rather
+                than extend, and a figure you have to open a menu for is a figure nobody watches.
+                The view toggle went in with the rest: asked for directly, after it had been left
+                out here on the argument that two taps per switch was too many. */}
             {magnifierButton}
-            {/* The metrics card, with no button of its own: the row that opens it is in the menu.
-                Rendered here regardless, because it IS the card — only its trigger moved. */}
+            {/* THE ONE CONTROL THAT STAYS BESIDE THE TITLE. Its own button, its own percentage —
+                the figure is the reason it is out here rather than in the menu. */}
             {selected.conversationId !== undefined && (
               <SessionStatsMenu
                 harness={selected.harness}
@@ -686,8 +597,6 @@ export default function SessionsPage() {
                 currency={currency}
                 brlRate={brlRate}
                 touch
-                controlled={{ open: statsOpen, onClose: () => setStatsOpen(false) }}
-                onContextLabel={setContextLabel}
                 {...(selected.model ? { startedModel: selected.model } : {})}
                 {...(selected.effort ? { startedEffort: selected.effort } : {})}
               />
@@ -701,6 +610,21 @@ export default function SessionsPage() {
                 onGone={() => navigate('/sessions')}
                 onOpened={id => navigate(sessionPath(id))}
                 extra={[
+                  /* THE TWO VIEWS, as rows rather than as a segmented control on the bar. Both are
+                     listed and the current one is MARKED — a single "switch view" row would not say
+                     which of the two you are in, and that is the only thing the control on the bar
+                     was still communicating once it lost its labels. Absent for a harness that can
+                     never name its conversation, exactly as the toggle was. */
+                  ...(selected.conversationBlind === undefined ? ([
+                    ['chat', pt ? 'Conversa' : 'Chat', <MessagesSquare key="c" size={15} />],
+                    ['terminal', 'Terminal', <TerminalSquare key="t" size={15} />],
+                  ] as const).map(([id, label, icon]) => ({
+                    id: `view-${id}`,
+                    label,
+                    icon,
+                    on: sessionView === id,
+                    onSelect: () => setSessionView(id),
+                  })) : []),
                   {
                     id: 'filters',
                     label: pt ? 'Filtros' : 'Filters',
@@ -709,13 +633,6 @@ export default function SessionsPage() {
                     on: filterCount > 0,
                     onSelect: () => setSheetOpen(true),
                   },
-                  ...(selected.conversationId !== undefined ? [{
-                    id: 'stats',
-                    label: pt ? 'Métricas da sessão' : 'Session metrics',
-                    icon: <BarChart3 size={15} />,
-                    ...(contextLabel ? { badge: contextLabel } : {}),
-                    onSelect: () => setStatsOpen(true),
-                  }] : []),
                   {
                     id: 'artifacts',
                     label: pt ? 'Conteúdos da sessão' : 'Session contents',
