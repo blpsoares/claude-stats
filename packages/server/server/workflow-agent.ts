@@ -45,6 +45,19 @@ export function aggregateWorkflowAgent(lines: string[], opts: { withCommands?: b
   /** True when `commands` was cut at `MAX_COMMANDS`, so the view can say so instead of implying
    *  the agent stopped there. */
   commandsClipped: boolean
+  /**
+   * The index — among ALL tool calls, not among the possibly-clipped `commands` — of the one that
+   * was asked for and has no result yet. That is the call IN FLIGHT.
+   *
+   * A transcript records a `tool_use` when the agent asks and a `tool_result` when the answer comes
+   * back, so an unanswered ask is the one thing here that is happening RIGHT NOW rather than having
+   * happened. Verified on a finished agent: 58 asks, 58 results, none pending.
+   *
+   * `null` when every call was answered. It is a fact about the FILE, not a claim that the agent is
+   * alive: a transcript left dangling by a killed run also ends on an unanswered ask, which is why
+   * only a caller that knows the run is live may render it as "running".
+   */
+  pendingToolIndex: number | null
 } {
   let model = ''
   let prompt = '', startedAt = ''
@@ -53,6 +66,9 @@ export function aggregateWorkflowAgent(lines: string[], opts: { withCommands?: b
   const tools: Record<string, number> = {}
   const commands: string[] = []
   let commandsClipped = false
+  // Asked, in order; answered, as a set. What is asked and never answered is in flight.
+  const asked: string[] = []
+  const answered = new Set<string>()
   for (const raw of lines) {
     const line = raw.trim()
     if (!line) continue
@@ -61,6 +77,16 @@ export function aggregateWorkflowAgent(lines: string[], opts: { withCommands?: b
     if (!prompt && e.type === 'user') {
       const text = userText(e)
       if (text) { prompt = text; startedAt = typeof e.timestamp === 'string' ? e.timestamp : '' }
+    }
+    // A tool's ANSWER comes back in a user envelope, so the result scan happens before the
+    // assistant-only gate below.
+    const anyMsg = e.message as Record<string, unknown> | undefined
+    const anyContent = anyMsg?.content
+    if (Array.isArray(anyContent)) {
+      for (const part of anyContent) {
+        const c = part as Record<string, unknown>
+        if (c?.type === 'tool_result' && typeof c.tool_use_id === 'string') answered.add(c.tool_use_id)
+      }
     }
     if (e.type !== 'assistant') continue
     const msg = e.message as Record<string, unknown> | undefined
@@ -75,6 +101,7 @@ export function aggregateWorkflowAgent(lines: string[], opts: { withCommands?: b
         if (c?.type !== 'tool_use' || typeof c.name !== 'string') continue
         toolCalls += 1
         tools[c.name] = (tools[c.name] ?? 0) + 1
+        asked.push(typeof c.id === 'string' ? c.id : '')
         if (!opts.withCommands) continue
         if (commands.length >= MAX_COMMANDS) { commandsClipped = true; continue }
         commands.push(commandLine(c.name, c.input))
@@ -90,9 +117,16 @@ export function aggregateWorkflowAgent(lines: string[], opts: { withCommands?: b
     { inputTokens: tokensIn, outputTokens: tokensOut, cacheReadInputTokens: cacheRead, cacheCreationInputTokens: cacheWrite, webSearchRequests: 0, costUSD: 0 },
     model,
   )
+  // The LAST unanswered ask, not the first: an earlier one left dangling is a call whose result
+  // was never written, while the newest is the one the agent is waiting on now.
+  let pendingToolIndex: number | null = null
+  for (let i = asked.length - 1; i >= 0; i -= 1) {
+    const id = asked[i]!
+    if (id !== '' && !answered.has(id)) { pendingToolIndex = i; break }
+  }
   return {
     model, tokensIn, tokensOut, cacheRead, cacheWrite, costUSD, prompt, startedAt,
-    toolCalls, tools, commands, commandsClipped,
+    toolCalls, tools, commands, commandsClipped, pendingToolIndex,
   }
 }
 

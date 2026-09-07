@@ -217,6 +217,7 @@ export async function assembleWorkflowRuns(
         ...(agentId ? { agentId } : {}),
         labelSource,
         toolCalls: agg.toolCalls,
+        pending: agg.pendingToolIndex !== null,
         model: agg.model || (meta?.model ?? ''),
         // NOTE: per-agent status is a best-effort 'completed'. The available data
         // (journal.jsonl + the task-notification <usage> counts) reports how many

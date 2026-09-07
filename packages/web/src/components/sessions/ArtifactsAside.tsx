@@ -56,7 +56,8 @@ import {
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
 import {
-  agentDetailStateOf, agentDetailUrl, agentOpenable, groupAgentsByPhase, labelCaveat,
+  agentDetailStateOf, agentDetailUrl, agentIsRunning, agentOpenable, agentOpensByDefault,
+  groupAgentsByPhase, labelCaveat, runOpensByDefault, runningCommandIndex,
   liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
   unplacedPhaseText, workflowCount, workflowsPollMs, workflowsStateOf,
   type AgentDetailState, type WorkflowAgentDetail, type WorkflowAgentRow,
@@ -304,6 +305,9 @@ export function ArtifactsAside({
     () => asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null,
   )
   const [openRun, setOpenRun] = useState<string | null>(null)
+  /** Runs already opened for the user once. Closing one must STAY closed — the poll runs every
+   *  five seconds, and re-opening it on each would take the panel away from them repeatedly. */
+  const autoOpened = useRef<Set<string>>(new Set())
   const [agentsState, setAgentsState] = useState<SubagentsState | null>(
     () => asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null,
   )
@@ -881,6 +885,15 @@ export function ArtifactsAside({
     finally { setAgentsMore(false) }
   }
 
+
+  /** A run somebody is WATCHING opens by itself — that is what the tab polls for. Once. */
+  useEffect(() => {
+    if (wfState?.phase !== 'ready') return
+    const live = wfState.rows.find(r => runOpensByDefault(r) && !autoOpened.current.has(r.runId))
+    if (!live) return
+    autoOpened.current.add(live.runId)
+    setOpenRun(prev => prev ?? live.runId)
+  }, [wfState])
 
   const workflowsBody = (): React.ReactNode => {
     const st = wfState
@@ -1824,11 +1837,34 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
  * agent of every run on each poll, and one 72-agent run is megabytes of shell. Same split, and the
  * same reason, as the subagents tab's list versus its activity.
  */
-function WorkflowAgentLine({ sessionId, runId, agent, pt }: {
-  sessionId: string; runId: string; agent: WorkflowAgentRow; pt: boolean
+
+/** Keeps the executing line in view. Its own component so the effect runs AFTER the line it
+ *  watches has been drawn, without the parent having to re-render to schedule it. */
+function FollowLine({ target }: { target: React.RefObject<HTMLDivElement | null> }) {
+  useEffect(() => {
+    target.current?.scrollIntoView({ block: 'nearest' })
+  })
+  return null
+}
+
+function WorkflowAgentLine({ sessionId, runId, agent, pt, runLive }: {
+  sessionId: string; runId: string; agent: WorkflowAgentRow; pt: boolean; runLive: boolean
 }) {
   const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
+  const working = agentIsRunning(agent, runLive)
+  // The agent actually doing something opens by itself — following it is the point.
+  const [open, setOpen] = useState(() => agentOpensByDefault(agent, runLive))
+  // It may only START working after the row was drawn. Opening then is the same gesture, one poll
+  // later; it never CLOSES anything, so a row the user shut stays shut.
+  const wasWorking = useRef(working)
+  useEffect(() => {
+    if (working && !wasWorking.current && agentOpensByDefault(agent, runLive)) setOpen(true)
+    wasWorking.current = working
+  }, [working, agent, runLive])
+  /** The line being executed, so following it means the box scrolls to it rather than the user
+   *  hunting for the pulse. `nearest` and never `smooth`: this fires on every poll while a run
+   *  works, and a smooth scroll every five seconds is a box that will not sit still. */
+  const followRef = useRef<HTMLDivElement | null>(null)
   const [detail, setDetail] = useState<AgentDetailState | null>(null)
   const openable = agentOpenable(agent)
   const caveat = labelCaveat(agent, pt)
@@ -1863,9 +1899,16 @@ function WorkflowAgentLine({ sessionId, runId, agent, pt }: {
           {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
         </span>
       )}
+      {/* Working is said by a dot AND by the label's colour — never by colour alone. */}
+      {working && (
+        <span aria-hidden style={{
+          flexShrink: 0, width: 5, height: 5, borderRadius: '50%',
+          background: 'var(--anthropic-orange)', animation: 'ag-agent-pulse 1.6s ease-in-out infinite',
+        }} />
+      )}
       <span style={{
         minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        color: 'var(--text-secondary)',
+        color: working ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
         // A label nothing recorded IS the file name; saying it in the same weight as a real one
         // would present a hash as a name somebody chose.
         fontStyle: agent.labelSource === 'none' ? 'italic' : undefined,
@@ -1913,6 +1956,7 @@ function WorkflowAgentLine({ sessionId, runId, agent, pt }: {
             <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{detail.message}</p>
           ) : (
             <>
+              <FollowLine target={followRef} />
               {detail.detail.prompt !== '' && (
                 <p style={{
                   margin: '0 0 4px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)',
@@ -1933,12 +1977,24 @@ function WorkflowAgentLine({ sessionId, runId, agent, pt }: {
                     border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '4px 6px',
                     background: 'var(--bg-elevated)',
                   }}>
-                    {detail.detail.commands.map((c, i) => (
-                      <div key={i} style={{
-                        fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10, lineHeight: 1.6,
-                        color: 'var(--text-secondary)', whiteSpace: 'pre', minWidth: 0,
-                      }}>{c}</div>
-                    ))}
+                    {detail.detail.commands.map((c, i) => {
+                      const now = runningCommandIndex(detail.detail.pendingIndex, detail.detail.commands.length, runLive) === i
+                      return (
+                        <div
+                          key={i}
+                          ref={now ? followRef : undefined}
+                          style={{
+                            fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10, lineHeight: 1.6,
+                            color: now ? 'var(--text-primary)' : 'var(--text-secondary)',
+                            whiteSpace: 'pre', minWidth: 0,
+                            ...(now ? {
+                              animation: 'ag-line-pulse 1.8s ease-in-out infinite',
+                              borderRadius: 4, margin: '0 -3px', padding: '0 3px', fontWeight: 600,
+                            } : {}),
+                          }}
+                        >{c}</div>
+                      )
+                    })}
                   </div>
                   {/* The COUNT stays exact even when the list is cut, so the two never disagree. */}
                   {detail.detail.commandsClipped && (
@@ -2064,7 +2120,7 @@ function WorkflowCard({ sessionId, row, pt, now, open, onToggle }: {
               {g.agents.map((a, i) => (
                 <WorkflowAgentLine
                   key={a.agentId ?? `${a.label}-${i}`}
-                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt}
+                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt} runLive={row.live}
                 />
               ))}
             </div>
@@ -2169,7 +2225,14 @@ function SubagentCard({ row, pt, now, onOpen }: {
           <span>{pt ? `nível ${row.spawnDepth}` : `depth ${row.spawnDepth}`}</span>
         )}
       </div>
-      <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+      <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+        /* The line being executed. A BACKGROUND pulse, not an opacity one: the text must stay
+           readable through the whole cycle — a command you cannot read while it runs is the one
+           moment you most want to read it. Soft on purpose; it sits under a monospace block. */
+        @keyframes ag-line-pulse {
+          0%,100% { background: color-mix(in srgb, var(--anthropic-orange) 10%, transparent) }
+          50%     { background: color-mix(in srgb, var(--anthropic-orange) 26%, transparent) }
+        }`}</style>
     </button>
   )
 }

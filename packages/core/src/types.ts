@@ -342,6 +342,10 @@ export interface WorkflowAgent {
   labelSource?: 'record' | 'matched' | 'none'
   /** Every tool call the agent made. Optional for the same backward-compatibility reason. */
   toolCalls?: number
+  /** Its transcript ends on a tool call nobody answered — the agent is waiting on something. A
+   *  fact about the FILE: only a caller that knows the RUN is live may read it as "running", since
+   *  a killed run leaves the same dangling ask behind. */
+  pending?: boolean
   model: string
   status: 'completed' | 'failed' | 'skipped'
   tokensIn: number
