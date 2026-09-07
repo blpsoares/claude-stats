@@ -75,7 +75,24 @@ export function securityHeaders(opts: {
     // where this applies, the server is bound to 127.0.0.1 anyway. Every other profile keeps
     // `same-origin`.
     'Cross-Origin-Resource-Policy': opts.embed ? 'cross-origin' : 'same-origin',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    /*
+     * MICROPHONE IS `self`, and every other capability stays denied.
+     *
+     * The composer takes DICTATION (`dictation.ts`), which is a first-party feature of this very
+     * page — and `microphone=()` denies the page ITSELF, not merely third parties. So the mic was
+     * off everywhere, `localhost` included, where the secure-context rule the whole dictation
+     * module is written around is satisfied. Measured on this dashboard at http://localhost:47292:
+     * `isSecureContext` true, `document.featurePolicy.allowsFeature('microphone')` FALSE, and
+     * `SpeechRecognition.start()` answering `onerror: not-allowed` — which `dictationError` then
+     * reported as "the browser denied this page permission", sending the user to fix a browser
+     * setting that was never the problem. Reported as "o microfone não funciona no localhost".
+     *
+     * `(self)` is the narrow grant: same-origin documents only, no third-party frame, and the
+     * browser's own permission prompt is still the consent gate — nothing here grants a microphone,
+     * it only stops the server from refusing one on the user's behalf. Camera, geolocation, payment
+     * and usb have no feature in this product and stay denied.
+     */
+    'Permissions-Policy': 'camera=(), microphone=(self), geolocation=(), payment=(), usb=()',
   }
   if (opts.tls) h['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
   // API responses carry account-scoped data; a shared cache must never hold them.

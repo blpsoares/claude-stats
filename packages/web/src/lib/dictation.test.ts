@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { dictationSupport, dictationLocale, dictationError, insecureAlternative, dictatedText, appendDictation } from './dictation'
+import { dictationSupport, dictationLocale, dictationError, insecureAlternative, dictatedText, appendDictation, micDenied } from './dictation'
 
 describe('dictationSupport', () => {
   it('is ready when the API exists in a secure context', () => {
@@ -31,6 +31,39 @@ describe('dictationSupport', () => {
 
   it('survives having no window at all', () => {
     expect(dictationSupport(undefined, 'en').state).toBe('no-api')
+  })
+
+  it('names the PERMISSIONS POLICY when the page itself is denied the microphone', () => {
+    // The bug this covers: agentop's own baseline sent `Permissions-Policy: microphone=()`, which
+    // denies the PAGE, not merely third parties. Measured on http://localhost:47292 —
+    // `isSecureContext` true, `allowsFeature('microphone')` false, `SpeechRecognition.start()`
+    // answering `not-allowed` — so the user was told the browser had refused a permission they
+    // had never been asked for. A reverse proxy can send the same header, so the check stays.
+    const win = {
+      SpeechRecognition: class {},
+      isSecureContext: true,
+      document: { featurePolicy: { allowsFeature: (f: string) => f !== 'microphone' } },
+    }
+    const s = dictationSupport(win, 'pt')
+    expect(s.state).toBe('blocked')
+    expect(s.reason).toMatch(/Permissions-Policy/)
+    expect(dictationSupport(win, 'en').reason).toMatch(/Permissions-Policy/)
+  })
+
+  it('is READY when the policy allows the microphone', () => {
+    expect(dictationSupport({
+      SpeechRecognition: class {},
+      isSecureContext: true,
+      document: { featurePolicy: { allowsFeature: () => true } },
+    }, 'en').state).toBe('ready')
+  })
+
+  it('reports HTTP before the policy — the protocol is the fixable half', () => {
+    expect(dictationSupport({
+      SpeechRecognition: class {},
+      isSecureContext: false,
+      document: { featurePolicy: { allowsFeature: () => false } },
+    }, 'en').state).toBe('insecure')
   })
 
   it('every refusal has real text in both languages', () => {
@@ -145,5 +178,21 @@ describe('insecureAlternative on a phone', () => {
 
   it('defaults to the old behaviour, so no caller loses it by omission', () => {
     expect(insecureAlternative('http://10.0.0.4:47292/')).toBe('http://localhost:47292/')
+  })
+})
+
+describe('micDenied', () => {
+  it('counts only a definite false — an absent API is not a denial', () => {
+    // Reporting a refusal in front of a microphone that works is the opposite of this module's job.
+    expect(micDenied(undefined)).toBe(false)
+    expect(micDenied({})).toBe(false)
+    expect(micDenied({ document: {} })).toBe(false)
+    expect(micDenied({ document: { featurePolicy: {} } })).toBe(false)
+    expect(micDenied({ document: { featurePolicy: { allowsFeature: () => true } } })).toBe(false)
+    expect(micDenied({ document: { featurePolicy: { allowsFeature: () => false } } })).toBe(true)
+  })
+
+  it('a throwing implementation is not an answer either', () => {
+    expect(micDenied({ document: { featurePolicy: { allowsFeature: () => { throw new Error('nope') } } } })).toBe(false)
   })
 })

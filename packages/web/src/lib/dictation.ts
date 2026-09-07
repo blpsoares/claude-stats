@@ -15,7 +15,7 @@
  * to send — the same text they could have typed.
  */
 
-export type DictationState = 'ready' | 'no-api' | 'insecure'
+export type DictationState = 'ready' | 'no-api' | 'insecure' | 'blocked'
 
 export interface DictationSupport {
   state: DictationState
@@ -29,7 +29,13 @@ export interface DictationSupport {
  * nothing checks.
  */
 export function dictationSupport(
-  win: { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown; isSecureContext?: boolean } | undefined,
+  win: {
+    SpeechRecognition?: unknown
+    webkitSpeechRecognition?: unknown
+    isSecureContext?: boolean
+    /** Reached through the window so the caller keeps passing ONE object — see `micDenied`. */
+    document?: { featurePolicy?: { allowsFeature?: (feature: string) => boolean } }
+  } | undefined,
   lang: 'en' | 'pt',
 ): DictationSupport {
   const pt = lang === 'pt'
@@ -52,7 +58,42 @@ export function dictationSupport(
         : 'The microphone needs HTTPS or localhost. This page is on plain HTTP.',
     }
   }
+  // Checked THIRD, and it is the one a person cannot fix from their side: the PAGE may be denied
+  // the microphone by the `Permissions-Policy` header the server sent, and the browser then answers
+  // `not-allowed` — indistinguishable, from inside the recogniser, from someone clicking "Block".
+  // That is exactly what shipped: agentop's own baseline said `microphone=()`, which denies the
+  // page itself, so dictation was dead on `localhost` too and the message blamed the browser.
+  // A reverse proxy in front of a central can do the same thing, so the check stays whatever the
+  // baseline says.
+  if (micDenied(win)) {
+    return {
+      state: 'blocked',
+      reason: pt
+        ? 'Esta página está proibida de usar o microfone pelo cabeçalho Permissions-Policy do servidor (ou do proxy na frente dele). Não é uma permissão do navegador.'
+        : 'This page is denied the microphone by the server’s Permissions-Policy header (or a proxy in front of it). This is not a browser permission.',
+    }
+  }
   return { state: 'ready', reason: null }
+}
+
+/**
+ * PURE: does the permissions policy of THIS document deny the microphone?
+ *
+ * Only a definite `false` counts. `document.featurePolicy` is non-standard-ish and absent in some
+ * browsers, and an absent answer is not a denial — reporting one would put a refusal in front of a
+ * microphone that works, which is the opposite of the rule this module exists for.
+ */
+export function micDenied(win: {
+  document?: { featurePolicy?: { allowsFeature?: (feature: string) => boolean } }
+} | undefined): boolean {
+  const fp = win?.document?.featurePolicy
+  if (!fp || typeof fp.allowsFeature !== 'function') return false
+  try {
+    return fp.allowsFeature('microphone') === false
+  } catch {
+    // A throw is not an answer either.
+    return false
+  }
 }
 
 /** The BCP-47 tag the recogniser listens in — the UI language, because that is what the user types
