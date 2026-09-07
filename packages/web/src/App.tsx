@@ -39,6 +39,7 @@ import { ProjectsList } from './components/ProjectsList'
 import { FiltersBar } from './components/FiltersBar'
 import { NotificationToasts } from './components/NotificationToasts'
 import { KeyboardProbe, keyboardProbeOn } from './components/KeyboardProbe'
+import { shouldResetDocumentScroll } from './lib/viewportReset'
 import { MagnifierLayer } from './components/a11y/MagnifierLayer'
 import { HideLensesButton } from './components/a11y/HideLensesButton'
 import { MagnifierButton } from './components/a11y/MagnifierButton'
@@ -1734,15 +1735,57 @@ export default function AppLayout() {
       if (!editable(ev.target)) return
       for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
     }
+    /**
+     * THE INVARIANT, and it is what makes this survive a signal that never arrives.
+     *
+     * Everything above waits for the keyboard to ANNOUNCE its departure, and the announcement is
+     * the weak part: `focusout` does not fire on the accessory bar's ✓, and a page running as an
+     * INSTALLED APP can have its layout viewport resized instead — in which case
+     * `visualViewport.height` never shrinks against `tallest`, `wasCovered` is never set, and the
+     * restore above is never reached at all. Reported as "o input continua flutuando e acredito que
+     * vai continuar", together with the bottom bar floating on the list and BOTH coming right after
+     * leaving the route and returning. One displacement, two symptoms, cured by a remount: that is
+     * `#root` sitting at `-scrollY`.
+     *
+     * This screen cannot scroll — a `100dvh` column whose panes scroll inside themselves — so
+     * whenever nothing is being typed into, `scrollY` must be 0. `shouldResetDocumentScroll` holds
+     * the three guards; this only asks, on whichever signals do arrive, and again a moment later
+     * because iOS keeps adjusting through a dismissal.
+     */
+    const settle = () => {
+      const el = document.documentElement
+      if (!shouldResetDocumentScroll({
+        scrollY: window.scrollY,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        editableFocused: editable(document.activeElement),
+      })) return
+      window.scrollTo(0, 0)
+    }
+    const settleSoon = () => { for (const ms of [0, 160, 420, 900]) window.setTimeout(settle, ms) }
+
     window.addEventListener('focusin', onIn)
     window.addEventListener('focusout', onOut)
+    window.addEventListener('focusout', settleSoon)
+    // `scroll` is the one signal that always arrives when the thing this fixes has happened.
+    window.addEventListener('scroll', settle, { passive: true })
     vv?.addEventListener('resize', onViewport)
+    vv?.addEventListener('resize', settleSoon)
+    vv?.addEventListener('scroll', settle)
     window.addEventListener('resize', onViewport)
+    window.addEventListener('orientationchange', settleSoon)
+    // Once on arrival too: the route can be entered with the document already displaced.
+    settleSoon()
     return () => {
       window.removeEventListener('focusin', onIn)
       window.removeEventListener('focusout', onOut)
+      window.removeEventListener('focusout', settleSoon)
+      window.removeEventListener('scroll', settle)
       vv?.removeEventListener('resize', onViewport)
+      vv?.removeEventListener('resize', settleSoon)
+      vv?.removeEventListener('scroll', settle)
       window.removeEventListener('resize', onViewport)
+      window.removeEventListener('orientationchange', settleSoon)
     }
   }, [lockViewport])
 
