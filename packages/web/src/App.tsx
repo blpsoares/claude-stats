@@ -22,7 +22,6 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
-import { ViewportProbe } from './components/ViewportProbe'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -1600,27 +1599,30 @@ export default function AppLayout() {
     return () => { root.classList.remove('ag-viewport-locked') }
   }, [lockViewport])
   /**
-   * SNAPSHOT BEFORE THE KEYBOARD, RESTORE AFTER IT — asked for in exactly those words: "não dá pra
-   * você resetar a posição dele sempre pro estado anterior antes do teclado subir quando o usuário
-   * minimizar o teclado novamente?"
+   * SNAPSHOT WHEN A FIELD IS ENTERED, RESTORE WHEN THE KEYBOARD GOES AWAY.
    *
-   * It is the right shape, and it is a better one than what was here. Every previous attempt tried
-   * to work out WHERE things should be while the keyboard is up — which needs measurements that do
-   * not mean the same thing in a Safari tab, a Safari-added web app and a Chrome-added shortcut, and
-   * got five different wrong answers. This asks nothing about the keyboard at all: it remembers what
-   * the scroll positions were the instant before a field took focus, and puts them back when the
-   * field loses it.
+   * Asked for in these words: "não dá pra você resetar a posição dele pro estado anterior antes do
+   * teclado subir quando o usuário minimizar o teclado novamente?" — and it is a better shape than
+   * every previous attempt, which tried to work out where things should BE while the keyboard is up
+   * from measurements that do not mean the same thing in a Safari tab, a Safari-added web app and a
+   * Chrome-added shortcut. This asks nothing about the keyboard's size.
    *
-   * IT RESTORES EVERY SCROLLER ON THE PATH, not just the document. That matters here and is what the
-   * page-only version could not fix: the composer is `position: sticky; bottom: 0` INSIDE the
-   * conversation's own scrolling column, so if iOS moves that column to reveal the caret, the
-   * composer ends up parked away from the bottom edge — "desgrudado" — with `window.scrollY` sitting
-   * innocently at 0 the whole time. Walking up from the focused element catches whichever one moved
-   * without having to know which one it will be.
+   * THE TRIGGER IS THE VIEWPORT COMING BACK, NOT `focusout`, AND THAT WAS THE BUG IN THE FIRST
+   * VERSION OF THIS. iOS's accessory bar has a "done" control — the ✓ visible in the screenshots
+   * that reported this — and dismissing the keyboard with it hides the keyboard WITHOUT blurring
+   * the field. So `focusout` never fired, the restore never ran, and the fix looked like no fix at
+   * all. The visible band growing back is the one signal that is true however the keyboard was
+   * dismissed: the ✓, the ⌄, a tap outside, or the field losing focus.
    *
-   * The restore is repeated across the dismissal animation rather than fired once: iOS keeps
-   * adjusting during it, so a single write lands mid-animation and is overwritten a frame later.
-   * Each repeat is a no-op once the value is already back.
+   * WHY THE POSITION MOVES AT ALL: `#root` is `overflow-x: clip` on a phone, and a lone `clip`
+   * computes the other axis to `clip` too, so it is a clip container — which anchors `position:
+   * fixed` descendants to ITSELF rather than to the window (CLAUDE.md records this for the bottom
+   * bar). iOS scrolls the DOCUMENT to reveal the caret; if it does not fully undo that, `#root`
+   * sits at `-scrollY` and the composer and the fixed bar both come back exactly that much higher.
+   * The two moving together is what named the cause.
+   *
+   * IT RESTORES EVERY SCROLLER ON THE PATH, not just the document, because the conversation's own
+   * column can be the one that moved and `window.scrollY` then sits innocently at 0.
    */
   useEffect(() => {
     if (!lockViewport) return
@@ -1641,27 +1643,54 @@ export default function AppLayout() {
       if (!editable(ev.target)) return
       before = { page: window.scrollY, scrollers: snapshot(ev.target as HTMLElement) }
     }
-    const onOut = (ev: FocusEvent) => {
-      if (!editable(ev.target) || before === null) return
+    const restore = () => {
       const was = before
-      before = null
-      const restore = () => {
-        if (window.scrollY !== was.page) window.scrollTo(0, was.page)
-        // A scroller that was at its BOTTOM is put back at its bottom, not at the pixel it held:
-        // the conversation grows while you type, and the pixel that was the end is no longer it.
-        for (const { el, top } of was.scrollers) {
-          const wasAtEnd = top >= el.scrollHeight - el.clientHeight - 4
-          const target = wasAtEnd ? el.scrollHeight - el.clientHeight : top
-          if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
-        }
+      if (was === null) return
+      if (window.scrollY !== was.page) window.scrollTo(0, was.page)
+      // A scroller that was at its BOTTOM is put back at its bottom, not at the pixel it held: the
+      // conversation grows while you type, and the pixel that was the end is no longer it.
+      for (const { el, top } of was.scrollers) {
+        const wasAtEnd = top >= el.scrollHeight - el.clientHeight - 4
+        const target = wasAtEnd ? el.scrollHeight - el.clientHeight : top
+        if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
       }
+    }
+    /** How much the band must lose before it counts as covered by something. */
+    const COVERED_BY = 120
+    const vv = window.visualViewport
+    let tallest = vv ? vv.height : window.innerHeight
+    let wasCovered = false
+    const onViewport = () => {
+      const h = vv ? vv.height : window.innerHeight
+      if (h <= 0) return
+      if (tallest - h >= COVERED_BY) {
+        wasCovered = true
+        return
+      }
+      if (h >= tallest) tallest = h
+      if (!wasCovered) return
+      wasCovered = false
+      // Repeated across the dismissal animation rather than fired once: iOS keeps adjusting during
+      // it, so a single write lands mid-animation and is overwritten a frame later. Each repeat is
+      // a no-op once the value is already back.
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    // `focusout` is kept as a SECOND trigger, not the only one: tapping outside the field dismisses
+    // the keyboard and blurs, and on a layout where the band never changed there is nothing else to
+    // notice it by.
+    const onOut = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
       for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
     }
     window.addEventListener('focusin', onIn)
     window.addEventListener('focusout', onOut)
+    vv?.addEventListener('resize', onViewport)
+    window.addEventListener('resize', onViewport)
     return () => {
       window.removeEventListener('focusin', onIn)
       window.removeEventListener('focusout', onOut)
+      vv?.removeEventListener('resize', onViewport)
+      window.removeEventListener('resize', onViewport)
     }
   }, [lockViewport])
 
@@ -3431,13 +3460,6 @@ export default function AppLayout() {
       boxSizing: 'border-box',
       transition: 'padding-left 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
     }}>
-      {/* A DIAGNOSTIC, behind `?vpdebug=1` and nothing else — see ViewportProbe's own header. The
-          keyboard bug lives in numbers this repo cannot reproduce, so it puts them where the device
-          is. */}
-      {/* TEMPORARILY UNCONDITIONAL. A Home Screen app launches from the manifest's `start_url`, so
-          the `?vpdebug=1` on the shortcut never reaches the page — which is exactly where the
-          readings are needed. Back behind the flag, and then deleted, once they are in. */}
-      <ViewportProbe />
       {/* The billing prompt. Mounted HERE, after the archive consent gate's early return above, so
           the two can never stack on a first launch — one blocking modal behind one dismissible one
           is a pile nobody reads. It is the same component for the first-run invite and for the
