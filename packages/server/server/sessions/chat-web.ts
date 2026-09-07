@@ -30,6 +30,7 @@ import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ChatTurn } from './chat-turn'
 import { transcriptReaderFor } from './harness-transcript'
 import { conversationOfRow } from './row-conversation'
+import { pendingFor, type PendingPrompt } from './pending-prompts'
 
 export interface ChatPayload {
   /** The turns, oldest first. Empty with no `unavailable` means a conversation with nothing in it. */
@@ -43,6 +44,15 @@ export interface ChatPayload {
   unavailable?: string
   /** True while the session is running, so the view knows whether to expect more. */
   live: boolean
+  /**
+   * Messages handed to this session that its transcript does not carry yet.
+   *
+   * Held by the SERVER (`pending-prompts.ts`) rather than by the tab that sent them, which is what
+   * makes every device show the same queue — the report this answers was a message visible on the
+   * phone that sent it and nowhere else. Each carries when it was sent, so any device can say how
+   * long it has been waiting instead of drawing a bubble with no age.
+   */
+  pending?: PendingPrompt[]
   /**
    * Already-localized: these turns are the END of a longer conversation.
    *
@@ -145,7 +155,14 @@ export async function readSessionChat(
     // `unavailable` means "a conversation with nothing in it". A session that is NOT running keeps
     // the refusal, because there its missing transcript really is a transcript that is gone — the
     // same N/A-versus-a-confident-0 rule, applied to "not yet" against "no longer".
-    if (live) return { turns: [], live }
+    if (live) {
+      // THE FIRST MESSAGE IS EXACTLY THIS CASE. A harness writes its transcript when the
+      // conversation first says something, so a session that has only ever been sent one message
+      // has no file — and returning an empty payload here would hide the very message that is
+      // waiting to create it.
+      const queued = pendingFor(conversationId, [])
+      return { turns: [], live, ...(queued.length > 0 ? { pending: queued } : {}) }
+    }
     return {
       turns: [],
       unavailable: lang === 'pt'
@@ -161,9 +178,14 @@ export async function readSessionChat(
   // written against holds 1239 turns, so a 400-turn window cuts it and says nothing.
   const read = await reader.read(path, MAX_TURNS)
     .catch(() => ({ turns: [] as ChatTurn[], older: false }))
+  // What is still waiting, judged against the user turns THIS read returned. The window matters and
+  // is the right one: a message queued a minute ago cannot be older than the last 400 turns, and
+  // comparing against a wider slice would cost a second read to learn nothing.
+  const pending = pendingFor(conversationId, read.turns.filter(t => t.role === 'user').map(t => t.text))
   return {
     turns: read.turns,
     live,
+    ...(pending.length > 0 ? { pending } : {}),
     ...(read.older
       ? {
           older: lang === 'pt'

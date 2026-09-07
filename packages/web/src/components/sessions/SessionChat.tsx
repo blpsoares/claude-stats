@@ -52,7 +52,7 @@ import {
   slashQuery, stepSkill,
 } from '../../lib/skillMenu'
 import { markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
-import { pendingEchoes } from '../../lib/echoMatch'
+import { pendingEchoes } from '@agentistics/core'
 import {
   applyDraftRequest, consumeDraftRequest, getDraftRequest, useDraftRequest,
 } from '../../lib/composerStore'
@@ -70,6 +70,8 @@ interface ChatPayload {
   live: boolean
   /** Already-localized: these turns are the END of a longer conversation. See `chat-web.ts`. */
   older?: string
+  /** Messages the SERVER is holding for this conversation — see `pending-prompts.ts`. */
+  pending?: { text: string; at: number }[]
 }
 
 export interface SessionChatProps {
@@ -677,6 +679,40 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * whose only outcome is a modal saying "nothing" is a control that exists to refuse.
    */
   const lastSent = useMemo(() => lastSentMessage(turns, echo), [turns, echo])
+  /**
+   * WHAT IS STILL WAITING, from BOTH sides, and the server's copy wins on age.
+   *
+   * The local echo is what makes a sent message appear instantly — it exists before any poll — and
+   * the server's list is what makes it appear on every OTHER device, and survive this one being
+   * closed and reopened. Neither replaces the other: without the local half the sender waits a poll
+   * to see their own message, without the server half nobody else ever sees it.
+   *
+   * The union is by TEXT, which is the same key both sides already retire on. Where both have it,
+   * the server's `at` is used: it is when the message was actually handed over, while the local
+   * timestamp is when THIS tab first drew it — and after a reload the local one is the reload, which
+   * is exactly how a queued message became a bubble with no age and no way to tell it from a lost
+   * one. `at` may still be undefined for a purely local entry that has not been through a poll yet,
+   * and the bubble then shows no age rather than inventing one.
+   */
+  const queued = useMemo(() => {
+    const out: { text: string; at?: number }[] = []
+    const server = new Map((payload?.pending ?? []).map(p => [p.text, p.at]))
+    const seen = new Set<string>()
+    for (const text of echo) {
+      if (seen.has(text)) continue
+      seen.add(text)
+      const at = server.get(text) ?? echoSeen.current.get(text)
+      out.push(at === undefined ? { text } : { text, at })
+    }
+    for (const p of payload?.pending ?? []) {
+      if (seen.has(p.text)) continue
+      seen.add(p.text)
+      out.push({ text: p.text, at: p.at })
+    }
+    return out
+  }, [echo, payload?.pending])
+
+
 
   /**
    * When each echo was first seen, so its bubble can say how long it has been waiting.
@@ -1095,18 +1131,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               carries the same text — so it is drawn as one: faded, with the wait said in words
               under it. It used to be indistinguishable from a delivered message, and on a session
               mid-turn the wait is minutes. */}
-          {echo.map((text, i) => (
+          {queued.map((q, i) => (
             <ChatBubble
               key={`echo-${i}`}
-              turn={{ role: 'user', text }}
+              turn={{ role: 'user', text: q.text }}
               lang={lang}
               harness={session.harness}
               anchorId={turnAnchorId('echo', i)}
               awaiting
               awaitingWorking={working}
-              {...(echoSeen.current.get(text) !== undefined
-                ? { awaitingSinceMs: now - echoSeen.current.get(text)! }
-                : {})}
+              {...(q.at !== undefined ? { awaitingSinceMs: Math.max(0, now - q.at) } : {})}
             />
           ))}
 

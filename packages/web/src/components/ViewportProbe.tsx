@@ -67,16 +67,35 @@ export function ViewportProbe() {
   const [closedR, setClosedR] = useState<Reading | null>(null) // the reading 400ms after it lost it
 
   useEffect(() => {
-    const editable = (el: EventTarget | null): boolean => {
-      const e = el as HTMLElement | null
-      return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
+    // THE TRIGGER IS THE VIEWPORT SHRINKING, not the focus. The first version keyed both frames on
+    // an INPUT having focus, and a screenshot came back with both still empty — a phone can raise
+    // and drop a keyboard without this page ever seeing a focus event it recognises (a field inside
+    // a shadow root, a dictation panel, an autofill bar), and a diagnostic that needs the user to
+    // hit an invisible condition is one more round trip, which is the thing it exists to remove.
+    //
+    // A drop of more than 120px in the visible band is a keyboard by any reading, and the growth
+    // back is the dismissal. Both are recorded whatever had focus.
+    const KEYBOARD_DROP = 120
+    let tallest = read().vvH
+    const onViewport = () => {
+      const now = read()
+      if (now.vvH <= 0) return
+      if (tallest - now.vvH >= KEYBOARD_DROP) {
+        setOpenR(now)
+      } else if (now.vvH >= tallest) {
+        tallest = now.vvH
+        // 400ms after it comes back: iOS keeps adjusting the scroll across the dismissal animation,
+        // so the reading that matters is the one AFTER it settles, not the first frame of it.
+        window.setTimeout(() => setClosedR(read()), 400)
+      }
     }
-    const onOut = (ev: FocusEvent) => {
-      if (!editable(ev.target)) return
-      window.setTimeout(() => setClosedR(read()), 400)
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', onViewport)
+    window.addEventListener('resize', onViewport)
+    return () => {
+      vv?.removeEventListener('resize', onViewport)
+      window.removeEventListener('resize', onViewport)
     }
-    window.addEventListener('focusout', onOut)
-    return () => window.removeEventListener('focusout', onOut)
   }, [])
 
   useEffect(() => {

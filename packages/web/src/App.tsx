@@ -3382,7 +3382,18 @@ export default function AppLayout() {
       // height the shorter box did — `box-sizing: border-box` is global — while the border box
       // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
       // pixel it left, and nothing anchors to an edge that is not the screen's.
-      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
+      // `dvh` EVERYWHERE, not only under the mobile breakpoint. The note above records why a phone
+      // cannot use `100vh` — it does not shrink for a collapsing browser toolbar, so it is taller
+      // than the visible area and the foot of the column goes below the fold — and then the fix was
+      // applied only where `useIsMobile()` is true, which is a WIDTH test at 768px. An iPad is
+      // 820pt wide in portrait: it took the desktop branch, got `100vh`, and the composer sat below
+      // the fold with nothing on screen saying so. Reported as the chat input simply not existing
+      // on a tablet, in the PWA and in the browser alike.
+      //
+      // There is no cost on a desktop: with no dynamic toolbars `dvh` and `vh` are the same number.
+      // A rule that holds on every screen does not need a breakpoint, and the breakpoint was the
+      // whole defect.
+      height: inSessionsWorkspace ? '100dvh' : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
