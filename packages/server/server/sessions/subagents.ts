@@ -42,6 +42,8 @@ import { calcCost, sumTokens, type TokenBreakdown } from '@agentistics/core'
 export interface SubagentMeta {
   agentId: string
   agentType?: string
+  /** The harness's own second marker for a fork. Read beside `agentType`, never instead of it. */
+  isFork?: true
   description?: string
   /** The parent's `tool_use` id — the exact link back to the row in the Live feed. */
   toolUseId?: string
@@ -76,7 +78,25 @@ export function parseSubagentMeta(agentId: string, raw: string): SubagentMeta {
     ...(str('model') ? { model: str('model')! } : {}),
     ...(typeof o.spawnDepth === 'number' && Number.isFinite(o.spawnDepth)
       ? { spawnDepth: o.spawnDepth } : {}),
+    ...(o.isFork === true ? { isFork: true } : {}),
   }
+}
+
+/**
+ * A FORK IS NOT A SUBAGENT — PURE.
+ *
+ * A fork is a conversation branched off this one; nothing dispatched it, it is claimed by no
+ * `tool_use`, and `agent-metrics.ts` files it outside the invocation list for exactly that reason.
+ * It shares the `subagents/` directory only because that is where the harness writes both.
+ *
+ * The two markers are read together because the harness writes both and either alone would be a
+ * guess about a format nobody controls. **The default is `agent`**: forks are marked explicitly, so
+ * an unmarked transcript is one, and mis-filing an agent as a fork would hide real dispatched work
+ * from the tab that exists to count it. The other direction shows a fork among agents, which is
+ * visible and correctable; this one is neither.
+ */
+export function subagentKind(meta: Pick<SubagentMeta, 'agentType' | 'isFork'>): 'agent' | 'fork' {
+  return meta.agentType === 'fork' || meta.isFork === true ? 'fork' : 'agent'
 }
 
 /**

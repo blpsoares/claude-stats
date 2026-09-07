@@ -1795,7 +1795,7 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           : await readSessionSubagents(host, lang, id, {
             ...(num(url.searchParams.get('limit')) !== undefined ? { limit: num(url.searchParams.get('limit'))! } : {}),
             ...(num(url.searchParams.get('offset')) !== undefined ? { offset: num(url.searchParams.get('offset'))! } : {}),
-          })
+          }, url.searchParams.get('kind') === 'fork' ? 'fork' : 'agent')
         return new Response(JSON.stringify(payload), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })

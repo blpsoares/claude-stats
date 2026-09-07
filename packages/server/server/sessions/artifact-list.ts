@@ -61,8 +61,28 @@ export function resolveArtifactPath(raw: string, cwd: string): string | null {
 export async function listExistingArtifacts(
   paths: readonly string[], cwd: string,
 ): Promise<ListedArtifact[]> {
+  return (await listArtifactsWithOutside(paths, cwd)).files
+}
+
+/**
+ * The same list, plus HOW MANY files the session wrote outside its own folder.
+ *
+ * The count exists because the drop was invisible, and an invisible drop reads as a bug in the
+ * panel. Reported exactly that way: a file this session had just written with `cat > …` did not
+ * appear, and nothing on screen said why — so the honest reading from outside is "the Files tab
+ * missed it". It did not; it refused it, for the reason above.
+ *
+ * It is a COUNT and never the paths. Naming them would put text from outside the session's own
+ * folder on a screen the read guard exists to keep it off — the drop would be undone by the
+ * explanation of the drop. A number plus a sentence is the whole of what a reader needs: it says
+ * the panel is complete for what it can serve, and that something else was written elsewhere.
+ */
+export async function listArtifactsWithOutside(
+  paths: readonly string[], cwd: string,
+): Promise<{ files: ListedArtifact[]; outside: number }> {
   const out: ListedArtifact[] = []
   const seen = new Set<string>()
+  const outsideSeen = new Set<string>()
   for (const raw of paths) {
     const path = resolveArtifactPath(raw, cwd)
     if (!path || seen.has(path)) continue
@@ -70,7 +90,7 @@ export async function listExistingArtifacts(
     // and reverted — it is shared, and widening the guard to all of it defeats the symlink-escape
     // check for any session whose folder is itself under it. The list must not offer what the read
     // route will refuse, so it applies the identical rule.
-    if (!withinDirectory(path, cwd)) continue
+    if (!withinDirectory(path, cwd)) { outsideSeen.add(path); continue }
     seen.add(path)
     try {
       const st = await stat(path)
@@ -78,5 +98,5 @@ export async function listExistingArtifacts(
       out.push({ raw, path, bytes: st.size, scope: 'project' })
     } catch { /* gone, or unreadable — either way there is nothing to open */ }
   }
-  return out
+  return { files: out, outside: outsideSeen.size }
 }

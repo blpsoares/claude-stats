@@ -31,11 +31,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
-import {
-  FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
-  BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
-  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X, Workflow,
-} from 'lucide-react'
+import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
   countSkills, groupSkills, shortName, skillInvocation, type SkillEntry,
@@ -77,7 +73,7 @@ import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'workflows' | 'mcps' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
@@ -85,6 +81,15 @@ const GALLERY_SCOPE_KEY = 'agentistics:gallery-scope'
 const SKILL_FORMAT_KEY = 'agentistics:skill-format'
 
 export interface ArtifactsAsideProps {
+  /**
+   * Already-localized: files this session wrote outside its own folder, which cannot be listed.
+   *
+   * A COUNT in a sentence, never the paths — see `listArtifactsWithOutside` on the server. It
+   * exists because the drop was silent, and a silent drop reads as the panel having missed
+   * something it wrote.
+   */
+  outsideNote?: string
+
   /**
    * The session's own directory.
    *
@@ -286,13 +291,22 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 }
 
 export function ArtifactsAside({
-  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, turns, facts, onClose,
+  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, outsideNote, turns, facts, onClose,
   tabRequest,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
   const [open, setOpen] = useState<Artifact | null>(null)
   const [tab, setTab] = useState<TabId>('files')
+  /**
+   * Which of the two things in `subagents/` the list is showing, and how many there are of each.
+   *
+   * ONE effect and ONE state serve both tabs — a second copy of the poll, the merge and the paging
+   * would be a second set of rules about the same directory. The kind is a parameter of the read;
+   * the counts come back on every read, so a tab shows its badge without having been opened.
+   */
+  const agentKind: 'agent' | 'fork' = tab === 'forks' ? 'fork' : 'agent'
+  const [agentKinds, setAgentKinds] = useState<{ agents: number; forks: number } | null>(null)
   /** The SUBAGENTS tab's own state — declared here because the tab BAR reads its count. */
   /**
    * Seeded from `asideCache` for the same reason the Skills and PRs tabs are: closing the panel and
@@ -328,7 +342,7 @@ export function ArtifactsAside({
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
-      || t === 'agents' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
+      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -578,8 +592,23 @@ export function ArtifactsAside({
       id: 'agents',
       label: pt ? 'Subagentes' : 'Subagents',
       icon: <Bot size={12} />,
-      count: subagentCount(agentsState),
+      count: agentKinds?.agents ?? subagentCount(agentsState),
     },
+    // FORKS GET THEIR OWN TAB, and that is the point of the split rather than a cosmetic one. A
+    // fork is a conversation branched off this one — nothing dispatched it, it is claimed by no
+    // `tool_use`, and the session's own metrics card correctly reports it as no subagent at all.
+    // Counting the two together made those two surfaces contradict each other on one screen. They
+    // share a directory because that is where the harness writes both; they are not the same thing.
+    // The tab is ABSENT when there are none: an empty tab is a promise that something might be
+    // behind it.
+    ...((agentKinds?.forks ?? 0) > 0
+      ? [{
+          id: 'forks' as const,
+          label: pt ? 'Forks' : 'Forks',
+          icon: <GitBranch size={12} />,
+          count: agentKinds?.forks ?? null,
+        }]
+      : []),
     {
       id: 'workflows',
       label: pt ? 'Workflows' : 'Workflows',
@@ -763,7 +792,8 @@ export function ArtifactsAside({
    */
   useEffect(() => {
     // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
-    const key = asideKey(sessionId, 'subagents')
+    // The cache is per KIND: the two tabs are two lists of the same directory.
+    const key = asideKey(sessionId, agentKind === 'fork' ? 'forks' : 'subagents')
     const hit = asideCache.read<SubagentsState>(key)
     // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
     // running agent's numbers move. Pages already asked for are merged, never replaced.
@@ -779,13 +809,17 @@ export function ArtifactsAside({
     const read = async () => {
       if (first) setAgentsState({ phase: 'loading' })
       try {
-        const res = await fetch(`/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&limit=${Math.max(SUBAGENT_PAGE, loaded)}&lang=${pt ? 'pt' : 'en'}`)
+        const res = await fetch(`/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&kind=${agentKind}&limit=${Math.max(SUBAGENT_PAGE, loaded)}&lang=${pt ? 'pt' : 'en'}`)
         if (!alive) return
         if (!res.ok) {
           setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
           return
         }
-        const fresh = subagentsStateOf(await res.json() as SubagentsPayload)
+        const body = await res.json() as SubagentsPayload & { counts?: { agents: number; forks: number } }
+        // Both counts ride every answer, so the OTHER tab's badge is right without it having been
+        // opened — and the Forks tab only exists at all once this says there is one.
+        if (body.counts) setAgentKinds(body.counts)
+        const fresh = subagentsStateOf(body)
         // Merge onto what is already on screen, so a poll never drops the pages somebody loaded.
         const next: SubagentsState = fresh.phase === 'ready'
           ? { ...fresh, rows: appendPage(hit.value?.phase === 'ready' ? hit.value.rows : [], fresh.rows) }
@@ -796,7 +830,7 @@ export function ArtifactsAside({
         // POLLED ONLY WHILE THE TAB IS ON SCREEN. The list costs a full read of the parent
         // transcript, and re-reading it every five seconds for a count in a corner of a bar is the
         // disk-burner `chat-tail.ts` documents, moved one panel over.
-        const wait = tab === 'agents' ? subagentsPollMs(next) : null
+        const wait = tab === 'agents' || tab === 'forks' ? subagentsPollMs(next) : null
         if (wait !== null) timer = setTimeout(read, wait)
       } catch {
         if (alive) setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
@@ -804,7 +838,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [tab, sessionId, pt])
+  }, [tab, agentKind, sessionId, pt])
 
   /**
    * The session's DYNAMIC WORKFLOW runs.
@@ -1094,6 +1128,15 @@ export function ArtifactsAside({
             {pt
               ? 'A sessão também escreveu por comandos cujos caminhos não dá para ler; esses arquivos não estão nesta lista.'
               : 'The session also wrote through commands whose paths cannot be read; those files are not in this list.'}
+          </p>
+        )}
+        {/* The other reason a written file is not here, and the one that was silent: it is outside
+            this session's own folder, so the read route would refuse it and the list does not offer
+            a row whose only outcome is a refusal. The sentence is the server's — it holds the count
+            and never the paths. */}
+        {outsideNote && (
+          <p style={{ margin: '6px 8px 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {outsideNote}
           </p>
         )}
       </div>
@@ -1476,7 +1519,7 @@ export function ArtifactsAside({
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()
-            : tab === 'agents' ? agentsBody()
+            : tab === 'agents' || tab === 'forks' ? agentsBody()
             : tab === 'workflows' ? workflowsBody()
             : tab === 'mcps' ? mcpBody()
             : tab === 'prs' ? prsBody()

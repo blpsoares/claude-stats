@@ -927,6 +927,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * take it, since a stop control on an idle session would send Escape into its prompt.
    */
   const stopVerb = row?.verbs.find(v => v.action === 'interrupt')
+  /**
+   * Is the one button showing STOP right now?
+   *
+   * `working` and a stop the row actually offers are the preconditions — a stop on an idle session
+   * sends Escape into its prompt, which is why the row gates `interrupt` at all. The DRAFT is what
+   * decides between the two faces: nothing written means there is nothing to send, so the only
+   * thing left to do to a working session is stop it; a single character means the opposite.
+   * Attachments count as something written — a message that is only files is still a message.
+   */
+  const stopShown = working && !!stopVerb?.enabled && draft.trim() === '' && attached.length === 0
   const [stopping, setStopping] = useState(false)
   async function stopNow() {
     if (!stopVerb?.enabled || stopping) return
@@ -1059,27 +1069,53 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     // reply that repeats forty lines back at the session costs it context for no benefit.
     const quote = replyTo ? quoteFor(replyTo) : ''
     const full = [quote, ...attached.map(a => a.path), text].filter(x => x !== '').join('\n')
+    /**
+     * THE COMPOSER EMPTIES ON THE KEYSTROKE, NOT ON THE ANSWER.
+     *
+     * It used to `await act(...)` and only then clear the draft and draw the echo, so the whole
+     * round trip was visible as the field sitting there full with nothing happening. Reported as
+     * "a partir do momento que eu dou enter numa mensagem ela está demorando pra ser enviada", and
+     * the delivery was never the slow part — the WAIT FOR THE ANSWER was, and the browser has
+     * nothing to learn from it that changes what it should draw.
+     *
+     * The echo already carries the honesty this needs: it renders as an UNREAD message with the
+     * wait said in words, and it is retired the instant the transcript carries it. So drawing it
+     * before the answer is not a claim that it landed — it is the same claim it was already making
+     * one round trip later.
+     *
+     * A FAILURE PUTS IT BACK, exactly as it was: the text, the attachments and the reply target.
+     * The one thing a person must never lose is what they wrote, and an optimistic clear that
+     * cannot undo itself is how that happens.
+     */
+    const restore = { draft, attached, replyTo }
     setSending(true)
+    editEcho(list => [...list, full])
+    setDraft('')
+    sessionScratch.clearDraft(scratchId)
+    setAttached([])
+    sessionScratch.writeAttachments(scratchId, [])
+    editReply(null)
+    setAtTail(true)
+    toTail()
+    setNotice(null)
+
     const out = await act({ id: session.id, action: 'prompt', text: full })
     setSending(false)
     if (out.ok) {
-      // Echoed straight away. It is already in the session; the transcript catches up in a poll or
-      // two, and this is what makes pressing enter visibly do something.
-      editEcho(list => [...list, full])
       // Ask for the transcript at once. The harness writes the user turn as soon as it takes the
       // message, and the next scheduled read is up to `CHAT_POLL_MS` away — three seconds in which
       // the echo sits there labelled as undelivered when it has in fact already landed.
       nudgeChat.current()
-      setDraft('')
-      sessionScratch.clearDraft(scratchId)
-      setAttached([])
-      sessionScratch.writeAttachments(scratchId, [])
-      editReply(null)
-      setAtTail(true)
-      toTail()
-      setNotice(null)
       return
     }
+    // It did not go. Take the echo back out — leaving it would show a message that is waiting for
+    // a session that never received it — and give the person their words back untouched.
+    editEcho(list => list.filter(t => t !== full))
+    setDraft(restore.draft)
+    sessionScratch.writeDraft(scratchId, restore.draft)
+    setAttached(restore.attached)
+    sessionScratch.writeAttachments(scratchId, restore.attached)
+    editReply(restore.replyTo)
     setNotice(out.message)
   }
 
@@ -1800,40 +1836,51 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     <History size={15} />
                   </button>
                 )}
-                {/* Working's own stop, right beside the field it does not block. Absent the moment
-                    the turn ends — a stop control on an idle session would send Escape into its
-                    prompt, which is exactly the row's own gate on `interrupt`. */}
-                {working && stopVerb?.enabled && (
+                {/* ONE BUTTON, TWO JOBS, AND THE DRAFT DECIDES WHICH.
+                    Asked for in those terms: the send control BECOMES the stop while the session
+                    is working, rather than a second button appearing beside it — two controls one
+                    finger-width apart, one of which interrupts a turn, is a row where the wrong
+                    press is cheap to make and expensive to undo.
+                    The draft is the discriminator and it is the honest one: with something written
+                    the only thing you can mean is send, and with nothing written the only thing
+                    left to do to a working session is stop it. Typing therefore turns it back into
+                    a send WITHOUT stopping anything — the switch is about what the button will do
+                    next, never about what the session is doing now — and emptying the field turns
+                    it back into a stop. */}
+                {stopShown ? (
                   <button
                     onClick={() => void stopNow()}
                     disabled={stopping}
-                    title={stopVerb.label}
-                    aria-label={stopVerb.label}
+                    title={stopVerb!.label}
+                    aria-label={stopVerb!.label}
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, cursor: stopping ? 'default' : 'pointer',
-                      border: '1px solid color-mix(in srgb, var(--accent-red) 45%, transparent)',
-                      background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
-                      color: 'var(--accent-red)',
+                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, border: 'none',
+                      cursor: stopping ? 'default' : 'pointer',
+                      // Filled, not outlined: this is the one control in the row that ENDS
+                      // something, and an outline reads as the same weight as the others.
+                      background: 'var(--accent-red)',
+                      color: '#fff',
                     }}
                   >
                     {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
                   </button>
+                ) : (
+                  <button
+                    onClick={() => void send()}
+                    disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
+                    aria-label={pt ? 'Enviar' : 'Send'}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
+                      background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
+                      color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
+                      cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
+                    }}
+                  >
+                    {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
+                  </button>
                 )}
-                <button
-                  onClick={() => void send()}
-                  disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
-                  aria-label={pt ? 'Enviar' : 'Send'}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
-                    background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
-                    color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
-                    cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
-                  }}
-                >
-                  {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
-                </button>
 
                 {/* Mic and model live behind ONE button. Four controls plus the field on a
                     390px screen is a row where the buttons win, and these two are the pair a person
