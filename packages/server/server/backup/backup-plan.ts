@@ -50,7 +50,7 @@ export interface ExcludeRule {
    * `prefix` — the path STARTS WITH `pattern`. A string prefix, deliberately, not a directory
    * boundary: three rules depend on it matching a filename STEM rather than a directory
    * — `.agentistics/cache.db` must catch `cache.db-wal` and `cache.db-shm`, `.agentistics/git-stats.db`
-   * the same, and `.agentistics/server-` must catch `server-47291.lock`. A boundary check would let
+   * the same, and `.agentistics/server.lock` must be caught. A boundary check would let
    * all of those through.
    *
    * The cost is that a path merely sharing a string prefix is excluded too (a hypothetical
@@ -307,8 +307,8 @@ const RUNTIME: ExcludeRule[] = [
     why: 'Names tmux sessions that will not exist on the new machine. Restoring it yields rows pointing at nothing.',
   },
   {
-    pattern: '.agentistics/server-', match: 'prefix', reason: 'runtime',
-    why: 'Port lock files held by a process on the old machine.',
+    pattern: '.agentistics/server.lock', match: 'prefix', reason: 'runtime',
+    why: 'The instance claim, held by a process on the old machine. Restoring it would make a fresh machine believe a server it does not have is already running.',
   },
   {
     pattern: '.agentistics/events-producer.json', match: 'prefix', reason: 'runtime',

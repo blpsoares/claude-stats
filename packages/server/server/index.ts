@@ -150,12 +150,15 @@ const serverProcStatsMap = new Map<number, ProcStatSample>()
 {
   const { claimInstanceLock } = await import('./single-instance')
   const { serverLockFile } = await import('./config')
-  const lock = await claimInstanceLock(serverLockFile(PORT))
+  const { AGENTISTICS_DATA_DIR: LOCK_DIR } = await import('./config')
+  const lock = await claimInstanceLock(serverLockFile())
   if (!lock.ok) {
     console.error(
-      `[startup] another agentop server is already running on port ${PORT}` +
+      `[startup] another agentop server is already using ${LOCK_DIR}` +
       (lock.holder ? ` (pid ${lock.holder})` : '') +
-      ' — exiting instead of scanning every repository a second time.'
+      ' — exiting instead of scanning every repository a second time.\n' +
+      '          To run a second one anyway, give it its own data directory: ' +
+      'AGENTISTICS_DIR=/path/to/dir agentop server'
     )
     process.exit(1)
   }
