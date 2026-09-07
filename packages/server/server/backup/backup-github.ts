@@ -230,24 +230,3 @@ export function parseReleaseBody(body: string): ReleaseSummary | null {
     sha256: sha256Match[1]!,
   }
 }
-
-/**
- * WHEN A BACKUP RELEASE WAS ACTUALLY MADE.
- *
- * `created_at` on a GitHub release is NOT when the release was created — it is the date of the
- * COMMIT the tag points at. On a backup repository every tag is cut against the same seeded commit,
- * so `created_at` is one identical timestamp on every release, of every machine, forever.
- *
- * Measured on a real backup repository: four releases across two machines and two days, and
- * `created_at` was `2026-09-06T16:24:54Z` on all four, while `published_at` was distinct and
- * correct on each. Reported as a list where every card showed the same date — and the same field
- * was ALSO the sort key, which is the part that was not cosmetic: "the newest release" was
- * whichever order GitHub happened to return, so a restore with no `--release` could pick any of
- * them, and remote retention could delete the newest instead of the oldest.
- *
- * `published_at` is null only on a DRAFT, which agentop never creates; `created_at` is the fallback
- * so a hand-made draft still sorts somewhere rather than crashing the list.
- */
-export function releaseMadeAt(r: { published_at?: string | null; created_at: string }): string {
-  return r.published_at ?? r.created_at
-}

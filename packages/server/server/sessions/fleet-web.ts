@@ -112,6 +112,9 @@ export async function hostForFleet(lang: CliLang): Promise<StartHost> {
   return hostFor(lang)
 }
 
+/** How long one fleet snapshot serves every route that only needs to find a row in it. */
+const SNAPSHOT_TTL_MS = 1_000
+
 async function hostFor(lang: CliLang): Promise<StartHost> {
   const cached = HOSTS.get(lang)
   if (cached) return cached
@@ -125,6 +128,35 @@ async function hostFor(lang: CliLang): Promise<StartHost> {
   const constructStart = performance.now()
   const host = createControlHost(lang, NO_TERMINAL)
   markFleetPhase('hostFor: createControlHost', constructStart)
+  // ONE FLEET READ SERVES THE BURST THAT OPENS A SESSION.
+  //
+  // Clicking a row in the list fires several routes at once — the chat, the artifacts, the
+  // subagents, the files — and every one of them needs the same thing from the fleet: WHICH ROW,
+  // for its cwd, harness and conversation id. Each was paying a full `host.sessions()` for it, and
+  // that walks every session and captures its pane: ~200 ms measured here, four times over, before
+  // anything the person asked for is read. Reported as "quando eu clico em outra sessão... tem um
+  // delay pra abrir, tá tudo local, deveria ser instantâneo" — and it is local; it was just being
+  // read four times.
+  //
+  // So the snapshot is memoized for a moment. The window is deliberately far below the UI's own 5s
+  // poll, so nothing anyone looks at gets slower to update: this only collapses calls that were
+  // always going to be the same answer, made within the same gesture.
+  const cachedSessions = host.sessions
+  if (cachedSessions) {
+    let at = 0
+    let inflight: ReturnType<typeof cachedSessions> | null = null
+    host.sessions = () => {
+      const now = Date.now()
+      // The IN-FLIGHT promise is shared too, not just the settled result: the burst arrives inside
+      // one read, so a TTL alone would still start four of them.
+      if (inflight && now - at < SNAPSHOT_TTL_MS) return inflight
+      at = now
+      inflight = cachedSessions.call(host)
+      // A failed read must not be remembered as the answer for the next second.
+      void inflight.catch(() => { inflight = null; at = 0 })
+      return inflight
+    }
+  }
   HOSTS.set(lang, host)
   return host
 }
@@ -209,10 +241,24 @@ export async function runFleetAction(
       // queue held by the tab that sent it is a queue no other device can see, which is the whole
       // of the report. `conversationOfRow` because a message belongs to the CONVERSATION, not to
       // the session that happened to host it — reopening one must not lose what is still waiting.
+      //
+      // AND IT DOES NOT HOLD THE REPLY. `host.sessions()` is a FLEET READ — it walks every session
+      // and captures panes — and awaiting it here put that whole cost between pressing enter and
+      // the browser hearing back, on the one action where the person is watching. Reported as
+      // "está demorando pra ser enviada… não tem motivo pra demorar", and there was none: the
+      // message had already been delivered by the line above.
+      //
+      // The queue is for DISPLAY, so it can be written a moment later. What it must not do is make
+      // the send look slow. A failure to record leaves the message un-queued and delivered, which
+      // is the harmless direction: the transcript is the record either way.
       if (out.ok) {
-        const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
-        const conv = row ? conversationOfRow(row) : ''
-        if (conv) recordPrompt(conv, text)
+        void (async () => {
+          try {
+            const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
+            const conv = row ? conversationOfRow(row) : ''
+            if (conv) recordPrompt(conv, text)
+          } catch { /* the message went; the queue is a view of it, not the record */ }
+        })()
       }
       return out
     }
@@ -871,7 +917,7 @@ export async function readFleetArtifactMedia(
  */
 export async function listSessionArtifacts(
   host: StartHost, lang: CliLang, id: string,
-): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string; outside?: string }> {
   if (!host.sessions) return { files: [] }
   const fleet = await host.sessions()
   const row = fleet.sessions.find(r => r.id === id)
@@ -879,14 +925,28 @@ export async function listSessionArtifacts(
   const { readSessionChat } = await import('./chat-web')
   const chat = await readSessionChat(host, lang, row.id)
   if (chat.unavailable) return { files: [], unavailable: chat.unavailable }
-  const { listExistingArtifacts } = await import('./artifact-list')
-  return { files: await listExistingArtifacts(artifactPathsFromTurns(chat.turns), row.cwd) }
+  const { listArtifactsWithOutside } = await import('./artifact-list')
+  const { files, outside } = await listArtifactsWithOutside(artifactPathsFromTurns(chat.turns), row.cwd)
+  // Already localized, and a COUNT rather than the paths — see `listArtifactsWithOutside`. It is
+  // present only when there is something to say: an absent field draws no line, which is the
+  // ordinary case and must cost nothing.
+  const pt = lang === 'pt'
+  return {
+    files,
+    ...(outside > 0
+      ? {
+          outside: pt
+            ? `${outside} arquivo(s) que esta sessão escreveu estão fora da pasta dela e não podem ser abertos aqui.`
+            : `${outside} file(s) this session wrote are outside its own folder and cannot be opened here.`,
+        }
+      : {}),
+  }
 }
 
 /** The route's entry point: resolve the host, then list. Mirrors `readFleetArtifact`. */
 export async function listFleetArtifacts(
   lang: CliLang, id: string,
-): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string; outside?: string }> {
   const host = await hostFor(lang)
   return await listSessionArtifacts(host, lang, id)
 }

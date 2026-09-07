@@ -42,6 +42,8 @@ import { calcCost, sumTokens, type TokenBreakdown } from '@agentistics/core'
 export interface SubagentMeta {
   agentId: string
   agentType?: string
+  /** The harness's own second marker for a fork. Read beside `agentType`, never instead of it. */
+  isFork?: true
   description?: string
   /** The parent's `tool_use` id — the exact link back to the row in the Live feed. */
   toolUseId?: string
@@ -49,16 +51,6 @@ export interface SubagentMeta {
   spawnDepth?: number
   /** The alias the call asked for (`haiku`), NOT the resolved model id. */
   model?: string
-  /**
-   * The harness's OWN statement that this is a conversation FORK, not an agent it dispatched.
-   *
-   * Read from the meta rather than inferred, and this is the field to read: measured over 542 metas
-   * on one machine, `isFork: true` and `agentType: 'fork'` agree exactly (17 of them) while a
-   * non-fork carries the key at all. The two INFERENCES a reader might reach for are both wrong —
-   * 12 of those forks carry a `toolUseId`, and 2 `general-purpose` agents carry none, so "nothing
-   * claimed it with a tool_use" separates neither.
-   */
-  isFork?: boolean
 }
 
 /** The agent id in `agent-<id>.jsonl` / `agent-<id>.meta.json`, or null for any other file. */
@@ -86,24 +78,25 @@ export function parseSubagentMeta(agentId: string, raw: string): SubagentMeta {
     ...(str('model') ? { model: str('model')! } : {}),
     ...(typeof o.spawnDepth === 'number' && Number.isFinite(o.spawnDepth)
       ? { spawnDepth: o.spawnDepth } : {}),
-    ...(typeof o.isFork === 'boolean' ? { isFork: o.isFork } : {}),
+    ...(o.isFork === true ? { isFork: true } : {}),
   }
 }
 
 /**
- * IS THIS A FORK RATHER THAN AN AGENT THIS CONVERSATION RAN?
+ * A FORK IS NOT A SUBAGENT — PURE.
  *
- * A fork is not a subagent: NOTHING DISPATCHED IT. It is this conversation, continued from an
- * earlier point, so counting it among the agents makes the total wrong in the direction that reads
- * as work you did not do — which is how it was reported, the aside saying "Subagents 1" beside a
- * metrics card that said none had run.
+ * A fork is a conversation branched off this one; nothing dispatched it, it is claimed by no
+ * `tool_use`, and `agent-metrics.ts` files it outside the invocation list for exactly that reason.
+ * It shares the `subagents/` directory only because that is where the harness writes both.
  *
- * `isFork` is the harness's own boolean and leads; `agentType === 'fork'` is accepted beside it
- * because that string is what the row on screen is already labelled by, and a meta that carried one
- * without the other must not be counted as an agent by default.
+ * The two markers are read together because the harness writes both and either alone would be a
+ * guess about a format nobody controls. **The default is `agent`**: forks are marked explicitly, so
+ * an unmarked transcript is one, and mis-filing an agent as a fork would hide real dispatched work
+ * from the tab that exists to count it. The other direction shows a fork among agents, which is
+ * visible and correctable; this one is neither.
  */
-export function isForkMeta(meta: Pick<SubagentMeta, 'isFork' | 'agentType'>): boolean {
-  return meta.isFork === true || meta.agentType === 'fork'
+export function subagentKind(meta: Pick<SubagentMeta, 'agentType' | 'isFork'>): 'agent' | 'fork' {
+  return meta.agentType === 'fork' || meta.isFork === true ? 'fork' : 'agent'
 }
 
 /**
@@ -147,26 +140,13 @@ export interface AgentFile {
   agentId: string
   /** Last write, epoch ms. The sort key, and the only thing read before the page is chosen. */
   mtimeMs: number
-  /** `isForkMeta` of this one's meta — see `AgentPage.agents`. */
-  isFork: boolean
 }
 
 export interface AgentPage {
-  /** The rows this page holds, newest first — forks among them, because the list shows both. */
+  /** The agents this page holds, newest first. */
   files: AgentFile[]
-  /** How many rows exist in all — so a partial list can say it is partial. */
+  /** How many exist in all — so a partial list can say it is partial. */
   total: number
-  /**
-   * How many of them this conversation actually DISPATCHED.
-   *
-   * The number the word "subagents" means, and the one the tab's badge carries. It is counted HERE
-   * rather than by the client because the rows are PAGED: a client holding twenty of fifty-seven
-   * rows can label the ones it has and cannot recount the ones it has never seen — which is why the
-   * badge went on summing forks after the row beside it had been labelled `fork`.
-   */
-  agents: number
-  /** How many are conversation FORKS. `agents + forks === total`. */
-  forks: number
   /** True when there are older ones behind this page. */
   hasMore: boolean
 }
@@ -180,16 +160,7 @@ export function pageOfAgents(files: readonly AgentFile[], limit: number, offset:
   const from = Math.max(0, Math.min(offset, ordered.length))
   const size = Math.max(1, Math.min(limit, 200))
   const page = ordered.slice(from, from + size)
-  // Counted over EVERYTHING, never over the page: the split answers "how many subagents did this
-  // conversation run", which does not change with how far somebody has scrolled.
-  const forks = ordered.reduce((n, f) => n + (f.isFork ? 1 : 0), 0)
-  return {
-    files: page,
-    total: ordered.length,
-    agents: ordered.length - forks,
-    forks,
-    hasMore: from + page.length < ordered.length,
-  }
+  return { files: page, total: ordered.length, hasMore: from + page.length < ordered.length }
 }
 
 /**

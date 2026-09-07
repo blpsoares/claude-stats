@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict, isBackupTag, parseReleaseBody, releaseMadeAt, releaseTag, tagLabel, tooLargeUploadMessage, uploadVerdict } from './backup-github'
+import { GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict, isBackupTag, parseReleaseBody, releaseTag, tagLabel, tooLargeUploadMessage, uploadVerdict } from './backup-github'
 import type { BackupLayer } from './backup-plan'
 
 const bytes = (over: Partial<Record<BackupLayer, number | null>> = {}): Record<BackupLayer, number | null> => ({
@@ -151,41 +151,4 @@ test('a label is folded to what a git ref may hold, and never collides with the 
   expect(tagLabel(releaseTag('2026-09-05T20-16-20-298Z', 'my laptop (work)'))).toBe('my-laptop-work')
   // A label that folds to nothing must not produce a tag that reads as an unlabelled one.
   expect(tagLabel(releaseTag('2026-09-05T20-16-20-298Z', '???'))).toBe(null)
-})
-
-/**
- * `releaseMadeAt` — GitHub's `created_at` is not when the release was created.
- *
- * It is the date of the COMMIT the tag points at. Every backup tag on a repository is cut against
- * the same seeded commit, so `created_at` is ONE identical timestamp on every release, of every
- * machine, forever. The figures below are from a real backup repository: four releases, two
- * machines, two days.
- */
-test('takes published_at — created_at is identical on every release of a backup repository', () => {
-  const real = [
-    { tag_name: 'backup-braiaode2-2026-09-06T16-46-21-256Z', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-06T16:46:24Z' },
-    { tag_name: 'backup-braiaode2-2026-09-06T16-24-49-398Z', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-06T16:24:55Z' },
-    { tag_name: 'backup-alienware-2026-09-07T18-39-32-570Z', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-07T18:39:34Z' },
-    { tag_name: 'backup-alienware-2026-09-07T18-23-34-165Z', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-07T18:23:36Z' },
-  ]
-  // The bug, stated as an assertion: the field the list used to read cannot tell them apart.
-  expect(new Set(real.map(r => r.created_at)).size).toBe(1)
-  // What `releaseMadeAt` reads can.
-  expect(new Set(real.map(releaseMadeAt)).size).toBe(4)
-  expect(releaseMadeAt(real[2]!)).toBe('2026-09-07T18:39:34Z')
-})
-
-test('sorting by it puts the real newest first — the sort key decides what a bare restore picks', () => {
-  const byMadeAt = [
-    { tag_name: 'a', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-06T16:24:55Z' },
-    { tag_name: 'b', created_at: '2026-09-06T16:24:54Z', published_at: '2026-09-07T18:39:34Z' },
-  ].sort((x, y) => releaseMadeAt(y).localeCompare(releaseMadeAt(x)))
-  expect(byMadeAt[0]!.tag_name).toBe('b')
-})
-
-test('falls back to created_at for a draft, which has no published_at', () => {
-  // agentop never creates a draft; a hand-made one must still sort somewhere rather than crash.
-  expect(releaseMadeAt({ created_at: '2026-01-01T00:00:00Z', published_at: null }))
-    .toBe('2026-01-01T00:00:00Z')
-  expect(releaseMadeAt({ created_at: '2026-01-01T00:00:00Z' })).toBe('2026-01-01T00:00:00Z')
 })

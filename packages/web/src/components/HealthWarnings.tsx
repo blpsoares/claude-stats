@@ -1,19 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, AlertCircle, Info, X, ChevronDown, ChevronUp, CheckCircle } from 'lucide-react'
 import type { HealthIssue } from '@agentistics/core'
+import { createSharedPref } from '../lib/sharedPref'
 
-const DISMISS_KEY = 'claude-stats-dismissed-health'
+// SHARED: dismissing a warning is a statement about the machine, which is the same machine from
+// every device. It was per browser, so a warning waved away at the desk was still shouting on the
+// phone. See `sharedPref.ts` for the first-paint and arming rules.
+const dismissedStore = createSharedPref<string[]>({
+  key: 'claude-stats-dismissed-health',
+  prefKey: 'dismissedHealth',
+  fallback: [],
+  parse: raw => (Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : null),
+})
 
 function getDismissed(): Set<string> {
-  try {
-    const saved = localStorage.getItem(DISMISS_KEY)
-    if (saved) return new Set(JSON.parse(saved) as string[])
-  } catch { /* ignore */ }
-  return new Set()
+  return new Set(dismissedStore.get())
 }
 
 function saveDismissed(ids: Set<string>) {
-  localStorage.setItem(DISMISS_KEY, JSON.stringify(Array.from(ids)))
+  dismissedStore.set(Array.from(ids))
 }
 
 type Severity = HealthIssue['severity']

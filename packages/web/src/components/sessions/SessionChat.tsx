@@ -996,6 +996,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const showReopen = !canPrompt && !blocked && !!reopen && !typing
 
   const stopVerb = row?.verbs.find(v => v.action === 'interrupt')
+  /**
+   * Is the one button showing STOP right now?
+   *
+   * `working` and a stop the row actually offers are the preconditions — a stop on an idle session
+   * sends Escape into its prompt, which is why the row gates `interrupt` at all. The DRAFT is what
+   * decides between the two faces: nothing written means there is nothing to send, so the only
+   * thing left to do to a working session is stop it; a single character means the opposite.
+   * Attachments count as something written — a message that is only files is still a message.
+   */
+  const stopShown = working && !!stopVerb?.enabled && draft.trim() === '' && attached.length === 0
   const [stopping, setStopping] = useState(false)
   async function stopNow() {
     if (!stopVerb?.enabled || stopping) return
@@ -1135,44 +1145,71 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     // reply that repeats forty lines back at the session costs it context for no benefit.
     const quote = replyTo ? quoteFor(replyTo) : ''
     const full = [quote, ...attached.map(a => a.path), text].filter(x => x !== '').join('\n')
+    /**
+     * THE COMPOSER EMPTIES ON THE KEYSTROKE, NOT ON THE ANSWER.
+     *
+     * It used to `await act(...)` and only then clear the draft and draw the echo, so the whole
+     * round trip was visible as the field sitting there full with nothing happening. Reported as
+     * "a partir do momento que eu dou enter numa mensagem ela está demorando pra ser enviada", and
+     * the delivery was never the slow part — the WAIT FOR THE ANSWER was, and the browser has
+     * nothing to learn from it that changes what it should draw.
+     *
+     * The echo already carries the honesty this needs: it renders as an UNREAD message with the
+     * wait said in words, and it is retired the instant the transcript carries it. So drawing it
+     * before the answer is not a claim that it landed — it is the same claim it was already making
+     * one round trip later.
+     *
+     * A FAILURE PUTS IT BACK, exactly as it was: the text, the attachments and the reply target.
+     * The one thing a person must never lose is what they wrote, and an optimistic clear that
+     * cannot undo itself is how that happens.
+     */
+    const restore = { draft, attached, replyTo }
     setSending(true)
+    editEcho(list => [...list, full])
+    setDraft('')
+    sessionScratch.clearDraft(scratchId)
+    setAttached([])
+    sessionScratch.writeAttachments(scratchId, [])
+    editReply(null)
+    setAtTail(true)
+    toTail()
+    setNotice(null)
+
     /**
      * AN ANSWER IS NOT A PROMPT, and it goes down the route the server verified for it.
      *
      * `approve` with the option's `choice` AND the text: the digit selects the write-your-own row
      * and turns it into a field, then the words go in, then the return. Those three steps are the
-     * server's (`answerSession`), reproduced against a live dialog — sending this as a `prompt`
-     * would type it into the dialog's own filter instead, which is exactly what `canPrompt`'s
-     * `blocked` rule exists to prevent.
+     * server's (`answerSession`), and sending this as a `prompt` would type it into the dialog's
+     * own filter instead — which is exactly what `canPrompt`'s `blocked` rule exists to prevent.
      *
      * The ATTACHMENTS still ride along, because that is half of why the composer is the field here:
-     * their paths are part of the answer's text.
+     * their paths are part of the answer's text. And the optimistic clear above covers this path
+     * unchanged: `restore` puts back the words, the files AND the reply target if it does not go.
      */
     const out = answeringNow && answering
       ? await act({ id: session.id, action: 'approve', choice: answering.number, text: full })
       : await act({ id: session.id, action: 'prompt', text: full })
     setSending(false)
     if (out.ok) {
-      // Echoed straight away. It is already in the session; the transcript catches up in a poll or
-      // two, and this is what makes pressing enter visibly do something.
-      editEcho(list => [...list, full])
       // Ask for the transcript at once. The harness writes the user turn as soon as it takes the
       // message, and the next scheduled read is up to `CHAT_POLL_MS` away — three seconds in which
       // the echo sits there labelled as undelivered when it has in fact already landed.
       nudgeChat.current()
-      setDraft('')
-      sessionScratch.clearDraft(scratchId)
-      setAttached([])
-      sessionScratch.writeAttachments(scratchId, [])
-      editReply(null)
-      setAtTail(true)
-      toTail()
-      setNotice(null)
       // The question has been answered; the composer stops being an answer field. The card itself
       // goes when the row stops reporting the dialog, which is the server's answer and not ours.
+      // Everything else was already cleared on the keystroke — see the optimistic clear above.
       setAnswering(null)
       return
     }
+    // It did not go. Take the echo back out — leaving it would show a message that is waiting for
+    // a session that never received it — and give the person their words back untouched.
+    editEcho(list => list.filter(t => t !== full))
+    setDraft(restore.draft)
+    sessionScratch.writeDraft(scratchId, restore.draft)
+    setAttached(restore.attached)
+    sessionScratch.writeAttachments(scratchId, restore.attached)
+    editReply(restore.replyTo)
     setNotice(out.message)
   }
 
@@ -1951,36 +1988,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   </button>
                 )}
 
-                {/* Working's own stop, right beside the field it does not block. Absent the moment
-                    the turn ends — a stop control on an idle session would send Escape into its
-                    prompt, which is exactly the row's own gate on `interrupt`.
-                    IT SITS WITH THE MODE CHIP, before the history button, because those two are the
-                    controls that act on THE TURN THAT IS RUNNING. Asked for in that order, and it
-                    reads that way: the pair about the live turn, then the pair about the message
-                    you are writing (recall, send), then the menu. It used to sit between recall and
-                    send, so the one control that appears and disappears mid-turn did so in the
-                    middle of the group and shifted send under a thumb that was already moving. */}
-                {working && stopVerb?.enabled && (
-                  <button
-                    onClick={() => void stopNow()}
-                    disabled={stopping}
-                    title={stopVerb.label}
-                    aria-label={stopVerb.label}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, cursor: stopping ? 'default' : 'pointer',
-                      border: '1px solid color-mix(in srgb, var(--accent-red) 45%, transparent)',
-                      background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
-                      color: 'var(--accent-red)',
-                    }}
-                  >
-                    {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
-                  </button>
-                )}
                 {/* THE LAST MESSAGE YOU SENT. ABSENT until there is one — `lastSent` is null on a
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting
-                    group because it is about what you have already sent, not about composing. */}
+                    group because it is about what you have already sent, not about composing.
+                    NOT WHILE ANSWERING A QUESTION, with the mode chip and the model: all three are
+                    about the next TURN, and this is an answer to a dialog already open. */}
                 {lastSent && !answeringNow && (
                   <button
                     onClick={() => setRecall('ask')}
@@ -1995,20 +2008,51 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     <History size={15} />
                   </button>
                 )}
-                <button
-                  onClick={() => void send()}
-                  disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
-                  aria-label={pt ? 'Enviar' : 'Send'}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
-                    background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
-                    color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
-                    cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
-                  }}
-                >
-                  {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
-                </button>
+
+                {/* ONE SLOT: STOP WHILE IT WORKS, SEND WHEN IT DOES NOT.
+                    A stop on an idle session would send Escape into its prompt, which is the row's
+                    own gate on `interrupt`.
+
+                    This supersedes an earlier reorder of mine and does its job better. The
+                    complaint was that stop appeared and disappeared in the MIDDLE of the group, so
+                    every time a turn ended send jumped left under a thumb already moving toward it;
+                    moving stop to the head of the group only shortened the jump. Sharing one slot
+                    removes it: the control under your thumb is always the one you want, and
+                    nothing else shifts at all. */}
+                {working && stopVerb?.enabled ? (
+                  <button
+                    onClick={() => void stopNow()}
+                    disabled={stopping}
+                    title={stopVerb!.label}
+                    aria-label={stopVerb!.label}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, border: 'none',
+                      cursor: stopping ? 'default' : 'pointer',
+                      // Filled, not outlined: this is the one control in the row that ENDS
+                      // something, and an outline reads as the same weight as the others.
+                      background: 'var(--accent-red)',
+                      color: '#fff',
+                    }}
+                  >
+                    {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => void send()}
+                    disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
+                    aria-label={pt ? 'Enviar' : 'Send'}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
+                      background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
+                      color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
+                      cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
+                    }}
+                  >
+                    {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
+                  </button>
+                )}
 
                 {/* Mic and model live behind ONE button. Four controls plus the field on a
                     390px screen is a row where the buttons win, and these two are the pair a person

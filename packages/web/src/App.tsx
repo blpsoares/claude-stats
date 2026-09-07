@@ -73,6 +73,7 @@ import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
 import { getPinnedIds } from './lib/pinnedSessions'
+import { loadSharedPrefs } from './lib/sharedPref'
 import {
   DEFAULT_ORDER, sortSessions, type ControlSession,
 } from '@agentistics/tui/control/session-fleet'
@@ -1950,6 +1951,21 @@ export default function AppLayout() {
       .then(prefs => { if (prefs) setDeniedRepoLabels(buildDeniedRepoLabels(readTeamConnections(prefs))) })
       .catch(() => { /* a failed refresh keeps the last-known map — never wipes the badges */ })
   }, [])
+  // THE SHARED PREFERENCES ARE READ HERE and re-read whenever this tab comes back to the front: a
+  // pin made on the phone, a warning dismissed on the tablet, a notification switched off at the
+  // desk must all reach the other devices without a reload, or "the same application from three
+  // devices" is three applications again. ONE request answers all of them — see `sharedPref.ts`.
+  useEffect(() => {
+    void loadSharedPrefs()
+    const again = () => { if (document.visibilityState === 'visible') void loadSharedPrefs() }
+    document.addEventListener('visibilitychange', again)
+    window.addEventListener('focus', again)
+    return () => {
+      document.removeEventListener('visibilitychange', again)
+      window.removeEventListener('focus', again)
+    }
+  }, [])
+
   const chooseArchive = useCallback((mode: ArchiveMode) => {
     setArchiveChoice(mode)
     fetch('/api/preferences', {
@@ -3110,7 +3126,15 @@ export default function AppLayout() {
         }} />
       )}
 
-      {selectedFleetSession && selectedFleetSession.conversationBlind === undefined && (
+      {/* NOT ON A CENTRAL. The conversation is not relayed — the reverse channel's chat route
+          answers 410 — so a Chat tab there is a control that cannot do what it says, and choosing
+          it drops the reader back onto the same relayed screen with a sentence explaining that the
+          screen is all there is. The release note for this claimed the toggle was already withheld;
+          it was not, because the gate keys on `conversationBlind`, a MACHINE-LOCAL sentence that
+          `reduceMachineFleetRow` deliberately strips from the wire — so on a relayed row it is
+          always `undefined` and the tab was always offered. `isCentral` is the fact that decides
+          this, and it is the one the relay cannot lose. */}
+      {selectedFleetSession && !isCentral && selectedFleetSession.conversationBlind === undefined && (
         <div role="tablist" style={{
           display: 'flex', gap: 3, padding: 2, borderRadius: 9, flexShrink: 0,
           background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',

@@ -249,3 +249,52 @@ describe('retireFallenSessions', () => {
     expect(current.find(s => s.id === 's3')?.endedAt).toBeUndefined()
   })
 })
+
+// The write's temp path is unique per writer — see `registry.ts`.
+//
+// THE RACE ITSELF IS NOT UNIT-TESTED, and saying so is more useful than a test that passes either
+// way. It needs both writers on the UNLOCKED path (`file-lock.ts` lets a blocked acquirer proceed
+// after WAIT_MS), and holding the lock to force that makes every write pay 5 s, so a run long
+// enough to show the loss takes minutes. An in-process test WITHOUT holding the lock passes with
+// the old shared path too: the lock does its job, and the test discriminates nothing.
+//
+// It was measured instead, with two real processes doing 60 adds each against one file while the
+// lock was held from outside — the records that survived, of 120:
+//
+//     shared `<file>.tmp`   68 · 120 · 62
+//     unique per writer    119 · 120 · 118
+//
+// With one path they overwrite each other INSIDE the temp file: A writes its list, B replaces the
+// bytes with its own, A renames and publishes B's — a third of the registry gone in one step,
+// which is what "the sessions stopped by themselves" looks like from outside. What IS asserted
+// here is the property that makes it impossible: nothing shared is left behind to collide on.
+describe('the registry write', () => {
+  let dir = ''
+  let file = ''
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agentistics-reg-tmp-'))
+    file = join(dir, 'managed-sessions.json')
+  })
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  const session = (id: string) => ({
+    id, harness: 'claude' as const, cwd: '/x', createdAt: new Date().toISOString(),
+    label: `s-${id}`, lastSeenMs: Date.now(),
+  })
+
+  it('leaves no scratch file behind for another writer to collide on', async () => {
+    const reg = createSessionRegistry(file)
+    await reg.add(session('one') as never)
+    await reg.add(session('two') as never)
+    const left = await readdir(dir)
+    expect(left.filter(f => f.includes('.tmp'))).toEqual([])
+    expect(left).toContain('managed-sessions.json')
+  })
+
+  it('publishes a complete list, never a partial one', async () => {
+    const reg = createSessionRegistry(file)
+    await Promise.all(Array.from({ length: 12 }, (_, i) => reg.add(session(`id${i}`) as never)))
+    const list = JSON.parse(await readFile(file, 'utf-8')) as unknown[]
+    expect(list.length).toBe(12)
+  })
+})

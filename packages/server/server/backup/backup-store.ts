@@ -128,27 +128,28 @@ export function lastBackup(entries: BackupHistoryEntry[]): BackupHistoryEntry | 
 }
 
 /**
- * WHEN A BACKUP LAST RAN — a different question from `lastBackup`, and the one a SCHEDULE asks.
+ * When a backup last RAN — regardless of whether its file is still here.
  *
- * `lastBackup` answers "what can I still restore from", so it counts only files that are on disk.
- * That is right for a status line and catastrophic for a schedule, because a run that happened and
- * was later pruned still happened. Every rule in this module is built on records OUTLIVING their
- * files — `markPresence` marks rather than drops, precisely so history survives retention — and a
- * scheduler reading the present-only answer throws that away.
+ * A different question from `lastBackup`, which answers "what can I restore from" and therefore
+ * requires the file to be present. Confusing the two is what made a daily schedule fire every
+ * fifteen minutes, measured on a real machine: with `deleteLocalAfterUpload` on, every scheduled
+ * run uploaded its archive and deleted the local copy, so no run it performed was ever `present`.
+ * The newest surviving file stayed a day old, "more than 24 h since the last backup" became
+ * permanently true, and every tick of the daemon started another one — 13 backups in three hours,
+ * each 112 MB, each re-downloaded to verify its hash.
  *
- * Measured on a real machine, and it is not an edge case: with `deleteLocalAfterUpload` the archive
- * goes to GitHub and the local copy is deleted SECONDS later (17:20:13 written, 17:20:20 pruned).
- * Every record is then absent, `lastBackup` is null on every check, `isDue` reads that as "never
- * backed up" and fires — so a schedule set to DAILY ran every fifteen minutes, which is the
- * daemon's polling interval and not a schedule at all. Reported as exactly that. Nine runs in one
- * afternoon, each one uploading and re-downloading a hundred-megabyte archive to verify it.
+ * So the SCHEDULE reads this, and only the restore surfaces read `lastBackup`. A run that happened
+ * and was uploaded happened, whatever became of the local copy.
  *
- * So this counts EVERY record, present, pruned or missing. It is deliberately order-independent
- * rather than trusting `markPresence`'s sort, for the reason `lastPerHarness` gives.
+ * Order-INDEPENDENT for the same reason `lastPerHarness` is: `markPresence` sorts, but a function
+ * whose answer depends on its caller having sorted silently becomes wrong the day one does not.
  */
-export function lastRun(entries: BackupHistoryEntry[]): BackupHistoryEntry | null {
+export function lastBackupRun(entries: BackupHistoryEntry[]): BackupHistoryEntry | null {
   let best: BackupHistoryEntry | null = null
-  for (const e of entries) if (best === null || e.at > best.at) best = e
+  for (const e of entries) {
+    if (!e.at) continue
+    if (best === null || e.at > best.at) best = e
+  }
   return best
 }
 

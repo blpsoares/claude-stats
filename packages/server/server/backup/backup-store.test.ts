@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  lastBackup, lastPerHarness, lastRun, loadBackupHistory, markPresence, readBackups,
+  lastBackup, lastBackupRun, lastPerHarness, loadBackupHistory, markPresence, readBackups,
   readPrunedPaths, recordBackup, recordPrune, toPrune, type BackupRecord,
 } from './backup-store'
 
@@ -196,15 +196,54 @@ test('a torn or hand-edited line is skipped on both reads, never thrown on', asy
   }
 })
 
+// --- when one last RAN, which is a different question -----------------------
+//
+// THE BUG THIS EXISTS FOR, measured on a real machine: a `daily` schedule fired every fifteen
+// minutes for hours. With `deleteLocalAfterUpload` on, every scheduled run uploaded its archive
+// and deleted the local copy, so no run it performed was ever `present`; the newest surviving file
+// stayed a day old, "more than 24 h ago" was permanently true, and every tick started another
+// 112 MB backup. The schedule was asking the restore question.
+
+test('the last RUN counts a backup whose file was uploaded and deleted', () => {
+  const entries = markPresence([
+    rec({ at: '2026-09-07T19:11:36Z', path: '/b/uploaded.tar.zst' }),
+    rec({ at: '2026-09-06T16:12:22Z', path: '/b/still-here.tar.zst' }),
+  ], NONE, p => p === '/b/still-here.tar.zst')
+  // What can I restore from? The one still on disk.
+  expect(lastBackup(entries)?.at).toBe('2026-09-06T16:12:22Z')
+  // When did one last run? The one that ran.
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-07T19:11:36Z')
+})
+
+test('the last run is order-independent — it does not depend on the caller having sorted', () => {
+  const entries = markPresence([
+    rec({ at: '2026-09-01T00:00:00Z', path: '/b/a.tar.zst' }),
+    rec({ at: '2026-09-09T00:00:00Z', path: '/b/c.tar.zst' }),
+    rec({ at: '2026-09-05T00:00:00Z', path: '/b/b.tar.zst' }),
+  ], NONE, () => false)
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-09T00:00:00Z')
+})
+
+test('with no records at all there is no last run', () => {
+  expect(lastBackupRun([])).toBeNull()
+})
+
+// ---------------------------------------------------------------------------------
+// The same question, reached from the other side: `lastBackupRun` was arrived at twice,
+// independently, from the same measured failure. These cases are kept beside the ones
+// above because they pin things those do not — a PRUNED record specifically, ordering
+// independence, and the grep guard that fails the build if a schedule is ever fed the
+// restorable-from timestamp again. That guard is what stops the four call sites drifting
+// back apart.
 /**
- * `lastRun` — WHEN ONE LAST RAN, which is not the question `lastBackup` answers.
+ * `lastBackupRun` — WHEN ONE LAST RAN, which is not the question `lastBackup` answers.
  *
  * Measured on a real machine: with `deleteLocalAfterUpload` the archive goes to GitHub and the
  * local copy is deleted seconds later (17:20:13 written, 17:20:20 pruned), so every record reads
  * absent, `lastBackup` answers null on every check, and a schedule set to DAILY fired on every one
  * — nine runs in an afternoon, spaced at the daemon's fifteen-minute polling interval.
  */
-test('lastRun counts a PRUNED run: retention deleting the file does not un-run the backup', () => {
+test('lastBackupRun counts a PRUNED run: retention deleting the file does not un-run the backup', () => {
   const entries = markPresence(
     [rec({ at: '2026-09-07T17:20:13.507Z', path: '/b/new.tar.zst' })],
     new Set(['/b/new.tar.zst']),
@@ -212,18 +251,18 @@ test('lastRun counts a PRUNED run: retention deleting the file does not un-run t
   )
   expect(entries[0]!.presence).toBe('pruned')
   expect(lastBackup(entries)).toBe(null)
-  expect(lastRun(entries)?.at).toBe('2026-09-07T17:20:13.507Z')
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-07T17:20:13.507Z')
 })
 
-test('lastRun counts a MISSING run too — it happened, whatever became of the file', () => {
+test('lastBackupRun counts a MISSING run too — it happened, whatever became of the file', () => {
   const entries = markPresence(
     [rec({ at: '2026-09-07T10:00:00.000Z', path: '/gone.tar.zst' })], new Set(), () => false,
   )
   expect(entries[0]!.presence).toBe('missing')
-  expect(lastRun(entries)?.at).toBe('2026-09-07T10:00:00.000Z')
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-07T10:00:00.000Z')
 })
 
-test('lastRun takes the NEWEST regardless of presence, and of the order it is handed', () => {
+test('lastBackupRun takes the NEWEST regardless of presence, and of the order it is handed', () => {
   // The newest is the pruned one; an older record must not win just by still being restorable.
   const entries = markPresence(
     [
@@ -234,13 +273,13 @@ test('lastRun takes the NEWEST regardless of presence, and of the order it is ha
     p => p === '/old.tar.zst',
   )
   expect(lastBackup(entries)?.path).toBe('/old.tar.zst')
-  expect(lastRun(entries)?.path).toBe('/new.tar.zst')
+  expect(lastBackupRun(entries)?.path).toBe('/new.tar.zst')
   // Order-independent, for the reason `lastPerHarness` gives.
-  expect(lastRun([...entries].reverse())?.path).toBe('/new.tar.zst')
+  expect(lastBackupRun([...entries].reverse())?.path).toBe('/new.tar.zst')
 })
 
-test('lastRun is null only when nothing was ever recorded', () => {
-  expect(lastRun([])).toBe(null)
+test('lastBackupRun is null only when nothing was ever recorded', () => {
+  expect(lastBackupRun([])).toBe(null)
 })
 
 /**

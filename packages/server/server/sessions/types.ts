@@ -410,6 +410,17 @@ export interface SessionBackend {
    * this exposes an existing path rather than adding a mechanism. `false` when the backend could not
    * deliver it; never a throw, for the same reason as `sendText`.
    */
+  /**
+   * Answer a dialog's FREE-TEXT option: the digit, a look at what it did, then the words.
+   *
+   * One call and not three because `writeToPane` locks per pane — three locked calls leave two gaps
+   * another writer can land in. `opened` is the caller's: whether a field appeared needs the
+   * harness's rules and its dialog parser, and it runs inside the lock. `no-field` means the digit
+   * did not open one, so nothing further was typed.
+   */
+  sendChoiceText?(
+    id: string, key: string, text: string, opened: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'no-field' | 'failed'>
   sendTextRaw(id: string, text: string): Promise<boolean>
   /**
    * Press ONE named key — the backend's own vocabulary (`Enter`, `Escape`).

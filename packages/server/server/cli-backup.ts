@@ -20,7 +20,7 @@ import { CURRENT_VERSION } from './version'
 import { cliStrings, resolveLang, type CliStrings } from './cli-i18n'
 import { BACKUP_LAYERS, planSources, withMetrics, type BackupLayer } from './backup/backup-plan'
 import { formatBytes, layerTotal, plannedTotal, type BackupSizes } from './backup/backup-size'
-import { lastBackup, lastPerHarness, lastRun, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastBackupRun, loadBackupHistory, recordPrune, toPrune } from './backup/backup-store'
 import { runBackup, walkSources } from './backup/backup'
 import { probeAll, candidatePaths, createBundle, capturePatch, listUntracked } from './backup/repo-probe'
 import { groupRepos, expandHome, assetRel, type RepoEntry } from './backup/repo-manifest'
@@ -50,6 +50,9 @@ export interface BackupPrefs {
   schedule: ScheduleId
   /** Hours between runs when `schedule` is `'custom'`. Undefined otherwise. */
   customHours?: number
+  /** The local hour a `daily`/`weekly` run is anchored to. Undefined reads as `DEFAULT_HOUR`
+   *  in `schedule.ts`, which is the one place that clamps and defaults it. */
+  atHour?: number
   layers: BackupLayer[]
   scheduleLayers: BackupLayer[]
   harnesses: HarnessId[]
@@ -68,6 +71,9 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
     // Carried raw. `intervalMs` is the ONE place that clamps and defaults it, so a hand-edited
     // preferences file cannot smuggle a five-minute backup past a validation that lives elsewhere.
     customHours: typeof b.customHours === 'number' ? b.customHours : undefined,
+    // Carried raw for the same reason as `customHours`: `normalizeHour` is the one place that
+    // clamps it, so a hand-edited file cannot smuggle an hour past a validation living elsewhere.
+    atHour: typeof b.atHour === 'number' ? b.atHour : undefined,
     layers,
     scheduleLayers: (b.scheduleLayers as BackupLayer[] | undefined) ?? DEFAULT_LAYERS,
     harnesses: (b.harnesses as HarnessId[] | undefined)?.filter(h => HARNESS_ORDER.includes(h)) ?? [...HARNESS_ORDER],
@@ -156,16 +162,19 @@ export async function writeBackupScheduleLayers(layers: BackupLayer[]): Promise<
   return normalized
 }
 
-export async function writeBackupSchedule(schedule: ScheduleId, customHours?: number): Promise<void> {
+export async function writeBackupSchedule(
+  schedule: ScheduleId, customHours?: number, atHour?: number,
+): Promise<void> {
   const p = await readPreferences()
-  // `customHours` is written only when it was given, so switching to `weekly` and back to `custom`
-  // returns to the number the user had chosen rather than to a default they never picked.
+  // `customHours` and `atHour` are written only when given, so switching to `weekly` and back to
+  // `custom` returns to the number the user had chosen rather than to a default they never picked.
   await writePreferences({
     ...p,
     backup: {
       ...(p.backup ?? {}),
       schedule,
       ...(customHours === undefined ? null : { customHours }),
+      ...(atHour === undefined ? null : { atHour }),
     },
   })
 }
@@ -655,10 +664,10 @@ export async function runBackupCli(argv: string[]): Promise<number> {
     const per = lastPerHarness(entries)
     for (const h of HARNESS_ORDER) log(`  ${h.padEnd(12)} ${per[h] ?? 'never'}`)
     // `last` above is what you can RESTORE from; the schedule asks when one last RAN, and a
-    // pruned backup still answers that. See `lastRun`.
+    // pruned backup still answers that. See `lastBackupRun`.
     const st = scheduleStatus({
       schedule: prefs.schedule, customHours: prefs.customHours,
-      lastAt: lastRun(entries)?.at ?? null, nowMs: Date.now(),
+      lastAt: lastBackupRun(entries)?.at ?? null, nowMs: Date.now(),
       serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
     })
     log(st.kind === 'inactive-no-server'
@@ -922,7 +931,7 @@ export async function runRestoreCli(argv: string[]): Promise<number> {
           const newest = g.releases[0]
           console.error(g.machine === null
             ? `  (unnamed machine) — use --release ${newest?.tagName ?? ''}`
-            : `  --from ${g.machine}   (${g.releases.length} backup(s), newest ${newest?.publishedAt ?? '?'})`)
+            : `  --from ${g.machine}   (${g.releases.length} backup(s), newest ${newest?.createdAt ?? '?'})`)
         }
         return 1
       }

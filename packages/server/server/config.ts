@@ -78,6 +78,30 @@ export const MANAGED_SESSIONS_FILE = join(AGENTISTICS_DATA_DIR, 'managed-session
 // this file may only ever cost one slow build. Never store anything here that is not
 // also on disk somewhere else.
 export const PARSE_CACHE_FILE = process.env.AGENTISTICS_PARSE_CACHE_FILE ?? join(AGENTISTICS_DATA_DIR, 'cache.db')
+/** Repository statistics, keyed on the commit they were derived from. Its own file rather than a
+ *  table in `cache.db`: the two are gc'd on different clocks, and a corrupt parse cache must not
+ *  cost the git walks as well — each degrades to a no-op independently. */
+export const GIT_STATS_CACHE_FILE = process.env.AGENTISTICS_GIT_STATS_CACHE_FILE ?? join(AGENTISTICS_DATA_DIR, 'git-stats.db')
+
+/** One server per PORT. Keyed on the port rather than the machine because a local server and a
+ *  central are two legitimate processes on one host — what must never happen twice is two servers
+ *  answering for the same address while both scan every repository on disk. */
+/**
+ * The instance claim, keyed on the DATA DIRECTORY — never on the port.
+ *
+ * It was `server-${port}.lock`, which is a claim on a port, and the port already has a claim: the
+ * bind. What two servers actually contend over is this directory — the session registry, the
+ * consolidate store, the backup history — and the repositories they each walk to fill it.
+ *
+ * Measured on one machine with the port-keyed lock installed: `agentop server` on 47291 and a
+ * second one on 48801, both with no `AGENTISTICS_DIR`, both writing `~/.agentistics` and both
+ * spawning `git log --numstat` across every worktree. Two different lock names, so both passed the
+ * guard that exists to stop exactly that.
+ *
+ * Keyed on the directory, a preview on another port still runs — it just has to say WHERE its data
+ * goes (`AGENTISTICS_DIR=…`), which is the thing that made it harmless in the first place.
+ */
+export const serverLockFile = (): string => join(AGENTISTICS_DATA_DIR, 'server.lock')
 export const PARSE_CACHE_ENABLED = process.env.AGENTISTICS_PARSE_CACHE !== '0'
 
 // ---------------------------------------------------------------------------

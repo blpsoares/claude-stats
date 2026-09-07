@@ -34,7 +34,7 @@ import { mkdir, readFile, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { gh, type FetchLike } from './github-api'
-import { isBackupTag, labelSlug, parseReleaseBody, releaseMadeAt, tagLabel, type ReleaseSummary } from './backup-github'
+import { isBackupTag, labelSlug, parseReleaseBody, tagLabel, type ReleaseSummary } from './backup-github'
 
 export interface GithubReleaseAsset {
   id: number
@@ -45,7 +45,10 @@ export interface GithubReleaseAsset {
 export interface GithubReleaseInfo {
   id: number
   tagName: string
-  /** When the release was PUBLISHED — never GitHub's `created_at`. See `releaseMadeAt`. */
+  /** GitHub's `created_at`, which is the TAG'S COMMIT date and NOT when the release was made.
+   *  Kept because it is what the API said; never used to order or display — see `releaseInstant`. */
+  createdAt: string
+  /** GitHub's `published_at` — when the release actually appeared. */
   publishedAt: string
   /** Raw markdown — `parseReleaseBody` is what turns this into something a caller can act on. */
   body: string
@@ -75,11 +78,40 @@ export async function listGithubReleases(
   const releases = res.data.map(r => ({
     id: r.id,
     tagName: r.tag_name,
-    publishedAt: releaseMadeAt(r),
+    createdAt: r.created_at,
+    publishedAt: r.published_at ?? '',
     body: r.body ?? '',
     assets: r.assets.map(a => ({ id: a.id, name: a.name, size: a.size })),
   }))
   return { ok: true, releases }
+}
+
+
+/** The timestamp agentop stamps into its own tags: `backup-<machine>-2026-09-07T19-11-36-983Z`. */
+const TAG_STAMP = /-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/
+
+/**
+ * WHEN A RELEASE ACTUALLY HAPPENED.
+ *
+ * Never `created_at`. GitHub sets that to the date of the COMMIT the tag points at, so a repository
+ * whose backup tags all hang off one commit reports the SAME instant for every release. Measured on
+ * a real backup repo: four releases, four different uploads, `created_at` identical on all four
+ * (`2026-09-06T16:24:54Z`) while `published_at` differed by hours.
+ *
+ * Two things were wrong because of it, and only one of them was visible. The restore list printed
+ * the same date on every card. And `pickBackupRelease` — which restores "the newest" when no tag is
+ * named — sorted on a field that is constant, so the sort was a no-op and the release it picked was
+ * whichever GitHub happened to return first.
+ *
+ * The order of preference is by how much each source can be trusted to be OURS: the timestamp
+ * agentop itself stamped into the tag, then GitHub's `published_at`, then `created_at` as the last
+ * resort so a release always sorts somewhere rather than vanishing.
+ */
+export function releaseInstant(r: { tagName: string; publishedAt?: string; createdAt: string }): string {
+  const m = TAG_STAMP.exec(r.tagName)
+  if (m) return `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`
+  if (r.publishedAt) return r.publishedAt
+  return r.createdAt
 }
 
 export type PickReleaseResult =
@@ -101,10 +133,7 @@ export function pickBackupRelease(releases: GithubReleaseInfo[], tag?: string): 
   }
   const backups = [...releases]
     .filter(r => isBackupTag(r.tagName))
-    // By PUBLICATION. `created_at` is the tag's commit date and is identical on every release of a
-    // backup repository, so sorting by it made "the newest" whatever order GitHub returned — and
-    // this is the function that picks what a bare `restore` overwrites your machine with.
-    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+    .sort((a, b) => releaseInstant(b).localeCompare(releaseInstant(a)))
   const newest = backups[0]
   return newest
     ? { ok: true, release: newest }
@@ -306,8 +335,7 @@ export async function downloadBackupRelease(
  *  first, decoded where possible. Never downloads anything. */
 export interface ListedBackupRelease {
   tagName: string
-  /** When it was PUBLISHED — see `releaseMadeAt`. */
-  publishedAt: string
+  createdAt: string
   summary: ReleaseSummary | null
 }
 
@@ -318,8 +346,8 @@ export async function listBackupReleases(
   if (!listed.ok) return { ok: false, message: listed.message }
   const releases = listed.releases
     .filter(r => isBackupTag(r.tagName))
-    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
-    .map(r => ({ tagName: r.tagName, publishedAt: r.publishedAt, summary: parseReleaseBody(r.body) }))
+    .sort((a, b) => releaseInstant(b).localeCompare(releaseInstant(a)))
+    .map(r => ({ tagName: r.tagName, createdAt: releaseInstant(r), summary: parseReleaseBody(r.body) }))
   return { ok: true, releases }
 }
 
@@ -358,13 +386,14 @@ export function groupReleasesByMachine(releases: ListedBackupRelease[]): Machine
   }
   const groups = [...byMachine.entries()].map(([machine, list]) => ({
     machine,
-    releases: [...list].sort((a, b) => b.publishedAt.localeCompare(a.publishedAt)),
+    releases: [...list].sort((a, b) => releaseInstant(b).localeCompare(releaseInstant(a))),
   }))
   return groups.sort((a, b) => {
     // The unattributable group is last whatever its dates: it is the one a person cannot act on
     // with confidence.
     if ((a.machine === null) !== (b.machine === null)) return a.machine === null ? 1 : -1
-    return (b.releases[0]?.publishedAt ?? '').localeCompare(a.releases[0]?.publishedAt ?? '')
+    const bi = b.releases[0], ai = a.releases[0]
+    return (bi ? releaseInstant(bi) : '').localeCompare(ai ? releaseInstant(ai) : '')
   })
 }
 

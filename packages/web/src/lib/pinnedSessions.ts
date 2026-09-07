@@ -6,6 +6,11 @@
  * OUTSIDE the grouping, and survive a reload. The store is the persisted, shared source of truth
  * (localStorage + an external store), the same shape as `terminalZoom.ts`.
  *
+ * WHERE IT LIVES: the SERVER, through `sharedPref.ts` — a pin is a fact about the WORK, not about
+ * the screen it was made on, so the same dashboard opened from a phone, a tablet and the desktop
+ * must show one pinned band. It was `localStorage`, which is per browser, so it showed three. That
+ * module holds the first-paint and arming rules; nothing about them is restated here.
+ *
  * The rules are deliberate and pinned by the pure `planPinToggle`:
  *  - a HARD limit (MAX_PINNED), and the one past it is REFUSED, never a silent swap — a swap
  *    surprises, a refusal is predictable;
@@ -13,6 +18,8 @@
  *    never touches it, and a pinned session that dies stays pinned (shown as ended) until the person
  *    unpins it, so a slot is never taken away behind their back.
  */
+
+import { createSharedPref } from './sharedPref'
 
 const KEY = 'agentistics-pinned-sessions'
 export const MAX_PINNED = 10
@@ -73,63 +80,40 @@ export function resolvePinnedRows<T>(
     .filter((r): r is T => r !== undefined)
 }
 
-function readInitial(): string[] {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((x): x is string => typeof x === 'string').slice(0, MAX_PINNED)
-  } catch {
-    return []
-  }
-}
-
-let current: string[] = readInitial()
-const subscribers = new Set<() => void>()
-
-function persist() {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(current))
-  } catch {
-    /* storage may be unavailable; the in-memory set still drives this session */
-  }
-  for (const fn of subscribers) fn()
-}
+const store = createSharedPref<string[]>({
+  key: KEY,
+  prefKey: 'pinnedSessions',
+  fallback: [],
+  parse: raw => Array.isArray(raw)
+    ? raw.filter((x): x is string => typeof x === 'string').slice(0, MAX_PINNED)
+    : null,
+})
 
 export function getPinnedIds(): string[] {
-  return current
+  return store.get()
 }
 
 export function isSessionPinned(id: string): boolean {
-  return current.includes(id)
+  return store.get().includes(id)
 }
 
 /** Toggle a pin, returning whether it happened (a refused fourth returns ok:false, reason:'limit'). */
 export function togglePinnedSession(id: string): PinToggleResult {
-  const result = planPinToggle(current, id)
-  if (result.ok && (result.next.length !== current.length || !result.next.every((x, i) => x === current[i]))) {
-    current = result.next
-    persist()
-  }
+  const result = planPinToggle(store.get(), id)
+  if (result.ok) store.set(result.next)
   return result
 }
 
 /** Reorder and persist. Subscribers are notified exactly as `togglePinnedSession` notifies them. */
 export function movePinnedSession(from: number, to: number): void {
-  const next = planPinMove(current, from, to)
-  if (next.length === current.length && next.every((x, i) => x === current[i])) return
-  current = next
-  persist()
+  store.set(planPinMove(store.get(), from, to))
 }
 
 export function subscribePinnedSessions(fn: () => void): () => void {
-  subscribers.add(fn)
-  return () => subscribers.delete(fn)
+  return store.subscribe(fn)
 }
 
-const EMPTY: string[] = []
-/** Stable empty array for `useSyncExternalStore`'s server snapshot (a new [] each call loops). */
+/** Stable reference for `useSyncExternalStore`'s server snapshot (a new [] each call loops). */
 export function pinnedServerSnapshot(): string[] {
-  return EMPTY
+  return store.serverSnapshot()
 }

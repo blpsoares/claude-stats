@@ -85,7 +85,7 @@ import {
 import { readGithubSection } from './backup-routes'
 import { omittedSecrets } from './backup/backup-plan'
 import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
-import { lastBackup, lastPerHarness, lastRun, loadBackupHistory } from './backup/backup-store'
+import { lastBackup, lastPerHarness, lastBackupRun, loadBackupHistory } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
@@ -2569,10 +2569,11 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
 
       // What you can RESTORE from. Unchanged — see the same note in `backup-routes.ts`.
       const last = lastBackup(entries)
-      // The SCHEDULE asks when one last RAN, which a pruned file still answers — see `lastRun`.
+      // The SCHEDULE asks when one last RAN, which a pruned file still answers — see `lastBackupRun`.
       const st = scheduleStatus({
         schedule: prefs.schedule, customHours: prefs.customHours,
-        lastAt: lastRun(entries)?.at ?? null, nowMs: Date.now(),
+        atHour: prefs.atHour, tzOffsetMinutes: new Date().getTimezoneOffset(),
+        lastAt: lastBackupRun(entries)?.at ?? null, nowMs: Date.now(),
         serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
       })
 
@@ -3282,8 +3283,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         if (isFreeTextOption(managed.harness, picked.label)) {
           const answer = (text ?? '').trim()
           if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
-          if (!await backend.sendKey(id, key)) return { ok: false, message: s.sessSendFailed(id) }
-          await new Promise(r => setTimeout(r, ANSWER_SETTLE_MS))
+          if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
           /**
            * DID THE FIELD ACTUALLY OPEN? The three steps used to run with nothing checked between
            * them — digit, words, return — on the reasoning that the digit turns that row into a
@@ -3291,25 +3291,26 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
            *
            * Where the digit only moves the HIGHLIGHT, that sequence is worse than the plain one it
            * replaced: the words go wherever the session is listening and the Enter then submits the
-           * row that happens to be highlighted. So the same read-back decides here, and the signal
-           * is the option LIST — a field that has opened replaces it, while a highlight that merely
-           * moved leaves it exactly as it was (`submit`).
+           * row that happens to be highlighted. So the frame is read back, and the signal is the
+           * option LIST — a field that has opened replaces it, while a highlight that merely moved
+           * leaves it exactly as it was (`submit`).
+           *
+           * The check is passed INTO the backend rather than run between three calls of our own,
+           * because `writeToPane` locks per pane: three locked calls leave two gaps another writer
+           * can land in, which is the collision `pane-writer.ts` exists to prevent — and its own
+           * note names this path as the harder version of it.
            */
-          const opened = await backend.capture(id, SEND_CAPTURE_LINES).catch(() => [] as string[])
-          const step = answerFollowUp({
-            stillAsking: rules.approval.some(re => re.test(opened.join('\n'))),
-            before: options, after: parseDialogOptions(opened), choice,
+          const out = await backend.sendChoiceText(id, key, answer, frame => {
+            const step = answerFollowUp({
+              stillAsking: rules.approval.some(re => re.test(frame.join('\n'))),
+              before: options, after: parseDialogOptions(frame), choice,
+            })
+            // Only a dialog we no longer recognise means a field replaced the option list. `done`
+            // (it closed on the digit alone), `submit` and `stuck` all mean no field opened.
+            return step.kind === 'changed'
           })
-          // The dialog closed on the digit alone: the answer was given, and it was not this text.
-          if (step.kind === 'done') return { ok: false, message: s.sessAnswerNoField(picked.label) }
-          // The options are still listed with our row highlighted — no field. Typing now would put
-          // the words somewhere nobody can see and submit whatever is under the cursor.
-          if (step.kind === 'submit' || step.kind === 'stuck') {
-            return { ok: false, message: s.sessAnswerNoField(picked.label) }
-          }
-          if (!await backend.sendTextRaw(id, answer)) return { ok: false, message: s.sessSendFailed(id) }
-          await new Promise(r => setTimeout(r, ANSWER_SETTLE_MS))
-          return (await backend.sendKey(id, 'Enter'))
+          if (out === 'no-field') return { ok: false, message: s.sessAnswerNoField(picked.label) }
+          return out === 'sent'
             ? { ok: true, message: s.sessAnswered(answer) }
             : { ok: false, message: s.sessSendFailed(id) }
         }
