@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
-  SUBAGENT_POLL_MS, appendPage, forkCount, forkNote, runningCount, subagentCount,
+  SUBAGENT_POLL_MS, appendPage, forkCount, runningCount, subagentCount,
   subagentStatusText, subagentsPollMs, subagentsStateOf, unmeasuredText, unpricedText,
   type SubagentRow, type SubagentsState,
 } from './subagents'
@@ -64,30 +64,33 @@ describe('subagentCount — the tab never says 0 for something it cannot count',
   })
 })
 
-describe('forkNote — the list says what the badge left out', () => {
-  /**
-   * Without it a badge reading 3 over four rows is the same two-halves-of-one-screen disagreement
-   * the count itself was fixed for.
-   */
-  it('names the forks in the list, in both languages', () => {
-    const one = ready({ rows: [row({ isFork: true })], agents: 0, forks: 1 })
-    expect(forkNote(one, false)).toContain('One of these is a fork')
-    expect(forkNote(one, true)).toContain('Um destes é um fork')
-    expect(forkNote(ready({ agents: 3, forks: 2 }), false)).toContain('2 of these are forks')
-    expect(forkNote(ready({ agents: 3, forks: 2 }), true)).toContain('2 destes são forks')
-  })
-
-  it('is absent when there is no fork to explain', () => {
-    expect(forkNote(ready({ agents: 3 }), false)).toBe(null)
-    expect(forkNote({ phase: 'unsupported', message: 'x' }, false)).toBe(null)
-    expect(forkNote(null, false)).toBe(null)
-  })
-})
-
 describe('subagentsPollMs — only what can still change', () => {
   it('polls while an agent is running', () => {
     expect(subagentsPollMs(ready({ rows: [row({ status: 'running' }), row()] }))).toBe(SUBAGENT_POLL_MS)
     expect(runningCount(ready({ rows: [row({ status: 'running' })] }))).toBe(1)
+  })
+
+  /**
+   * A running FORK used to light the dot on the Subagents tab — "counted under the wrong heading",
+   * which is the badge's own bug one pixel smaller. The POLL still watches both: either kind still
+   * running is a reason to read again.
+   */
+  it('counts the running rows of ONE kind when asked, and of both when not', () => {
+    const state = ready({
+      rows: [row({ agentId: 'a', status: 'running' }), row({ agentId: 'f', status: 'running', isFork: true })],
+      agents: 1, forks: 1,
+    })
+    expect(runningCount(state, 'agent')).toBe(1)
+    expect(runningCount(state, 'fork')).toBe(1)
+    expect(runningCount(state)).toBe(2)
+    expect(subagentsPollMs(state)).toBe(SUBAGENT_POLL_MS)
+  })
+
+  it('a running fork alone does not light the agents tab, and still polls', () => {
+    const state = ready({ rows: [row({ status: 'running', isFork: true })], agents: 0, forks: 1 })
+    expect(runningCount(state, 'agent')).toBe(0)
+    expect(runningCount(state, 'fork')).toBe(1)
+    expect(subagentsPollMs(state)).toBe(SUBAGENT_POLL_MS)
   })
 
   it('stops once everything has stopped — the list costs a full read of the parent', () => {

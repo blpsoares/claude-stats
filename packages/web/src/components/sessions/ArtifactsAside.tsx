@@ -35,6 +35,7 @@ import {
   FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
   BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
   ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X, Workflow,
+  GitFork,
 } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -51,7 +52,7 @@ import {
   type StepPayload, type StepState,
 } from '../../lib/stepDetail'
 import {
-  SUBAGENT_PAGE, appendPage, forkNote, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
+  SUBAGENT_PAGE, appendPage, forkCount, runningCount, subagentCount, subagentStatusText, subagentsPollMs,
   subagentsStateOf, unmeasuredText, unpricedText,
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
@@ -75,7 +76,7 @@ import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'workflows' | 'mcps' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
@@ -578,6 +579,25 @@ export function ArtifactsAside({
       icon: <Bot size={12} />,
       count: subagentCount(agentsState),
     },
+    /**
+     * FORKS GET THEIR OWN TAB, and that is the whole point of having separated the counts.
+     *
+     * A fork is not a subagent — NOTHING DISPATCHED IT; it is this conversation continued from an
+     * earlier point. Taking it out of the badge stopped the number lying, and left the rows mixed
+     * into a list called Subagents, where the only thing telling them apart was a small label.
+     * Asked for: "era pra ter sido criado pra eu conseguir ver."
+     *
+     * The two tabs read ONE state and ONE fetch — `agentsState` holds every row and the server's
+     * `agents`/`forks` counts — so they can never disagree about what a row is or how many there
+     * are. Splitting the FETCH would be two pages of one list, and the paging is what made this
+     * uncountable on the client in the first place.
+     */
+    {
+      id: 'forks',
+      label: pt ? 'Forks' : 'Forks',
+      icon: <GitFork size={12} />,
+      count: forkCount(agentsState),
+    },
     {
       id: 'workflows',
       label: pt ? 'Workflows' : 'Workflows',
@@ -669,7 +689,8 @@ export function ArtifactsAside({
         )}
         {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
         {t.id === 'mcps' && runningMcpCount(mcp?.servers ?? null) > 0 && <RunningDot />}
-        {t.id === 'agents' && runningCount(agentsState) > 0 && <RunningDot />}
+        {t.id === 'agents' && runningCount(agentsState, 'agent') > 0 && <RunningDot />}
+        {t.id === 'forks' && runningCount(agentsState, 'fork') > 0 && <RunningDot />}
         {t.id === 'workflows' && liveRunCount(wfState) > 0 && <RunningDot />}
       </button>
     )
@@ -909,7 +930,16 @@ export function ArtifactsAside({
     )
   }
 
-  const agentsBody = (): React.ReactNode => {
+  /**
+   * ONE BODY, TWO TABS. `kind: 'agent'` is what this conversation DISPATCHED; `kind: 'fork'` is
+   * this conversation continued from an earlier point, which nothing dispatched.
+   *
+   * They share the state and the fetch on purpose — the rows are PAGED, and one page split two ways
+   * is exactly the arithmetic the client cannot do. The server sends every row plus its own
+   * `agents`/`forks` counts; this only chooses which of them to draw, so the badge above a list and
+   * the rows in it can never disagree.
+   */
+  const agentsBody = (kind: 'agent' | 'fork'): React.ReactNode => {
     // One open agent replaces the list, exactly as an open FILE does — 440px cannot hold a list and
     // a conversation side by side.
     if (openAgent) {
@@ -930,31 +960,43 @@ export function ArtifactsAside({
     // failed, this conversation ran none, or here they are.
     if (st.phase === 'unsupported') return <Note icon={<Bot size={16} />} text={st.message} />
     if (st.phase === 'failed') return <Note text={st.message} />
-    if (st.rows.length === 0) {
-      return <Note icon={<Bot size={16} />} text={pt
-        ? 'Esta conversa não delegou nada a um subagente.'
-        : 'This conversation has not delegated anything to a subagent.'} />
+    const mine = st.rows.filter(r => (kind === 'fork') === r.isFork)
+    /**
+     * THE COUNT IS THE SERVER'S, the rows are this page's, and the empty state has to know both.
+     * "None of these exist" and "none are on this page yet" are different facts, and only the
+     * first is about the conversation.
+     */
+    const total = kind === 'fork' ? st.forks : st.agents
+    if (total === 0) {
+      return kind === 'fork'
+        ? <Note icon={<GitFork size={16} />} text={pt
+          ? 'Esta conversa não foi bifurcada. Um fork é esta mesma conversa continuada de um ponto anterior — nada o despacha, e por isso ele não conta como subagente.'
+          : 'This conversation has not been forked. A fork is this same conversation continued from an earlier point — nothing dispatches one, which is why it is not counted as a subagent.'} />
+        : <Note icon={<Bot size={16} />} text={pt
+          ? 'Esta conversa não delegou nada a um subagente.'
+          : 'This conversation has not delegated anything to a subagent.'} />
     }
-    const forks = forkNote(st, pt)
     return (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
-        {/* THE LIST SAYS WHAT THE BADGE LEFT OUT. The badge counts agents and the list shows forks
-            too, so without this line a badge reading 3 over four rows is the same two-halves-
-            disagreeing the count was fixed for. Absent when there is no fork here. */}
-        {forks !== null && (
-          <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
-            {forks}
+        {/* WHAT THIS TAB HOLDS, said once. The two lists come from one paged fetch, so a tab can be
+            waiting on a page that has not arrived while the count above it is already right — and
+            an empty box under a badge reading 3 is the two-halves-disagreeing this was fixed for. */}
+        {mine.length === 0 && (
+          <p style={{ margin: '0 8px 6px', fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {pt
+              ? `${total} ${total === 1 ? 'existe' : 'existem'}, mas ${total === 1 ? 'ainda não veio' : 'ainda não vieram'} nesta página. Carregue mais abaixo.`
+              : `${total} ${total === 1 ? 'exists' : 'exist'}, and ${total === 1 ? 'it has' : 'they have'} not arrived on this page yet. Load more below.`}
           </p>
         )}
-        {/* A PAGE SAYS IT IS A PAGE. Newest first, by each agent's last activity. */}
+        {/* A PAGE SAYS IT IS A PAGE. Newest first, by each one's last activity. */}
         {st.total > st.rows.length && (
           <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
             {pt
-              ? `Mostrando os ${st.rows.length} mais recentes de ${st.total}.`
-              : `Showing the ${st.rows.length} most recent of ${st.total}.`}
+              ? `Mostrando ${mine.length} de ${total}; a lista carrega ${st.rows.length} de ${st.total} no total.`
+              : `Showing ${mine.length} of ${total}; the list has loaded ${st.rows.length} of ${st.total} in all.`}
           </p>
         )}
-        {st.rows.map(r => (
+        {mine.map(r => (
           <SubagentCard key={r.agentId} row={r} pt={pt} now={now} onOpen={() => setOpenAgent(r)} />
         ))}
         {st.hasMore && (
@@ -1483,7 +1525,8 @@ export function ArtifactsAside({
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()
-            : tab === 'agents' ? agentsBody()
+            : tab === 'agents' ? agentsBody('agent')
+            : tab === 'forks' ? agentsBody('fork')
             : tab === 'workflows' ? workflowsBody()
             : tab === 'mcps' ? mcpBody()
             : tab === 'prs' ? prsBody()

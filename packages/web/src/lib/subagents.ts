@@ -118,28 +118,17 @@ export function forkCount(state: SubagentsState | null): number | null {
 }
 
 /**
- * The sentence that keeps the badge and the list from reading as a contradiction.
+ * How many are running right now — the number worth putting on the tab beside the total.
  *
- * The badge counts agents; the list shows forks too. With no line saying so, a badge reading 3 over
- * four rows is the same "two halves of one screen disagreeing" the count itself was fixed for — so
- * whenever a fork is in the list, the list says what it is holding. Absent when there are none.
+ * `kind` narrows it to one of the two tabs. Without it a running FORK lit the dot on the Subagents
+ * tab, which is the same "counted under the wrong heading" the badge itself was fixed for, one
+ * pixel smaller. Omitted, it counts BOTH — which is what the poll wants, since either kind still
+ * running is a reason to read again.
  */
-export function forkNote(state: SubagentsState | null, pt: boolean): string | null {
-  if (state?.phase !== 'ready' || state.forks === 0) return null
-  const n = state.forks
-  if (pt) {
-    return n === 1
-      ? 'Um destes é um fork desta conversa, não um subagente: nada o despachou. Ele conta na lista e fora da contagem.'
-      : `${n} destes são forks desta conversa, não subagentes: nada os despachou. Contam na lista e fora da contagem.`
-  }
-  return n === 1
-    ? 'One of these is a fork of this conversation, not a subagent: nothing dispatched it. It is in the list and outside the count.'
-    : `${n} of these are forks of this conversation, not subagents: nothing dispatched them. They are in the list and outside the count.`
-}
-
-/** How many are running right now — the number worth putting on the tab beside the total. */
-export function runningCount(state: SubagentsState | null): number {
-  return state?.phase === 'ready' ? state.rows.filter(r => r.status === 'running').length : 0
+export function runningCount(state: SubagentsState | null, kind?: 'agent' | 'fork'): number {
+  if (state?.phase !== 'ready') return 0
+  return state.rows.filter(r =>
+    r.status === 'running' && (kind === undefined || (kind === 'fork') === r.isFork)).length
 }
 
 export const SUBAGENT_POLL_MS = 5000
