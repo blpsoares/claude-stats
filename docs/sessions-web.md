@@ -119,6 +119,16 @@ source that can say `killed`), then the completion counts, then whether the sess
 A launched run that stopped moving is `abandoned`, said in words. Measured across 17 real runs on
 one machine, 4 had carried the wrong status. It polls only while a run is live.
 
+**A run opens into its PHASES, and each agent into what it ran.** The agents are grouped under the
+phase each ran in, in the run's own recorded order — a flat list is the run's shape flattened away,
+and which agent ran in which phase is what somebody opens a run to see. The placement comes from
+the run's own `workflowProgress` (`workflow-progress.ts`), which names each `agentId`'s label and
+phase outright: **340 of 340 agent transcripts on one machine**. `workflow-match.ts` stays as the
+fallback for a run that has not written a record yet, and `labelSource` says which of the two a
+label came from, because a guess and a record look identical on screen. Opening an agent asks a
+SECOND request for its prompt and every command it ran — the list reads every agent of every run
+on each poll, and one 72-agent run is megabytes of shell.
+
 **It does not reload from zero when it is closed and reopened.** Tabs seed from `asideCache`, so
 skills, PRs and skill bodies survive a close — reopening used to re-fetch everything and stall.
 

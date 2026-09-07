@@ -7,6 +7,7 @@ import { parseWorkflowUsage } from './workflow-usage'
 import { aggregateWorkflowAgent } from './workflow-agent'
 import { matchTranscriptsToCalls } from './workflow-match'
 import { workflowRunState, recordedRunState } from './workflow-live'
+import { parseWorkflowProgress, agentIdOfFile } from './workflow-progress'
 
 export interface DiscoveredRun {
   runId: string
@@ -33,13 +34,15 @@ export function forgetWorkflowAgentSummaries(): void {
 }
 
 
-/** A run's own end-of-run record, or null when it never wrote one (still running, or lost). */
-async function readRunRecord(path: string): Promise<{ status?: unknown; durationMs?: number } | null> {
+/** A run's own end-of-run record, or null when it never wrote one (still running, or lost).
+ *  The WHOLE document is returned: besides the status it carries `workflowProgress`, which places
+ *  every agent in its phase exactly — see workflow-progress.ts. */
+async function readRunRecord(path: string): Promise<Record<string, unknown> | null> {
   const raw = await readFile(path, 'utf-8').catch(() => '')
   if (!raw) return null
   try {
-    const d = JSON.parse(raw) as Record<string, unknown>
-    return { status: d.status, durationMs: typeof d.durationMs === 'number' ? d.durationMs : undefined }
+    const d = JSON.parse(raw) as unknown
+    return d && typeof d === 'object' ? d as Record<string, unknown> : null
   } catch { return null }
 }
 
@@ -159,6 +162,13 @@ export async function assembleWorkflowRuns(
     }
     const parsed = parseWorkflowScript(scriptText)
 
+    const launchedMs = launch.startedAt ? Date.parse(launch.startedAt) || 0 : 0
+    // The run's own record, written when it ended: `<session>/workflows/<runId>.json`, a sibling
+    // of the `subagents/workflows` dir holding the transcripts. It is the only source that can say
+    // a run was KILLED — from the files alone that is indistinguishable from one that stopped —
+    // and it also places every agent in its phase exactly.
+    const record = await readRunRecord(join(dirname(dirname(workflowsDir)), 'workflows', `${launch.runId}.json`))
+
     // Per-agent transcripts: agent-*.jsonl in the run dir.
     const agentFiles = sortAgentFiles(files.filter(f => /^agent-.*\.jsonl$/.test(f)))
     const aggregated = []
@@ -183,6 +193,12 @@ export async function assembleWorkflowRuns(
     // agent-<hash>.jsonl: the hash carries no order, so pairing by position (the old behaviour)
     // handed every agent a label belonging to some other agent — labels and metrics from different
     // runs of the workflow, rendered as if they matched. See workflow-match.ts.
+    // The run's OWN placement first: `workflowProgress` names each agentId's label and phase
+    // outright (100 % of the 340 transcripts on one machine). `matchTranscriptsToCalls` stays as
+    // the fallback for a run that has not written a record yet — and for one whose record predates
+    // this field. A guessed label and a recorded one look identical on screen, so which it was
+    // travels with it as `labelSource`.
+    const progress = parseWorkflowProgress(record)
     const matched = matchTranscriptsToCalls(aggregated, parsed.agents)
     // Chronological, because that is the order the user watched them run in.
     const order = aggregated
@@ -191,9 +207,16 @@ export async function assembleWorkflowRuns(
 
     const agents: WorkflowAgent[] = []
     for (const { a: agg, meta } of order) {
+      const agentId = agentIdOfFile(agg.file)
+      const placed = agentId ? progress.byAgent.get(agentId) : undefined
+      const labelSource: NonNullable<WorkflowAgent['labelSource']> =
+        placed ? 'record' : meta?.label ? 'matched' : 'none'
       agents.push({
-        label: meta?.label || agg.file.replace(/\.jsonl$/, ''),
-        phase: meta?.phase ?? '',
+        label: placed?.label || meta?.label || agg.file.replace(/\.jsonl$/, ''),
+        phase: placed?.phase ?? meta?.phase ?? '',
+        ...(agentId ? { agentId } : {}),
+        labelSource,
+        toolCalls: agg.toolCalls,
         model: agg.model || (meta?.model ?? ''),
         // NOTE: per-agent status is a best-effort 'completed'. The available data
         // (journal.jsonl + the task-notification <usage> counts) reports how many
@@ -208,12 +231,13 @@ export async function assembleWorkflowRuns(
     }
 
     const usage = parseWorkflowUsage(launch.notificationText)
-    const phases = parsed.phases.map(title => ({ title, agentCount: agents.filter(a => a.phase === title).length }))
-    const launchedMs = launch.startedAt ? Date.parse(launch.startedAt) || 0 : 0
-    // The run's own record, written when it ended: `<session>/workflows/<runId>.json`, a sibling
-    // of the `subagents/workflows` dir holding the transcripts. It is the only source that can say
-    // a run was KILLED — from the files alone that is indistinguishable from one that stopped.
-    const record = await readRunRecord(join(dirname(dirname(workflowsDir)), 'workflows', `${launch.runId}.json`))
+    // The phase list, in the order the run recorded them — the order somebody watched them run in.
+    // The script's declared list is the fallback for a run with no record. Any phase that agents
+    // actually landed in is kept even if neither source named it, or its agents would have nowhere
+    // to be counted.
+    const phaseTitles = progress.phases.length > 0 ? [...progress.phases] : [...parsed.phases]
+    for (const a of agents) if (a.phase !== '' && !phaseTitles.includes(a.phase)) phaseTitles.push(a.phase)
+    const phases = phaseTitles.map(title => ({ title, agentCount: agents.filter(a => a.phase === title).length }))
     const status: WorkflowRun['status'] = workflowRunState({
       recorded: recordedRunState(record?.status), usage, sessionLive, lastTouchedMs, launchedMs, now,
     })
@@ -228,7 +252,7 @@ export async function assembleWorkflowRuns(
       // the thing a viewer is watching. Everything else keeps the reported duration (0 = unknown).
       durationMs: status === 'running' && launchedMs
         ? Math.max(0, now - launchedMs)
-        : (usage?.durationMs ?? record?.durationMs ?? 0),
+        : (usage?.durationMs ?? (typeof record?.durationMs === 'number' ? record.durationMs : 0)),
       phases,
       agents,
       totals: {

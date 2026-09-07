@@ -56,8 +56,10 @@ import {
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
 import {
+  agentDetailStateOf, agentDetailUrl, agentOpenable, groupAgentsByPhase, labelCaveat,
   liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
-  workflowCount, workflowsPollMs, workflowsStateOf,
+  unplacedPhaseText, workflowCount, workflowsPollMs, workflowsStateOf,
+  type AgentDetailState, type WorkflowAgentDetail, type WorkflowAgentRow,
   type WorkflowRunRow, type WorkflowsPayload, type WorkflowsState,
 } from '../../lib/workflows'
 import { ConfirmModal } from '../../pages/settings/primitives'
@@ -900,7 +902,7 @@ export function ArtifactsAside({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
         {st.rows.map(r => (
           <WorkflowCard
-            key={r.runId} row={r} pt={pt} now={now}
+            key={r.runId} sessionId={sessionId} row={r} pt={pt} now={now}
             open={openRun === r.runId}
             onToggle={() => setOpenRun(openRun === r.runId ? null : r.runId)}
           />
@@ -1814,8 +1816,150 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
  * ran, grouped by the phase the script declared, because "14 agents" is a number and "the extract
  * phase ran 8 of them" is the thing somebody is actually watching.
  */
-function WorkflowCard({ row, pt, now, open, onToggle }: {
-  row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
+
+/**
+ * One agent inside a phase, and what it ran.
+ *
+ * The commands are a SEPARATE request, made only when this row is opened: the list reads every
+ * agent of every run on each poll, and one 72-agent run is megabytes of shell. Same split, and the
+ * same reason, as the subagents tab's list versus its activity.
+ */
+function WorkflowAgentLine({ sessionId, runId, agent, pt }: {
+  sessionId: string; runId: string; agent: WorkflowAgentRow; pt: boolean
+}) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const [detail, setDetail] = useState<AgentDetailState | null>(null)
+  const openable = agentOpenable(agent)
+  const caveat = labelCaveat(agent, pt)
+
+  useEffect(() => {
+    if (!open || !openable || detail !== null) return
+    let alive = true
+    setDetail({ phase: 'loading' })
+    void (async () => {
+      try {
+        const res = await fetch(agentDetailUrl(sessionId, runId, agent.agentId!, pt))
+        if (!alive) return
+        if (!res.ok) {
+          setDetail({ phase: 'failed', message: pt ? 'Não foi possível ler este agente.' : 'This agent could not be read.' })
+          return
+        }
+        setDetail(agentDetailStateOf(await res.json() as WorkflowAgentDetail))
+      } catch {
+        if (alive) setDetail({ phase: 'failed', message: pt ? 'Não foi possível ler este agente.' : 'This agent could not be read.' })
+      }
+    })()
+    return () => { alive = false }
+  }, [open, openable, detail, sessionId, runId, agent.agentId, pt])
+
+  const line = (
+    <div style={{
+      display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, width: '100%',
+      fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+    }}>
+      {openable && (
+        <span aria-hidden style={{ flexShrink: 0, opacity: 0.7, display: 'inline-flex' }}>
+          {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        </span>
+      )}
+      <span style={{
+        minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        color: 'var(--text-secondary)',
+        // A label nothing recorded IS the file name; saying it in the same weight as a real one
+        // would present a hash as a name somebody chose.
+        fontStyle: agent.labelSource === 'none' ? 'italic' : undefined,
+      }}>{agent.label}</span>
+      <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+        {agent.toolCalls !== null && agent.toolCalls > 0
+          ? `${fmt(agent.toolCalls)} ${pt ? 'chamadas' : 'calls'} · ` : ''}
+        {agent.totalTokens !== null ? `${fmt(agent.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
+        {agent.costUSD !== null ? ` · ${fmtCost(agent.costUSD)}` : ''}
+      </span>
+    </div>
+  )
+
+  return (
+    <div style={{ padding: '1px 0' }}>
+      {openable ? (
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
+            padding: isMobile ? '6px 2px' : '2px', cursor: 'pointer', fontFamily: 'inherit',
+            minHeight: isMobile ? 44 : undefined, borderRadius: 5, minWidth: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+        >
+          {line}
+        </button>
+      ) : <div style={{ padding: 2 }}>{line}</div>}
+
+      {/* A guessed name and a recorded one look identical on screen; only one is worth trusting. */}
+      {caveat !== null && (
+        <p style={{ margin: '0 0 0 18px', fontSize: 9.5, color: 'var(--text-tertiary)', fontStyle: 'italic', opacity: 0.85 }}>
+          {caveat}
+        </p>
+      )}
+
+      {open && (
+        <div style={{ margin: '3px 0 5px 18px', minWidth: 0 }}>
+          {detail === null || detail.phase === 'loading' ? (
+            <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Spinner size={11} />{pt ? 'Lendo a transcrição deste agente…' : 'Reading this agent’s transcript…'}
+            </p>
+          ) : detail.phase === 'failed' ? (
+            <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{detail.message}</p>
+          ) : (
+            <>
+              {detail.detail.prompt !== '' && (
+                <p style={{
+                  margin: '0 0 4px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)',
+                  display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }} title={detail.detail.prompt}>
+                  {detail.detail.prompt}
+                </p>
+              )}
+              {detail.detail.commands.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                  {pt ? 'Este agente não chamou nenhuma ferramenta.' : 'This agent called no tools.'}
+                </p>
+              ) : (
+                <>
+                  {/* Wide content scrolls inside its own box; the panel body never scrolls sideways. */}
+                  <div style={{
+                    maxHeight: 210, overflowY: 'auto', overflowX: 'auto',
+                    border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '4px 6px',
+                    background: 'var(--bg-elevated)',
+                  }}>
+                    {detail.detail.commands.map((c, i) => (
+                      <div key={i} style={{
+                        fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10, lineHeight: 1.6,
+                        color: 'var(--text-secondary)', whiteSpace: 'pre', minWidth: 0,
+                      }}>{c}</div>
+                    ))}
+                  </div>
+                  {/* The COUNT stays exact even when the list is cut, so the two never disagree. */}
+                  {detail.detail.commandsClipped && (
+                    <p style={{ margin: '3px 0 0', fontSize: 9.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                      {pt
+                        ? `Mostrando as primeiras ${fmt(detail.detail.commands.length)} de ${fmt(detail.detail.toolCalls)} chamadas.`
+                        : `Showing the first ${fmt(detail.detail.commands.length)} of ${fmt(detail.detail.toolCalls)} calls.`}
+                    </p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WorkflowCard({ sessionId, row, pt, now, open, onToggle }: {
+  sessionId: string; row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
 }) {
   const isMobile = useIsMobile()
   const st = runStatusText(row.status, pt)
@@ -1897,24 +2041,32 @@ function WorkflowCard({ row, pt, now, open, onToggle }: {
                 ? (pt ? 'Nenhum agente escreveu ainda.' : 'No agent has written yet.')
                 : (pt ? 'Nenhuma transcrição de agente ficou no disco.' : 'No agent transcript was left on disk.')}
             </p>
-          ) : row.agents.map((a, i) => (
-            <div key={`${a.label}-${i}`} style={{
-              display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, padding: '2px 0',
-              fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
-            }}>
-              <span style={{
-                minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                color: 'var(--text-secondary)',
-              }}>{a.label}</span>
-              {/* The phase is the script's own word for what this agent was doing. A transcript the
-                  matcher could not pair carries none, and says nothing rather than guessing one. */}
-              {a.phase !== '' && (
-                <span style={{ flexShrink: 0, opacity: 0.75 }}>{a.phase}</span>
-              )}
-              <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                {a.totalTokens !== null ? `${fmt(a.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
-                {a.costUSD !== null ? ` · ${fmtCost(a.costUSD)}` : ''}
-              </span>
+          ) : groupAgentsByPhase(row).map((g, gi) => (
+            <div key={`${g.title}-${gi}`} style={{ marginBottom: 5 }}>
+              {/* THE PHASE IS THE PLAN. A flat list of agents is the run's shape flattened away —
+                  which agent ran in which phase is what somebody opens a run to see. */}
+              <div style={{
+                display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0,
+                borderBottom: '1px solid var(--border-subtle)', paddingBottom: 2, marginBottom: 3,
+              }}>
+                <span style={{
+                  fontSize: 9.5, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase',
+                  color: g.title === '' ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                  fontStyle: g.title === '' ? 'italic' : undefined,
+                  minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{g.title === '' ? unplacedPhaseText(pt) : g.title}</span>
+                <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)' }}>
+                  {g.agents.length === 0
+                    ? (pt ? 'nada rodou' : 'nothing ran')
+                    : `${fmt(g.agents.length)} ${pt ? (g.agents.length === 1 ? 'agente' : 'agentes') : (g.agents.length === 1 ? 'agent' : 'agents')}`}
+                </span>
+              </div>
+              {g.agents.map((a, i) => (
+                <WorkflowAgentLine
+                  key={a.agentId ?? `${a.label}-${i}`}
+                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt}
+                />
+              ))}
             </div>
           ))}
         </div>
