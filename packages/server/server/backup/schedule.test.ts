@@ -1,7 +1,10 @@
 import { describe, test, expect } from 'bun:test'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { MIN_CUSTOM_HOURS, intervalMs, isDue, scheduleStatus, SCHEDULE_IDS } from './schedule'
+import {
+  MIN_CUSTOM_HOURS, DEFAULT_HOUR, intervalMs, isDue, scheduleStatus, SCHEDULE_IDS,
+  normalizeHour, hourAnchorOnLocalDay, nextRunMs,
+} from './schedule'
 
 const DAY = 86_400_000
 const now = Date.parse('2026-09-04T12:00:00.000Z')
@@ -51,12 +54,16 @@ test('with the server stopped nothing is due and the status is `inactive`, with 
   expect(s.nextAtMs).toBeNull()
 })
 
-test('with the server running the status names the next time', () => {
+// A daily run is now ANCHORED to an hour, so the next time is that hour on the next day rather
+// than one interval after whenever the last one happened to fire.
+test('with the server running the status names the next anchored time', () => {
   const s = scheduleStatus({
-    schedule: 'daily', lastAt: new Date(now - DAY / 2).toISOString(), nowMs: now, serverRunning: true,
+    schedule: 'daily', atHour: 10, tzOffsetMinutes: 0,
+    lastAt: new Date(now - DAY / 2).toISOString(), nowMs: now, serverRunning: true,
   })
   expect(s.kind).toBe('next')
-  expect(s.nextAtMs).toBe(now + DAY / 2)
+  // last = 2026-09-04T00:00Z, so the next daily run is 2026-09-05T10:00Z.
+  expect(s.nextAtMs).toBe(Date.parse('2026-09-05T10:00:00.000Z'))
 })
 
 test('an off schedule reports off, not a missing next time', () => {
@@ -117,4 +124,74 @@ describe('custom — an interval the user picks', () => {
   test('custom is in SCHEDULE_IDS, so every surface offering the list offers it', () => {
     expect(SCHEDULE_IDS).toContain('custom')
   })
+})
+
+// --- the hour of the day ----------------------------------------------------
+
+test('an hour outside the clock is clamped, never refused — a field is an intent', () => {
+  expect(normalizeHour(undefined)).toBe(DEFAULT_HOUR)
+  expect(normalizeHour(NaN)).toBe(DEFAULT_HOUR)
+  expect(normalizeHour(-3)).toBe(0)
+  expect(normalizeHour(99)).toBe(23)
+  expect(normalizeHour(10.7)).toBe(10)
+})
+
+test('the anchor lands on the local clock, not on UTC', () => {
+  // UTC-3: 10:00 local is 13:00Z.
+  const at = hourAnchorOnLocalDay(Date.parse('2026-09-04T12:00:00Z'), 1, 10, 180)
+  expect(new Date(at).toISOString()).toBe('2026-09-05T13:00:00.000Z')
+})
+
+// THE BUG THIS EXISTS FOR: "daily" fired every 15 minutes. It must fire once.
+test('a daily run already taken today is not due again today', () => {
+  const base = { schedule: 'daily' as const, atHour: 10, tzOffsetMinutes: 0, serverRunning: true }
+  // Ran at 09:00, and it is now 11:00 — the anchor hour has passed, but the day already has a run.
+  const v = isDue({ ...base, lastAt: '2026-09-04T09:00:00.000Z', nowMs: Date.parse('2026-09-04T11:00:00Z') })
+  expect(v.due).toBe(false)
+  if (v.due) return
+  expect(v.reason).toBe('not-yet')
+})
+
+test('a daily run is due at the anchor hour the next day, and not before', () => {
+  const base = { schedule: 'daily' as const, atHour: 10, tzOffsetMinutes: 0, serverRunning: true, lastAt: '2026-09-04T09:00:00.000Z' }
+  expect(isDue({ ...base, nowMs: Date.parse('2026-09-05T09:59:00Z') }).due).toBe(false)
+  expect(isDue({ ...base, nowMs: Date.parse('2026-09-05T10:00:00Z') }).due).toBe(true)
+})
+
+// The machine that was off through its hour: it comes back OWED, runs once, then waits.
+test('a missed window is owed on start, and the run after it is the next anchor', () => {
+  const base = { schedule: 'daily' as const, atHour: 10, tzOffsetMinutes: 0, serverRunning: true }
+  const bootedLate = Date.parse('2026-09-06T14:00:00Z')
+  expect(isDue({ ...base, lastAt: '2026-09-04T10:00:00.000Z', nowMs: bootedLate }).due).toBe(true)
+  // Having run at 14:00, the next one is 10:00 the following day — not immediately, not a day late.
+  const after = nextRunMs({ ...base, lastAt: null, nowMs: bootedLate }, bootedLate)
+  expect(new Date(after!).toISOString()).toBe('2026-09-07T10:00:00.000Z')
+})
+
+test('a weekly run is anchored a week on, at the same hour', () => {
+  const after = nextRunMs(
+    { schedule: 'weekly', atHour: 8, tzOffsetMinutes: 0, lastAt: null, nowMs: now, serverRunning: true },
+    Date.parse('2026-09-04T09:00:00Z'),
+  )
+  expect(new Date(after!).toISOString()).toBe('2026-09-11T08:00:00.000Z')
+})
+
+// An interval cadence has no time of day, and forcing one on it would turn it into something else.
+test('a custom interval keeps interval semantics, unanchored', () => {
+  const last = Date.parse('2026-09-04T09:13:00Z')
+  const after = nextRunMs(
+    { schedule: 'custom', customHours: 6, atHour: 10, tzOffsetMinutes: 0, lastAt: null, nowMs: now, serverRunning: true },
+    last,
+  )
+  expect(after).toBe(last + 6 * 3_600_000)
+})
+
+test('an owed run is reported as now, never as a time already past', () => {
+  const s = scheduleStatus({
+    schedule: 'daily', atHour: 10, tzOffsetMinutes: 0,
+    lastAt: '2026-09-01T10:00:00.000Z', nowMs: now, serverRunning: true,
+  })
+  expect(s.kind).toBe('next')
+  if (s.kind !== 'next') return
+  expect(s.nextAtMs).toBe(now)
 })

@@ -14,7 +14,7 @@ import { join } from 'path'
 import { buildReleaseBody } from './backup-github'
 import type { FetchLike } from './github-api'
 import {
-  downloadBackupAsset, downloadBackupRelease, groupReleasesByMachine, listBackupReleases,
+  downloadBackupAsset, downloadBackupRelease, groupReleasesByMachine, listBackupReleases, releaseInstant,
   newestForMachine, pickBackupAsset,
   pickBackupRelease, type GithubReleaseInfo,
 } from './github-restore'
@@ -84,9 +84,9 @@ async function withDestDir(fn: (destDir: string) => Promise<void>): Promise<void
 
 describe('pickBackupRelease', () => {
   const releases = (): GithubReleaseInfo[] => [
-    { id: 1, tagName: 'backup-2026-09-01T00-00-00Z', createdAt: '2026-09-01T00:00:00Z', body: '', assets: [] },
-    { id: 2, tagName: 'backup-2026-09-03T00-00-00Z', createdAt: '2026-09-03T00:00:00Z', body: '', assets: [] },
-    { id: 3, tagName: 'v1.0.0', createdAt: '2026-09-04T00:00:00Z', body: '', assets: [] }, // hand-made, newer!
+    { id: 1, tagName: 'backup-2026-09-01T00-00-00Z', createdAt: '2026-09-01T00:00:00Z', publishedAt: '2026-09-01T00:00:00Z', body: '', assets: [] },
+    { id: 2, tagName: 'backup-2026-09-03T00-00-00Z', createdAt: '2026-09-03T00:00:00Z', publishedAt: '2026-09-03T00:00:00Z', body: '', assets: [] },
+    { id: 3, tagName: 'v1.0.0', createdAt: '2026-09-04T00:00:00Z', publishedAt: '2026-09-04T00:00:00Z', body: '', assets: [] }, // hand-made, newer!
   ]
 
   test('without --release, picks the newest release whose tag isBackupTag recognises', () => {
@@ -120,7 +120,7 @@ describe('pickBackupRelease', () => {
 
 describe('pickBackupAsset', () => {
   const release = (assets: { id: number; name: string; size: number }[]): GithubReleaseInfo => (
-    { id: 1, tagName: 'backup-x', createdAt: '2026-01-01T00:00:00Z', body: '', assets }
+    { id: 1, tagName: 'backup-x', createdAt: '2026-01-01T00:00:00Z', publishedAt: '2026-01-01T00:00:00Z', body: '', assets }
   )
 
   test('matches the single asset whose size equals the summary archiveBytes', () => {
@@ -449,4 +449,47 @@ test('the newest release OF A GIVEN MACHINE is selectable', () => {
   // Asking for a machine that has nothing here answers NOTHING — never the newest of some other
   // machine, which would restore the wrong computer onto this one without saying so.
   expect(newestForMachine(list, 'tablet')).toBe(null)
+})
+
+// --- when a release actually happened ---------------------------------------
+//
+// MEASURED on a real backup repository: four releases from four different uploads, GitHub's
+// `created_at` IDENTICAL on all four (`2026-09-06T16:24:54Z`) because every backup tag hangs off
+// the same commit, while `published_at` differed by hours. Two things broke: the restore list
+// printed one date on every card, and `pickBackupRelease` sorted on that constant — a no-op sort,
+// so "the newest backup" was whichever GitHub returned first.
+
+test('the instant comes from the tag agentop stamped, not from created_at', () => {
+  expect(releaseInstant({
+    tagName: 'backup-alienware-2026-09-07T19-11-36-983Z',
+    publishedAt: '2026-09-07T19:11:38Z',
+    createdAt: '2026-09-06T16:24:54Z',
+  })).toBe('2026-09-07T19:11:36.983Z')
+})
+
+test('a release agentop did not tag falls back to published_at, never created_at', () => {
+  expect(releaseInstant({
+    tagName: 'v1.0.0', publishedAt: '2026-09-07T10:00:00Z', createdAt: '2026-09-06T16:24:54Z',
+  })).toBe('2026-09-07T10:00:00Z')
+})
+
+test('with neither, created_at is the last resort so nothing sorts nowhere', () => {
+  expect(releaseInstant({ tagName: 'v1', publishedAt: '', createdAt: '2026-09-06T16:24:54Z' }))
+    .toBe('2026-09-06T16:24:54Z')
+  expect(releaseInstant({ tagName: 'v1', createdAt: '2026-09-06T16:24:54Z' }))
+    .toBe('2026-09-06T16:24:54Z')
+})
+
+test('the real repository: a constant created_at still orders correctly', () => {
+  const SAME = '2026-09-06T16:24:54Z'
+  const list: GithubReleaseInfo[] = [
+    { id: 1, tagName: 'backup-braiaode2-2026-09-06T16-24-49-398Z', createdAt: SAME, publishedAt: '2026-09-06T16:24:55Z', body: '', assets: [] },
+    { id: 2, tagName: 'backup-alienware-2026-09-07T19-11-36-983Z', createdAt: SAME, publishedAt: '2026-09-07T19:11:38Z', body: '', assets: [] },
+    { id: 3, tagName: 'backup-alienware-2026-09-07T18-55-54-355Z', createdAt: SAME, publishedAt: '2026-09-07T18:56:03Z', body: '', assets: [] },
+  ]
+  const picked = pickBackupRelease(list)
+  expect(picked.ok).toBe(true)
+  if (!picked.ok) return
+  // The genuinely newest upload, not whichever the API listed first.
+  expect(picked.release.tagName).toBe('backup-alienware-2026-09-07T19-11-36-983Z')
 })

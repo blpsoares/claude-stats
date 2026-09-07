@@ -76,6 +76,8 @@ interface BackupStatusJson {
     scheduleActive: boolean
     /** Hours between runs when `schedule` is `'custom'`; null when never set. */
     customHours: number | null
+    /** The local hour a daily/weekly run is anchored to; null when never chosen. */
+    atHour: number | null
     keep: number
     retainedLabel: string
     secretsCount: number
@@ -103,6 +105,8 @@ interface BackupConfigPatch {
   schedule?: BackupScheduleId
   /** Hours between runs, when `schedule` is `'custom'`. */
   customHours?: number
+  /** The local hour a daily/weekly run is anchored to. */
+  atHour?: number
 }
 
 type RunOutcome = { ok: true; bytesLabel: string; skipped?: number } | { ok: false; reason: string }
@@ -1187,7 +1191,8 @@ export default function BackupSettings() {
             pt={pt}
             disabled={savingConfig}
             customHours={status.config.customHours ?? null}
-            onChange={(schedule, customHours) => void patchConfig({ schedule, customHours })}
+            atHour={status.config.atHour ?? null}
+            onChange={(schedule, customHours, atHour) => void patchConfig({ schedule, customHours, atHour })}
           />
           <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', margin: '18px 0 4px' }}>
             {pt ? 'O que uma execução agendada grava' : 'What a scheduled run carries'}
@@ -1545,14 +1550,18 @@ function LayerPicker({ layers, sizes, archiveMode, pt, disabled, onToggle }: {
  * `active` mirrors `ControlBackupConfig.scheduleActive` — with the server stopped, a schedule other
  * than `off` reads INACTIVE rather than a "next at…" that will not arrive.
  */
-function SchedulePicker({ value, active, pt, disabled, customHours, onChange }: {
+const DEFAULT_BACKUP_HOUR = 10
+
+function SchedulePicker({ value, active, pt, disabled, customHours, atHour, onChange }: {
   value: BackupScheduleId
   active: boolean
   pt: boolean
   disabled: boolean
   /** The hours last chosen, or null when never set. */
   customHours: number | null
-  onChange: (schedule: BackupScheduleId, customHours?: number) => void
+  /** The local hour chosen, or null when never chosen — rendered as the default, not as blank. */
+  atHour: number | null
+  onChange: (schedule: BackupScheduleId, customHours?: number, atHour?: number) => void
 }) {
   const isMobile = useIsMobile()
   // Local, so typing a two-digit number does not fire a save on the first digit — `6` would be a
@@ -1588,6 +1597,39 @@ function SchedulePicker({ value, active, pt, disabled, customHours, onChange }: 
           )
         })}
       </div>
+      {/* A cadence with no time of day is anchored to whenever the machine last happened to run
+          one, which drifts across the day. `custom` is deliberately excluded: "every 6 hours" has
+          no single time of day, and forcing one on it would turn it into a different schedule. */}
+      {(value === 'daily' || value === 'weekly') && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>
+            {pt ? 'A que horas' : 'At what time'}
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.45, margin: '0 0 6px' }}>
+            {pt
+              ? 'No relógio desta máquina. Se ela estiver desligada nesse horário, o backup roda assim que você ligar e o próximo volta a ser no horário marcado.'
+              : 'On this machine’s clock. If it is off at that time the backup runs as soon as you turn it on, and the next one goes back to the chosen time.'}
+          </p>
+          <select
+            value={String(atHour ?? DEFAULT_BACKUP_HOUR)}
+            disabled={disabled}
+            onChange={e => onChange(value, undefined, Number(e.target.value))}
+            style={{
+              padding: '7px 10px', minHeight: isMobile ? 44 : undefined,
+              width: isMobile ? '100%' : 140, boxSizing: 'border-box',
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 7,
+              // 16px or iOS Safari zooms the viewport on focus and breaks the sticky header.
+              fontFamily: 'inherit', fontSize: isMobile ? 16 : 13,
+              color: 'var(--text-primary)', outline: 'none',
+              ...(disabled ? { opacity: 0.6, cursor: 'not-allowed' } : {}),
+            }}
+          >
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={String(h)}>{`${String(h).padStart(2, '0')}:00`}</option>
+            ))}
+          </select>
+        </div>
+      )}
       {value === 'custom' && (
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 2 }}>

@@ -68,6 +68,9 @@ export interface BackupStatusJson {
     scheduleActive: boolean
     /** Hours between runs when `schedule` is `'custom'`; null when it has never been set. */
     customHours: number | null
+    /** The local hour a daily/weekly run is anchored to; null when never chosen (reads as the
+     *  default in `schedule.ts`, which is the one place that decides it). */
+    atHour: number | null
     keep: number
     /** What EVERY retained backup occupies together, already formatted. */
     retainedLabel: string
@@ -104,6 +107,8 @@ export interface BackupConfigPatch {
   schedule?: ScheduleId
   /** Hours between runs, when `schedule` is `'custom'`. */
   customHours?: number
+  /** The local hour a daily/weekly run is anchored to. */
+  atHour?: number
 }
 
 /**
@@ -157,7 +162,8 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
   const last = lastBackup(entries)
   const st = scheduleStatus({
     schedule: prefs.schedule,
-    customHours: prefs.customHours,
+    customHours: prefs.customHours, atHour: prefs.atHour,
+    tzOffsetMinutes: new Date().getTimezoneOffset(),
     lastAt: last?.at ?? null,
     nowMs: Date.now(),
     serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
@@ -173,6 +179,7 @@ export async function readBackupStatus(): Promise<BackupStatusJson> {
       // Sent even when the schedule is not `custom`, so switching to it in the interface shows the
       // number the user last chose rather than an empty field.
       customHours: prefs.customHours ?? null,
+      atHour: prefs.atHour ?? null,
       scheduleActive: st.kind === 'next',
       keep: prefs.keep,
       retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
@@ -252,7 +259,11 @@ export async function updateBackupConfig(
       && (!Number.isFinite(patch.customHours) || patch.customHours <= 0)) {
       return { ok: false, reason: 'custom schedule takes a positive number of hours' }
     }
-    await writeBackupSchedule(patch.schedule, patch.customHours)
+    // Validated for SHAPE here and clamped by `normalizeHour` — same division as `customHours`.
+    if (patch.atHour !== undefined && !Number.isFinite(patch.atHour)) {
+      return { ok: false, reason: 'the hour of day must be a number' }
+    }
+    await writeBackupSchedule(patch.schedule, patch.customHours, patch.atHour)
   }
   return { ok: true, status: await readBackupStatus() }
 }
