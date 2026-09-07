@@ -30,6 +30,19 @@ export const NOTIFICATION_TEXT: Record<string, { pt: Localized; en: Localized }>
   // Raised when an owner recovers their password with the second factor. It is a WARNING, not a
   // success: the whole point of showing it to every other owner is that this is what an account
   // takeover would look like, and the only chance anyone has to notice it.
+  // Raised for a MANAGER, about somebody else's account — it carries no `meta` at all, which is
+  // why `notifications-store.ts` keys it by SUBJECT: two people asking at once must not collapse
+  // into one row that shows only the second one.
+  'iam.reset_requested': {
+    pt: {
+      title: 'Pedido de redefinição de senha',
+      message: 'Alguém pediu para redefinir a senha de uma conta que você administra. Confirme com a pessoa antes de aprovar.',
+    },
+    en: {
+      title: 'Password reset requested',
+      message: 'Someone asked to reset the password of an account you administer. Confirm with them before approving.',
+    },
+  },
   'iam.password_recovered': {
     pt: {
       title: 'Senha de owner redefinida',
@@ -158,7 +171,21 @@ const PEER_CODES = new Set(['member.rules_proposed', 'member.peer_pinned', 'memb
 
 export function resolveNotification(n: AppNotification, lang: 'pt' | 'en'): Localized {
   const loc = n.code ? NOTIFICATION_TEXT[n.code]?.[lang] : undefined
-  const title = loc?.title ?? n.title ?? ''
+  // A CODE WITH NO TEXT MUST NOT RENDER AS A BLANK CARD.
+  //
+  // Only `code` + `meta` are stored, so a code this table has not met resolves to empty strings —
+  // and both surfaces then draw a card with an icon, a timestamp, a dismiss button and NOTHING to
+  // read. It is the worst possible failure for a notification: the product is telling the user
+  // something happened and refusing to say what, and it is indistinguishable from a rendering bug.
+  //
+  // `notificationCoverage.test.ts` makes an unmapped code fail the build, so this should never
+  // fire. It exists anyway because that test can only see the codes the server emits TODAY, and a
+  // notification stored by a newer build and read by an older one is the case no lint can reach.
+  // The code itself is a poor title and an honest one.
+  const fallbackTitle = n.code
+    ? (lang === 'pt' ? `Evento: ${n.code}` : `Event: ${n.code}`)
+    : ''
+  const title = loc?.title ?? n.title ?? fallbackTitle
   let message = loc?.message ?? n.message
   // Interpolate {user} from meta (e.g. "{user} connected to the central").
   if (message && n.meta?.user) {

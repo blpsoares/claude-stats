@@ -1026,10 +1026,25 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     pick(e.dataTransfer.files)
   }
 
+  /**
+   * IS THE PERSON TYPING RIGHT NOW.
+   *
+   * It exists for one rule, asked for in these words: "enquanto eu estiver digitando no input NADA
+   * tira o foco dele". A `disabled` attribute is not a style — the browser BLURS an element the
+   * moment it becomes disabled — and this field was disabled from `canPrompt`, which is recomputed
+   * on every 5s fleet poll. So a poll that briefly reported the session blocked, or not live, or
+   * mid-send took the caret out from under someone mid-sentence, and they had to tap back in. "Do
+   * nada o foco sai do input."
+   */
+  const [typing, setTyping] = useState(false)
+
   async function send() {
     const text = draft.trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
-    if ((text === '' && attached.length === 0) || sending) return
+    // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
+    // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
+    // about what may be DELIVERED, not about what may be typed.
+    if ((text === '' && attached.length === 0) || sending || !canPrompt) return
     // Paths first, on their own lines, then what was typed — the assistant reads the files it is
     // pointed at, and burying the paths inside a sentence makes them easy to miss.
     // Quote first, then the paths, then what was typed. The quote is trimmed to a few lines: a
@@ -1564,7 +1579,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   // written prompt changes whether the caret is inside a `/command`, and a picker
                   // that only listened to typing would answer for wherever the caret used to be.
                   onSelect={e => setCaret(e.currentTarget.selectionStart ?? 0)}
+                  onFocus={() => setTyping(true)}
                   onBlur={e => {
+                    setTyping(false)
                     // Leaving the field closes the picker — unless the focus went INTO it, which
                     // is what a keyboard user tabbing onto an entry does.
                     if (!skillPickerRef.current?.contains(e.relatedTarget as Node | null)) setSlashDismissed(true)
@@ -1599,7 +1616,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
                   }}
-                  disabled={!canPrompt || sending}
+                  // NEVER WHILE IT HAS THE CARET. `disabled` blurs, so making it depend on a
+                  // 5s poll makes the poll able to interrupt a sentence. What the state actually
+                  // has to stop is SENDING, and `send()` refuses on its own — a field that accepts
+                  // text it cannot deliver yet costs nothing, while a field that empties your focus
+                  // mid-word costs the sentence.
+                  disabled={!typing && (!canPrompt || sending)}
                   rows={1}
                   placeholder={canPrompt
                     ? (pt ? 'Escreva para esta sessão…' : 'Write to this session…')

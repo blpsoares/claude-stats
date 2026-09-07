@@ -1600,26 +1600,27 @@ export default function AppLayout() {
     return () => { root.classList.remove('ag-viewport-locked') }
   }, [lockViewport])
   /**
-   * PUT THE PAGE BACK WHEN THE FIELD IS LEFT — and do NOTHING else about the keyboard.
+   * SNAPSHOT BEFORE THE KEYBOARD, RESTORE AFTER IT — asked for in exactly those words: "não dá pra
+   * você resetar a posição dele sempre pro estado anterior antes do teclado subir quando o usuário
+   * minimizar o teclado novamente?"
    *
-   * iOS scrolls the page to bring the caret into view, and that is the half that has always
-   * WORKED: the composer rides up with the keyboard by itself. What it does not reliably do is undo
-   * that scroll on dismissal, and since this shell is exactly one viewport tall, the leftover shows
-   * as a band of nothing at the foot — the composer and the bottom bar both sitting higher than
-   * they started. That, and only that, is what this fixes.
+   * It is the right shape, and it is a better one than what was here. Every previous attempt tried
+   * to work out WHERE things should be while the keyboard is up — which needs measurements that do
+   * not mean the same thing in a Safari tab, a Safari-added web app and a Chrome-added shortcut, and
+   * got five different wrong answers. This asks nothing about the keyboard at all: it remembers what
+   * the scroll positions were the instant before a field took focus, and puts them back when the
+   * field loses it.
    *
-   * FIVE ATTEMPTS TO DO MORE WERE REVERTED, and the reason is worth keeping. Each tried to take
-   * the keyboard over from iOS — a fixed body, a shell sized to the visible band, a shell sized to
-   * the locked box, the keyboard's height reserved as padding, that height measured against a
-   * remembered resting one. Every version was correct in a headless emulation and wrong on the
-   * device, in a different way each time: a bar floating off the floor, a composer under the fold,
-   * a composer that never rose, a composer pushed to the top of the screen. The measurements those
-   * versions rest on — `window.innerHeight`, `visualViewport.height` — do not mean the same thing
-   * in a Safari tab and in an installed web app, and this repo has no way to test the second.
+   * IT RESTORES EVERY SCROLLER ON THE PATH, not just the document. That matters here and is what the
+   * page-only version could not fix: the composer is `position: sticky; bottom: 0` INSIDE the
+   * conversation's own scrolling column, so if iOS moves that column to reveal the caret, the
+   * composer ends up parked away from the bottom edge — "desgrudado" — with `window.scrollY` sitting
+   * innocently at 0 the whole time. Walking up from the focused element catches whichever one moved
+   * without having to know which one it will be.
    *
-   * So the rule is the one this file already states for the desktop: do not re-anchor a layout that
-   * is correct. `focusout` is a fact, not a measurement, and putting a scroll back is not a layout
-   * change.
+   * The restore is repeated across the dismissal animation rather than fired once: iOS keeps
+   * adjusting during it, so a single write lands mid-animation and is overwritten a frame later.
+   * Each repeat is a no-op once the value is already back.
    */
   useEffect(() => {
     if (!lockViewport) return
@@ -1627,17 +1628,41 @@ export default function AppLayout() {
       const e = el as HTMLElement | null
       return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
     }
-    const onBlur = (ev: FocusEvent) => {
-      if (!editable(ev.target)) return
-      // The keyboard's dismissal is animated and iOS keeps adjusting the scroll across it, so one
-      // reset lands mid-animation and is overwritten. These cover the whole of it, and each is a
-      // no-op once the page is already home.
-      for (const ms of [0, 120, 300, 600]) {
-        window.setTimeout(() => { if (window.scrollY !== 0) window.scrollTo(0, 0) }, ms)
+    /** Every scrolling ancestor of `el`, with what it was showing. */
+    const snapshot = (el: HTMLElement): { el: HTMLElement; top: number }[] => {
+      const out: { el: HTMLElement; top: number }[] = []
+      for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+        if (n.scrollHeight > n.clientHeight + 1) out.push({ el: n, top: n.scrollTop })
       }
+      return out
     }
-    window.addEventListener('focusout', onBlur)
-    return () => window.removeEventListener('focusout', onBlur)
+    let before: { page: number; scrollers: { el: HTMLElement; top: number }[] } | null = null
+    const onIn = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      before = { page: window.scrollY, scrollers: snapshot(ev.target as HTMLElement) }
+    }
+    const onOut = (ev: FocusEvent) => {
+      if (!editable(ev.target) || before === null) return
+      const was = before
+      before = null
+      const restore = () => {
+        if (window.scrollY !== was.page) window.scrollTo(0, was.page)
+        // A scroller that was at its BOTTOM is put back at its bottom, not at the pixel it held:
+        // the conversation grows while you type, and the pixel that was the end is no longer it.
+        for (const { el, top } of was.scrollers) {
+          const wasAtEnd = top >= el.scrollHeight - el.clientHeight - 4
+          const target = wasAtEnd ? el.scrollHeight - el.clientHeight : top
+          if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
+        }
+      }
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    window.addEventListener('focusin', onIn)
+    window.addEventListener('focusout', onOut)
+    return () => {
+      window.removeEventListener('focusin', onIn)
+      window.removeEventListener('focusout', onOut)
+    }
   }, [lockViewport])
 
   /**
