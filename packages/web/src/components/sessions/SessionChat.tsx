@@ -40,7 +40,8 @@ import { isImagePath } from '../../lib/attachmentPreview'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
-import { scratchKey, sessionScratch, type CachedChat } from '../../lib/sessionScratch'
+import { scratchKey, sessionScratch } from '../../lib/sessionScratch'
+import { chatReadAt, firstFrameStale, refreshChat, subscribeChat } from '../../lib/chatFeed'
 import { composerMaxHeight } from '../../lib/composerHeight'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
@@ -107,8 +108,11 @@ export interface SessionChatProps {
   }) => void
 }
 
-/** Matches the fleet poll. The transcript only changes when a turn lands, so faster buys nothing. */
-const CHAT_POLL_MS = 3000
+// How often the conversation is re-read — and for how long it keeps being read after you leave —
+// belongs to `chatFeed.ts`, which is the one place that decides it for every surface.
+
+/** How long a stale first frame goes unannounced before the "updating" line appears. */
+const REFRESH_NOTICE_MS = 400
 
 // How tall the composer's field may grow is `composerHeight.ts` — a share of the viewport rather
 // than a constant, because a fixed number is most of a phone and a sliver of a desktop.
@@ -152,6 +156,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const scratchId = scratchKey(session)
 
   const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(scratchId) as ChatPayload | null)
+  /**
+   * The frame on screen is one this session cached a while ago, and a fresh read is on its way.
+   *
+   * Only ever true for a first frame that is genuinely BEHIND (`firstFrameStale`) — the tab was
+   * hidden, or the warm window closed while you were away. Saying nothing there is what makes the
+   * conversation appear to change on its own; saying it on every mount would be a label that
+   * flashes for 150 ms and means nothing, which is why the marker itself also waits (see
+   * `showRefreshing`).
+   */
+  const [refreshing, setRefreshing] = useState(() => firstFrameStale(chatReadAt(scratchId), Date.now()))
   const [draft, setDraft] = useState(() => sessionScratch.readDraft(scratchId))
 
   /**
@@ -203,6 +217,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     landedRef.current = false
     setAtTail(true)
     setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
+    setRefreshing(firstFrameStale(chatReadAt(scratchId), Date.now()))
     setDraft(sessionScratch.readDraft(scratchId))
     setReplyTo(sessionScratch.readReply(scratchId))
     setEcho(sessionScratch.readEchoes(scratchId))
@@ -604,42 +619,54 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    */
   const nudgeChat = useRef<() => void>(() => {})
 
+  /*
+   * THE CONVERSATION IS READ BY `chatFeed`, NOT BY THIS COMPONENT.
+   *
+   * The poll used to live here, which meant it existed only while this view was mounted — and
+   * mounting is what returning to a session IS. So the cached first frame was exactly as old as
+   * the time spent elsewhere: leave mid-turn, come back two minutes later, and the conversation
+   * on screen was the one you left, ending at your own last message, with every reply since
+   * arriving in one jump a moment later. Reported as "por um instante fica meu último prompt ali
+   * e, do nada, carrega todas as novas mensagens".
+   *
+   * The feed keeps reading it for a few minutes after the last watcher leaves, so the frame this
+   * mount paints from the cache is current. Everything else is unchanged: it still asks on mount,
+   * still polls at the same cadence while watched, and a failed read still keeps the conversation
+   * on screen rather than blanking it.
+   *
+   * A BACKGROUND TAB still does not poll — Chrome throttles a hidden tab's timers to roughly once
+   * a minute, and the warm read stands down there too — so coming back into view asks immediately,
+   * which is the exact moment somebody wants what they missed.
+   */
   useEffect(() => {
-    let alive = true
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/fleet/chat?id=${encodeURIComponent(session.id)}&lang=${lang}`)
-        if (!res.ok || !alive) return
-        const next = await res.json() as ChatPayload
-        setPayload(next)
-        // Write through, so the NEXT visit starts where this one ended.
-        sessionScratch.writeChat(scratchId, next as unknown as CachedChat)
-      } catch { /* transient — keep the last conversation rather than blanking it */ }
-    }
-    nudgeChat.current = () => { void poll() }
-    void poll()
-    const t = setInterval(poll, CHAT_POLL_MS)
-    /*
-     * A BACKGROUND TAB DOES NOT POLL, and nothing here noticed it coming back.
-     *
-     * Chrome throttles `setInterval` in a hidden tab to roughly once a minute, so leaving the
-     * session to do something else and returning meant the conversation on screen was as old as the
-     * last tick — the cached turns ending at your own last message — until the throttled interval
-     * happened to fire. Reported as "fica um tempo na minha última mensagem e depois de uns 5
-     * segundos aparece as mensagens". Measured against the server, which is not the slow part: the
-     * chat read answers in 100-220ms on every session on this machine.
-     *
-     * Coming back into view is the exact moment somebody wants what they missed, so it asks then.
-     */
-    const onVisible = () => { if (document.visibilityState === 'visible') void poll() }
+    const stop = subscribeChat({ id: session.id, key: scratchId, lang }, next => {
+      setPayload(next as unknown as ChatPayload)
+      setRefreshing(false)
+    })
+    nudgeChat.current = () => { refreshChat(session.id) }
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshChat(session.id) }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      alive = false
       nudgeChat.current = () => {}
-      clearInterval(t)
       document.removeEventListener('visibilitychange', onVisible)
+      stop()
     }
-  }, [session.id, lang])
+  }, [session.id, lang, scratchId])
+
+  /**
+   * THE MARKER WAITS, and that is what keeps it from being noise.
+   *
+   * The read answers in 66-143 ms on this machine, so a label rendered the instant a mount starts
+   * would appear and vanish inside a blink on almost every visit — a flicker announcing a flicker.
+   * It is shown only once the wait is long enough to be felt, which on a phone reaching a member
+   * machine over the LAN with a long transcript is where it actually earns its place.
+   */
+  const [showRefreshing, setShowRefreshing] = useState(false)
+  useEffect(() => {
+    if (!refreshing) { setShowRefreshing(false); return }
+    const t = setTimeout(() => setShowRefreshing(true), REFRESH_NOTICE_MS)
+    return () => clearTimeout(t)
+  }, [refreshing])
 
   /**
    * IS THE LIVE SCREEN WORTH WATCHING RIGHT NOW?
@@ -1211,6 +1238,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               wrong PLACE for whatever chrome slipped through. `live` still drives the follow-the-
               tail effect below (new screen content is a sign to keep scrolling), and `WorkingNote`
               is the one and only "the session is busy" indicator now — small, grey, no raw text. */}
+
+          {/* The conversation on screen is one this tab cached before you left, and the current one
+              is on its way. AT THE TAIL rather than the top: the view lands at the end, which is
+              where the reader is looking and where the messages that changed will appear. */}
+          {showRefreshing && (
+            <p role="status" style={{
+              margin: 0, textAlign: 'center', fontSize: 11, lineHeight: 1.5,
+              color: 'var(--text-tertiary)',
+            }}>{pt ? 'Atualizando a conversa…' : 'Updating this conversation…'}</p>
+          )}
 
           {/* The quiet line saying the session is busy. AFTER the messages, deliberately not styled
               as one — it is the only place the reasoning and the tool calls surface, and rendering
