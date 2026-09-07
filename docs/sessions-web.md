@@ -93,6 +93,18 @@ advertise the cycle key.
 
 - **Dictation shows what it is hearing.** `interimResults` is on, the interim text is previewed, and
   the mic pulses while it is live — a control that records silently is one you cannot tell is broken.
+- **The SERVER may not deny the microphone to its own page.** The baseline security header said
+  `Permissions-Policy: microphone=()`, which denies the document itself and not merely a third
+  party, so dictation was dead on `localhost` too — where the secure context it needs is satisfied.
+  Measured on `http://localhost:47292`: `isSecureContext` true, `allowsFeature('microphone')`
+  FALSE, `SpeechRecognition.start()` answering `onerror: not-allowed`, which `dictationError` then
+  reported as the browser having refused a permission the user was never asked for. It is
+  `microphone=(self)`: same-origin only, and the browser's own prompt is still the consent gate.
+  `dictationSupport` has a `blocked` state for it, because a reverse proxy in front of a central can
+  send the same header and the button must name what is actually refusing.
+- **A stale service worker carries stale HEADERS.** The PWA precache serves the whole document, and
+  a cached response brings its `Permissions-Policy` with it — so the fix above appears not to work
+  until the shell is replaced. `Ctrl+Shift+R`, or unregister the worker.
 - **It does not lose focus mid-sentence.** The poll re-rendered the view under the field.
 - **`Enter` sends on a hardware keyboard and BREAKS THE LINE on a phone.** `shift+enter` needs a
   shift key a software keyboard does not have, so on a touch layout the return key is the only way
