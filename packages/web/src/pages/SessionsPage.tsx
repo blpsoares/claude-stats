@@ -580,7 +580,9 @@ export default function SessionsPage() {
 
             {/* Icons only — the words "Chat" and "Terminal" beside a title on a 390px screen push
                 the title to about six characters. The `aria-label` carries the name. */}
-            {selected.conversationBlind === undefined && (
+            {/* Not on a central — see the same gate in App.tsx's strip. The conversation is not
+                relayed, so a Chat tab there cannot do what it says. */}
+            {!isCentral && selected.conversationBlind === undefined && (
               <div role="tablist" style={{
                 display: 'flex', gap: 2, padding: 2, borderRadius: 9, flexShrink: 0,
                 background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
