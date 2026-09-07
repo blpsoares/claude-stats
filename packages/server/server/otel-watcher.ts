@@ -39,7 +39,7 @@ import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions'
 
 // Shared imports from the main codebase
 
-import { calcCost } from '@agentistics/core'
+import { calcCost, sessionCostUSD } from '@agentistics/core'
 import type { ModelUsage, HarnessId, SessionMeta } from '@agentistics/core'
 import type { OtelSnapshot } from '@agentistics/core'
 import { HOME_DIR, CLAUDE_DIR, PROJECTS_DIR, SESSION_META_DIR, STATS_CACHE_FILE, CONSOLIDATED_DIR } from './config'
@@ -122,16 +122,17 @@ async function buildHarnessSnapshots(): Promise<HarnessSnapshot[]> {
           const cacheWrite = s.cache_creation_input_tokens ?? 0
           totalInputTokens += inp + cacheRead + cacheWrite
           totalOutputTokens += out
-          // Build a ModelUsage-compatible shape for calcCost
-          const usage: ModelUsage = {
+          // Per-model breakdown (multi-model sessions, e.g. Antigravity, price correctly)
+          // instead of one dominant model's rate applied to the session's whole usage.
+          // No model at all → calcCost falls back to the default price, same as everywhere else.
+          totalCostUsd += sessionCostUSD(s) ?? calcCost({
             inputTokens: inp,
             outputTokens: out,
             cacheReadInputTokens: cacheRead,
             cacheCreationInputTokens: cacheWrite,
             webSearchRequests: 0,
             costUSD: 0,
-          }
-          totalCostUsd += calcCost(usage, s.model ?? '')
+          }, '')
         })
       )
     )
@@ -586,29 +587,55 @@ async function main() {
   console.log(`  OTLP:       ${OTLP_ENDPOINT || '(disabled)'}`)
   console.log()
 
-  // Initial snapshot
-  await rebuildSnapshot()
-
-  // Setup OpenTelemetry export
+  // Setup OpenTelemetry export FIRST, because it decides whether the snapshot is worth building.
   const otel = setupOtel()
 
-  // Debounce: after a file change, wait a short delay before rebuilding
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null
-  const DEBOUNCE_MS = 2000
+  // THE SNAPSHOT HAS EXACTLY ONE CONSUMER: the observable callbacks `setupOtel` registers. With no
+  // `OTEL_EXPORTER_OTLP_ENDPOINT` it returns null, registers nothing, and `latestSnapshot` is then
+  // read by no one — so everything below was a full scan of every transcript on the machine,
+  // rebuilt on every file change AND every 30 seconds, forever, feeding a variable nothing looks
+  // at.
+  //
+  // Under `agentop server` this module runs INSIDE the HTTP server's process (cli.ts imports
+  // both), so it also stood up a SECOND set of chokidar watchers on the two directories `sse.ts`
+  // already watches there.
+  //
+  // What is MEASURED is the work, not a memory number: with a warm parse cache, skipping this loop
+  // moved peak RSS by ~6% (492 MB → 461 MB over 120s on an 862 MB store), because the cache makes
+  // an unchanged file cheap to re-scan. The cost it certainly removes is the scan itself — every
+  // 30 seconds, forever, plus one per file change — and the two duplicate watchers. On a COLD
+  // cache, or the first run after Claude rewrites its transcripts, that scan is the expensive one.
+  // The honest claim is that this is work with no consumer, not that it was the whole 1 GB.
+  //
+  // The daemon still runs: the session-event producer below is the other reason it exists, it is
+  // needed whether or not anyone exports metrics, and it does not read the snapshot.
+  if (otel) {
+    // Initial snapshot
+    await rebuildSnapshot()
 
-  const triggerUpdate = () => {
-    if (debounceTimer) clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(() => rebuildSnapshot(), DEBOUNCE_MS)
+    // Debounce: after a file change, wait a short delay before rebuilding
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    const DEBOUNCE_MS = 2000
+
+    const triggerUpdate = () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => rebuildSnapshot(), DEBOUNCE_MS)
+    }
+
+    // Watch directories for changes
+    await Promise.all([
+      watchDirectory(SESSION_META_DIR, triggerUpdate),
+      watchDirectory(PROJECTS_DIR, triggerUpdate),
+    ])
+
+    // Also do periodic polling as a fallback (chokidar can miss events in some edge cases)
+    setInterval(() => rebuildSnapshot(), WATCH_INTERVAL_SEC * 1000)
+  } else {
+    // Said out loud, because "metrics export disabled" alone reads as "the numbers are not sent"
+    // rather than "the numbers are not computed", and someone reading the log should be able to
+    // tell that this process is now cheap.
+    console.log('[otel] Snapshot loop not started — nothing would read it. The event producer still runs.')
   }
-
-  // Watch directories for changes
-  await Promise.all([
-    watchDirectory(SESSION_META_DIR, triggerUpdate),
-    watchDirectory(PROJECTS_DIR, triggerUpdate),
-  ])
-
-  // Also do periodic polling as a fallback (chokidar can miss events in some edge cases)
-  setInterval(() => rebuildSnapshot(), WATCH_INTERVAL_SEC * 1000)
 
   // The session-event producer rides along here rather than being its own service: it has to be
   // long-lived to tell a working session from a finished one (see events/producer.ts), and a
@@ -617,12 +644,18 @@ async function main() {
   const { startEventProducer } = await import('./events/daemon')
   const events = await startEventProducer()
 
+  // The scheduled backup rides along for the same reason the event producer does — see
+  // backup/daemon.ts. Never fatal to this daemon.
+  const { startScheduledBackup } = await import('./backup/daemon')
+  const backups = startScheduledBackup()
+
   console.log('[watcher] Running — use `bun run dev` in a separate terminal for the dashboard UI')
 
   // Graceful shutdown
   const shutdown = async () => {
     console.log('\n[watcher] Shutting down...')
     await events?.stop()
+    backups?.stop()
     if (otel) await otel.shutdown()
     process.exit(0)
   }

@@ -46,14 +46,14 @@
     },
     "packages/agentop": {
       "name": "@agentistics/agentop",
-      "version": "1.22.4",
+      "version": "2.10.1",
       "bin": {
         "agentop": "bin/agentop.js",
       },
     },
     "packages/core": {
       "name": "@agentistics/core",
-      "version": "1.22.4",
+      "version": "2.10.1",
       "dependencies": {
         "@opentelemetry/api": "^1.9.1",
         "date-fns": "^4.1.0",
@@ -71,7 +71,7 @@
     },
     "packages/mcp": {
       "name": "@agentistics/mcp",
-      "version": "1.22.4",
+      "version": "2.10.1",
       "bin": {
         "agentistics-mcp": "dist/agentistics-mcp.js",
       },
@@ -81,7 +81,7 @@
     },
     "packages/server": {
       "name": "@agentistics/server",
-      "version": "1.22.4",
+      "version": "2.10.1",
       "dependencies": {
         "@agentistics/core": "workspace:*",
         "@agentistics/tui": "workspace:*",
@@ -91,7 +91,7 @@
     },
     "packages/tui": {
       "name": "@agentistics/tui",
-      "version": "1.22.4",
+      "version": "2.10.1",
       "dependencies": {
         "@agentistics/core": "workspace:*",
         "es-toolkit": "^1.50.0",
@@ -103,13 +103,25 @@
         "ink-testing-library": "^4.0.0",
       },
     },
-    "packages/web": {
-      "name": "@agentistics/web",
-      "version": "1.22.4",
+    "packages/vscode": {
+      "name": "agentistics-vscode",
+      "version": "1.1.0",
       "dependencies": {
         "@agentistics/core": "workspace:*",
+        "@agentistics/tui": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/vscode": "^1.85.0",
+      },
+    },
+    "packages/web": {
+      "name": "@agentistics/web",
+      "version": "2.10.1",
+      "dependencies": {
+        "@agentistics/core": "workspace:*",
+        "@agentistics/tui": "workspace:*",
         "@opentelemetry/api": "^1.9.1",
-        "@xterm/xterm": "5.5.0",
+        "@xterm/xterm": "^5.5.0",
         "date-fns": "^4.1.0",
         "html2canvas": "^1.4.1",
         "jspdf": "^4.2.1",
@@ -612,6 +624,8 @@
 
     "@types/use-sync-external-store": ["@types/use-sync-external-store@0.0.6", "", {}, "sha512-zFDAD+tlpf2r4asuHEj0XH6pY6i0g5NeAHPn+15wk3BV6JA69eERFXC1gyGThDkVa1zCyKr5jox1+2LbV/AMLg=="],
 
+    "@types/vscode": ["@types/vscode@1.134.0", "", {}, "sha512-NDEu0hg4sF7+vvFsADsktqUJ6f80LHSZvVK2Ovo1XiQ0/VHck1O3zst+ZZyVA/uvz6vo6LcuoqU2q48YMqOwWw=="],
+
     "@types/webidl-conversions": ["@types/webidl-conversions@7.0.3", "", {}, "sha512-CiJJvcRtIgzadHCYXw7dqEnMNRjhGZlYK05Mj9OyktqV8uVT8fD2BFOB7S1uwBE3Kj2Z+4UyPmFw/Ixgw/LAlA=="],
 
     "@types/whatwg-url": ["@types/whatwg-url@11.0.5", "", { "dependencies": { "@types/webidl-conversions": "*" } }, "sha512-coYR071JRaHa+xoEvvYqvnIHaVqaYrLPbsufM9BF63HkwI5Lgmy2QR8Q5K/lYDYo5AK82wOvSOS0UsLTpTG7uQ=="],
@@ -625,6 +639,8 @@
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
     "acorn": ["acorn@8.16.0", "", { "bin": { "acorn": "bin/acorn" } }, "sha512-UVJyE9MttOsBQIDKw1skb9nAwQuR5wuGD3+82K6JgJlm/Y+KI92oNsMNGZCYdDsVtRHSak0pcV5Dno5+4jh9sw=="],
+
+    "agentistics-vscode": ["agentistics-vscode@workspace:packages/vscode"],
 
     "ajv": ["ajv@8.18.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A=="],
 

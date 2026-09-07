@@ -1,0 +1,157 @@
+{
+  "name": "agentistics-vscode",
+  "displayName": "Agentistics",
+  "description": "Your coding-assistant fleet and your usage metrics, inside the editor — a client of the local agentop server.",
+  "version": "1.1.0",
+  "publisher": "blpsoares",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "agent",
+    "tmux",
+    "analytics"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blpsoares/agentistics.git",
+    "directory": "packages/vscode"
+  },
+  "homepage": "https://github.com/blpsoares/agentistics",
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentistics",
+          "title": "Agentistics",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentistics": [
+        {
+          "id": "agentistics.sessions",
+          "name": "Sessions",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentistics.openSessions",
+        "title": "Agentistics: Open the whole fleet in an editor tab",
+        "icon": "$(window)"
+      },
+      {
+        "command": "agentistics.newSession",
+        "title": "Agentistics: Start a session here"
+      },
+      {
+        "command": "agentistics.openSession",
+        "title": "Agentistics: Open a session in a tab"
+      },
+      {
+        "command": "agentistics.attachSession",
+        "title": "Agentistics: Attach to a session in a terminal"
+      },
+      {
+        "command": "agentistics.refresh",
+        "title": "Agentistics: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentistics.startServer",
+        "title": "Agentistics: Start the local agentop server"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentistics.refresh",
+          "when": "view == agentistics.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentistics.openSessions",
+          "when": "view == agentistics.sessions",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agentistics",
+      "properties": {
+        "agentistics.apiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:47291",
+          "markdownDescription": "The local `agentop server` API — port 47291 by default. Everything the extension knows comes from here; it never reads `~/.agentistics` or talks to tmux itself."
+        },
+        "agentistics.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "pt"
+          ],
+          "default": "auto",
+          "markdownDescription": "Language for the extension and for the sentences the server sends back. `auto` follows VS Code's own display language and falls back to English."
+        },
+        "agentistics.notifyOnAttention": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a notification when a session starts waiting on you. Fired on the transition into that state, never on the level — a session that has been waiting for an hour does not re-announce itself."
+        },
+        "agentistics.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show today's cost and tokens in the status bar."
+        },
+        "agentistics.statusBarRefreshSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 15,
+          "markdownDescription": "How often to re-read today's totals. The fleet list refreshes every 5 seconds regardless — this timer is for `/api/data`, which is megabytes on a well-used machine, so it is deliberately slow."
+        },
+        "agentistics.currency": {
+          "type": "string",
+          "enum": [
+            "usd",
+            "brl"
+          ],
+          "default": "usd",
+          "markdownDescription": "Currency for the status bar. `brl` converts with the live rate the server already fetches (`/api/rates`), through the same formatter the dashboard uses — so the two can never disagree about the same day."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun run build:extension && bun run build:webview",
+    "build:extension": "bun build src/extension.ts --target=node --format=cjs --outfile=dist/extension.cjs --external vscode --minify",
+    "build:webview": "bun build src/webview/main.ts --target=browser --format=iife --outfile=dist/webview.js --minify",
+    "watch": "bun build src/extension.ts --target=node --format=cjs --outfile=dist/extension.cjs --external vscode --watch",
+    "package": "bun run build && bunx @vscode/vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@agentistics/core": "workspace:*",
+    "@agentistics/tui": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0"
+  }
+}

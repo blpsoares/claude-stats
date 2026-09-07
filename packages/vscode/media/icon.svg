@@ -1,0 +1,22 @@
+<!--
+  The agentistics mark, as supplied. Two changes and no others, both required by where it is drawn:
+
+  - `currentColor` instead of the fixed #6672A5. VS Code tints an activity-bar icon itself — dim
+    when the view is inactive, the theme's foreground when it is — and a hardcoded colour keeps the
+    icon at one shade while every neighbour responds, which reads as a broken icon rather than a
+    branded one.
+  - A SQUARE viewBox. The artwork is 323x441; the activity bar draws into a square, so a tall
+    viewBox is letterboxed and the mark comes out smaller than everything beside it. The extra
+    width is padding around the original coordinates — nothing is scaled or moved.
+-->
+<svg width="441" height="441" viewBox="-59 0 441 441" fill="none" xmlns="http://www.w3.org/2000/svg">
+<rect x="89.5" y="390.49" width="29" height="44" stroke="currentColor" stroke-width="12"/>
+<rect x="147.5" y="364.49" width="29" height="70" stroke="currentColor" stroke-width="12"/>
+<rect x="205.5" y="337.49" width="29" height="97" stroke="currentColor" stroke-width="12"/>
+<rect x="260.5" y="288.49" width="29" height="146" stroke="currentColor" stroke-width="12"/>
+<path d="M81.5 175.49L107.192 130.99L132.884 175.49" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+<path d="M189.5 175.49L215.192 130.99L240.884 175.49" stroke="currentColor" stroke-width="13" stroke-linecap="round"/>
+<path d="M290 221.99L169.5 329.49L146 305.99L100 351.99L88 341.602M290 221.99L317.5 201.99V140.49L290 122.49M290 221.99V122.49M33 219.49L5.5 200.49V143.49L33 123.99M33 219.49V123.99M33 219.49V293.99L88 341.602M33 219.49L88 263.49V341.602M33 123.99V86.9901L161.5 6.49011L290 86.9901V122.49" stroke="currentColor" stroke-width="11"/>
+<path d="M27 208.556L11.5 198.223V143.741L27 132.198V208.556Z" stroke="currentColor"/>
+<path d="M296 211.644L317 200.111V140.268L296 127.383V211.644Z" stroke="currentColor"/>
+</svg>

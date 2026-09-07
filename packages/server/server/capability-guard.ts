@@ -18,8 +18,6 @@ const EXACT: ReadonlyMap<string, keyof Capabilities> = new Map<string, keyof Cap
   ['/api/exec', 'localShell'],
   ['/api/chat-tty', 'localChat'],
   ['/api/chat-harnesses', 'localChat'],
-  ['/api/mcp-list', 'mcpAdmin'],
-  ['/api/mcp-action', 'mcpAdmin'],
   ['/api/projects-list', 'localTranscripts'],
   // Returns this machine's decrypted sibling messages — a peer's FULL source list, plus its own
   // key fingerprints. Strictly more sensitive than /api/team/status, which deliberately exposes
@@ -32,17 +30,7 @@ const EXACT: ReadonlyMap<string, keyof Capabilities> = new Map<string, keyof Cap
   // deployment that should read a transcript but not this.
   ['/api/billing/detect', 'localTranscripts'],
   ['/api/hardware-resources', 'localProcesses'],
-  // The session fleet, and acting on it. `/api/fleet` alone captures each live session's SCREEN —
-  // a coding assistant's terminal, transcript and all — and `/api/fleet/act` types into it, sends
-  // it a keystroke that answers a permission prompt, or kills it. That is shell access with extra
-  // steps, so it rides `localShell` rather than the softer `localChat`: there is no deployment
-  // that should expose someone's keyboard to the internet and a shell is the honest name for it.
-  ['/api/fleet', 'localShell'],
-  ['/api/fleet/act', 'localShell'],
-  // The live terminal channel — an SSE stream of a session's SCREEN, colours and all. It is a read,
-  // but it is a read of a coding assistant's terminal, so it rides the same `localShell` as
-  // `/api/fleet`: there is no deployment that should stream someone's terminal to the internet.
-  ['/api/fleet/stream', 'localShell'],
+  // The session fleet is registered as a PREFIX below, not name by name — see the note there.
 ])
 
 /** Prefix (no trailing slash) → capability. Matches `<prefix>` and `<prefix>/…` only. */
@@ -52,6 +40,34 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   ['/api/gemini-sessions', 'localTranscripts'],
   ['/api/copilot-sessions', 'localTranscripts'],
   ['/api/nay-sessions', 'localTranscripts'],
+  // The session fleet, and everything under it. `/api/fleet` alone captures each live session's
+  // SCREEN — a coding assistant's terminal, transcript and all — `/api/fleet/act` types into it,
+  // answers a permission prompt for it or kills it, `/api/fleet/stream` streams that screen
+  // continuously, `/api/fleet/attach` hands out the command that enters it, and `/api/fleet/new`
+  // starts a fresh assistant in a directory the caller names. That is shell access with extra
+  // steps, so it rides `localShell` rather than the softer `localChat`: there is no deployment that
+  // should expose someone's keyboard to the internet and a shell is the honest name for it.
+  //
+  // A PREFIX and not five names: a route that is not registered here is assumed harmless, so the
+  // next fleet route someone adds must be guarded by having been added AT ALL, never by having
+  // remembered a second table.
+  ['/api/fleet', 'localShell'],
+  // The web dashboard's read of the backup engine and its "run now" button. `status` walks the
+  // metrics layer and the backup history; `run` spawns `git bundle`/`git diff` across every known
+  // repository and, depending on the configured layers, copies the raw harness directories
+  // (`~/.claude`, `~/.codex`, …) into an archive on disk — the same shell-and-filesystem power
+  // `/api/exec` carries, so it rides the same capability rather than a softer one.
+  ['/api/backup', 'localShell'],
+  // Reading and WRITING this machine's MCP server configuration. `/api/mcp/servers` reports what is
+  // configured and what is running; `/api/mcp/install` and `/api/mcp/remove` run `claude mcp` to
+  // change it. A PREFIX for the same reason `/api/fleet` is one: the next route here is guarded by
+  // having been added at all, never by having remembered a second table. It cannot collide with the
+  // older `/api/mcp-list` / `/api/mcp-action`, which are exact entries above — a prefix matches
+  // `<prefix>` and `<prefix>/…` only.
+  // It replaced `/api/mcp-list` + `/api/mcp-action`, which had no client and read two files that
+  // hold no MCP servers at all (`~/.claude/settings.json` and `<project>/.claude/settings.json`) —
+  // a second lister giving a different, wrong answer is the drift this codebase is built against.
+  ['/api/mcp', 'mcpAdmin'],
 ]
 
 export function routeCapability(pathname: string): keyof Capabilities | null {

@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { calcStreak, calcLongestStreak, getDateRangeFilter, filterByHarness, computeHarnessSummaries, computeFilteredHarnessSummaries, sortRepos, pickLongestSession, repositoryGitTotals, apportionModelUsage, summarizeApiCostByDay, computeDerivedStats, resolvePresenceScope } from './useData'
-import { EMPTY_TOKENS, mergeStatsCaches, totalTokens } from '@agentistics/core'
+import { EMPTY_TOKENS, mergeStatsCaches, totalTokens, calcCost } from '@agentistics/core'
 import type { RepoSortKey, RepoStat } from './useData'
 import type { SessionMeta } from '@agentistics/core'
 import { format, subDays } from 'date-fns'
@@ -1148,6 +1148,126 @@ describe('machine filter reads the same deep history as the member filter', () =
 })
 
 // ---------------------------------------------------------------------------
+// Machine-scoped COST reads the deep cache — the same path (resolveMachineCacheScope)
+// the tokens already travel, per model, over all four billed counters.
+//
+// The block above pins a machine selection's SESSIONS and INPUT TOKENS to the deep statsCache.
+// COST — the dashboard's headline number, and the one the reader budgets against — was never
+// asserted for a machine scope. That omission is exactly where this repo's costing has regressed
+// before:
+//   - summing the session documents instead of the deep cache (this task): the central showed
+//     R$319,40 for two machines apart but R$705,45 together, on the same tokens (a ~2,2x gap);
+//   - pricing a whole session by its dominant model (server PR #267, ~2,2x);
+//   - counting only 2 of the 4 billed counters (#225, ~300x low), or pricing cache as fresh
+//     input (#225, ~10x high).
+// Each of those makes the machine's cost DIVERGE from the deep-cache figure below, so pinning the
+// machine cost to `calcCost` over the cache's own per-model usage catches all of them at once.
+//
+// The A-numbers are the acceptance items of this task's spec.
+describe('machine-scoped cost is derived from the deep cache, not summed from sessions', () => {
+  // A real, priced model (MODEL_PRICING: 5 / 25 / 0.50 / 6.25 per 1M) so `calcCost` is exercised
+  // over every counter — input, output, cache-read and cache-write — rather than a fallback blend.
+  const MODEL = 'claude-opus-4-6'
+  const four = (i: number, o: number, cr: number, cw: number) => ({
+    [MODEL]: {
+      inputTokens: i, outputTokens: o,
+      cacheReadInputTokens: cr, cacheCreationInputTokens: cw,
+      webSearchRequests: 0, costUSD: 0,
+    },
+  })
+  const cacheFor = (i: number, o: number, cr: number, cw: number, dates: string[]): import('@agentistics/core').StatsCache => ({
+    version: 1,
+    lastComputedDate: dates[dates.length - 1]!,
+    dailyActivity: dates.map(d => ({ date: d, sessionCount: 100, messageCount: 300, toolCallCount: 0 })),
+    dailyModelTokens: [],
+    modelUsage: four(i, o, cr, cw),
+    totalSessions: dates.length * 100,
+    totalMessages: dates.length * 300,
+    longestSession: { sessionId: 'x', duration: 1, messageCount: 1, timestamp: '2026-06-01T00:00:00Z' },
+    firstSessionDate: dates[0]!,
+    hourCounts: {},
+    totalSpeculationTimeSavedMs: 0,
+  })
+
+  // Two machines with genuinely different deep histories, dominated by cache-read (≈80% of the
+  // volume, as real Claude usage is) so a "2 of 4 counters" or "cache as fresh input" mistake moves
+  // the number far.
+  const alienware = cacheFor(1_000_000, 500_000, 8_000_000, 200_000, ['2026-06-01', '2026-06-02'])
+  const dell = cacheFor(9_000_000, 4_500_000, 72_000_000, 1_800_000, ['2026-06-01', '2026-06-03'])
+  const costA = calcCost(alienware.modelUsage[MODEL]!, MODEL)
+  const costB = calcCost(dell.modelUsage[MODEL]!, MODEL)
+  const tokensA = 1_000_000 + 500_000 + 8_000_000 + 200_000
+
+  // The surviving session documents are a TINY, recent subset of that history — this is precisely
+  // what "summing session documents" would report. They are dated AFTER the cache window so they
+  // are pure gap sessions (their count supplements the cache; their cost does not — it is already
+  // inside `modelUsage`).
+  const recent = (memberId: string): SessionMeta => ({
+    session_id: `${memberId}-recent`, harness: 'claude', user: 'Bryan Soares', memberId,
+    project_path: '/p', model: MODEL, start_time: '2026-08-29T10:00:00.000Z', end_time: '2026-08-29T11:00:00.000Z',
+    input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 100,
+  } as unknown as SessionMeta)
+  const sessionSumCost = calcCost(
+    { inputTokens: 1_000, outputTokens: 500, cacheReadInputTokens: 2_000, cacheCreationInputTokens: 100, webSearchRequests: 0, costUSD: 0 },
+    MODEL,
+  )
+
+  const data = {
+    statsCache: cacheFor(0, 0, 0, 0, ['2026-06-01']),
+    sessions: [recent('alienware'), recent('dell')],
+    projects: [],
+    allSessions: [],
+    harnesses: ['claude'],
+    userStatsCaches: { 'Bryan Soares': mergeStatsCaches([alienware, dell]) },
+    machineStatsCaches: { alienware, dell },
+    machineOwners: {
+      alienware: { user: 'Bryan Soares', teamIds: ['dev'] },
+      dell: { user: 'Bryan Soares', teamIds: ['dev'] },
+    },
+  } as unknown as import('@agentistics/core').AppData
+
+  const filters = (over: Partial<import('@agentistics/core').Filters>): import('@agentistics/core').Filters =>
+    ({ dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [], ...over })
+
+  // The dashboard headline (`computeDerivedStats.totalCostUSD`) — what A1 measures.
+  const dA = computeDerivedStats(data, filters({ machines: ['alienware'] }))!
+  const dB = computeDerivedStats(data, filters({ machines: ['dell'] }))!
+  const dAB = computeDerivedStats(data, filters({ machines: ['alienware', 'dell'] }))!
+
+  // A1 — the accounts close. Two machines apart sum to the two together, on the same tokens.
+  // Tolerance is 1e-6 USD (sub-micro-dollar): the merge is additive and `calcCost` is linear, so
+  // the only slack is IEEE-754 rounding, not a modelling choice.
+  test('A1: filtering the two machines together equals the sum of each alone', () => {
+    expect(dAB.totalCostUSD).toBeCloseTo(dA.totalCostUSD + dB.totalCostUSD, 6)
+  })
+
+  // A3 — a single machine reflects its WHOLE deep history, not the fraction still stored as
+  // session documents. If cost were summed from sessions, `dA.totalCostUSD` would collapse to
+  // `sessionSumCost` (orders of magnitude smaller); reading the deep cache, it is `costA`.
+  test('A3: a single machine cost is the deep-cache figure, dwarfing the surviving sessions', () => {
+    expect(dA.totalCostUSD).toBeCloseTo(costA, 6)
+    expect(dA.totalCostUSD).toBeGreaterThan(sessionSumCost * 100)
+  })
+
+  // A2 — cost and tokens are read from the SAME deep-cache usage record. The tokens are exactly the
+  // four counters of the cache (the recent session's tokens do not leak in), and the cost is
+  // `calcCost` of that very record — so they cannot come from different sources.
+  test('A2: cost and tokens share the deep-cache source, over all four counters', () => {
+    expect(totalTokens(dA.tokenTotals)).toBe(tokensA)
+    expect(dA.totalCostUSD).toBeCloseTo(calcCost(alienware.modelUsage[MODEL]!, MODEL), 6)
+  })
+
+  // The Compare page must agree with the dashboard for the identical selection, or the two screens
+  // contradict each other. Same property, through `computeFilteredHarnessSummaries.costUSD`.
+  test('the Compare page prices a machine from the cache and closes under the merge', () => {
+    const one = computeFilteredHarnessSummaries(data, filters({ machines: ['alienware'] }))
+    const both = computeFilteredHarnessSummaries(data, filters({ machines: ['alienware', 'dell'] }))
+    expect(one.summaries.claude!.costUSD).toBeCloseTo(costA, 6)
+    expect(both.summaries.claude!.costUSD).toBeCloseTo(costA + costB, 6)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // pickLongestSession — the "958h" regression
 // ---------------------------------------------------------------------------
 
@@ -1500,5 +1620,180 @@ describe('the header total never exceeds — and is never disconnected from — 
     const offlineTokens = 5_000_000_000 + 2_000_000_000 + 15_000_000_000 + 1_000_000_000
     expect(totalTokens(d.tokenTotals)).toBe(offlineTokens)
     expect(d.totalSessions).toBe(400)
+  })
+})
+
+// "Active only" on the dashboard (Task 9) — the stored session set intersected with the live
+// fleet by conversation id, and the scope this forces to be cache-blind.
+
+describe('computeDerivedStats — active only', () => {
+  const cache: import('@agentistics/core').StatsCache = {
+    version: 1, lastComputedDate: '2026-08-01',
+    dailyActivity: [{ date: '2026-08-01', sessionCount: 500, messageCount: 5000, toolCallCount: 0 }],
+    dailyModelTokens: [],
+    // A deep cached history dwarfing the two live sessions below — if "active only" fell back to
+    // the cache instead of forcing the per-session sum, the totals would show this instead.
+    modelUsage: {
+      'claude-sonnet-4-5': {
+        inputTokens: 900_000_000, outputTokens: 400_000_000,
+        cacheReadInputTokens: 1_000_000_000, cacheCreationInputTokens: 50_000_000,
+        webSearchRequests: 0, costUSD: 0,
+      },
+    },
+    totalSessions: 500, totalMessages: 5000, hourCounts: {},
+  } as unknown as import('@agentistics/core').StatsCache
+
+  // Dated ON the cache's own covered day (its `dailyActivity` already has 2026-08-01), so the
+  // gap-fill supplement (sessions on days statsCache has not yet computed) does not also add
+  // these two — isolating the test to the cache-vs-per-session behaviour this task changes.
+  const running: SessionMeta = {
+    session_id: 'conv-running', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-08-01T10:00:00.000Z', end_time: '2026-08-01T11:00:00.000Z',
+    input_tokens: 1_000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+  } as unknown as SessionMeta
+  const finished: SessionMeta = {
+    session_id: 'conv-finished', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-08-01T09:00:00.000Z', end_time: '2026-08-01T09:30:00.000Z',
+    input_tokens: 2_000, output_tokens: 1_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: cache,
+    sessions: [running, finished],
+    allSessions: [],
+    projects: [],
+    harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  const filters = (over: Partial<import('@agentistics/core').Filters> = {}): import('@agentistics/core').Filters =>
+    ({ dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [], ...over })
+
+  test('off (default): reads the deep cache, not the two session documents', () => {
+    const d = computeDerivedStats(data, filters())!
+    expect(d.activeOnlyScoped).toBe(false)
+    expect(d.totalSessions).toBe(500)
+  })
+
+  test('on: keeps only the running conversation, and forces the per-session sum', () => {
+    const d = computeDerivedStats(data, filters(), [], true, new Set(['conv-running']))!
+    expect(d.activeOnlyScoped).toBe(true)
+    expect(d.totalSessions).toBe(1)
+    expect(d.filteredSessions.map(s => s.session_id)).toEqual(['conv-running'])
+    // Not the cache's 500 messages, and not the finished session's tokens either.
+    expect(totalTokens(d.tokenTotals)).toBe(1_000 + 500)
+  })
+
+  test('on with nothing running: reports zero, never the cache\'s totals', () => {
+    const d = computeDerivedStats(data, filters(), [], true, new Set())!
+    expect(d.totalSessions).toBe(0)
+    expect(d.totalCostUSD).toBe(0)
+  })
+})
+
+
+describe('the `all` range claims sessions that record a per-day split', () => {
+  // THE REGRESSION. `all` starts at the EPOCH and `daysBetween` stops at MAX_RANGE_DAYS, so the
+  // range's day set was `1970-01-01 … 1971-02-04`. Every session carrying `daily` was tested for
+  // membership in it and dropped — silently, because the survivors are exactly the older records
+  // written before the field existed. Measured on a real machine: 397 of 662 sessions gone from
+  // the default view, which surfaced as the sessions workspace drawing "no activity in the chosen
+  // window" over a fleet that was plainly running.
+  const day = (n: number) => ({
+    input_tokens: n, output_tokens: n, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, messages: n,
+  })
+  const withDaily: SessionMeta = {
+    session_id: 'conv-live', harness: 'claude', project_path: '/p',
+    model: 'claude-sonnet-4-5', start_time: '2026-09-03T23:23:46.121Z',
+    input_tokens: 1_500, output_tokens: 1_500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0,
+    user_message_count: 10, assistant_message_count: 10,
+    daily: { '2026-09-03': day(500), '2026-09-05': day(1_000) },
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: { version: 1, lastComputedDate: '2026-08-01', dailyActivity: [], dailyModelTokens: [], modelUsage: {}, totalSessions: 0, totalMessages: 0, hourCounts: {} },
+    sessions: [withDaily], allSessions: [], projects: [], harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  const allRange: import('@agentistics/core').Filters =
+    { dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [] } as import('@agentistics/core').Filters
+
+  test('it is kept, and with its LIFETIME totals — `all` slices nothing', () => {
+    const d = computeDerivedStats(data, allRange, [], true, new Set(['conv-live']))!
+    expect(d.filteredSessions.map(s => s.session_id)).toEqual(['conv-live'])
+    expect(totalTokens(d.tokenTotals)).toBe(3_000)
+  })
+
+  test('and it reaches the heatmap, which is what showed the bug', () => {
+    const d = computeDerivedStats(data, allRange, [], true, new Set(['conv-live']))!
+    expect(d.heatmapData.length).toBeGreaterThan(0)
+  })
+
+  test('a BOUNDED range still slices it to the days asked for', () => {
+    // The fix must not cost the measurement it was built for: the two paths have to agree.
+    const oneDay = { ...allRange, dateRange: 'custom', customStart: '2026-09-05', customEnd: '2026-09-05' } as unknown as import('@agentistics/core').Filters
+    const d = computeDerivedStats(data, oneDay, [], true, new Set(['conv-live']))!
+    expect(totalTokens(d.tokenTotals)).toBe(2_000)
+  })
+
+  test('a day it sat out still excludes it', () => {
+    const gap = { ...allRange, dateRange: 'custom', customStart: '2026-09-04', customEnd: '2026-09-04' } as unknown as import('@agentistics/core').Filters
+    const d = computeDerivedStats(data, gap, [], true, new Set(['conv-live']))!
+    expect(d.filteredSessions).toEqual([])
+  })
+})
+
+describe('the activity calendar counts the days a session WORKED', () => {
+  // "Estou há alguns dias trabalhando e dia 4 foi pulado." It was: the day filter learned to read
+  // `SessionMeta.daily` and the calendar did not, so a conversation open since Tuesday drew one
+  // cell on Tuesday and left every day it actually worked blank.
+  const day = (n: number) => ({
+    input_tokens: n, output_tokens: n, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, messages: n,
+  })
+  const long: SessionMeta = {
+    session_id: 'long', harness: 'claude', project_path: '/p', model: 'claude-sonnet-4-5',
+    start_time: '2026-09-03T10:00:00.000Z',
+    user_message_count: 30, assistant_message_count: 30,
+    tool_counts: { Bash: 100 },
+    daily: { '2026-09-03': day(10), '2026-09-04': day(20), '2026-09-05': day(30) },
+  } as unknown as SessionMeta
+  const older: SessionMeta = {
+    session_id: 'older', harness: 'claude', project_path: '/p', model: 'claude-sonnet-4-5',
+    start_time: '2026-09-04T09:00:00.000Z',
+    user_message_count: 4, assistant_message_count: 4,
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: { version: 1, lastComputedDate: '2026-08-01', dailyActivity: [], dailyModelTokens: [], modelUsage: {}, totalSessions: 0, totalMessages: 0, hourCounts: {} },
+    sessions: [long, older], allSessions: [], projects: [], harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  // A session-scoped filter, so the calendar is built from sessions rather than the Claude cache.
+  const filters = { dateRange: 'all', customStart: '', customEnd: '', projects: ['/p'], models: [] } as unknown as import('@agentistics/core').Filters
+
+  test('a day in the MIDDLE of a long session is not skipped', () => {
+    const d = computeDerivedStats(data, filters)!
+    const on4 = d.heatmapData.find(x => x.date === '2026-09-04')
+    expect(on4).toBeDefined()
+    expect(on4!.value).toBeGreaterThan(0)
+  })
+
+  test('every day it worked is counted, and it counts as a session on each', () => {
+    const d = computeDerivedStats(data, filters)!
+    const days = Object.fromEntries(d.heatmapData.map(x => [x.date, x]))
+    expect(days['2026-09-03']!.value).toBe(10)
+    expect(days['2026-09-04']!.value).toBe(20 + 8)   // the long session's day, plus the one that started then
+    expect(days['2026-09-05']!.value).toBe(30)
+    expect(days['2026-09-04']!.sessions).toBe(2)
+  })
+
+  test('a session with no `daily` keeps the start-day rule', () => {
+    const d = computeDerivedStats(data, filters)!
+    const on4 = d.heatmapData.find(x => x.date === '2026-09-04')!
+    // `older` has no daily and started on the 4th: its 8 messages land there and nowhere else.
+    expect(d.heatmapData.filter(x => x.value > 0).map(x => x.date).sort())
+      .toEqual(['2026-09-03', '2026-09-04', '2026-09-05'])
+    expect(on4.sessions).toBe(2)
   })
 })

@@ -100,6 +100,22 @@ docs: improve install instructions
 
 Commit messages are in **English**.
 
+**The type decides the published version.** `.github/workflows/release.yml` reads every commit in
+the range and hands it to `bumpFromCommits` in `@agentistics/core` (`versionBump.ts`) — the one
+tested implementation of the rule: a `!` or a `BREAKING CHANGE:` footer is a major, `feat` is a
+minor, anything else is a patch. So a mistyped `chore:` over a real feature ships it as a
+correction, and nobody reading the versions learns it landed.
+
+Two rules exist because getting them wrong published v1.23.1 for a feature (#248):
+
+- **Read git with `--pretty=tformat:`, never `format:`.** `format:` omits the terminal newline on
+  the last record and `while read` drops it, so the OLDEST commit of the range goes unclassified.
+  It is safe inside `$(…)`, which is exactly why the wrong form survives long enough to be copied
+  into a loop. `releaseWorkflow.lint.test.ts` fails the build on either form.
+- **The workflow never decides the bump itself.** `bumpFromCommits` throws when it is handed
+  nothing to classify, so an unreadable range fails the job loudly. A bash `patch` default would
+  turn that same failure back into a quietly wrong number.
+
 ## Submitting a PR
 
 1. Fork the repo and create a branch from `dev` (ongoing work targets `dev`; `main` receives

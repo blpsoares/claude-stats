@@ -22,6 +22,7 @@ import {
   StatusInfoButton, StatusInfoPanel, toneBorderColor,
 } from './ConnectionCardParts'
 import { PeersSection } from './PeersSection'
+import { RemoteSessionsBlock } from './RemoteSessionsBlock'
 import { NoticesModal } from './NoticesModal'
 import { noticeSummary, type ProposalView, type KeyWarningView, type PeerFingerprint } from './proposalNotices'
 
@@ -60,6 +61,9 @@ export interface ConnectionCardProps {
   siblingRules?: SiblingRuleFact[]
   selfFingerprint?: string
   onDismissProposal?: (connId: string, body: { proposalId?: string; keyWarningMachineId?: string }) => Promise<void>
+  /** Write the remote-session consent switches. Same PATCH the rules use, and the panel owns it
+   *  for the same reason `onApplyRules` does: the card renders, the panel talks to the server. */
+  onSetRemoteConsent?: (connId: string, body: { allowRemoteSessions: boolean; allowRemoteScreens: boolean }) => Promise<void>
   /** Arrived here from the bell (`notificationLink`): open this card AND its notices modal, so a
    *  notification about a decision reaches that decision in one click.
    *
@@ -73,6 +77,7 @@ export function ConnectionCard({
   conn, status, archiveMode, shareTargets, projectTargets, sessions, modelUsage, otelEnabled, duplicateHost, lang,
   onDisconnect, onSyncNow, onApplyRules,
   proposals = [], keyWarnings = [], peers = [], siblingRules = [], selfFingerprint = '', onDismissProposal,
+  onSetRemoteConsent,
   focusNoticesSeq = 0,
 }: ConnectionCardProps) {
   const isMobile = useIsMobile()
@@ -395,6 +400,18 @@ export function ConnectionCard({
             editing={repoEditing}
             onEditingChange={setRepoEditing}
           />
+
+          {onSetRemoteConsent && !repoEditing && (
+            <RemoteSessionsBlock
+              connId={conn.id}
+              status={status}
+              lang={lang}
+              // Same guard the card's other writes take: a rules apply or a disconnect in flight
+              // is exactly when a second write races the server's own forget/push sequence.
+              disabled={disableWrites}
+              onPatch={onSetRemoteConsent}
+            />
+          )}
 
           {/* Fix 6 (Plan 4 Task 1): hidden — not merely disabled — for the whole time the repo
              panel's edit view is open. Both are unrelated to the edit in progress, and Disconnect

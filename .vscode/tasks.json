@@ -1,0 +1,14 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // The extension ships as two bundles and VS Code loads those, not `src/` — so F5 has to
+      // build before it launches or it runs whatever was there last.
+      "label": "build the extension",
+      "type": "shell",
+      "command": "bun run build:vscode",
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
+}

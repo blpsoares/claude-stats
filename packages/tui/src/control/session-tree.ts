@@ -42,7 +42,7 @@ import {
   type DimensionContext, type DimensionWordBook,
 } from './session-dimensions'
 import { DEFAULT_ORDER, sessionRank, sortSessions, type SessionOrder } from './session-order'
-import type { SessionGroup } from './sessions'
+import type { SessionGroup } from './session-fleet'
 import type { ControlSession } from './types'
 
 /** What a card band puts between two segments of a breadcrumb. */

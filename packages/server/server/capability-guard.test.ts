@@ -34,6 +34,38 @@ describe('routeCapability', () => {
     // The live terminal channel streams a session's SCREEN. It is a read, but a read of a coding
     // assistant's terminal, so it must be as unreachable on an exposed profile as the fleet itself.
     expect(routeCapability('/api/fleet/stream')).toBe('localShell')
+    // The attach ticket hands out the command that ENTERS a session, and `new` starts a fresh
+    // assistant in a directory the caller names — the most powerful call on the whole route table.
+    expect(routeCapability('/api/fleet/attach')).toBe('localShell')
+    expect(routeCapability('/api/fleet/new')).toBe('localShell')
+    expect(routeCapability('/api/fleet/skills')).toBe('localShell')
+    // The live terminal WRITE channel (WS) types key-by-key into a session, control keys included —
+    // strictly more power than the line prompt, so it rides localShell too (A5: refused off `local`).
+    expect(routeCapability('/api/fleet/input')).toBe('localShell')
+    // The artifacts panel's one route READS A FILE OFF THE DISK for a page. Its own two gates
+    // (membership in what the session touched, then containment in the session's cwd) decide WHICH
+    // file; this decides whether the question may be asked at all on an exposed profile.
+    expect(routeCapability('/api/fleet/file')).toBe('localShell')
+  })
+
+  it('guards a fleet route nobody has written yet', () => {
+    // The registration is a PREFIX on purpose: an unregistered route is assumed harmless, so the
+    // next fleet route must be guarded by having been added at all, never by someone having
+    // remembered a second table. This assertion is what keeps that true.
+    expect(routeCapability('/api/fleet/anything-added-later')).toBe('localShell')
+    // …without swallowing a neighbour that merely starts with the same letters.
+    expect(routeCapability('/api/fleetwide')).toBeNull()
+  })
+
+  it('maps the backup routes, and any sub-path added later', () => {
+    // The status read walks the metrics layer and the run spawns `git` across every known
+    // repository and, depending on layers, copies raw harness directories to disk — the same
+    // shell-and-filesystem power /api/exec carries.
+    expect(routeCapability('/api/backup/status')).toBe('localShell')
+    expect(routeCapability('/api/backup/run')).toBe('localShell')
+    // A PREFIX, so a future backup route is guarded by having been added at all.
+    expect(routeCapability('/api/backup/anything-added-later')).toBe('localShell')
+    expect(routeCapability('/api/backupwide')).toBeNull()
   })
 
   it('maps the local chat routes', () => {
@@ -64,14 +96,36 @@ describe('routeCapability', () => {
   })
 
   it('maps the mcp admin routes', () => {
-    expect(routeCapability('/api/mcp-action')).toBe('mcpAdmin')
-    expect(routeCapability('/api/mcp-list')).toBe('mcpAdmin')
+    // `/api/mcp-list` and `/api/mcp-action` are GONE: they had no client and read two files that
+    // hold no MCP servers at all, so their entries went with them rather than guarding nothing.
+    expect(routeCapability('/api/mcp-action')).toBeNull()
+    expect(routeCapability('/api/mcp-list')).toBeNull()
+    // The MCP PANEL rides a prefix, so the next route under it is guarded by having been added at
+    // all — the same reason `/api/fleet` is a prefix. Both writes run `claude mcp` on this host.
+    expect(routeCapability('/api/mcp')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/servers')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/install')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/remove')).toBe('mcpAdmin')
+    expect(routeCapability('/api/mcp/anything-added-later')).toBe('mcpAdmin')
+    // …and it may not swallow a neighbour that merely starts with the same letters.
+    expect(routeCapability('/api/mcpanything')).toBeNull()
   })
 
   it('returns null for ordinary metric routes', () => {
     expect(routeCapability('/api/data')).toBeNull()
     expect(routeCapability('/api/tags/abc')).toBeNull()
     expect(routeCapability('/api/health')).toBeNull()
+  })
+
+  it('the RELAYED machine fleet is unguarded ON PURPOSE, not by omission', () => {
+    // The guard maps a path to the LOCAL capability it needs, and this one needs none: it spawns
+    // nothing, reads no transcript and touches no dotfile — the fleet comes from the machine over
+    // the reverse channel. It must not ride `localShell` like /api/fleet does, or it would be
+    // dead on every central (localShell is false on lan and public), which is every deployment
+    // where it means anything. Its own three gates are in machine-fleet-route.ts.
+    expect(routeCapability('/api/team/machine-fleet')).toBeNull()
+    // And it must not accidentally inherit /api/fleet's entry through some prefix rule.
+    expect(routeCapability('/api/fleet')).toBe('localShell')
   })
 
   it('does not match a route that merely starts with the same characters', () => {

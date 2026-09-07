@@ -1,8 +1,10 @@
-import type { BillingReadiness, BillingSettings, CostBasis, MonthlyCommitment, SavedComparison, Filters, Lang, Theme, SessionMeta, AppData, StatsCache, HarnessId } from '@agentistics/core'
+import type { BillingReadiness, BillingSettings, CostBasis, MonthlyCommitment, SavedComparison, Filters, Lang, Theme, SessionMeta, AppData, StatsCache, HarnessId, Project } from '@agentistics/core'
 import type { useDerivedStats } from '../hooks/useData'
 import type { PlanBasisView } from '../hooks/usePlanBasis'
+import type { A11yState } from '../hooks/useAccessibility'
 import type { TagDef } from './tagMatch'
 import type { ChatModelId } from './chatModels'
+import type { CardId } from './cardOrder'
 
 type DerivedStats = NonNullable<ReturnType<typeof useDerivedStats>>
 
@@ -28,16 +30,18 @@ export interface Principal {
   mustChangePassword: boolean
 }
 
-/** Draft shape for the Preferences settings page / modal (single source of truth). */
+/** Draft shape for the Preferences settings page / modal (single source of truth).
+ *
+ *  Chat's sound/model preferences moved to the Chat settings section (ChatSettings.tsx), which
+ *  reads and writes them directly via /api/preferences — the same pattern it already used for
+ *  `chatEnabled` — so they are deliberately NOT part of this draft. Carrying them here would mean
+ *  Preferences' Save button could silently overwrite whatever Chat's own controls just set. */
 export interface PrefsDraft {
   lang: Lang
   theme: Theme
   currency: 'USD' | 'BRL'
   cardOrder: string[]
   cardPrecision: Record<string, boolean>
-  chatModel: ChatModelId | null
-  chatSoundEnabled: boolean
-  chatSoundId: string
 }
 
 export interface AppContext {
@@ -49,6 +53,18 @@ export interface AppContext {
   // filters
   filters: Filters
   setFilters: React.Dispatch<React.SetStateAction<Filters>>
+  /** The fleet's own "only what is running" switch — see `FiltersBar`'s `onActiveOnlyChange` doc
+   *  comment. Lives here (not in `Filters`) so the Sessions workspace's mobile FiltersBar can read
+   *  and write the SAME state the desktop shared header already does, computed once in App.tsx. */
+  activeOnly: boolean
+  setActiveOnly: (v: boolean) => void
+  /** The SAME memoized values the desktop header's `FiltersBar` already gets — computed once in
+   *  App.tsx from `data`/`filters`, so the mobile Sessions workspace's own `FiltersBar` can reuse
+   *  them verbatim instead of re-deriving (and risking disagreeing with) the same filter options.
+   *  `sessionCountByProject`/`models` are declared further down already — this only adds the two
+   *  the dashboard's own context never needed. */
+  availableProjects: Project[]
+  availableHarnesses: HarnessId[]
 
   // preferences
   lang: Lang
@@ -85,10 +101,16 @@ export interface AppContext {
    *  different question from the filter-window plan cost. `null` when nothing is registered. */
   monthCommitment: MonthlyCommitment | null
 
-  // chat preferences (seed the Preferences settings page draft)
+  // chat preferences — live values consumed by the chat widget (TtyChat). Set from the Chat
+  // settings section (ChatSettings.tsx), which persists them itself via PUT /api/preferences and
+  // calls these setters so the live widget picks up the change without a reload — the same thing
+  // `savePreferences` used to do for them when they still lived in the Preferences draft.
   chatModel: ChatModelId | null
+  setChatModel: (m: ChatModelId) => void
   chatSoundEnabled: boolean
+  setChatSoundEnabled: (v: boolean) => void
   chatSoundId: string
+  setChatSoundId: (id: string) => void
 
   /** Persists a full preferences draft: applies it to global state + PUTs /api/preferences.
    *  Reuses the same logic the old Settings modal ran on Save. */
@@ -125,8 +147,8 @@ export interface AppContext {
   infoItems: InfoItem[]
 
   // card order for home page (managed via preferences)
-  cardOrder: string[]
-  setCardOrder: React.Dispatch<React.SetStateAction<string[]>>
+  cardOrder: CardId[]
+  setCardOrder: React.Dispatch<React.SetStateAction<CardId[]>>
 
   // per-card full precision toggle
   cardPrecision: Record<string, boolean>
@@ -150,6 +172,16 @@ export interface AppContext {
   /** Central-only: available machines for filter. Empty when not a central or no machines. */
   machines: { id: string; name: string; user: string; teamId?: string; teamIds?: string[] }[]
 
+  /** Local host-power capabilities the server still grants (`server/exposure.ts`'s `CAPS`, as
+   *  reported by `/api/team/session`). Undefined while `teamSession` has not loaded yet — treat
+   *  the same as "granted", the same reading `App.tsx` already uses for an older server. */
+  capabilities?: {
+    localShell?: boolean
+    localChat?: boolean
+    localTranscripts?: boolean
+    mcpAdmin?: boolean
+  }
+
   /** The tag definitions `useDerivedStats` resolves a tag filter against.
    *
    *  Exposed because a page that derives a SECOND scope (the compare page's B side) must pass the
@@ -170,4 +202,7 @@ export interface AppContext {
    *  never keep claiming "Hidden from N centrals" after the rule is gone. OPTIONAL for the same
    *  reason `deniedRepoLabels` is — every page consumes `AppContext`. */
   refreshDeniedRepoLabels?: () => void
+
+  /** Magnifier lenses — the accessibility feature. Always present; `prefs.enabled` is the switch. */
+  a11y: A11yState
 }

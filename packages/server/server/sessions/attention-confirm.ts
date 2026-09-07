@@ -83,6 +83,25 @@ export interface ConfirmResult {
 export function confirmActivities(
   memory: ConfirmMemory,
   raw: ReadonlyMap<string, SessionActivity>,
+  /**
+   * The sessions whose reading is CORROBORATED — believe them at once.
+   *
+   * The asymmetry below (work resumed is believed immediately, needing a person is confirmed) was
+   * right about the direction and wrong about the evidence. `attentionOf` reads `working` from
+   * whether the pane MOVED, and a pane moves for reasons that are not a turn: a repaint, an
+   * advisory line, a plugin notice. Each of those flipped a row to `working` for one poll and back,
+   * so the row changed colour and wording continuously and a notification went out each time —
+   * reported as exactly that.
+   *
+   * So `working` keeps its immediacy only where something CORROBORATES it: the harness's own
+   * working marker on screen (`esc to interrupt`). A harness that prints no marker has nothing
+   * better than movement and must keep believing it at once, or codex would never read as working
+   * at all — which is why this is a set the CALLER fills, not a rule this module can decide.
+   *
+   * Absent (the parameter omitted) means "everything is corroborated", so existing callers and the
+   * tests written against them keep their exact behaviour.
+   */
+  corroborated?: ReadonlySet<string>,
 ): ConfirmResult {
   const lastRaw = new Map<string, SessionActivity>()
   const confirmed = new Map<string, SessionActivity>()
@@ -94,8 +113,9 @@ export function confirmActivities(
     const prevRaw = memory.lastRaw.get(id)
 
     let next: SessionActivity
-    if (!needsPerson(r)) {
-      // Work resumed, or the session exited. Believed at once — see the header's asymmetry.
+    if (!needsPerson(r) && (corroborated === undefined || corroborated.has(id))) {
+      // Work resumed, or the session exited, AND something corroborates it. Believed at once — see
+      // the header's asymmetry and the `corroborated` parameter.
       next = r
     } else if (prevConfirmed === r || prevRaw === r) {
       // Already the believed state, or seen on two consecutive polls: confirmed.

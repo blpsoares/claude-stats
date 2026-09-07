@@ -1,0 +1,243 @@
+/**
+ * ApprovalCard — the question a session is blocked on, answerable from the chat.
+ *
+ * This is the one thing the conversation view cannot get from the transcript: a dialog is on the
+ * SCREEN and is never written to the JSONL. It arrives on the fleet row instead — `approvalLines`
+ * verbatim, and `dialogOptions` parsed off the frame by `parseDialogOptions`.
+ *
+ * MOST DIALOGS ARE NOT YES/NO. Claude's permission prompt is `1. Yes / 2. Yes, always / 3. No`, and
+ * an `AskUserQuestion` can offer five answers that do different work. A key that "approves" takes
+ * whichever row is HIGHLIGHTED, which on such a dialog is choosing for the user — so the options
+ * are listed and the PICKED one is sent by number. Where the harness has no verified way to select
+ * by number the server sets `canChoose` false and hands over the row's own sentence, and this card
+ * refuses in words rather than falling back to the bare confirm key. That fallback is the defect,
+ * not the safety net.
+ *
+ * The card shows the dialog VERBATIM above the options. What the keystroke will do is not obvious
+ * from a label alone, and a person agreeing to something should be able to read what they are
+ * agreeing to.
+ */
+
+import { useState } from 'react'
+import { AlertCircle, Check } from 'lucide-react'
+import type { FleetActionId, FleetRow } from '../../lib/fleet'
+
+export interface ApprovalCardProps {
+  row: FleetRow
+  lang: 'pt' | 'en'
+  act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
+    => Promise<{ ok: boolean; message: string; id?: string }>
+}
+
+export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
+  const pt = lang === 'pt'
+  const [busy, setBusy] = useState<number | 'confirm' | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const options = row.dialogOptions ?? []
+  const approve = row.verbs.find(v => v.action === 'approve')
+
+  /**
+   * WHICH DIALOG THIS IS. Its options, as text — the only thing on the row that changes when the
+   * question does, and stays the same while it is still being asked.
+   */
+  const shape = options.map(o => `${o.number}:${o.label}`).join('\n')
+  /** The dialog that has already been answered from here. */
+  const [answeredShape, setAnsweredShape] = useState<string | null>(null)
+
+  /**
+   * ONE ANSWER PER DIALOG, and the second one was doing real damage.
+   *
+   * An option is picked by TYPING ITS DIGIT — that is the only mechanism claude publishes. For an
+   * ordinary option the digit selects and submits, but claude's `AskUserQuestion` has a
+   * WRITE-YOUR-OWN option, and there the digit opens a TEXT FIELD. Every further digit then lands
+   * INSIDE that field: reported with a screenshot where option 3 read `33333333333333333` and the
+   * card cheerfully said `answered: 3333333333333333`.
+   *
+   * The card cannot tell text-entry mode from selection mode — no probed marker distinguishes them,
+   * and inventing one is how a guess ships. What it CAN say is that this dialog has already been
+   * answered from here, so the buttons go inert until the options CHANGE. A dialog still on screen
+   * after an answer is either processing it or has opened a mode this card does not drive; pressing
+   * again helps in neither case.
+   */
+  const alreadyAnswered = answeredShape !== null && answeredShape === shape
+
+  /** The free-text option's draft, while it is open. `null` means it is not open. */
+  const [writing, setWriting] = useState<{ number: number; text: string } | null>(null)
+
+  async function answer(choice?: number, text?: string) {
+    setBusy(choice ?? 'confirm')
+    const out = await act({
+      id: row.id,
+      action: 'approve',
+      ...(choice !== undefined ? { choice } : {}),
+      ...(text !== undefined ? { text } : {}),
+    })
+    setBusy(null)
+    setNotice(out.message)
+    if (out.ok) { setAnsweredShape(shape); setWriting(null) }
+  }
+
+  return (
+    <div style={{
+      border: '1px solid var(--anthropic-orange)',
+      background: 'var(--anthropic-orange-dim)',
+      borderRadius: 14, padding: 16, display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+        color: 'var(--anthropic-orange)',
+      }}>
+        <AlertCircle size={14} />
+        {pt ? 'Esta sessão está perguntando' : 'This session is asking'}
+      </div>
+
+      {/* The dialog itself, monospaced and unedited. A person agreeing to something has to be able
+          to read what they are agreeing to, and a label alone does not say what the key will do. */}
+      {(row.approvalLines?.length ?? 0) > 0 && (
+        <pre style={{
+          margin: 0, padding: '10px 12px', borderRadius: 10,
+          background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
+          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
+          fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-secondary)',
+          whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 260, overflowY: 'auto',
+        }}>
+          {row.approvalLines!.join('\n')}
+        </pre>
+      )}
+
+      {options.length > 0 ? (
+        row.chooseBlind ? (
+          // A numbered dialog on a harness with no verified way to select by number. Refused in
+          // words that name what DOES work, rather than sending the confirm key and taking
+          // whichever row happens to be highlighted.
+          <p style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
+            {row.chooseBlind}
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {options.map(o => (
+              <button
+                key={o.number}
+                onClick={() => {
+                  // THE FREE-TEXT OPTION OPENS A FIELD instead of answering. Picking it with the
+                  // digit does not submit — it turns the row into one — and every further press
+                  // then types that digit into it, which is how `33333333333333333` happened.
+                  if (o.freeText) { setWriting({ number: o.number, text: '' }); return }
+                  void answer(o.number)
+                }}
+                disabled={busy !== null || alreadyAnswered}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
+                  padding: '10px 12px', borderRadius: 10,
+                  cursor: busy === null && !alreadyAnswered ? 'pointer' : 'default',
+                  border: `1px solid ${o.selected ? 'var(--anthropic-orange)' : 'var(--border-subtle)'}`,
+                  background: 'var(--bg-card)', color: 'var(--text-primary)',
+                  fontFamily: 'inherit', fontSize: 13, minWidth: 0,
+                  opacity: alreadyAnswered ? 0.5 : (busy !== null && busy !== o.number ? 0.5 : 1),
+                }}
+              >
+                <span style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+                  background: 'var(--bg-elevated)', color: 'var(--text-tertiary)',
+                  fontSize: 11, fontWeight: 700,
+                }}>
+                  {o.number}
+                </span>
+                <span style={{ minWidth: 0, flex: 1 }}>{o.label}</span>
+                {/* Which row the dialog currently has highlighted. Shown because it is a fact about
+                    the screen, never because it is a recommendation. */}
+                {o.selected && (
+                  <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                    {pt ? 'em foco' : 'highlighted'}
+                  </span>
+                )}
+              </button>
+            ))}
+
+            {/* THE FIELD. Shown under the options, so the question and the answers stay readable
+                while it is being written. `Enter` sends because that is what it does in the session
+                itself; `Escape` closes it without answering, which the dialog cannot offer once a
+                digit has been sent. */}
+            {writing && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                <input
+                  autoFocus
+                  value={writing.text}
+                  onChange={e => setWriting({ ...writing, text: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { e.preventDefault(); setWriting(null); return }
+                    if (e.key === 'Enter' && writing.text.trim() !== '') {
+                      e.preventDefault(); void answer(writing.number, writing.text.trim())
+                    }
+                  }}
+                  placeholder={pt ? 'Escreva a sua resposta…' : 'Write your own answer…'}
+                  style={{
+                    flex: 1, minWidth: 0, height: 38, padding: '0 12px', borderRadius: 10,
+                    border: '1px solid var(--anthropic-orange)', background: 'var(--bg-card)',
+                    color: 'var(--text-primary)', fontFamily: 'inherit',
+                    // 16px on a phone or iOS Safari zooms the viewport and breaks the sticky header.
+                    fontSize: 16,
+                  }}
+                />
+                <button
+                  onClick={() => void answer(writing.number, writing.text.trim())}
+                  disabled={busy !== null || writing.text.trim() === ''}
+                  style={{
+                    padding: '0 14px', height: 38, borderRadius: 10, border: 'none', flexShrink: 0,
+                    background: 'var(--anthropic-orange)', color: '#fff',
+                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+                    cursor: writing.text.trim() === '' ? 'default' : 'pointer',
+                    opacity: writing.text.trim() === '' ? 0.5 : 1,
+                  }}
+                >{pt ? 'Responder' : 'Answer'}</button>
+              </div>
+            )}
+          </div>
+        )
+      ) : approve?.enabled ? (
+        // Nothing to choose between — the `Press enter to continue` shape. The bare confirm key
+        // survives only here.
+        <button
+          onClick={() => void answer()}
+          disabled={busy !== null || alreadyAnswered}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+            padding: '10px 14px', borderRadius: 10, border: 'none', alignSelf: 'flex-start',
+            background: 'var(--anthropic-orange)', color: '#fff',
+            fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+            cursor: busy === null ? 'pointer' : 'default',
+          }}
+        >
+          <Check size={14} />
+          {approve.label}
+        </button>
+      ) : (
+        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
+          {approve?.reason ?? row.approveBlind ?? (pt
+            ? 'Esta pergunta não pode ser respondida daqui. Abra a sessão no terminal.'
+            : 'This question cannot be answered from here. Open the session in the terminal.')}
+        </p>
+      )}
+
+      {notice && (
+        <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+          {notice}
+        </p>
+      )}
+
+      {/* WHY THE BUTTONS ARE INERT. A row that stops responding with no sentence is the
+          control-that-reads-as-broken; and the one case a person most needs told about is the
+          write-your-own option, where the answer has to be typed in the session itself. */}
+      {alreadyAnswered && (
+        <p role="status" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--anthropic-orange)' }}>
+          {pt
+            ? 'Já respondido daqui. Se o diálogo continuar na tela, ele abriu um campo para você escrever — isso é feito na própria sessão (attach), porque daqui cada clique digitaria o número da opção dentro do campo.'
+            : 'Already answered from here. If the dialog is still on screen it has opened a field for you to type in — that is done in the session itself (attach), because from here each click would type the option’s number into that field.'}
+        </p>
+      )}
+    </div>
+  )
+}

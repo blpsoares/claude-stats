@@ -18,7 +18,14 @@
 
 /** What kind of derived value a row holds. Part of the slot, so two derivations
  *  of one file never collide. */
-export type ParseCacheKind = 'session' | 'enrich'
+/**
+ * `subagent` is keyed on ONE AGENT'S OWN transcript, never the conversation's.
+ *
+ * Those files change independently of the parent — a running agent writes while the conversation
+ * sits still — so a summary cached under the parent's stamp would be a cache key that does not name
+ * its source. Keyed on its own file, a finished agent is summarised once ever.
+ */
+export type ParseCacheKind = 'session' | 'enrich' | 'subagent'
 
 /** The identity of a file VERSION, as `stat()` reports it. */
 export interface FileStamp {

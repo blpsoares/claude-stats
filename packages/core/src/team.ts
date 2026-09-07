@@ -77,6 +77,24 @@ export interface TeamConnection {
   label?: string
   /** ISO — deterministic card ordering. */
   addedAt?: string
+  /**
+   * This machine's consent for THIS central to manage its sessions. Absent reads as OFF — see
+   * `remoteSessions.ts`, which is the only place the two switches are interpreted.
+   *
+   * Per CONNECTION rather than per machine, like every other rule on this type: consent is given to
+   * one central, and a machine connected to two has no reason to give both the same answer. The
+   * ask was phrased per machine because most machines have one connection.
+   *
+   * Unlike `shareMode`/`sources`, these two DO travel to the central — announced by the machine
+   * over the reverse channel, never asked for. That is not an inconsistency: a sharing rule is
+   * enforced by the member simply not sending the data, so the central learning it would add
+   * exposure and buy nothing; this one has to be readable by the account that owns the machine, on
+   * the central, or the only way to discover why a fleet is empty is to walk to the machine.
+   */
+  allowRemoteSessions?: boolean
+  /** Additionally let the session SCREEN travel (and with it `approve`/`prompt`). Never in force
+   *  while `allowRemoteSessions` is off — `resolveRemoteConsent` is what applies that. */
+  allowRemoteScreens?: boolean
   /** ISO — set once this connection's auth failures have been REJECTED (401/403) continuously
    *  for at least `AUTH_FAIL_SUSTAIN_MS` (team-uploader.ts). While set, pushes are paused (a
    *  central that is rejecting the token is never hammered) but the connection and its
@@ -322,6 +340,13 @@ export function migrateTeamConfig(raw: unknown): TeamConfig {
         // `resolveMemberIdentity` persisted it correctly and a raw disk read confirmed it at
         // +200ms; by +2.2s, with no OTHER write traced anywhere in that window, it was gone.
         ...(typeof entry.machineName === 'string' && entry.machineName ? { machineName: entry.machineName } : {}),
+        // Same trap as `machineName` above, and it bit the same way: the switches persisted
+        // correctly and then read back as OFF, because `readEffective` runs the stored config
+        // through this reconstruction before any mutate callback sees it. A consent that silently
+        // reverts to "no" is the harmless direction of the bug and still a lie about what the user
+        // chose — and the central is told whatever this read produces.
+        ...(typeof entry.allowRemoteSessions === 'boolean' ? { allowRemoteSessions: entry.allowRemoteSessions } : {}),
+        ...(typeof entry.allowRemoteScreens === 'boolean' ? { allowRemoteScreens: entry.allowRemoteScreens } : {}),
       })
     }
     // An EMPTY sanitized array is NOT proof of "solo", and treating it as authoritative was a

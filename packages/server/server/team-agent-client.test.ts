@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test'
 import {
   agentWsUrl, backoffDelay, BACKOFF_MS, fingerprintOf, shouldTeardown, decodeAgentFrame,
+  liveReportNeedsData, LIVE_REPORT_DATA_MAX_AGE_MS,
 } from './team-agent-client'
 import type { TeamConnection } from '@agentistics/core'
 
@@ -340,4 +341,46 @@ describe('resolveMemberIdentity', () => {
 
     expect(hits).toBe(0)
   })
+})
+
+// ---------------------------------------------------------------------------
+// liveReportNeedsData — how often the live-session report may cause a FULL rebuild
+//
+// Measured 2026-09-03 on a real member machine: calling buildApiResponse() on every 8s tick made
+// this timer the cadence of a full transcript walk — 1.457 MB of file reads per minute, 30% of a
+// core, RSS oscillating 1,28-2,20 GB, with no browser open. The same build in solo mode (no
+// reverse channel, so no live-report loop) idled at 188 MB and 0 MB/min.
+// ---------------------------------------------------------------------------
+
+test('liveReportNeedsData rebuilds when the loop has never held a corpus', () => {
+  // The FIRST report has nothing to reuse. Reporting no sessions because the corpus was not ready
+  // would be worse than the one build, so `null` always rebuilds — whatever the clock says.
+  expect(liveReportNeedsData(null, 0)).toBe(true)
+  expect(liveReportNeedsData(null, 1_000_000)).toBe(true)
+})
+
+test('liveReportNeedsData reuses a corpus younger than the max age', () => {
+  const now = 1_000_000
+  expect(liveReportNeedsData(now - 1, now)).toBe(false)
+  expect(liveReportNeedsData(now - (LIVE_REPORT_DATA_MAX_AGE_MS - 1), now)).toBe(false)
+})
+
+test('liveReportNeedsData rebuilds at exactly the max age, and beyond', () => {
+  const now = 1_000_000
+  expect(liveReportNeedsData(now - LIVE_REPORT_DATA_MAX_AGE_MS, now)).toBe(true)
+  expect(liveReportNeedsData(now - LIVE_REPORT_DATA_MAX_AGE_MS * 10, now)).toBe(true)
+})
+
+test('liveReportNeedsData holds a corpus across several report ticks — that is the whole point', () => {
+  // Eight-second ticks against a sixty-second age: seven of every eight ticks must reuse, or the
+  // loop is back to setting the cadence of the most expensive computation in the process.
+  const built = 1_000_000
+  const rebuilds = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    .filter(tick => liveReportNeedsData(built, built + tick * 8_000))
+  expect(rebuilds).toEqual([8, 9]) // 64s and 72s — the first tick at or past 60s, and after
+})
+
+test('liveReportNeedsData takes an explicit max age, so a caller is never forced onto the default', () => {
+  expect(liveReportNeedsData(0, 5_000, 10_000)).toBe(false)
+  expect(liveReportNeedsData(0, 10_000, 10_000)).toBe(true)
 })

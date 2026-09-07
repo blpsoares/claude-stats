@@ -6,20 +6,15 @@ import {
   ListToolsRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { calcCost } from "@agentistics/core";
+import {
+  type AnySession,
+  filterSessions,
+  sessionHarness,
+  sessionMessages,
+  sessionTokens,
+} from "./session-tokens.js";
 
 const API = process.env.AGENTISTICS_API ?? "http://localhost:47291";
-
-function calcCostUSD(input: number, output: number, cacheRead: number, cacheWrite: number, model: string): number {
-  return calcCost({
-    inputTokens: input,
-    outputTokens: output,
-    cacheReadInputTokens: cacheRead,
-    cacheCreationInputTokens: cacheWrite,
-    webSearchRequests: 0,
-    costUSD: 0,
-  }, model);
-}
 
 // Multi-harness helpers
 // agentistics tracks several harnesses (Claude Code, Codex CLI, Gemini CLI,
@@ -32,30 +27,6 @@ const HARNESS_PARAM = {
   description:
     "Scope to one harness (claude | codex | gemini | copilot | antigravity), or 'all' (default) for the unified view across every harness.",
 } as const;
-
-type AnySession = Record<string, any>;
-
-function sessionHarness(s: AnySession): string {
-  return (s.harness as string) ?? "claude";
-}
-
-/** Filter sessions to a single harness, or return all for undefined/'all'. */
-function filterSessions(sessions: AnySession[], harness?: string): AnySession[] {
-  if (!harness || harness === "all") return sessions;
-  return sessions.filter((s) => sessionHarness(s) === harness);
-}
-
-function sessionTokens(s: AnySession) {
-  const input = s.input_tokens ?? 0;
-  const output = s.output_tokens ?? 0;
-  const cacheRead = s.cache_read_input_tokens ?? 0;
-  const cacheWrite = s.cache_creation_input_tokens ?? 0;
-  return { input, output, cacheRead, cacheWrite, cost: calcCostUSD(input, output, cacheRead, cacheWrite, s.model ?? "") };
-}
-
-function sessionMessages(s: AnySession): number {
-  return (s.user_message_count ?? 0) + (s.assistant_message_count ?? 0);
-}
 
 // Static mirror of src/lib/componentCatalog.tsx — keep in sync when adding components
 const CATALOG = [

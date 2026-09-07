@@ -11,7 +11,7 @@
  */
 
 import type { HarnessId, SessionMeta } from '@agentistics/core'
-import { calcCost, resolveContextWindow, sessionLabel } from '@agentistics/core'
+import { resolveContextWindow, sessionCostUSD, sessionLabel } from '@agentistics/core'
 import { loadConsolidated } from '../consolidate'
 import { sessionAtCwd } from '../live-sessions'
 import { SPAWN_SPECS } from './spawn-spec'
@@ -70,6 +70,10 @@ export function toConversation(s: SessionMeta): Conversation {
   const window = s.context_window ?? resolveContextWindow(s.model)?.tokens
   const total = (s.input_tokens ?? 0) + (s.output_tokens ?? 0)
     + (s.cache_read_input_tokens ?? 0) + (s.cache_creation_input_tokens ?? 0)
+  // Per-model when the session spans several (an Antigravity parent with its subagent children
+  // folded in carries a `model_usage` breakdown) — never one dominant model's rate applied to the
+  // session's whole usage.
+  const costUSD = total > 0 ? sessionCostUSD(s) : null
   return {
     sessionId: s.session_id,
     harness,
@@ -88,20 +92,10 @@ export function toConversation(s: SessionMeta): Conversation {
     ...(s.context_tokens && window
       ? { contextTokens: s.context_tokens, contextWindow: window }
       : {}),
-    // Through `calcCost`, never an inline rate: CLAUDE.md makes that the single source of truth, and
-    // a second arithmetic here would disagree with the dashboard the first time a price changed.
-    ...(total > 0 && s.model
-      ? {
-          costUSD: calcCost({
-            inputTokens: s.input_tokens ?? 0,
-            outputTokens: s.output_tokens ?? 0,
-            cacheReadInputTokens: s.cache_read_input_tokens ?? 0,
-            cacheCreationInputTokens: s.cache_creation_input_tokens ?? 0,
-            webSearchRequests: 0,
-            costUSD: 0,
-          }, s.model),
-        }
-      : {}),
+    // Through `sessionCostUSD`/`calcCost`, never an inline rate: CLAUDE.md makes that the single
+    // source of truth, and a second arithmetic here would disagree with the dashboard the first
+    // time a price changed.
+    ...(costUSD !== null ? { costUSD } : {}),
   }
 }
 

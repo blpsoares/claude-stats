@@ -21,6 +21,7 @@ packages/
   web/      (@agentistics/web)    — React + Vite frontend
   mcp/      (@agentistics/mcp)    — MCP server, publishable to npm standalone
   tui/      (@agentistics/tui)    — Ink (React) terminal dashboard + the `agentop` control center
+  vscode/   (agentistics-vscode)  — the VS Code extension: a CLIENT of the local server, no more
   desktop/                        — Tauri v2 Windows installer (spawns agentop as sidecar)
 ```
 
@@ -79,7 +80,12 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   ├── archive.ts           → mirrorFile, fullSync, snapshotStatsCache ('full' mode: raw transcript mirror → ~/.agentistics/archive)
   ├── consolidate.ts       → writeConsolidated, loadConsolidated ('consolidate' mode: per-session metrics → ~/.agentistics/sessions/<harness>/<id>.json; legacy flat files load as claude)
   ├── data.ts              → loadSessionMetas, scanProjects, buildApiResponse (main orchestrator)
-  ├── agent-metrics.ts     → extractAgentMetrics (parses Agent tool_use from JSONL)
+  ├── agent-metrics.ts     → extractAgentMetrics (every agent launch the parent records — an `Agent`
+  │                          tool_use, a result that NAMES an agent whatever tool produced it, and a
+  │                          launch the parent never answered)
+  ├── subagent-join.ts     → **pure**: which transcript belongs to which invocation. The `subagents/`
+  │                          DIRECTORY is authoritative for which agents existed; the parent only for
+  │                          how each was launched — and it does not always say even that
   ├── otel-watcher.ts      → chokidar file watcher + OTLP metrics export daemon
   ├── preferences.ts       → ~/.agentistics prefs incl. team config (mode/endpoint/token/user)
   ├── version.ts           → getVersionInfo (current vs latest); drives update banners/notifications
@@ -154,6 +160,25 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          (`approvalTail`, deliberately not `frameTail`: that one cuts at the last
   │                          rule and so cuts the dialog away). A prompt is refused on a session with
   │                          a dialog OPEN, in words, for the same reason.
+  │                          **WHICH MODE a session is in** is the pure `mode-spec.ts`, read from the
+  │                          FOOTER only (`MODE_FOOTER_LINES`) for the same reason the attention
+  │                          markers are — this product is developed with this product, so a
+  │                          transcript quoting `plan mode on` is a certainty. MEASURED by driving a
+  │                          live claude 2.1.263: `BTab` cycles `manual -> accept edits -> plan ->
+  │                          auto`, and each mode is matched on its OWN NAME because `manual`'s
+  │                          footer is the one that does NOT advertise the cycle key — matching the
+  │                          hint would find three of four. **It CYCLES, it does not PICK**: no
+  │                          keystroke jumps to a named mode, so a menu of four would reach three by
+  │                          luck; the verb is "next mode" and the row says which one it is now.
+  │                          Every other harness is `null` — a FINDING, not a gap: nobody has driven
+  │                          one, and a guessed key is a keystroke nobody asked for. The web chip
+  │                          colours it through `web/src/lib/modeStyle.ts` on an AUTONOMY gradient,
+  │                          and never with the fault colour.
+  │                          **AN OPTION CAN BE FREE TEXT.** `isFreeTextOption` names claude's "Type
+  │                          something", and answering it is the digit, then a WAIT FOR THE PANE TO
+  │                          MOVE, then the literal text (`sendChoiceText`). Sent as one burst the
+  │                          answer landed as `3jabuticaba` — and the API said `ok`, because a
+  │                          keystroke that lands is not a keystroke that was understood.
   │                          **WHICH SESSIONS FELL TOGETHER** is the pure `crash-group.ts`. The hard
   │                          part is not grouping, it is not admitting garbage: a `lost` row from
   │                          three days ago never fell, and a group holding everything that ever ran
@@ -324,7 +349,80 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          guessed directory, and a `derived` name is never adopted as a label. The
   │                          takeover additionally READS ITS WRITE BACK and retries once, saying so
   │                          when the record still cannot be kept — the loss is otherwise invisible
-  │                          at the moment it happens. See docs/session-manager.md
+  │                          at the moment it happens.
+  │                          **WHOSE CONVERSATION CAN BE READ** is `harness-transcript.ts`, a
+  │                          `Record<HarnessId, HarnessTranscript | null>` behind the workspace's
+  │                          chat view and the fleet poll's six-row tail. There are TWO limits and
+  │                          they were one thing for as long as Claude was the only readable
+  │                          harness: the LINK (is this row's `conversationId` exact?) and the
+  │                          FORMAT (has anybody written a reader?). Collapsing them cost the
+  │                          feature its honesty — measured 2026-09-05 on a live antigravity session
+  │                          whose `/proc/<pid>/cmdline` was `agy --conversation 01d0814f-…` for the
+  │                          very id the registry held, `GET /api/fleet/chat` ran into the
+  │                          CLAUDE-only path resolver, found nothing, took the live branch and
+  │                          answered `{turns: [], live: true}`: a blank pane with no sentence on
+  │                          it, because `SessionChat.tsx` draws "no messages yet" only when
+  │                          `live === null`. A `null` reader is now REFUSED IN WORDS and NAMES the
+  │                          harness. The link rule is untouched: only `ManagedSession.conversationId`
+  │                          reaches a reader, never the harness-and-directory guess, or some other
+  │                          conversation from the same folder appears under this session's name.
+  │                          `antigravity-chat.ts` is the first non-Claude reader and is PURE. agy
+  │                          writes the REQUEST and the EXECUTION as two steps — a `PLANNER_RESPONSE`
+  │                          carrying prose, `thinking` and `tool_calls`, then a `RUN_COMMAND` /
+  │                          `VIEW_FILE` / … step whose `content` is the result (1094 against 909 on
+  │                          the measured file; the executions carry no `tool_calls` at all). The
+  │                          chat keeps the REQUESTS and drops the executions, which is the INVERSE
+  │                          of `harness-activity.ts`'s choice for the same transcript and for the
+  │                          same reason — counting both is counting twice; a count wants the thing
+  │                          that happened, a bubble wants the one with the command in it. Tool names
+  │                          go through `canonicalTool`, so `sessionArtifacts.ts` — which selects by
+  │                          Claude's names — works on an agy session without knowing agy exists.
+  │                          `CONVERSATION_HISTORY` is a replay and is skipped; `SYSTEM_MESSAGE`,
+  │                          `CHECKPOINT` and `ERROR_MESSAGE` become unattributed notes that NAME the
+  │                          kind and never carry the body (agy's checkpoint is the whole truncated
+  │                          conversation, and its error paragraph runs 206–633 characters across all
+  │                          77 measured) — the same rule `chat-envelope.ts` applies to Claude's
+  │                          injected entries. `transcript-window.ts` is the shared byte-tail reader
+  │                          every harness polls through: a poll that reads whole transcripts is what
+  │                          made `/api/fleet` answer in 36 s cold.
+  │                          **FIVE READERS, and the sixth null is a FINDING.** `codex-chat.ts`,
+  │                          `copilot-chat.ts` and `kimi-chat.ts` joined `antigravity-chat.ts`, all
+  │                          pure, each written against a fresh measurement of that harness's own
+  │                          files. Three rules recur and every one of them was a real defect first:
+  │                          **(1) THE SAME TURN IS WRITTEN TWICE**, in a different pair of places
+  │                          each time — codex writes `event_msg/{user,agent}_message` beside
+  │                          `response_item/message`, kimi writes `turn.prompt` beside
+  │                          `context.append_message`, agy writes the tool REQUEST beside its
+  │                          EXECUTION, and kimi's metrics parser records the same trap for its usage
+  │                          records. In each case ONE family is chosen and the other is ignored
+  │                          outright, and the chosen one is the SUPERSET, measured: codex's
+  │                          `event_msg` covers 21 of 42 user messages, kimi's `turn.prompt` 15 of 22.
+  │                          **(2) WHAT NOBODY SAID IS NEVER DRAWN AS A MESSAGE**, and each harness
+  │                          declares it differently — kimi stamps `message.origin.kind`
+  │                          (`user` against `injection`, its own `isMeta`), copilot separates
+  │                          `data.content` from `data.transformedContent` (the second is the same
+  │                          text wrapped in `<current_datetime>`/`<system_reminder>` and is NEVER
+  │                          read), codex has a `developer` ROLE plus `<…>` envelopes, and codex ALSO
+  │                          has entries with no marker at all: measured over its 40 largest
+  │                          rollouts, 11 of 32 untagged user messages were the harness loading a
+  │                          file (`# AGENTS.md instructions for …`), so `INJECTED` is
+  │                          `chat-envelope.ts`'s `META_KINDS` applied there. Everywhere, an
+  │                          unrecognised entry stays the PERSON's — hiding a real message is the
+  │                          expensive direction. **(3) A SHELL DETAIL GOES THROUGH
+  │                          `commandSummary`**, never a first-line truncation: on a real codex
+  │                          rollout five consecutive chips read `cd /home/…/embark`, saying where
+  │                          the work happened and never what it was.
+  │                          **GEMINI HAS NO READER AND MAY NOT GET ONE**, and that is a LINK fact,
+  │                          not a format one. A reader is only ever offered a `conversationId`, and
+  │                          only a harness with `assignId` or an id-taking `resume` can ever have
+  │                          one — claude and copilot have `assignId`; codex, kimi and agy have
+  │                          `resume`; **gemini has neither** (`-r, --resume` takes "latest" or an
+  │                          index, and `--session-id` is excluded because gemini's id here is
+  │                          synthetic). So an entry for it would be unreachable code plus a claim
+  │                          the product cannot honour; `conversationBlind` already says so on the
+  │                          row and `SessionsPage` hides the chat tab. Its format WAS measured and
+  │                          the finding is recorded in `harness-transcript.ts` so nobody spends it
+  │                          twice: a patch log, not one message per line. See docs/session-manager.md
   ├── cli-start.ts         → the control center's HOST (`ControlHost`): service detection, start/stop/restart, connect/disconnect, boot service, archive consent, language — every action returns an already-localized `ActionResult` instead of printing
   ├── cli-stream.ts        → the control center's OUTPUT CHANNEL: subscribers + `streamCommand` (both pipes captured, never `inherit`) → lines via the pure `@agentistics/tui/control/stream`
   ├── cli-ui.ts            → dependency-free arrow-key select/confirm/input/pause + clearScreen (bundles clean into the binary; no node_modules to resolve)
@@ -389,6 +487,35 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          a budget that is felt is a budget that is wrong). The command matcher is
   │                          NARROWED by event, or removing one hook would delete a `Stop` entry
   │                          somebody had moved under `SessionStart`. See docs/claude-integration.md
+  ├── backup/              → **`agentop backup` / `agentop restore`** — carrying a machine's whole
+  │                          history to another one. Four LAYERS (`metrics` always, `repos`,
+  │                          `archive`, `raw`), each recorded in the manifest so a restore knows what
+  │                          it holds instead of inferring it. `backup-plan.ts` is **pure** and holds
+  │                          the exclusion table with a REASON per row — `secret` (a live credential,
+  │                          excluded by DECISION and NAMED on restore with the command that
+  │                          re-establishes it), `regenerable`, `runtime` (`managed-sessions.json`
+  │                          names tmux sessions that will not exist there). `backup-plan.test.ts`
+  │                          greps this module's own source and re-probes every credential path, so a
+  │                          rule deleted in a refactor fails the build rather than shipping a leak,
+  │                          and `backup-coverage.lint.test.ts` makes an UNDECIDED path impossible.
+  │                          Sizes are MEASURED per layer and per harness; `repos` reports `null`
+  │                          ("known after a backup runs") because its content does not exist until
+  │                          `buildRepoManifest` shells out to git — a surface renders that as a
+  │                          sentence, never as `0`. A SCHEDULE never carries `repos` (that is a thing
+  │                          a person asks for, not something a timer does behind them), rides the
+  │                          daemon `agentop server` already runs (`backup/daemon.ts`), and **absent
+  │                          reads as OFF** — a machine must not start writing gigabytes because it
+  │                          was upgraded. The restore is TWO-PHASE and RESUMABLE, and runs
+  │                          **structured argv, never a joined string** (a path with a space cannot be
+  │                          recovered from a joined line, and joining to re-split is how a wrong argv
+  │                          gets built); `restoreCommands` is the same plan for a person to read.
+  │                          `github-*.ts` versions backups as releases on a PRIVATE repository the
+  │                          user owns — private-ness and push access are verified BEFORE anything is
+  │                          written, the sha256 is checked against the release body before a download
+  │                          is touched, and `--from <machine>` exists because "the newest" is
+  │                          meaningless once several machines version into one repository. Three
+  │                          doors (CLI, cockpit tab, Settings → Backup) over one engine. See
+  │                          docs/backup.md
   ├── events/              → **the EVENT CHANNEL** behind `agentop events`: a state TRANSITION
   │                          reaching a person and the assistant orchestrating the fleet.
   │                          **The producer MUST be long-lived, and that decides its home.**
@@ -942,6 +1069,65 @@ The display **name is set by the central** on the minted token — there is no n
   See [docs/architecture.md](docs/architecture.md#per-connection-repository-sharing) and
   [docs/security.md](docs/security.md#8-per-connection-sharing-rules--the-guarantee-stated-precisely).
 
+### Managing a machine's sessions FROM a central — the machine decides, always
+
+`docs/architecture.md` and `docs/security.md` carry the write-up; these are the invariants a
+harness working here must not break.
+
+- **Two consent switches, and absent reads as OFF** (`remoteSessions.ts`, core). `sessions` grants
+  the row and the screenless verbs; `screens` additionally grants the terminal. `screens` is never
+  in force without `sessions`, and withdrawing `sessions` CLEARS `screens` rather than leaving it
+  stored — a grant left behind returns the moment the first switch is flipped again, which is a
+  grant nobody re-made. Same rule as `chat-gate.ts`, deliberately NOT `shareMode`'s migration rule.
+- **The relayed row is an ALLOWLIST, never a delete-list** (`reduceMachineFleetRow`). A
+  spread-and-delete leaks the next field somebody adds to `ControlSession`, silently and on every
+  machine. `chatTurns`, `lastLines`, `approvalLines` and `dialogOptions` may never cross, and
+  `machineFleet.test.ts` asserts it over a row carrying all four.
+- **Rules first, then reduce.** The member applies `cwdShared` BEFORE building the row, so a
+  session in a withheld repository never becomes one — reducing first leaves no `cwd` to judge.
+  `withheld` is a count of SESSIONS and is reported, never silently subtracted.
+- **The sharing rules bind the ACT half exactly as they bind the READ half, and for one release
+  they did not.** `buildMachineFleetReply` filtered rows through `cwdShared` from the day it
+  shipped; `performMachineAction` checked consent and the verb and then handed the id to
+  `runFleetAction`, which resolves against the machine's RAW fleet and registry — so a central
+  could `kill`, `rename`, `resume` or re-task a session in a repository the member had explicitly
+  withheld from it. **A rule enforced when you LOOK and not when you ACT is not a rule.** Both
+  halves now resolve through the one `sharedCwd` helper, and an id the machine cannot find is
+  refused for the same reason a row with no `cwd` is: the rule names directories, and an
+  unresolvable target has none to judge.
+- **The TASK verbs are refused outright on a RESTRICTED connection.** `openTask` expands to every
+  session filed under the row's task, over the whole registry, and a task routinely spans
+  repositories — so pressing it on a VISIBLE row spawned live assistants inside a withheld
+  directory and answered with a count of them. Refusing only when the task provably spans a
+  withheld row would be an ORACLE: repeated over the visible rows it maps which of them share work
+  with the hidden half, which is the same correlation as counting a hidden project's sessions. The
+  blunt refusal discloses nothing the reply does not already carry (`withheld` is a machine-level
+  count), and the verbs are dropped from the relayed row too — offering one the machine will refuse
+  is the control-that-reads-as-broken this file argues against everywhere else.
+- **Consent is ORTHOGONAL to the sharing rules, and that is the trap.** The two switches are
+  machine-wide; turning on "manage my sessions" says nothing about WHICH sessions, so without the
+  rule check above it silently re-opened the act surface over every withheld repository.
+- **`machineActions.ts` is CLOSED.** A verb it does not know is refused. A new `FleetActionId` must
+  be listed there on purpose before a central can drive it. `approve`/`prompt` are excluded because
+  neither can be offered without the screen — refused with a sentence naming why, never a disabled
+  button implying it is merely off.
+- **The MACHINE re-checks everything.** Consent and the verb allowlist are re-read from preferences
+  on every request in `performMachineAction`. The central's copy of those checks spares a round
+  trip and nothing more: a check that runs only on the party whose behaviour cannot be verified is
+  not a check.
+- **`machineOwnedBy` is not `canManageMachine`.** The wider predicate is right for administering a
+  machine (rename, rotate, re-assign) and wrong for reaching into its sessions. An unknown machine
+  answers `not-owner` exactly like one you do not own, so the route is not an existence oracle.
+- **Four silences, four sentences**: `not-owner`, `refused`, `offline`, `silent`. An empty list may
+  never stand in for any of them. A machine that refuses while OFFLINE reports offline — the more
+  actionable half.
+- **The central composes no wording.** Every refusal is the machine's own already-localized
+  sentence, passed through untouched.
+- **`/api/fleet*` stays refused on a central** (`index.ts`'s `TEAM_CENTRAL` block, plus its
+  `localShell` entry in `capability-guard.ts`). The relay routes are separate and touch no host, and
+  their deliberate ABSENCE from `capability-guard.ts` is pinned by a test rather than left as an
+  omission.
+
 ---
 
 ## Cost basis — API vs plan
@@ -1125,19 +1311,77 @@ Only active when `SERVE_STATIC=1` (set by `cli.ts` for the `server` subcommand).
 
 Agent metrics are extracted from raw JSONL files by `server/agent-metrics.ts`. They are available in the `agentMetrics` field of each `SessionMeta`.
 
-### Data available per Agent invocation
+### The numbers are in the SUBAGENT'S OWN transcript, not in the parent's result
+
+**Claude Code made the `Agent` tool asynchronous on 2026-08-14 and the parent's `toolUseResult`
+stopped carrying any numbers.** It is now `{ agentId, description, isAsync, outputFile,
+resolvedModel, status: 'async_launched' }` — no `usage`, no `totalTokens`, no `toolStats`, no
+duration. Every `?? 0` in the old reader fired at once and each invocation was published **priced at
+nothing**: measured on one machine, 391 of 391 invocations from 08-14 onward reported 0 tokens while
+the panel kept drawing rows for all of them. That is the whole failure mode worth remembering — a
+PARTIALLY working reader. `agentType` and `description` come from the parent's `tool_use` input, so
+the rows kept their names and only the values were gone, and it went unnoticed for three weeks.
+
+The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-<agentId>.jsonl`
+(+ an `agent-<agentId>.meta.json` naming the parent's `toolUseId`). `subagent-parse.ts` is **pure**
+— it sums one such transcript — and `subagent-metrics.ts` does the I/O: find, recurse, memoize.
+
+- **`outputFile` is NOT the file to read.** It is the agent's text answer in the run's `/tmp` scratch
+  directory, cleared on reboot and already gone for every invocation measured here. The durable one
+  is under `subagents/`.
+- **Price each model at ITS OWN rate.** A subagent commonly runs `haiku` under an `opus` parent (four
+  distinct models across 440 transcripts here), so one `modelId` for the whole invocation bills a
+  cheap agent as an expensive one — which is exactly what the old reader did with the parent's model.
+- **A nested subagent counts inside the invocation that spawned it.** Only a top-level `Agent`
+  `tool_use` becomes an `AgentInvocation`, so a subtree left out is left out of the session's totals
+  entirely. Cycle-safe by a visited set.
+- **The DURATION is the root's own span** — a nested agent runs inside its parent, and adding the two
+  counts the same wall time twice.
+- **THE LIST OF INVOCATIONS IS THE DIRECTORY'S, NOT THE PARENT'S.** Keying on `Agent` tool_use +
+  matching `tool_result` was a statement about the TOOL that launched an agent, not about whether one
+  ran. Measured 2026-09-06 (408 conversations, 541 subagent transcripts) — three shapes fell through:
+  a call the user INTERRUPTED (`toolUseResult` is the STRING `"Error: [Request interrupted by user
+  for tool use]"`, so no `agentId`: the row existed and was permanently unmeasured); a **background
+  agent** (the `Agent` tool_use is there and NO `tool_result` ever arrives — the launch sat in the
+  pending map to the end of the file and was dropped); and a **background forked skill** (`/code-
+  review` is a **`Skill`** tool_use whose result is `{status:'forked', background:true, agentId}` —
+  the parent names the agent perfectly well, only the tool differs). Four top-level transcripts,
+  1,6 MB, including a 24-million-token agent at US$ 15,76. `subagent-join.ts` pairs by the EXACT
+  `agentId` first and only then by the meta's own `toolUseId` — a single pass would let the fallback
+  consume a transcript some other invocation names outright — one transcript to at most one
+  invocation, and a `toolUseId` naming TWO transcripts is ambiguous and pairs NEITHER (a half-read
+  link is published as a measurement; an absence is rendered N/A). A NESTED transcript is excluded
+  from the candidate pool OUTRIGHT rather than by relying on no invocation happening to match it: its
+  meta carries a `toolUseId` too, and a second row would report the same tokens twice. A top-level
+  transcript nobody claims adds NO row and is REPORTED (`AgentJoinPlan.unclaimed`) — today those are
+  conversation FORKS (5 transcripts, 11,4 MB here), which belong to no `tool_use` anywhere.
+- **The gate must not be `toolCounts['Agent']` either.** A conversation whose only agent was a
+  background forked skill has no `Agent` in `toolCounts` at all, so `jsonl.ts` never called the
+  reader and `uses_task_agent` was false. Both now also accept "some `toolUseResult` named an agent"
+  (`sawAgentLaunch`).
+- **`cachedEnrich` enriches OUTSIDE its memo.** That path serves the meta-sourced sessions — MOST
+  Claude sessions — and was written before #373; it called `extractAgentMetrics` and never
+  `enrichFromSubagentTranscripts`, so every invocation it published stayed unmeasured. Caching the
+  enriched result would be the smaller diff and the wrong one: that memo is keyed on the PARENT's
+  stamp and a subagent's file goes on changing while the conversation sits idle, so the numbers would
+  freeze at the first read. `subagent-metrics.ts` keeps its own memo on each subagent file's own
+  mtime and size, which is the only stamp that answers this question.
+- **An invocation whose transcript is gone is `unmeasured: true`, never a zero.** Read that flag
+  BEFORE any figure on the record: it carries zeros only because the type has no other value to
+  carry. `SessionAgentMetrics` totals exclude them and `unmeasuredInvocations` counts them, so a
+  surface can say the totals cover fewer rows than it is showing (`web/src/lib/agentMeasured.ts`).
+  Same rule as `HARNESS_CAPABILITIES`, applied to one row instead of a whole harness.
 
 | Field | Source |
 |---|---|
-| `agentType` | `toolUseResult.agentType` in the JSONL message envelope |
+| `agentType` | `toolUseResult.agentType`, else the `tool_use` input's `subagent_type` |
 | `description` | `tool_use.input.description` |
-| `totalTokens` | `toolUseResult.totalTokens` |
-| `totalDurationMs` | `toolUseResult.totalDurationMs` |
-| `totalToolUseCount` | `toolUseResult.totalToolUseCount` |
-| `inputTokens / outputTokens / cacheReadTokens / cacheWriteTokens` | `toolUseResult.usage.*` |
-| `toolStats` (reads, searches, bash, edits, lines changed) | `toolUseResult.toolStats` |
-| `costUSD` | Calculated via `calcCost()` |
-| `status` | `toolUseResult.status` (`completed` / `failed`) |
+| `agentId` | `toolUseResult.agentId` — names the subagent transcript; absent when the call was interrupted or never answered, and then the join recovers it from `agent-<id>.meta.json`'s `toolUseId` |
+| `totalTokens` (all four counters) / `inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` | the subagent transcript's `message.usage`, per model; legacy: `toolUseResult.usage.*` |
+| `totalDurationMs` | the subagent transcript's first→last timestamp; legacy: `toolUseResult.totalDurationMs` |
+| `totalToolUseCount` / `toolStats` | the subagent transcript's `tool_use` items and `structuredPatch` hunks; legacy: `toolUseResult.toolStats` |
+| `costUSD` | `calcCost()` per model of the subagent's own turns |
+| `status` | `toolUseResult.status` (`failed` → `failed`, anything else → `completed`) |
 
 ### What is NOT available for Skills and Tasks
 
@@ -1582,6 +1826,207 @@ packages/tui/scripts/preview.tsx   dev tool: render ONE control-center frame to 
   toggle reassigns, so attaching to a session and detaching remounted the whole cockpit in the
   previous language, with nothing on screen to explain it and nothing to do but restart.
 
+## VS Code extension (`packages/vscode`)
+
+The fourth front door onto the fleet, after the CLI, the cockpit and the web dashboard. See
+`docs/vscode-extension.md`.
+
+```
+packages/vscode/src/
+  extension.ts   activation + wiring, nothing else
+  api.ts         the ONE process that talks HTTP; every method total
+  sessions.ts    SessionsHub: one poll, any number of surfaces, performs every action
+  streams.ts     one live screen per session (SSE), shared by every surface watching it
+  panels.ts      the editor tabs — one per session, keyed so asking twice REVEALS
+  ansi.ts        PURE: one terminal frame → HTML, in the dashboard's own palette
+  protocol.ts    the wire shapes (host <-> webview, and the server's answers)
+  view-model.ts  PURE: grouping, ordering, search, the three empty states
+  attention.ts   PURE: which sessions have just started needing a person
+  today.ts       PURE: today's totals + the day rule they use
+  config.ts      PURE: the two endpoints, the second derived from the first
+  i18n.ts        the extension's OWN chrome words, EN/PT — nothing about a session
+  terminal.ts    attach (a real integrated terminal) + starting the server
+  status-bar.ts  today, and the waiting count
+  webview/html.ts  PURE: the CSP'd documents and the escaping
+  webview/main.ts  the panel — DOM calls only
+```
+
+### Rules
+
+- **It is a CLIENT of `agentop server` and never anything more.** It must not read
+  `~/.agentistics`, talk to tmux, or import `server/sessions/*`. A second process
+  read-modify-writing `managed-sessions.json` beside the running server is the registry race
+  `registry.ts` documents — a record written by a short-lived process observed ERASED by a
+  longer-lived one, leaving a user in a session no verb could name.
+- **It holds no rule about what a session may take.** Every `enabled` flag, verb label and refusal
+  sentence arrives already decided from `/api/fleet`, which resolves them through the same
+  `sessionActions` the cockpit resolves every keypress against. The two exceptions are IMPORTED,
+  not restated: `sessionRank` (`@agentistics/tui/control/session-order`) and `sessionRunning`
+  (`.../session-dimensions`), both widened to `Pick<ControlSession, 'state'>` precisely so a client
+  holding the reduced `FleetRow` can call them.
+- **`approve` is an OPTION LIST, never a button.** The server reads the options off the live frame;
+  the panel lists them and sends the picked NUMBER. A single "approve" takes whichever row is
+  highlighted, which on "only my fix / promote everything / stop here" is choosing for someone.
+- **The webview never fetches, and never uses `innerHTML`.** Its `localhost` is the BROWSER's — in a
+  Remote-SSH window that is not the machine the sessions are on — so the extension host asks. And
+  every string on the panel is a session title, a note, a path or a line captured off a terminal: a
+  template literal is one unescaped `<` away from executing it. DOM calls only.
+- **The bell rings on the TRANSITION, never on the level**, and the FIRST poll announces nothing —
+  a machine with nine blocked sessions would greet the user with nine toasts. Only
+  `waiting-approval` raises a toast; plain `waiting` is where every turn ends, so a toast on it is a
+  toast per turn. It still counts toward the badge.
+- **An unreachable server prints a sentence, never a zero.** `down` (nothing answered), `refused`
+  (a central, or a profile with no host power) and a real empty fleet are three different facts and
+  keep three different sentences — the same N/A-versus-a-confident-0 rule the dashboard applies to
+  harness capabilities.
+- **The status bar's day is the UTC one** (`start_time.slice(0,10)`), matching the dashboard's own
+  date presets, and is summed PER SESSION — `stats-cache.json` is Claude-only and today's sessions
+  are all still on disk for every harness. Tokens is all four counters.
+- **`/api/data` gets its own slow timer** (default 300s). It is megabytes; the fleet poll is 5s and
+  a few kilobytes. Polling the large one at the small one's rate spends a megabyte a minute to move
+  a figure that changes once a turn.
+- **New server routes ride the `/api/fleet` PREFIX in `capability-guard.ts`.** It is a prefix and
+  not a list of names so the next fleet route is guarded by having been ADDED, never by having
+  remembered a second table; `capability-guard.test.ts` asserts a not-yet-written path resolves to
+  `localShell`. `POST /api/fleet/new` is the one fleet call that takes a DIRECTORY from the body
+  (`resume` refuses to, and says why) — `fleet-spawn.ts` is the pure reader, and it REFUSES rather
+  than repairs: a relative path resolves against the server's own cwd, an effort outside the CLI's
+  closed enum is a usage error nobody sees, and a model asked for on a harness with no model flag
+  would start a session that is not the one requested.
+- **`GET /api/fleet/attach` checks SCOPE before answering.** `attachSession` composes the command
+  from whatever id it is given, so an unknown id came back as a well-formed ticket for nothing and
+  the client opened a terminal that printed `no such session` and sat there.
+- **The cascade is deliberately absent.** It is measured against `ControlSession.projectRoot`, which
+  is not on the wire; a tree derived client-side by matching the project NAME against each `cwd`
+  goes wrong wherever a path segment repeats. A band per project plus the shortened directory is the
+  honest subset.
+- **TWO views, one document.** `list` is the fleet; `session` is one session's live screen, composer
+  and verbs. The sidebar walks between them (a 300px column cannot hold both); an editor TAB is
+  created PINNED to one session and never shows the list, which is what makes "several at once"
+  mean anything. Tabs are keyed by session id — asking twice REVEALS the one that exists — and are
+  titled with what the session is CALLED, because a tab strip of `3f5f21a8b0c1` is unusable.
+- **The HOST opens the terminal stream, never the webview** — a webview's `localhost` is the editor
+  client's, which under Remote-SSH/WSL is not the machine the sessions run on. One connection per
+  session shared by every watching surface (the server's own model), and **watching is tied to the
+  route**: capture is viewer-gated, so a surface that forgets to unwatch leaves a `capture-pane`
+  loop running for a screen nobody can see.
+- **The terminal's phase machine, its honesty line and the composer are IMPORTED from the dashboard**
+  (`packages/web/src/lib/terminalStream.ts` / `terminalInput.ts`, both dependency-free). A second
+  copy would be a second set of honesty rules, and "this screen is live" is the one thing this
+  feature may never be wrong about. Rendering is the pure `ansi.ts`, not xterm — `capture-pane` has
+  already resolved the redraws, so what is left is colour — but the PALETTE is the dashboard's own
+  `xtermTheme`, so one session reads the same in both places.
+- **The panel wears the DASHBOARD's palette**, not VS Code chrome, and follows
+  `activeColorTheme` for dark/light (the ANSI palette with it). A panel that looks like a different
+  product from the dashboard beside it is a different product as far as the eye is concerned.
+- **You type into the SCREEN, not into a text field**, over the WS write channel at
+  `/api/fleet/input` (`input-protocol.ts` / `input-channel.ts` / `input-web.ts`, Phase 2b). One
+  socket per session, FIFO by construction, one ack per keystroke. The extension briefly shipped an
+  HTTP `POST` of the same name and it is GONE — two write channels for one act is the duplication
+  this repo is built against, and the socket wins on both counts (ordering is the transport's, and a
+  keystroke that did not land is a fact rather than a silence). `input.ts` keeps a copy of the key
+  allowlist so the client does not ASK for what will be refused — a modifier press or a media key
+  would otherwise cost the user an ack failure for a key nobody meant to send — and the server
+  validates membership regardless. FOCUS is the consent gate (every terminal works that way) and the
+  strip under the screen says which state you are in; `ctrl+shift+*` and Cmd/Win are never swallowed,
+  or the editor stops working inside the panel. A delivered keystroke NUDGES the read channel, or the
+  character waits out a capture interval tuned for watching rather than typing.
+- **The status bar can price in BRL** (`agentistics.currency`), through `@agentistics/core`'s own
+  `fmtCost` and the rate `/api/rates` already caches — the same rate and formatter the dashboard
+  uses, so the two can never disagree about one day. No rate means DOLLARS, never a converted figure
+  invented from a guess.
+
+## What each surface is CALLED
+
+Four front doors, and a person saying "the sessions screen" has to land on exactly one of them.
+These are the names to use in conversation, in commits and in comments; they are not
+interchangeable.
+
+- **the Sessions workspace** — the WEB one: `/sessions`, the aside with the fleet on the left and
+  the centre holding either the overview (`FleetOverview`) or the open session's chat and terminal.
+  On a central it is the same workspace, showing the relayed fleet of the machine its picker has
+  chosen. When someone says "a interface de sessões", "a tela de sessões" or "the sessions view",
+  this is it.
+- **the cockpit** — the TERMINAL one: `agentop`'s control center (`packages/tui/src/control`), whose
+  own `sessions` tab draws the fleet. Never call the web one a cockpit; the ambiguity is the whole
+  reason this list exists.
+- **the VS Code extension** — `packages/vscode`, a client of `agentop server` and nothing more.
+- **`agentop session …`** — the CLI verbs.
+
+The FLEET is what all four show: the live sessions plus the conversations that can be reopened. A
+"session" is one conversation; the "fleet" is the set.
+
+## Accessibility magnifiers (`packages/web/src/components/a11y/`)
+
+Lenses a low-vision user places over the dashboard. Full write-up in
+[docs/accessibility-magnifiers.md](docs/accessibility-magnifiers.md); these are the invariants a
+harness must not break.
+
+- **The lens layer is a SIBLING of `#root`.** Each lens mirrors `#root`, so a layer inside it would
+  clone itself forever. The recursion is structurally impossible, not guarded against — never move
+  the container into the React tree.
+- **The mirror is a PICTURE**: a `cloneNode` of `#root`, `inert` + `aria-hidden` +
+  `pointer-events: none`, ids and names stripped. A live second copy would duplicate ids, focus and
+  side effects, and a screen reader would hear the page twice. `cloneNode` drops scroll positions,
+  form state and canvas pixels, so `reconcile` walks both trees in step and copies them. **A canvas
+  that cannot be copied is CLEARED, never left stale** — an empty region the settings screen warned
+  about is recoverable, a stale one that looks live is not.
+- **The clone is offset by `-scroll` and stays `position: relative`.** The offset makes stage-local
+  coordinates equal viewport coordinates, which all the geometry assumes; `relative` is the one
+  position value that does NOT become a containing block for `position: fixed` descendants, so the
+  cloned sidebar and modals still resolve against the stage.
+- **`position: sticky` is moved with `transform`, NEVER with `position`.** Sticky is IN FLOW;
+  changing it to `fixed`/`absolute` removes it and everything around it collapses. That shipped
+  once and corrupted the mirror on every page, because this app's header is sticky everywhere. A
+  transform is paint-only and cannot affect layout. Only WINDOW-scrolled stickies are moved at all —
+  one inside an `overflow: auto` panel already reproduces correctly and is left alone.
+- **A sticky copy's transform is MEASURED every scroll frame, never extrapolated** (`stickyOffset`,
+  pure). The copy never engages inside the clone, so it paints at `flow − scroll` and the correction
+  is `live − (flow − scroll)`. Carrying the last sync's correction forward by the scroll delta
+  instead holds the copy still on screen: right while the element is STUCK, wrong the whole time it
+  is not — an unstuck sticky flows with the page and its copy froze where the last sync left it. The
+  live reads are shared across every lens by one cache `applyScroll` passes into each
+  `setScroll`, or N lenses cost N forced layouts per frame instead of one.
+- **Left click, wheel and hover go to the PAGE; right click goes to the LENS.** That is why a pinned
+  lens is still reachable: right click opens its menu in every pin state, which is where unpin and
+  remove live. Pinned means immovable, not unreachable.
+- **A pinned lens is revealed by the KEYBOARD and never by the pointer** (`lensInteractive`, pure).
+  Every pointer path selects, so revealing on SELECTION meant the one gesture a mouse has for
+  reaching a pinned lens's menu also gave back its drag handle — the next drag moved a lens pinned
+  precisely so it would stop moving. `Tab`/`Ctrl+Shift+M` keep their reveal, because keyboard is the
+  only way a pinned lens is reachable at all. The reveal follows the SOURCE of the selection
+  (`A11yState.selectedVia`), never the selection itself.
+- **Interaction is forwarded by COORDINATE** (`lensPointToPage`, the exact inverse of the rendering
+  geometry), never by making the clone live. The probe that finds the target must make the WHOLE
+  magnifier layer transparent to hit-testing first — with two lenses stacked, hiding only the top
+  one hands the click to the one beneath it.
+- **`sourceRect` has two anchors and they are not interchangeable.** `'pan'` for a PLACED lens: the
+  region pans proportionally to the lens's position, which is what makes the page's outer band
+  reachable (a centred region plus an on-screen-clamped lens leaves a ~150px dead band at 4×); it
+  agrees exactly with the old centred rule at the viewport's centre. `'cursor'` for the FOLLOW lens:
+  centred on the pointer and NOT clamped, because its position IS the pointer and a pointer must
+  show what is under it or aiming becomes impossible. The clamp is gone on purpose: this lens is
+  never kept on screen, so sliding the region back inside the viewport while its frame stayed
+  half-off painted the page's outer band where nobody can see it — the same dead band `'pan'`
+  removes, reached by a different route.
+- **There is no cap on the number of lenses** — the cost is bounded by `mirrorSchedule.ts` instead:
+  two re-clones per frame, least-recently-synced first, off-screen never, with a backoff when a
+  measured cycle overruns. Twenty lenses cost ten frames, not one frame of twenty clones.
+- **`/api/preferences` could NOT be reused for these settings**: it is per MACHINE, and on a central
+  that file is shared by every signed-in user, so one person's lenses would appear on everyone's
+  screen. `a11y-prefs.ts` is the single place that picks the machine file or the per-account
+  `userPrefs` document; a central session with no account reads defaults and is refused on write,
+  and must NEVER fall back to the machine file.
+- **A PUT replaces the whole `accessibility` value** so the last lens of a page can be deleted, and
+  that rests on `writePreferences` staying a shallow merge across preference KEYS. Pinned by
+  `a11y-persistence.test.ts`.
+- **Saving is armed only by a genuinely successful load.** A central answers 401 until login and the
+  hook mounts before it; treating that 401 as an empty document once armed a save that replaced the
+  account's stored lenses with defaults.
+- The border is always `var(--anthropic-orange)`, in every state and both themes. There is no colour
+  option, and the settings screen says so rather than leaving a missing picker to read as an
+  oversight.
+
 ## Important rules
 
 - **Anything agentop writes OUTSIDE its own directories is an explicit act of the user, and is
@@ -1610,6 +2055,24 @@ packages/tui/scripts/preview.tsx   dev tool: render ONE control-center frame to 
     the page body.
   - New pages need their nav entry in **both** the desktop `SideNav` `items` array **and** the
     `MobileBottomNav` `navTiles` array in `App.tsx` — adding only the first hides the page on a phone.
+- **A DATE FILTER IS ANSWERED BY `SessionMeta.daily`, AND AN UNBOUNDED RANGE IS ANSWERED FROM THE
+  OTHER SIDE.** A session is a SPAN whose four counters are LIFETIME totals, so filing it on the day
+  it STARTED empties "today" for anyone whose session has been open since Tuesday, and filing it on
+  every day it TOUCHES measured **86x** too high on a real machine (4.446.955.424 tokens against a
+  true 51.465.608) — that version shipped and was reverted. `daily` is the third answer and it is a
+  MEASUREMENT: the parser already walks every turn and every turn carries a timestamp.
+  `web/src/lib/sessionDaySlice.ts` spends it — `sliceSession` cuts the session once and every total
+  downstream inherits the cut. **A session with no `daily` keeps the start-day rule** (`null`, never
+  a zero: one that cannot be split is not one that did nothing), **an unbounded range slices
+  nothing**, and **a range too long to enumerate must not be expressed as a day set at all**:
+  `daysBetween` STOPS at `MAX_RANGE_DAYS` (400) and `all` starts at the EPOCH, so its set was
+  `1970-01-01 … 1971-02-04` and every session carrying `daily` was tested for membership in a window
+  it could not fall in — **397 of 662 sessions dropped out of the default view**, silently, because
+  the survivors were exactly the older records with no `daily`. Past the cap use `activeInWindow`
+  (the SESSION's own days), and treat a set sitting exactly AT the cap as unusable rather than
+  complete. `Today` is its own preset ("only today, in progress") and is not the calendar's "today"
+  ("up to today"); both end at the END of the day, so a session a few seconds ahead of the browser's
+  clock is not excluded.
 - **A tag may be pinned to a PERIOD** (`TagDoc.window`, inclusive `yyyy-MM-dd`, each end independently
   optional) — that is what makes a tag answer "I ran harness X on this project from the 4th to the
   18th; what did it cost?" instead of only "these sources, all time". It is an AND on top of the
@@ -1733,6 +2196,25 @@ packages/tui/scripts/preview.tsx   dev tool: render ONE control-center frame to 
   - **`FiltersBar` `compact` prop** (used on mobile): hides the vestigial vertical dividers and tightens padding. On mobile the controls also stretch to fill each row (date presets `flex:1`, custom range full-width, the ＋ Filtro button full-width).
   - **`FiltersBar` "＋ Filtro" model**: the top bar shows only the date presets + custom range + a single dashed **＋ Filtro** button (with an active-dimension count badge). It opens a menu of the *available* dimensions (Members/Harnesses/Presence shown only on central-with-data; Repos only when a repo dimension exists; Projects/Models when present); picking one opens that dimension's inline value picker (Projects opens the full `ProjectsModal`). The selected values are NOT shown in the top bar — they render in the animated per-category chip rows below (`AnimatedRow`/`ChipRow`/`FilterChip`, one row per dimension incl. Presence). Do not re-add always-visible dimension dropdowns to the top bar.
   - **Full-screen modals on mobile**: ProjectsModal, SessionDrilldownModal, PreferencesModal, the transcript viewer, etc. render full-screen (overlay padding 0, width/height 100%, `borderRadius: 0`) — iOS Safari pushes centered fixed-width modals off-screen when the page overflows horizontally.
+  - **THE SESSIONS WORKSPACE STOPS THE DOCUMENT BOUNCING, AND NEVER BY RE-ANCHORING IT.** It is a
+    fixed-height column whose conversation, list and aside each scroll inside themselves, so a flick
+    off the end of one chains to the document and rubber-bands the page; and iOS scrolls the page
+    for the caret and does not always undo it (which is why the composer and the nav came back
+    higher than they went). The fixes are `overscroll-behavior: none` on the document there plus
+    `contain` on every inner scroller — PAINT-ONLY — and putting the scroll back when the keyboard
+    closes. **`position: fixed` on the body was tried TWICE and reverted both times**: it moves the
+    initial containing block onto the SMALL viewport, so `100dvh` overflows the locked box and
+    `#root`'s clip takes the foot of the column off screen, while sizing the shell to
+    `visualViewport.height` instead ends it above the floor with the fixed nav anchored to that
+    edge. Three position reports in an hour. `lib/mobileViewport.ts` measures ONE thing (is the
+    keyboard up) and sizes NOTHING: a measurement may inform a decision, it may not become a box.
+  - **`Enter` breaks the line on a phone and sends on a hardware keyboard.** `shift+enter` needs a
+    shift key a software keyboard does not have. `TtyChat` already split this way; gate on
+    `isMobile`, never on the harness or the field.
+  - **The magnifier's floating fallback appears only where no chrome hosts its button.**
+    `headerHostsMagnifier` names the slots that exist (the phone's header, the desktop strip's
+    trailing region, the Sessions workspace's own bar); a new screen with its own chrome must be
+    added there or the button lands on top of its content.
   - **iOS sticky fix**: mobile `html, body, #root` use `overflow-x: clip` (NOT `hidden`) in `index.css` — `hidden` forces `overflow-y` to compute to `auto`, creating a scroll container that breaks `position: sticky`. `clip` clips without that side effect.
   - **iOS install/PWA**: iOS has no `beforeinstallprompt`; InstallModal/Install tab detect iOS and show Add-to-Home-Screen steps instead of an install button. The data cache in `useData.ts` (`agentistics-data-cache-v1` in localStorage) gives instant reopen over plain HTTP (service worker needs HTTPS/localhost).
 - **`files_modified` counting** (`packages/server/server/jsonl.ts`): tracks unique file paths from Edit/Write/MultiEdit tool calls (`claudeFilesModified` Set), then takes `Math.max(gitFileStats.filesModified, claudeFilesModified.size)` — whichever is higher. This captures files Claude edited in non-git directories.
@@ -1792,3 +2274,24 @@ Do not mock the filesystem — the tested functions are pure and have no side ef
 
 - **pre-commit**: `bun tsc --noEmit` + `bun test`
 - **commit-msg**: commitlint enforces Conventional Commits (`feat:`, `fix:`, `chore:`, etc.)
+
+## The release's version bump — `versionBump.ts`, and the read that feeds it
+
+**The published version is decided by `bumpFromCommits` / `nextVersion` in `@agentistics/core`, and
+`.github/workflows/release.yml` only READS the commits and delegates.** The calculation was inline
+bash and nothing exercised it, so a defect was observable only in production, one release at a time
+— v1.23.1 shipped a `feat` as a patch. Two rules, both enforced by
+`packages/core/src/releaseWorkflow.lint.test.ts` (a grep over the workflows, the shape
+`tokens.lint.test.ts` uses over the product source):
+
+- **`git log --pretty=tformat:`, never `format:`.** `format:` omits the terminal newline on the LAST
+  record and `while IFS= read -r` silently drops a line without one, so the OLDEST commit of every
+  range went unclassified — and when that was the only `feat`, zero subjects were read. It is
+  harmless inside `$(…)`, which strips trailing newlines, and that is precisely why the wrong form
+  survives long enough to be copied into a loop. The lint bans the form outright in every workflow
+  and root shell script; `@git-format-intentional` plus a reason is the escape hatch.
+- **No bash bump default.** `bumpFromCommits` THROWS on an empty commit list, because a range that
+  has commits (`COMMIT_COUNT > 0`) yet yields none to classify is a reading defect, not a patch. A
+  `BUMP="patch"` floor in the shell converts that loud failure back into a quietly wrong release,
+  so the lint refuses one. A NON-empty list of only non-conventional subjects is a different thing
+  — the read worked, there is nothing to bump — and is a legitimate patch.

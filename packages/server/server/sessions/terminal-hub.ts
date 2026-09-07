@@ -58,6 +58,11 @@ interface Entry {
 export interface TerminalHub {
   /** Start (or join) watching a session. The returned function unsubscribes; call it once. */
   subscribe(id: string, sink: TerminalSink): Promise<() => void>
+  /**
+   * Capture now — the screen just changed because somebody typed into it. A no-op for a session
+   * nobody is watching. See the implementation for why it is a short burst.
+   */
+  nudge(id: string): void
   /** How many capture loops are running — for the route's cap and for tests. */
   activeLoops(): number
   /** Total readers across all sessions — for the route's cap. */
@@ -109,6 +114,28 @@ export function createTerminalHub(deps: TerminalHubDeps): TerminalHub {
   }
 
   return {
+    /**
+     * Capture NOW, because something just changed the screen on purpose.
+     *
+     * The poll cadence is tuned for watching — half a second is nothing when you are reading what
+     * an agent is doing, and it is an eternity when you are TYPING: every character would take up
+     * to `pollMs` to appear, which reads as a broken keyboard rather than as a slow one. The write
+     * path calls this after a keystroke lands, so the echo is one capture away instead of one
+     * interval.
+     *
+     * A short burst rather than a single tick: tmux accepts the key, the program redraws a moment
+     * later, and a capture taken between the two shows the screen as it was. Three cheap reads over
+     * ~200ms cover both edges. It is bounded by construction — only a session somebody is WATCHING
+     * has an entry, and `tick` is a no-op while one is already in flight.
+     */
+    nudge(id) {
+      const entry = entries.get(id)
+      if (!entry || entry.sinks.size === 0) return
+      void tick(id)
+      setTimeout(() => { if (entries.has(id)) void tick(id) }, 60)
+      setTimeout(() => { if (entries.has(id)) void tick(id) }, 200)
+    },
+
     async subscribe(id, sink) {
       if (!(await deps.isManaged(id))) {
         try { sink.onEnd('not-found') } catch { /* sink is done */ }

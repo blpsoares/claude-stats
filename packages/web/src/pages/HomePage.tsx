@@ -225,6 +225,20 @@ export default function HomePage() {
 
   return (
     <>
+      {/* "Active only" narrows this whole page to conversations running right now — a scope
+          `stats-cache.json` cannot represent at all, so every total below is a per-session sum
+          rather than the deep cached history. Said here, once, above everything it affects,
+          rather than left silent: an unexplained smaller number reads as a bug. */}
+      {derived.activeOnlyScoped && (
+        <p role="status" style={{
+          margin: '0 0 4px', fontSize: 12, lineHeight: 1.5, color: 'var(--text-tertiary)',
+        }}>
+          {lang === 'pt'
+            ? 'Mostrando só as conversas rodando agora — estes totais são somados por sessão.'
+            : 'Showing only conversations running right now — these totals are summed per session.'}
+        </p>
+      )}
+
       {/* Session date range */}
       {derived.firstSessionDate && derived.lastSessionDate && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-tertiary)', flexWrap: 'wrap' }}>
@@ -253,7 +267,7 @@ export default function HomePage() {
           middle of the grid. The row is user-reorderable, so that arrangement is reachable.
           `dense` backfills the gap with the next card that fits. */}
       <div className="ag-grid cols-5 ag-dense">
-        {(cardOrder as CardId[]).map(id => renderCard(id))}
+        {cardOrder.map(id => renderCard(id))}
       </div>
 
       {/* Highlights */}

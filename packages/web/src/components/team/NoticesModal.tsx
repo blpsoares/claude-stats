@@ -9,6 +9,7 @@ import { buildRestrictionTable, type RestrictionRow, type RestrictionMachine } f
 import {
   describeSources, proposalAge, proposalPlan, type ProposalView, type KeyWarningView,
 } from './proposalNotices'
+import { OVERLAY_TOP } from '../../lib/mobileOverlay'
 
 /**
  * NoticesModal — everything another machine of this account is waiting on a decision about.
@@ -167,7 +168,7 @@ export function NoticesModal({
       style={{
         position: 'fixed', inset: 0, zIndex: 2000, display: 'flex',
         alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center',
-        background: 'rgba(0,0,0,0.6)', padding: isMobile ? 0 : 16,
+        background: 'rgba(0,0,0,0.6)', padding: isMobile ? OVERLAY_TOP : 16,
       }}
     >
       <div

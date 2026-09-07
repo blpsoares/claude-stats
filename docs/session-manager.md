@@ -4,6 +4,13 @@
 sessions are hosted by tmux on its own socket (`-L agentop`), so they survive `agentop` exiting and
 never mix with your own tmux sessions.
 
+There are four front doors onto the same fleet and they hold ONE set of rules: this CLI, the
+control center's `sessions` tab, the web dashboard, and the
+[VS Code extension](vscode-extension.md). The last two reach it over `/api/fleet`, which resolves
+every verb, label and refusal through the same `sessionActions` the cockpit resolves each keypress
+against — a client that re-derived them would be another answer to "what may be done to this row",
+and the one that went wrong would offer a blind "approve" on a dialog with four different outcomes.
+
 ## Requirements
 
 tmux (Linux, macOS). **On Windows, run agentop inside WSL** — the CLI says so in those words rather
@@ -358,11 +365,101 @@ blind early Enter would select it and kill the session.
 Codex's reasoning effort is a `-c key=value` configuration override rather than a flag; it is not
 wired up because the key could not be verified from the CLI itself, and agentop does not guess flags.
 
+### Reading the conversation
+
+The Sessions workspace can show a session's **conversation**, not only its terminal screen. Whether
+it can for a given row depends on two independent things, and confusing them cost the feature its
+honesty once already — an Antigravity session with a perfectly good link showed a blank pane with
+no sentence on it, because the only transcript reader that existed was Claude's.
+
+**1. The LINK — is this row's conversation id exact?** A reader is only ever handed a
+`conversationId`, and `ManagedSession.conversationId` is written only where agentop itself handed
+that id to the CLI (`SpawnSpec.assignId` at spawn, or `resume` at reopen). The harness-and-directory
+inference behind the reopen offer never reaches a reader: it is good enough to offer a reopen a
+person confirms by title, and not good enough to put some other conversation from the same folder on
+screen under this session's name.
+
+**2. The FORMAT — has anybody written a reader for it?** `harness-transcript.ts` holds one entry per
+harness. An absent reader is refused in a sentence that names the harness, never rendered as an
+empty conversation.
+
+| Harness | Exact link comes from | Transcript read from |
+|---|---|---|
+| claude | `--session-id` at spawn, plus its own `~/.claude/sessions/<pid>.json` | `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` |
+| copilot | `--session-id` at spawn | `~/.copilot/session-state/<id>/events.jsonl` |
+| codex | `codex resume <id>` | `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl` |
+| kimi | `--resume <id>` | `~/.kimi-code/sessions/*/session_<id>/agents/main/wire.jsonl` |
+| antigravity | `--conversation <id>` | `brain/<id>/.system_generated/logs/transcript_full.jsonl` |
+| **gemini** | **never** | — |
+
+**Gemini can never be read here, and that is a fact about the LINK.** Its `-r, --resume` takes
+`latest` or an index rather than an id, and `--session-id` is deliberately not used because gemini's
+session id in this product is synthetic (`<dir>/<file>`), so a recorded UUID would resolve to nothing
+while looking exact. A gemini row therefore never carries a conversation id at all; the row says so
+(`conversationBlind`) and the workspace hides the chat tab rather than offering one that cannot work.
+A reader for its file format would be code nothing can reach. Its format is nonetheless recorded in
+`harness-transcript.ts` so the measurement is not spent twice: it is a patch log rather than one
+message per line.
+
+The same applies, per row, to any harness whose session was **started fresh** without an id —
+antigravity, codex and kimi only gain the link on a reopen, so a freshly spawned row of those three
+is blind until it is reopened, and says so.
+
+#### Three rules every reader follows
+
+Each was a real defect first, in a different harness each time.
+
+- **The same turn is often written twice, in two different places.** Codex writes
+  `event_msg/{user,agent}_message` beside `response_item/message`; kimi writes `turn.prompt` beside
+  `context.append_message`; antigravity writes the tool REQUEST beside its EXECUTION. Exactly one
+  family is read and the other is ignored outright, and the one read is the SUPERSET — measured,
+  codex's `event_msg` covers 21 of 42 user messages and kimi's `turn.prompt` 15 of 22, so choosing
+  the smaller one silently drops turns.
+- **What nobody said is never drawn as a message.** Every harness puts its own injected material
+  under the user's role and each declares it differently: kimi stamps `message.origin.kind`, copilot
+  keeps the person's `content` apart from a wrapped `transformedContent`, codex has a `developer`
+  role plus `<…>` envelopes — and codex also has entries with no marker at all (measured: 11 of 32
+  untagged user messages were the harness loading an `AGENTS.md`). Those become unattributed notes
+  that NAME the kind and never carry the body. An entry nothing recognises stays the person's:
+  hiding a real message is the expensive direction.
+- **A tool call is shown under the harness's OWN name.** A conversation records what happened, and
+  antigravity ran `run_command`, not `Bash`. The shared vocabulary (`canonicalTool`) is carried
+  alongside as `canonical` and is what anything selecting or counting reads — the artifacts panel
+  picks the file-writing tools by Claude's names and keeps working for every harness. A shell
+  detail goes through `commandSummary`, so a session that opens every command with `cd <dir>` does
+  not draw a column of identical `cd` rows.
+
 ## Scrolling an attached session
 
-Sessions are hosted on agentop's own tmux socket (`-L agentop`), and agentop sets four options on
-it before the first one exists: `remain-on-exit` (a finished session stays listable with its last
-frame readable), `mouse on`, a `history-limit` of 50000 lines, and `status off`.
+Sessions are hosted on agentop's own tmux socket (`-L agentop`), and agentop sets its options on it
+as part of creating the first session: the colour profile (below), `remain-on-exit` (a finished
+session stays listable with its last frame readable), `mouse on`, a `history-limit` of 50000 lines,
+and `status off`.
+
+All of it goes in **one chained tmux invocation** with the `new-session` it precedes, and that is
+not a style choice. `set-option` does not start a tmux server — on a cold socket it fails outright —
+so applied as separate pre-flight calls the options were simply lost, and the very first session
+kept tmux's defaults (8 colours, no mouse, a 2000-line buffer) until a second session happened to
+warm the server. Chaining runs every command against the single server tmux starts for the batch,
+in order, so an option that must precede its pane actually does.
+
+**Colour — a pane inside tmux should render like the CLI does outside it.** tmux's own
+`default-terminal` is `screen`, which advertises 8 colours, so a CLI in the pane self-downgrades
+even when the terminal you attach from does 256 or truecolor (measured on tmux 3.2a: `tput colors`
+is 8 inside such a pane against 256 outside). agentop sets `default-terminal` to the richest
+256-colour terminfo entry that provably exists on the host — `tmux-256color`, else `screen-256color`
+— which takes the pane to 256; a host with neither keeps tmux's default rather than naming an entry
+that is not installed. This is safe for every client because tmux downsamples per attach.
+
+Truecolor is added only when the terminal that *invoked* the session declared it (`COLORTERM` =
+`truecolor`/`24bit`), and it is keyed to that terminal's own `$TERM`: a `terminal-features
+,<TERM>:RGB` capability (appended, so tmux's built-in features survive) plus `COLORTERM=truecolor`
+carried into the pane so the CLI actually emits 24-bit. Keying to the invoker's `$TERM` is the
+compatibility guarantee — a different, less capable client attaching later never matches it and is
+rendered at 256 rather than fed RGB it cannot show. `-2` (force-256 on attach) was evaluated and
+left out: its effect on the attaching client could not be measured on 3.2a, and agentop does not
+ship a flag it could not verify — the attaching client's depth follows its own `$TERM` terminfo,
+which is exactly the terminfo the CLI would use outside tmux.
 
 The status bar is off because every fact it carries is wrong here: it lists windows and an agentop
 session is one window with one pane, it shows the session name and that name is `agentop-<id>`
@@ -374,10 +471,10 @@ nothing else, so attaching to a session to read what it did was attaching to a s
 read. The trade is that dragging to select now goes to tmux rather than to your terminal: **hold
 shift** to select and copy the terminal's own way.
 
-The scrollback is set up front because it does not apply retroactively — a pane created before it
-keeps tmux's default 2000 for as long as it lives. Sessions started by an older agentop therefore
-keep the small buffer until they are reopened; the mouse, being a server option, applies to them
-immediately.
+The scrollback and `default-terminal` are set up front because neither applies retroactively — a
+pane created before them keeps tmux's default 2000-line buffer and 8-colour `screen` for as long as
+it lives. Sessions started by an older agentop therefore keep the small buffer and the flat colours
+until they are reopened; the mouse, being a live server option, applies to them immediately.
 
 None of this touches your own tmux: different socket, different server, different config.
 
@@ -398,3 +495,48 @@ registry. `searchScopes` is a set — name, folder, harness, note, task, prompt,
 "all" control is simply every scope present; when it has never been chosen the search covers every
 field a row carries on its own, and `transcript` (a text scan of the conversation on disk) is an
 explicit opt-in rather than a cost paid on every keystroke.
+
+## One poller, many readers
+
+The cockpit, the web workspace, `agentop session ls` and `agentop hooks context` all describe the
+same fleet, and they used to each run their own poll. That is not merely wasteful — they disagreed:
+four sessions in the browser against three in the terminal, at the same moment, on the same machine.
+A frame digest, a heartbeat and an attention state are all *per poller*, so two pollers are two
+answers.
+
+`GET /api/fleet/snapshot` serves the **raw `SessionSnapshot`** (`shared-snapshot.ts`), and every
+one-shot reader takes it whenever a server is up, falling back to its own read when none is. Two
+rules keep it honest:
+
+- **The route serves the RAW snapshot, not the mapped `ControlSession` rows.** It briefly served the
+  mapped ones under the snapshot's type, and `session ls --json` answered `activity: null` on every
+  row — caught by reading the output, not by reading the types.
+- **A one-shot command never stamps `lastSeenMs`.** The heartbeat is what makes crash-grouping exact;
+  a `session ls` that touched it would make every row look alive at the moment somebody listed them.
+
+## Rows that are not what they look like
+
+Four fixes that all come from the same place — a row must say what it IS, and never guess:
+
+- **A CLI command is not a live session.** `NOT_A_SESSION` filters the process scan, so
+  `agentop session ls` typed in a terminal stopped appearing in its own output as an assistant.
+- **One external row per SESSION, not per process.** A harness installed as a `node` shim spawns
+  more than one process for one conversation; each was becoming a row.
+- **An unregistered row says what it is instead of `?`.** A running session whose registry record is
+  gone is now adopted where the harness's own record names our tmux session
+  (`session-adopt.ts`), and where it cannot be, the row says `unregistered` rather than showing a
+  question mark for a name.
+- **A stale row and a lost conversation stop sharing one sentence.** They are different facts and
+  they send the reader to different places.
+
+## Two failures the fleet used to report as "empty"
+
+- **A tmux that cannot be reached.** `list()` now throws unless `tmuxListIsEmptyState(code, out, err)`
+  says the failure really is the no-server case — and that rule reads **stderr**, where tmux actually
+  writes `error connecting to …`. Judging stdout alone would have made a machine with no tmux server
+  (the ordinary first-run state) throw on every poll.
+- **Two processes holding the registry lock.** `registry.ts` serialises writes within ONE process,
+  and agentop runs as several. The lock's ENOENT branch used to `rm` the file it had just failed to
+  find, which is how two holders happen; a vanished lock now retries and an abandoned one is taken
+  over by an atomic `rename`. Measured before and after over 600 concurrent writes: 31 losses in 150,
+  then 0 in 600.

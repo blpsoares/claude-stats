@@ -10,7 +10,8 @@
  * filter to stay out of their way. The prefix on the name is belt and braces for the case where a
  * user points their own tmux at our socket deliberately.
  *
- * Every field and flag below was probed against tmux 3.2a on 2026-08-12.
+ * Every field and flag below was probed against tmux 3.2a on 2026-08-12; the colour options
+ * (`default-terminal`, `terminal-features`, the pane's `COLORTERM`) were probed on 2026-09-01.
  */
 
 import type { BackendSession, PaneInfo } from './types'
@@ -32,9 +33,66 @@ export const LIST_FORMAT =
 
 const sock = (rest: string[]): string[] => ['-L', TMUX_SOCKET, ...rest]
 
-/** `--` matters: without it tmux parses the harness's own flags as its own. */
-export function newSessionArgs(o: { id: string; cwd: string; argv: string[] }): string[] {
-  return sock(['new-session', '-d', '-s', tmuxName(o.id), '-c', o.cwd, '--', ...o.argv])
+/**
+ * The colour profile agentop applies to its tmux, resolved from THIS host's terminfo and the
+ * INVOKING terminal's environment. It is data, not IO, so the argv builders stay pure and the
+ * resolution — which is terminfo-dependent (`resolveDefaultTerminal`) and env-dependent
+ * (`resolveTruecolorTerm`) — is tested on its own. See docs/session-manager.md for the why.
+ */
+export interface TerminalProfile {
+  /** tmux `default-terminal`, or null to leave tmux's own (`screen`, 8 colours) untouched. */
+  defaultTerminal: string | null
+  /**
+   * The invoking terminal's own `$TERM`, to key a truecolor (RGB) capability to — or null when the
+   * invoker did not DECLARE truecolor (`COLORTERM`). Keying it to that exact `$TERM` is the whole
+   * compatibility story: a different, less capable client attaching later never matches and is
+   * rendered at 256 rather than fed RGB it cannot show.
+   */
+  truecolorTerm: string | null
+}
+
+/**
+ * PURE: pick the richest 256-colour terminfo entry that PROVABLY exists on this host.
+ *
+ * tmux's own `default-terminal` is `screen`, which advertises 8 colours; a CLI inside such a pane
+ * self-downgrades even when the terminal you attach from does 256 or more (measured on 3.2a:
+ * `tput colors` 8 inside the pane vs whatever the real terminal reports outside it). `tmux-256color`
+ * takes the pane to 256. We never NAME an entry that is not installed — a `default-terminal`
+ * pointing at a missing terminfo entry downgrades every pane, which is worse than tmux's default —
+ * so the caller checks presence (`infocmp`) and a host with neither entry keeps tmux's default.
+ */
+export function resolveDefaultTerminal(has: { tmux256color: boolean; screen256color: boolean }): string | null {
+  if (has.tmux256color) return 'tmux-256color'
+  if (has.screen256color) return 'screen-256color'
+  return null
+}
+
+/**
+ * PURE: does the INVOKING terminal declare truecolor, and under which `$TERM`?
+ *
+ * The de-facto signal is `COLORTERM` = `truecolor` | `24bit`; nothing else is trusted, because
+ * forcing RGB onto a terminal that did not ask for it is exactly the incompatibility we must avoid
+ * (tmux would then emit 24-bit sequences a non-truecolor terminal cannot render). The capability is
+ * keyed to the invoker's `$TERM`, so with no `$TERM` there is nothing to key it to and we decline.
+ */
+export function resolveTruecolorTerm(env: { TERM?: string; COLORTERM?: string }): string | null {
+  const ct = (env.COLORTERM ?? '').trim().toLowerCase()
+  if (ct !== 'truecolor' && ct !== '24bit') return null
+  const term = (env.TERM ?? '').trim()
+  return term.length > 0 ? term : null
+}
+
+/**
+ * `--` matters: without it tmux parses the harness's own flags as its own.
+ *
+ * `-e COLORTERM=truecolor` (before `--`) is set only for a truecolor invoker: tmux does NOT set
+ * `COLORTERM` in a pane itself (measured on 3.2a), so a detached CLI only emits 24-bit colour when
+ * it inherits it. The client-side half — tmux actually forwarding RGB on attach — is the
+ * `terminal-features` capability in `serverOptionsArgs`.
+ */
+export function newSessionArgs(o: { id: string; cwd: string; argv: string[]; truecolor?: boolean }): string[] {
+  const env = o.truecolor ? ['-e', 'COLORTERM=truecolor'] : []
+  return sock(['new-session', '-d', '-s', tmuxName(o.id), '-c', o.cwd, ...env, '--', ...o.argv])
 }
 
 export function killSessionArgs(id: string): string[] {
@@ -147,9 +205,29 @@ export const HISTORY_LIMIT = 50_000
  * session you cannot read. It has a cost worth stating rather than discovering: with the mouse
  * captured, dragging to select goes to tmux instead of to the terminal, and SHIFT is the bypass —
  * the same trade the control center already documents for its own mouse mode.
+ *
+ * The COLOUR options come first and are conditional. `default-terminal` lifts the pane off tmux's
+ * 8-colour `screen` default (see `resolveDefaultTerminal`); it downsamples per attaching client, so
+ * it is safe unconditionally and only omitted when no 256-colour terminfo entry exists here. The
+ * truecolor `terminal-features` is appended (`-ga`, so tmux's built-in features survive) and keyed
+ * to the invoker's own `$TERM` — the compatibility guarantee: a client that did not declare
+ * truecolor never matches it. `-2` was evaluated and left out: on tmux 3.2a its effect on the
+ * attaching client could not be MEASURED (`client_colours` is unpopulated), and agentop does not
+ * ship a flag it could not verify — the attaching client's depth follows its own `$TERM` terminfo,
+ * which is exactly the terminfo the CLI would use OUTSIDE tmux.
+ *
+ * Only `default-terminal` must precede a pane to take effect (it does not apply retroactively), so
+ * these are set, like the others, before the first session — see the backend's spawn note.
  */
-export function serverOptionsArgs(): string[][] {
-  return [
+export function serverOptionsArgs(profile: TerminalProfile): string[][] {
+  const opts: string[][] = []
+  if (profile.defaultTerminal) {
+    opts.push(sock(['set-option', '-g', 'default-terminal', profile.defaultTerminal]))
+  }
+  if (profile.truecolorTerm) {
+    opts.push(sock(['set-option', '-ga', 'terminal-features', `,${profile.truecolorTerm}:RGB`]))
+  }
+  opts.push(
     // Keeps a finished session listable, with its last frame still capturable — the `exited` state.
     sock(['set-option', '-g', 'remain-on-exit', 'on']),
     sock(['set-option', '-g', 'mouse', 'on']),
@@ -161,7 +239,44 @@ export function serverOptionsArgs(): string[][] {
     // band costs a row of the assistant's screen to say nothing, in a colour that is hard to
     // ignore.
     sock(['set-option', '-g', 'status', 'off']),
+  )
+  return opts
+}
+
+/**
+ * The ONE tmux invocation that applies our server options AND creates the session, chained with a
+ * bare `;` between subcommands.
+ *
+ * Why one invocation rather than the options first and then `new-session`: `set-option` does NOT
+ * start a tmux server (measured on 3.2a — it exits non-zero, `error connecting to …`). So on a COLD
+ * socket the options applied before the first `new-session` were simply lost, and that first session
+ * kept tmux's 8-colour `screen` default — no 256 colours, no mouse, no scrollback — until a second
+ * session warmed the server. Chaining runs every command against the single server tmux starts for
+ * the batch, in order, so `default-terminal` (which does not apply retroactively) precedes the pane
+ * it must configure.
+ *
+ * `-L <socket>` is given ONCE, at the front; each `;` separates a subcommand that then carries no
+ * socket flag of its own. The `;` is a bare argv token because the caller execs tmux directly
+ * (`Bun.spawn`, no shell), so there is nothing to escape.
+ */
+export function spawnArgs(
+  profile: TerminalProfile,
+  o: { id: string; cwd: string; argv: string[] },
+): string[] {
+  // ONE profile drives both halves of truecolor: the client-side capability
+  // (`terminal-features` in serverOptionsArgs) and the pane-side `COLORTERM` here. Deriving the
+  // pane env from the profile — rather than a separate flag — is what keeps them from disagreeing.
+  const commands: string[][] = [
+    ...serverOptionsArgs(profile),
+    newSessionArgs({ id: o.id, cwd: o.cwd, argv: o.argv, truecolor: profile.truecolorTerm !== null }),
   ]
+  const chained: string[] = []
+  commands.forEach((cmd, i) => {
+    if (i > 0) chained.push(';')
+    // Each builder returns its own `-L <socket>` prefix; drop it so the socket is named once.
+    chained.push(...cmd.slice(2))
+  })
+  return sock(chained)
 }
 
 export function showPrefixArgs(): string[] {
@@ -171,6 +286,39 @@ export function showPrefixArgs(): string[] {
 /** Includes the binary: this argv is EXECED by the caller, not passed to our own tmux runner. */
 export function attachArgs(id: string): string[] {
   return ['tmux', '-L', TMUX_SOCKET, 'attach-session', '-t', tmuxName(id)]
+}
+
+/**
+ * Is a non-zero `list-sessions` the ORDINARY EMPTY STATE, or a failure?
+ *
+ * tmux exits 1 with no sessions when no server is running, which is what a machine looks like
+ * before anything has been started — a legitimate empty answer. Every OTHER non-zero exit is a
+ * failure, and for one release they were the same thing: `list()` ignored the exit code entirely
+ * and handed whatever came out to `parseTmuxList`, which yields `[]` for anything it cannot parse.
+ *
+ * So a tmux that could not be reached AT ALL reported every managed session as gone, silently and
+ * with confidence. Measured on this machine: `PATH=/nonexistent tmux list-sessions` exits **127**
+ * printing `command not found` — parsed as zero sessions. The cockpit then said "nothing running ·
+ * 326 sessions withheld" while four assistants were live in tmux, and the whole fleet reconciled to
+ * `lost`. Reported exactly that way.
+ *
+ * The distinction is the MESSAGE, because that is the only thing tmux gives us. Both forms it uses
+ * are matched (`error connecting to <socket>` on 3.x, `no server running on <socket>` on older
+ * builds), and anything else is a failure the caller must THROW on — `createSessionsPoller` already
+ * keeps its previous list and says the refresh failed, which is the honest answer and was
+ * unreachable while this returned `[]`.
+ *
+ * **BOTH STREAMS ARE READ, and the first version of this read only stdout — which would have broken
+ * exactly the case the old code got right.** Measured: with no server, `list-sessions` writes
+ * NOTHING to stdout and puts `error connecting to …` on STDERR. Judging on stdout alone, a machine
+ * that has simply never started a session sees `code 1` with an empty string, falls through to
+ * "failure", and every poll throws — turning the ordinary first-run state into a permanent error.
+ * A rule about a message must be given the streams the message can arrive on.
+ */
+export function tmuxListIsEmptyState(code: number, out: string, err = ''): boolean {
+  if (code === 0) return true
+  const text = `${out}\n${err}`.toLowerCase()
+  return text.includes('no server running on') || text.includes('error connecting to')
 }
 
 export function parseTmuxList(stdout: string): BackendSession[] {

@@ -134,7 +134,7 @@ test asserting exactly that (`auth-principal.test.ts`, `stepup.test.ts`).
 | Control | Does | Does **not** |
 |---|---|---|
 | **Exposure profile** (`exposure.ts`) | decides whether host-power routes exist at all; `public` revokes them permanently and ignores the opt-in flag; an unknown value fails closed | protect you from marking a public instance `local` — that env value is the trust anchor, which is why `doctor --exposed` re-checks against the strict bar |
-| **Capability guard** (`capability-guard.ts`) | 403s `/api/exec`, `/api/chat-tty`, host transcript readers and MCP admin before auth | cover a route nobody registered — an unregistered route is assumed harmless |
+| **Capability guard** (`capability-guard.ts`) | 403s `/api/exec`, `/api/chat-tty`, the whole `/api/fleet` prefix, host transcript readers and MCP admin before auth | cover a route nobody registered — an unregistered route is assumed harmless |
 | **Rate limiting** (`rate-limit.ts`) | 5 logins / 15 min per IP with doubling backoff; a soft per-account bucket checked before the argon2 verify | survive a process restart, or coordinate across replicas — the edge limiter is the front line |
 | **Password policy** (`@agentistics/core`, re-exported by `password-policy.ts`) | 8-char floor, one uppercase, one symbol, 1024 ceiling | a length floor beats composition rules (NIST SP 800-63B) — this is a deliberate product choice, taken knowing that; there is no breach-corpus or common-password check, so `Agentistics@123!` is accepted |
 | **TOTP** (`totp.ts`) | RFC 6238 second factor with single-use, hashed recovery codes | help if the authenticator device itself is compromised |
@@ -391,6 +391,126 @@ published envelope key — and the enumeration of what is keyed by a machine id 
 `GET /api/team/proposals` returns a sibling's full source list, so it is registered in
 `capability-guard.ts` and is unreachable on an internet-exposed instance.
 
+## 8b. The fleet routes — starting an assistant is the strongest thing this server does
+
+`/api/fleet` and everything under it is host power under another name. Reading the fleet CAPTURES
+each live session's screen — a coding assistant's terminal, transcript and all. `/api/fleet/act`
+types into it, answers a permission prompt for it, or kills it. `/api/fleet/stream` streams that
+screen continuously. `/api/fleet/attach` hands out the command that ENTERS it. And
+`/api/fleet/input` sends RAW KEYSTROKES into a live one, and
+`/api/fleet/new` **starts a fresh coding assistant, with a prompt, in a directory the request
+names** — billable, on this machine, with whatever access the assistant itself has.
+
+Three things bound it, and only one of them is wording:
+
+1. **`localShell`, registered as a PREFIX.** The whole `/api/fleet` subtree maps to `localShell` in
+   `capability-guard.ts`, so it is 403 on a `lan` or `public` profile *before* the auth gate,
+   whoever is authenticated. It is a prefix and not five names on purpose: a route that is not
+   registered is assumed harmless, so the next fleet route someone adds must be guarded by having
+   been added at all, never by having remembered a second table. `capability-guard.test.ts` asserts
+   a path nobody has written yet resolves to `localShell`, and that a near-miss (`/api/fleetwide`)
+   does not.
+2. **404 on a central.** A central aggregates many machines and hosts none of their sessions, so a
+   fleet read there would be that box's own processes answering under someone else's page. The
+   guard is a prefix too, for the same reason.
+3. **What a start request may ask for** (`fleet-spawn.ts`, pure and tested). The directory must be
+   ABSOLUTE — a relative path resolves against the server's own working directory, so the session
+   would open somewhere nobody named. The harness must be one this machine can start. An `effort`
+   must be in the closed enum the CLI itself prints. Nothing is repaired: a request naming a model
+   on a harness with no model flag is refused, because a session that is not the one asked for is
+   worse than no session.
+
+`POST /api/fleet/new` is the one fleet call that takes a directory from the request body.
+`resume` deliberately refuses to — reopening names an existing conversation, so a directory in the
+body could only ever contradict it, and accepting one would let a caller start an assistant
+anywhere on this machine. Starting IS the act of choosing where work happens and has nothing else
+to read it from; that is why the bound above is exposure rather than argument.
+
+`GET /api/fleet/attach` returns a ticket (`argv` + the real detach key) and never attaches: the
+server has no tty. It checks SCOPE first — the row must be one this machine manages and must be
+running — because `attachSession` composes the command from whatever id it is given without asking
+whether that session exists.
+
+**Raw keystrokes.** `POST /api/fleet/input` types characters with no submit, or presses one named
+key, in a session this machine manages. It is the same power a terminal has once attached, reached
+through the same `localShell` gate and the same scope check, and its one rule is in the pure
+`fleet-input.ts`: a key name outside tmux's own vocabulary is REFUSED, never forwarded, because
+`send-keys` does not fail cleanly on an unknown name — it sends the string, so a bogus key becomes
+typed text in somebody's live session. Unlike `prompt` it does not refuse an open dialog: a KEY is
+what answers a dialog, and the caller is looking at the frame while they press it.
+
+**Framing.** On a `local` profile the dashboard now allows exactly one frame-ancestor,
+`vscode-webview:`, so the VS Code extension can show it in an editor tab; `X-Frame-Options` is
+omitted on that profile because `DENY` cannot express "one scheme" and would simply win. A web
+page's origin is `http:` or `https:` and cannot be forged into another scheme, so no page gains the
+ability to frame anything, and `lan` / `public` are untouched — they keep `frame-ancestors 'none'`
+and the legacy header. `security-headers.test.ts` pins both directions.
+
+## 8c. Managing a machine's sessions from a central — what is guaranteed, and what is not
+
+Reaching into another machine's live sessions is the most powerful thing a central can be asked to
+relay. Four things make it safe enough to offer, and one thing it explicitly does not promise.
+
+**It is off until the machine turns it on.** Absent consent reads as OFF — the same rule
+`chat-gate.ts` applies to the local shell, and deliberately not the `shareMode` migration rule that
+treats absence as the old default. Treating absence as ON here would hand every already-connected
+machine to its central on upgrade.
+
+**Only the machine's OWN accounts.** `machineOwnedBy` (`iam-view.ts`) is deliberately narrower than
+the `canManageMachine` that governs renaming, rotating and re-assigning a machine: administering a
+machine belongs to whoever runs the instance, reaching into its live sessions belongs to its user.
+An instance owner who is not this machine's account is refused, and gets the same `not-owner`
+answer as a stranger — so the route is not an oracle for which machines a central holds.
+
+**The screen and the conversation never travel.** The relayed row is built by an ALLOWLIST of keys
+(`reduceMachineFleetRow`), so `lastLines`, `chatTurns`, `approvalLines` and `dialogOptions` cannot
+cross even as a future field somebody adds to `ControlSession`. `machineFleet.test.ts` feeds a row
+carrying all of them and asserts none survives. This is what keeps the 410 on
+`GET /api/team/session-chat` meaningful.
+
+**`approve` and `prompt` are refused, and not merely disabled.** Neither can be offered honestly
+without the screen: a permission prompt is `1. Yes / 2. Yes, always / 3. No`, an `AskUserQuestion`
+can offer five answers that do different work, and a keystroke that answers cannot know which
+option it is taking. A button over a dialog nobody can read is the accident `parseDialogOptions`
+exists to prevent.
+
+**The machine is the authority, not the central.** Consent, the verb allowlist **and this
+connection's sharing rules** are re-read on the member on every request. The central's copy of
+those checks exists only to spare a round trip and answer the user instantly; a check that runs
+only on the party whose behaviour cannot be verified is not a check.
+
+**A withheld session cannot be acted on, and for one release it could be.** The two consent
+switches are machine-wide: they say whether sessions may be managed at all, and nothing about
+WHICH. The rules in §8 say which. Both must hold, and only the first one did — the read half
+filtered rows through `cwdShared` while the act half resolved the id against the machine's raw
+fleet, so a central could `kill`, `rename`, `resume` or re-task a session in a repository its
+member had explicitly withheld from it. A rule enforced when you look and not when you act is not
+a rule. `performMachineAction` now resolves the target through the same predicate the rows went
+through, and refuses an id it cannot resolve — an unresolvable target has no directory to judge,
+and passing it through would leave every verb reachable by naming an id the fleet does not list.
+
+**The task verbs are refused entirely while anything is withheld.** `openTask` acts on the piece of
+WORK a row is filed under, expanding across the whole registry, and a task routinely spans
+repositories — so on a restricted connection it reached sessions the central was never shown,
+started assistants in their directories and reported how many. Refusing only when a task provably
+spans a withheld row would answer, one visible row at a time, "does this one share work with the
+hidden half" — an oracle, and the same correlation §8 exists to deny. So the verbs are refused for
+every restricted connection and are absent from the relayed rows; the refusal names no repository
+and no count, disclosing nothing beyond the machine-level `withheld` figure the reply already
+carries. Open or finish the task on the machine itself.
+
+**The stated non-guarantee.** Whoever runs the central administers machines and can re-assign one
+to another account. This switch is what stops session access being on without its owner choosing
+it — it is **not** a lock against a hostile central operator, and no surface claims otherwise: the
+confirmation dialog says so before the switch is turned on. A guarantee that hides its own edge is
+the kind people stop believing the first time they find the edge themselves.
+
+Everything relayed is audited on the central (`machine.session_action`, its own action rather than
+a flavour of `machine.update`, so an audit can answer "who killed my session") and announced on the
+machine itself — an action invisible on the machine it happened to is the failure this feature has
+to avoid. The session id is recorded and the text never is: a rename or a note is the user's own
+words about their own work.
+
 ## 9. Verifying it yourself
 
 Each control has tests next to it; these are the ones worth reading first:
@@ -403,6 +523,8 @@ Each control has tests next to it; these are the ones worth reading first:
 | Can one signed token be replayed as another? | `auth-principal.test.ts`, `stepup.test.ts` |
 | Does a bad exposure value fail open? | `exposure.test.ts` |
 | Is the lockout a DoS against a colleague? | `rate-limit.test.ts` |
+| Is a fleet route nobody has written yet already guarded? | `capability-guard.test.ts` — the `/api/fleet` prefix |
+| Can a start request open a session somewhere nobody named? | `fleet-spawn.test.ts` |
 
 ```bash
 bun test                    # the whole suite

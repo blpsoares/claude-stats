@@ -1,0 +1,170 @@
+# Publish the VS Code extension.
+#
+# Its OWN workflow, on its OWN tag, because the extension is versioned on its own line
+# (`packages/vscode/package.json` is deliberately absent from `release.yml`'s PKG_FILES). Tying it
+# to the product release would publish an extension that did not change every time the server ships,
+# and would make a one-line extension fix wait for a server release.
+#
+#   git tag vscode-v1.0.1 && git push origin vscode-v1.0.1
+#
+# Secrets, added once in the repository settings — no local login anywhere:
+#   OVSX_PAT  Open VSX — the registry VSCodium, Cursor, Windsurf and Gitpod read, since the
+#             Marketplace's terms do not let them use it.
+#   VSCE_PAT  Azure DevOps PAT, scope `Marketplace → Manage`, organisation `All accessible`.
+#
+# Either one alone is enough. They are INDEPENDENT registries, not steps of one release, so a
+# missing token skips that registry with a warning and the job still succeeds — failing a run that
+# did publish would train somebody to ignore a red mark that is usually wrong. What IS a failure is
+# a tag that published NOWHERE: "you asked for a publish and got silence" is the outcome this
+# workflow exists to prevent, and the final step is what decides that.
+name: Publish VS Code extension
+
+on:
+  push:
+    tags: ['vscode-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # attach the .vsix to a release for the tag
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/vscode
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: .
+        run: bun install --frozen-lockfile
+
+      # `embedded-dist.generated.ts` is gitignored, and the extension's type graph reaches the
+      # workspace. Same step `ci.yml` runs, for the same reason.
+      - name: Ensure type stub
+        working-directory: .
+        run: bun run stub
+
+      - name: Type check
+        working-directory: .
+        run: bun tsc --noEmit
+
+      - name: Test
+        working-directory: .
+        run: bun test
+
+      # The tag and the manifest must AGREE. Publishing 1.0.0 under a tag that says 1.0.1 is a lie
+      # about which code is in the marketplace, and neither a version nor a tag can be taken back —
+      # so a mismatch stops here, before anything is published.
+      - name: Check the tag against the manifest
+        id: version
+        run: |
+          VERSION=$(bun -e 'console.log(require("./package.json").version)')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "vsix=agentistics-vscode-${VERSION}.vsix" >> $GITHUB_OUTPUT
+          echo "publisher=$(bun -e 'console.log(require("./package.json").publisher)')" >> $GITHUB_OUTPUT
+
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [ "${GITHUB_REF}" = "${TAG}" ]; then
+            echo "▶ manual run — publishing the manifest's own version, v$VERSION"
+            exit 0
+          fi
+          if [ "$TAG" != "vscode-v$VERSION" ]; then
+            echo "::error::tag $TAG does not match packages/vscode/package.json ($VERSION)."
+            echo "::error::Bump the manifest, or tag vscode-v$VERSION."
+            exit 1
+          fi
+
+      - name: Package
+        run: bun run build && bunx @vscode/vsce package --no-dependencies
+
+      # Open VSX FIRST, deliberately. It is the registry this project can publish to today, and a
+      # missing Marketplace token must not stop a publish that is otherwise ready — the two are
+      # independent registries, not steps of one release.
+      #
+      # It is also the one VSCodium, Cursor, Windsurf and Gitpod read: the Marketplace's terms do not
+      # let them use it, so for a good part of this audience Open VSX is not the consolation prize.
+      - name: Publish to Open VSX
+        id: ovsx
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::notice::OVSX_PAT is not set — skipping Open VSX."
+            echo "published=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # Open VSX refuses a publish into a namespace that does not exist, and the namespace is a
+          # SEPARATE call — the classic first-publish failure. Creating one that already exists is
+          # an error too, so both outcomes are fine and only a real failure below is not.
+          bunx ovsx create-namespace "${{ steps.version.outputs.publisher }}" -p "$OVSX_PAT" \
+            || echo "::notice::namespace ${{ steps.version.outputs.publisher }} already exists"
+          bunx ovsx publish "${{ steps.version.outputs.vsix }}" -p "$OVSX_PAT"
+          echo "published=true" >> $GITHUB_OUTPUT
+
+      - name: Publish to the VS Code Marketplace
+        id: vsce
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::warning::VSCE_PAT is not set — the VS Code Marketplace was NOT updated. Upload the .vsix at https://marketplace.visualstudio.com/manage, or add the secret."
+            echo "published=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          bunx @vscode/vsce publish --packagePath "${{ steps.version.outputs.vsix }}"
+          echo "published=true" >> $GITHUB_OUTPUT
+
+      # The .vsix on a release of its own, so somebody who cannot reach either registry — an air-gapped
+      # machine, an editor that reads neither — still has a file to install.
+      - name: Attach the .vsix to a release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          NOTES="VS Code extension v${{ steps.version.outputs.version }}.
+
+          Install from the editor, or:
+          \`code --install-extension ${{ steps.version.outputs.vsix }}\`"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${{ steps.version.outputs.vsix }}" --clobber
+          else
+            gh release create "$TAG" \
+              --title "VS Code extension v${{ steps.version.outputs.version }}" \
+              --notes "$NOTES" \
+              "${{ steps.version.outputs.vsix }}"
+          fi
+
+      # What actually shipped, and the job's verdict.
+      #
+      # A tag that published NOWHERE is a failure — "you asked for a publish and got silence" is the
+      # outcome this workflow exists to prevent. A tag that reached one registry and not the other is
+      # a SUCCESS that says so: the registries are independent, and failing a job that did publish
+      # would train somebody to ignore a red mark that is usually wrong.
+      - name: What shipped
+        if: always()
+        run: |
+          VSCE="${{ steps.vsce.outputs.published }}"
+          OVSX="${{ steps.ovsx.outputs.published }}"
+          {
+            echo "### VS Code extension v${{ steps.version.outputs.version }}"
+            echo ""
+            echo "| Registry | |"
+            echo "|---|---|"
+            echo "| VS Code Marketplace | $([ "$VSCE" = true ] && echo 'published' || echo 'skipped — no VSCE_PAT') |"
+            echo "| Open VSX | $([ "$OVSX" = true ] && echo 'published' || echo 'skipped — no OVSX_PAT') |"
+            echo "| GitHub release | \`${{ steps.version.outputs.vsix }}\` |"
+          } >> $GITHUB_STEP_SUMMARY
+
+          if [ "$VSCE" != true ] && [ "$OVSX" != true ]; then
+            echo "::error::Neither registry was published to — both tokens are missing. Nothing shipped."
+            exit 1
+          fi

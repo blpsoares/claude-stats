@@ -25,10 +25,19 @@ export type AuditAction =
   // A machine's name, owner accounts, or team links changed — distinct from mint/rotate/revoke,
   // which touch the credential itself.
   | 'machine.update'
+  // A verb performed on one of ANOTHER machine's live sessions, relayed from this central. Its own
+  // action rather than a flavour of `machine.update`, which means the token document changed:
+  // renaming a session and re-assigning a machine's owner account are not the same event, and an
+  // audit that cannot tell them apart cannot answer "who killed my session".
+  | 'machine.session_action'
   | 'repo.register' | 'repo.unregister'
   | 'config.update' | 'bootstrap.consume'
   | 'capability.denied' | 'authz.denied' | 'rate.blocked'
   | 'stepup.granted' | 'stepup.failure' | 'stepup.missing'
+  // A live-terminal WRITE channel was opened (a keyboard attached to a session) or refused — ONE
+  // entry per channel, never per keystroke. `fleet.input.denied` records a rejected WS upgrade
+  // (e.g. a cross-origin attempt); the capability refusal is already `capability.denied`.
+  | 'fleet.input.open' | 'fleet.input.denied'
 
 export interface AuditEvent {
   action: AuditAction

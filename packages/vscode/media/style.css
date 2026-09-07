@@ -1,0 +1,713 @@
+/*
+ * style.css — the panel, in the agentistics design system.
+ *
+ * The palette is the dashboard's own (`packages/web/src/index.css`): the same near-black surfaces,
+ * the same Anthropic orange, the same green/amber/red accents, the same radii. That is the point of
+ * this file — a panel wearing raw VS Code chrome reads as a different product from the dashboard it
+ * sits beside, and the two are one product.
+ *
+ * It is NOT theme-agnostic by accident: `[data-theme]` is set by the host from
+ * `vscode.window.activeColorTheme`, so a light editor gets the dashboard's light palette rather
+ * than the dark one bolted into a bright window. Only the FOCUS ring and the scrollbar are borrowed
+ * from VS Code — those belong to the editor's input conventions, not to ours.
+ *
+ * The layout is single-column and stays single-column. The sidebar is routinely 280–320px and an
+ * editor tab is 1400px; what width buys is the room each row has to spend, not a different
+ * arrangement — the same principle the control center's width-aware screens follow.
+ */
+
+:root,
+body[data-theme='dark'] {
+  --bg-base: #0a0a0f;
+  --bg-surface: #111118;
+  --bg-card: #16161f;
+  --bg-card-hover: #1c1c28;
+  --bg-elevated: #1e1e2e;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --accent: #d97706;
+  --accent-light: #f59e0b;
+  --accent-dim: rgba(217, 119, 6, 0.15);
+
+  --green: #10b981;
+  --amber: #f59e0b;
+  --red: #ef4444;
+  --blue: #6366f1;
+  --cyan: #06b6d4;
+  --purple: #8b5cf6;
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-tertiary: rgba(255, 255, 255, 0.3);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --gap: 10px;
+}
+
+body[data-theme='light'] {
+  --bg-base: #f4f4f7;
+  --bg-surface: #fafafc;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f0f1f5;
+  --bg-elevated: #f0f1f5;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.16);
+
+  --accent: #f97316;
+  --accent-light: #fb923c;
+  --accent-dim: rgba(249, 115, 22, 0.12);
+
+  --green: #047857;
+  --amber: #b45309;
+  --red: #b91c1c;
+  --blue: #4338ca;
+  --cyan: #0e7490;
+  --purple: #7c3aed;
+
+  --text-primary: #18181b;
+  --text-secondary: rgba(24, 24, 27, 0.55);
+  --text-tertiary: rgba(24, 24, 27, 0.35);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--bg-base);
+}
+
+/* ---------------------------------------------------------------- buttons */
+
+.btn {
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.btn:hover:not(:disabled) { background: var(--bg-card-hover); border-color: var(--border-strong); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) { background: var(--accent-light); border-color: var(--accent-light); }
+.btn.ghost { background: transparent; }
+.btn.small { padding: 3px 8px; font-size: 12px; }
+.btn.tiny { padding: 2px 7px; font-size: 11.5px; border-radius: 6px; }
+
+:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+input {
+  font: inherit;
+  /* 13px floor: anything smaller is unreadable in a 300px panel on a high-DPI screen. */
+  font-size: max(13px, 13px);
+  width: 100%;
+  padding: 5px 8px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+input::placeholder { color: var(--text-tertiary); }
+input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- header */
+
+.ag-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: var(--gap);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+.header-top { display: flex; align-items: center; gap: var(--gap); flex-wrap: wrap; }
+.header-actions { display: flex; gap: 5px; margin-left: auto; flex-wrap: wrap; }
+
+/* Back is the first thing in the row, where every application puts it — including the editor. */
+.btn.back {
+  padding: 2px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.brand { display: flex; align-items: center; gap: 6px; }
+.brand-mark { color: var(--accent); font-size: 15px; }
+.brand-word {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+/* Waiting on a person: the one thing on this screen that must be readable without reading. */
+.attention {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--gap);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.attention-dot { color: var(--accent-light); }
+
+.filters { display: flex; gap: 6px; margin-top: var(--gap); align-items: center; }
+.filters .search { flex: 1; }
+
+.chip {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: default;
+  white-space: nowrap;
+}
+button.chip { cursor: pointer; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.task { border-color: var(--purple); color: var(--purple); }
+
+/* The harness keeps its own colour, the same one the dashboard and the cockpit give it. */
+.chip.harness { text-transform: lowercase; letter-spacing: .02em; }
+.chip.h-claude { color: #d97706; border-color: rgba(217, 119, 6, .45); }
+.chip.h-codex { color: #10b981; border-color: rgba(16, 185, 129, .45); }
+.chip.h-gemini { color: #6366f1; border-color: rgba(99, 102, 241, .45); }
+.chip.h-copilot { color: #06b6d4; border-color: rgba(6, 182, 212, .45); }
+.chip.h-antigravity { color: #8b5cf6; border-color: rgba(139, 92, 246, .45); }
+.chip.h-kimi { color: #ec4899; border-color: rgba(236, 72, 153, .45); }
+.chip.harness.on { color: #fff; }
+
+/*
+ * The arrangement panel — group, sort, filter, scope.
+ *
+ * Inside the sticky header, so the controls that decide what the list shows sit with the search
+ * that also does, and scroll away together when you are reading the list itself.
+ */
+.arrange {
+  margin-top: var(--gap);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  max-height: 46vh;
+  overflow: auto;
+}
+.arrange .field { margin-bottom: 9px; }
+.arrange .field:last-child { margin-bottom: 0; }
+
+/* A number ON a chip: how many rows carry that value, or how many filters are narrowing the list. */
+.count-badge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 10px;
+  background: rgba(127, 127, 127, .25);
+}
+.chip.on .count-badge { background: rgba(255, 255, 255, .25); }
+
+/* Sessions that fell together. Amber rather than red: nothing is broken, something is waiting. */
+.fell {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  margin: var(--gap) 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+}
+
+/* A task the user marked finished — dimmed, never hidden: it is still a thing that happened. */
+.group.done .group-name { text-decoration: line-through; opacity: .7; }
+
+/* ---------------------------------------------------------------- banners */
+
+.banner, .result { display: none; }
+.banner.visible, .result.visible {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  margin: var(--gap) var(--gap) 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border-left: 2px solid var(--border-strong);
+}
+.banner.bad { border-left-color: var(--red); }
+.banner.slow { border-left-color: var(--amber); }
+.result.ok { border-left-color: var(--green); }
+.result.bad { border-left-color: var(--red); }
+
+.notice {
+  margin: var(--gap);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+.body { padding: 0 var(--gap) 24px; }
+.dim { color: var(--text-secondary); }
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+  margin: var(--gap) 0 4px;
+}
+
+/* ---------------------------------------------------------------- the list */
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 16px 0 6px;
+}
+.group-name {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+}
+.group-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-card);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+/*
+ * A card is a whole click target with a corner of its own.
+ *
+ * The state is said THREE ways because this is the screen people SCAN: a stripe down the left edge,
+ * the dot, and the word. The stripe is what makes one blocked session findable in a list of forty
+ * without reading any of them.
+ */
+.card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  margin-bottom: 6px;
+  overflow: hidden;
+  transition: border-color .12s ease, background .12s ease, transform .12s ease;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: transparent;
+}
+.card:hover { background: var(--bg-card-hover); border-color: var(--border-strong); }
+.card.busy { opacity: .55; }
+.card.pinned { border-color: var(--accent); }
+
+.card-open {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 9px 56px 9px 12px;
+  cursor: pointer;
+}
+.card-head { display: flex; align-items: center; gap: 7px; }
+.card-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.card-cwd {
+  margin-top: 6px;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-note {
+  margin-top: 5px;
+  padding-left: 7px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+/* The two things that are not "open this session" — they sit out of the click target's way. */
+.card-corner {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+}
+
+.dot { font-size: 9px; line-height: 1; color: var(--text-tertiary); }
+.state-waiting .dot, .state-waiting-approval .dot { color: var(--amber); }
+.state-working .dot { color: var(--green); }
+.card.state-waiting::before, .card.state-waiting-approval::before { background: var(--amber); }
+.card.state-working::before { background: var(--green); }
+.state-lost, .state-exited, .state-closed, .state-unknown { opacity: .8; }
+
+.state-pill {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.state-pill.working { color: var(--green); }
+.state-pill.waiting, .state-pill.waiting-approval { color: var(--amber); }
+
+.empty { padding: 32px var(--gap); text-align: center; color: var(--text-secondary); }
+.empty p { margin: 4px 0; }
+
+/* ---------------------------------------------------------------- one session */
+
+/*
+ * One session, COMPACT.
+ *
+ * The sidebar is 300–360px and the terminal is the reason anybody opened this. Every row above the
+ * screen is a row the screen does not get, so the head is three lines — title, facts, marks — and
+ * the actions are icons under the screen rather than four wide buttons that wrapped into three
+ * rows and pushed the terminal off the bottom.
+ */
+.session { padding-top: 6px; }
+.session-head { padding: 0 2px 8px; }
+
+.session-title { display: flex; align-items: center; gap: 6px; }
+.session-name {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.session-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 5px;
+}
+.session-cwd { font-size: 11px; color: var(--text-tertiary); overflow-wrap: anywhere; }
+.session-marks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+
+.icon-btn {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.icon-btn:hover:not(:disabled) { background: var(--bg-card-hover); color: var(--text-primary); }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+/* The one control that cannot be undone does not look like the others. */
+.icon-btn.tiny { font-size: 12px; padding: 2px 5px; background: transparent; border-color: transparent; }
+.icon-btn.tiny:hover:not(:disabled) { background: var(--bg-elevated); border-color: var(--border); }
+.icon-btn.tiny.on { color: var(--accent); }
+.icon-btn.danger { color: var(--red); border-color: rgba(239, 68, 68, .4); }
+.icon-btn.danger:hover:not(:disabled) { background: var(--red); color: #fff; border-color: var(--red); }
+
+/* A note or a task: the value when there is one, `＋` when there is not. */
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.mark:hover { color: var(--text-primary); border-color: var(--accent); }
+.mark.set { border-style: solid; }
+.mark.note.set { border-color: var(--border-strong); color: var(--text-secondary); }
+.mark.task.set { border-color: var(--purple); color: var(--purple); }
+.mark-glyph { flex: none; }
+.mark-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.session-tools {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/*
+ * A glyph AND a word. The word is what makes the control readable the first time; the glyph is what
+ * makes the row scannable afterwards. Below ~420px the word is dropped and the tooltip carries it —
+ * a wrapped three-row button strip costs more than the words save.
+ */
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 4px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.action:hover:not(:disabled) { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--border-strong); }
+.action:disabled { opacity: .4; cursor: default; }
+.action-glyph {
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-primary);
+}
+.action:disabled .action-glyph { color: inherit; }
+.action.danger { color: var(--red); border-color: rgba(239, 68, 68, .4); }
+.action.danger .action-glyph { color: var(--red); }
+.action.danger:hover:not(:disabled) { background: var(--red); color: #fff; border-color: var(--red); }
+.action.danger:hover:not(:disabled) .action-glyph { color: #fff; }
+
+@media (max-width: 420px) {
+  .action-word { display: none; }
+  .action { padding: 4px 7px; }
+}
+
+.approval {
+  margin-top: var(--gap);
+  padding: 10px 11px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-md);
+  background: var(--accent-dim);
+}
+.approval-title { font-weight: 600; margin-bottom: 6px; }
+.options { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.option {
+  font: inherit;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.option:hover { background: var(--bg-card-hover); border-color: var(--accent); }
+.option.selected { border-color: var(--accent); }
+
+.dialog, .screen {
+  margin: 0;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: auto;
+}
+.dialog {
+  padding: 8px;
+  max-height: 220px;
+  background: var(--bg-base);
+  border-radius: var(--radius-sm);
+}
+
+/*
+ * The way back to the live edge.
+ *
+ * Absolute over the screen's own frame, bottom-right, and shown ONLY when the reader has left the
+ * tail: a control that is always there is one more thing on a 300px panel, and one that is there
+ * when it would do nothing teaches people to ignore it.
+ */
+.screen-frame { position: relative; }
+.to-tail {
+  display: none;
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+}
+.to-tail.visible { display: flex; }
+.to-tail:hover { background: var(--accent-light); border-color: var(--accent-light); }
+
+/* The live screen. It scrolls INSIDE its own box — the page never scrolls sideways. */
+.screen-box {
+  margin-top: var(--gap);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  overflow: hidden;
+}
+.screen {
+  padding: 8px;
+  /*
+   * Tall enough to be a terminal, and it takes what the panel has left rather than a fixed slice.
+   * `vh` alone gave the same height in a 360px sidebar and a 1400px editor tab — too short in one
+   * and a stripe in the other.
+   */
+  height: clamp(160px, 52vh, 900px);
+}
+.screen-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  font-size: 11.5px;
+}
+.pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.pill.live { color: var(--green); }
+.pill.connecting { color: var(--text-secondary); }
+.pill.finished { color: var(--blue); }
+.pill.ended, .pill.stalled { color: var(--red); }
+
+/* ------------------------------------------------------------- typing strip
+ *
+ * The one line that says whether your keys are going anywhere. It changes colour when the screen
+ * has the keyboard, because a terminal that silently swallows keys and one that silently ignores
+ * them look identical.
+ */
+
+.typing-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  font-size: 11.5px;
+}
+.typing-strip.live {
+  background: var(--accent-dim);
+  border-top-color: var(--accent);
+  color: var(--text-primary);
+}
+.typing-dot { color: var(--accent-light); font-size: 9px; }
+
+/* The screen is a real focus target once it can be typed into. */
+.screen:focus { outline: none; }
+.screen-box:has(.screen:focus) { border-color: var(--accent); }
+
+/*
+ * The cursor cell. `ansi.ts` already inverted the pen under it, so the only thing left here is the
+ * blink — and it stops on hover, because a blinking block under the pointer while you are trying to
+ * select text is noise.
+ */
+.cursor { animation: cursor-blink 1.1s step-end infinite; }
+.screen:hover .cursor, .screen:not(:focus) .cursor { animation: none; }
+@keyframes cursor-blink { 50% { opacity: .35; } }
+
+/* The inline editor the pencil and the marks open. */
+.text-verb { display: flex; gap: 5px; margin-top: 8px; align-items: center; }
+.text-verb input { flex: 1; }
+
+/* ---------------------------------------------------------------- wizard */
+
+.wizard {
+  margin-top: var(--gap);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+}
+.wizard-title { font-weight: 600; margin-bottom: var(--gap); }
+.field { margin-bottom: var(--gap); }
+.field label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.places { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.place {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.place:hover { background: var(--bg-card-hover); }
+.place-name { font-weight: 600; }
+.place-repo { font-size: 11px; color: var(--text-secondary); }
+.place-detail { font-size: 11px; color: var(--text-tertiary); overflow-wrap: anywhere; }
+.wizard-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+
+/* The editor's own scrollbar conventions — this is the one place borrowing beats matching. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }

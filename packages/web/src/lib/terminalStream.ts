@@ -62,6 +62,11 @@ export type TerminalPhase =
   | 'finished'
   /** the session left tmux; the last frame is the last thing it ever drew */
   | 'ended'
+  /** the channel opened (or was asked to) but no frame ever arrived — the connection did not
+   *  actually establish anything. Reachable ONLY from `connecting` (never once a frame exists), so
+   *  a live screen is never blanked by a transient blip. This is the honest end of the "connecting
+   *  forever" state: a signal that claimed to be progressing without establishing anything. */
+  | 'stalled'
 
 export interface TerminalState {
   phase: TerminalPhase
@@ -83,6 +88,9 @@ export type TerminalAction =
   | { type: 'open'; open: TerminalOpen }
   | { type: 'frame'; frame: TerminalFrame }
   | { type: 'end'; reason: TerminalEndReason }
+  /** The connection took too long or errored while no frame had arrived yet. The hook raises it on a
+   *  connecting-timeout or an EventSource error; the reducer only honours it before the first frame. */
+  | { type: 'stall' }
 
 export function terminalReducer(state: TerminalState, action: TerminalAction): TerminalState {
   switch (action.type) {
@@ -106,6 +114,13 @@ export function terminalReducer(state: TerminalState, action: TerminalAction): T
       // Keep the last frame — the finished screen is the whole point of showing it. Only the phase
       // and the reason change, so the terminal is signalled as gone, not frozen in silence.
       return { ...state, phase: 'ended', endReason: action.reason }
+    case 'stall':
+      // The honesty stop for "connecting forever": once we have waited long enough (or the socket
+      // errored) with NOTHING drawn, say so instead of spinning. But a stall may NEVER blank a screen
+      // that already has a frame — a live/finished terminal that drops a packet must keep showing its
+      // last screen and let EventSource reconnect, exactly as a native error does. So a stall is only
+      // honoured while still frame-less; otherwise it is ignored.
+      return state.frame ? state : { ...state, phase: 'stalled', endReason: null }
     default:
       return state
   }
@@ -164,7 +179,7 @@ export function parseEnd(raw: string): TerminalEndReason | null {
 
 // ---- the honesty line ----------------------------------------------------------------------------
 
-export type TerminalTone = 'idle' | 'connecting' | 'live' | 'finished' | 'ended'
+export type TerminalTone = 'idle' | 'connecting' | 'live' | 'finished' | 'ended' | 'stalled'
 
 export interface TerminalStatus {
   tone: TerminalTone
@@ -199,6 +214,21 @@ export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): Termina
       tone: 'connecting',
       label: pt ? 'Conectando' : 'Connecting',
       detail: pt ? 'Abrindo o canal do terminal…' : 'Opening the terminal channel…',
+      showCursor: false,
+      truncated: false,
+    }
+  }
+
+  if (state.phase === 'stalled') {
+    // The honest failure. A "connecting" that never resolves is indistinguishable from death, so once
+    // we have waited without a single frame we say what actually happened and what to do about it —
+    // rather than spinning the pill forever. The reconnect verb the UI draws is named here.
+    return {
+      tone: 'stalled',
+      label: pt ? 'Sem resposta' : 'No response',
+      detail: pt
+        ? 'O canal abriu, mas nenhum dado chegou. A sessão pode não estar produzindo saída, ou a conexão falhou. Toque em reconectar para tentar de novo.'
+        : 'The channel opened but no data arrived. The session may not be producing output, or the connection failed. Tap reconnect to try again.',
       showCursor: false,
       truncated: false,
     }

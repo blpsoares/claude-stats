@@ -195,6 +195,21 @@ describe('validatePatchBody', () => {
     expect(validatePatchBody({ sources: [] })).toEqual({ sources: [] })
   })
 
+  it('accepts the remote-session switches on their own', () => {
+    expect(validatePatchBody({ allowRemoteSessions: true })).toEqual({ allowRemoteSessions: true })
+    expect(validatePatchBody({ allowRemoteScreens: false })).toEqual({ allowRemoteScreens: false })
+    expect(validatePatchBody({ allowRemoteSessions: true, allowRemoteScreens: true }))
+      .toEqual({ allowRemoteSessions: true, allowRemoteScreens: true })
+  })
+
+  it('rejects a non-boolean switch rather than coercing it', () => {
+    // A truthy string must never read as an agreement nobody made — the same reason
+    // resolveRemoteConsent tests for a literal `true`.
+    expect('error' in validatePatchBody({ allowRemoteSessions: 'yes' })).toBe(true)
+    expect('error' in validatePatchBody({ allowRemoteSessions: 1 })).toBe(true)
+    expect('error' in validatePatchBody({ allowRemoteScreens: null })).toBe(true)
+  })
+
   it('accepts a shareMode-only body — a pure mode switch that keeps the existing sources', () => {
     expect(validatePatchBody({ shareMode: 'allowlist' })).toEqual({ shareMode: 'allowlist' })
   })
@@ -445,7 +460,8 @@ function statusEntry(id: string, extra?: Partial<ConnectionStatusEntry>): Connec
     id, endpoint: `https://${id}.example.com`, org: 'default', user: 'alice',
     lastSuccessAt: null, errKind: null, latencyMs: null,
     shareMode: 'denylist', deniedRepos: 0, deniedProjects: 0, allowedCount: 0,
-    deniedCount: 0, restricted: false, boundary: null, prehistorySessions: null,
+    deniedCount: 0, restricted: false, remoteSessions: false, remoteScreens: false,
+    boundary: null, prehistorySessions: null,
     canForget: false, centralTooOld: true, resync: null, pendingRules: false, elsewhere: [],
     ...extra,
   }
@@ -909,6 +925,63 @@ describe('handlePatchConnection — live-refresh notify', () => {
     const res = await handlePatchConnection(patchReq({ sources: [repoSrc('github.com/o/x')] }), 'c_aaaaaaaaaaaa', { ...deps, notify })
     expect(res.status).toBe(200)
     expect(notifyCalls).toBe(0)
+  })
+
+  it('stores the consent switches and announces them to the central', async () => {
+    const stored = conn('c_aaaaaaaaaaaa')
+    const { deps, state } = fakeStore({ schema: 2, mode: 'member', connections: [stored] })
+    const announced: string[] = []
+    const res = await handlePatchConnection(
+      patchReq({ allowRemoteSessions: true, allowRemoteScreens: true }), 'c_aaaaaaaaaaaa',
+      { ...deps, announceConsent: (id: string) => { announced.push(id) } },
+    )
+    expect(res.status).toBe(200)
+    const saved = state.config.connections[0]!
+    expect(saved.allowRemoteSessions).toBe(true)
+    expect(saved.allowRemoteScreens).toBe(true)
+    // A withdrawal that only reaches the central at the next reconnect leaves it acting on an
+    // agreement that no longer exists, so the announcement is immediate.
+    expect(announced).toEqual(['c_aaaaaaaaaaaa'])
+  })
+
+  it('withdrawing the fleet consent CLEARS a granted screen consent, so re-enabling never silently restores it', async () => {
+    const stored = conn('c_aaaaaaaaaaaa', { allowRemoteSessions: true, allowRemoteScreens: true })
+    const { deps, state } = fakeStore({ schema: 2, mode: 'member', connections: [stored] })
+    const res = await handlePatchConnection(
+      patchReq({ allowRemoteSessions: false }), 'c_aaaaaaaaaaaa', { ...deps, announceConsent: () => {} },
+    )
+    expect(res.status).toBe(200)
+    const saved = state.config.connections[0]!
+    expect(saved.allowRemoteSessions).toBe(false)
+    expect(saved.allowRemoteScreens).toBe(false)
+  })
+
+  it('does NOT announce or notify when the switches are unchanged', async () => {
+    const stored = conn('c_aaaaaaaaaaaa', { allowRemoteSessions: true })
+    const { deps } = fakeStore({ schema: 2, mode: 'member', connections: [stored] })
+    let notifyCalls = 0
+    const announced: string[] = []
+    const res = await handlePatchConnection(
+      patchReq({ allowRemoteSessions: true }), 'c_aaaaaaaaaaaa',
+      { ...deps, notify: () => { notifyCalls++ }, announceConsent: (id: string) => { announced.push(id) } },
+    )
+    expect(res.status).toBe(200)
+    expect(notifyCalls).toBe(0)
+    expect(announced).toEqual([])
+  })
+
+  it('an unrelated PATCH leaves an untouched switch absent — never rewritten to false', async () => {
+    // Rewriting `undefined` to `false` on every write marks the connection as changed and wakes
+    // every open dashboard for a no-op.
+    const stored = conn('c_aaaaaaaaaaaa', { label: 'old-name' })
+    const { deps, state } = fakeStore({ schema: 2, mode: 'member', connections: [stored] })
+    const announced: string[] = []
+    await handlePatchConnection(patchReq({ label: 'new-name' }), 'c_aaaaaaaaaaaa',
+      { ...deps, announceConsent: (id: string) => { announced.push(id) } })
+    const saved = state.config.connections[0]!
+    expect(saved.allowRemoteSessions).toBeUndefined()
+    expect(saved.allowRemoteScreens).toBeUndefined()
+    expect(announced).toEqual([])
   })
 
   it('does NOT notify when the connection is unknown (the write never happened)', async () => {

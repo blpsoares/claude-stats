@@ -33,6 +33,13 @@ jobs:
       - name: Test
         run: bun test
 
+      # The extension ships as two BUNDLES, and neither is produced by `tsc` or exercised by a
+      # test: `dist/extension.cjs` for the extension host and `dist/webview.js` for the panel. A
+      # bundler failure (an import that only resolves in the workspace, a browser target reaching
+      # for a node builtin) typechecks perfectly clean and is only visible here.
+      - name: Build the VS Code extension
+        run: bun run build:vscode
+
       # Supply chain (OWASP A03). A high-severity advisory in a transitive dependency is a
       # finding about THIS app, not about someone else's package.
       #

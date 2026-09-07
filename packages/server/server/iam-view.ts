@@ -169,6 +169,33 @@ export function mfaDisableAllowed(role: Role): boolean {
   return role !== 'owner'
 }
 
+/**
+ * Whether a principal is one of a machine's OWN accounts — and nothing else.
+ *
+ * Deliberately narrower than `canManageMachine`, which an instance owner and any manager of the
+ * machine's teams both pass. That width is right for ADMINISTERING a machine: renaming it, rotating
+ * its token, re-assigning it, all of which are about the token document and belong to whoever runs
+ * the instance. It is wrong for reaching INTO the machine — typing into a live session, killing
+ * one, reading what it is doing — which is the user's own work and nobody else's business.
+ *
+ * So this is a second predicate rather than a flag on the first. Narrowing `canManageMachine` in
+ * place would lock owners out of exactly the machines that need them (see its own comment about
+ * orphaned machines), and every existing caller wants the wide reading.
+ *
+ * The limit, stated rather than implied: an instance owner can already read the token store, mint a
+ * token and re-assign this machine's owning account, so this is not a barrier against a hostile
+ * operator and no UI may suggest that it is. What it does buy is the ordinary case — an admin with
+ * legitimate access who is simply not this machine's user — on top of the machine's own consent
+ * switch (`resolveRemoteConsent`), which is what actually has to be true for anything to be
+ * relayed at all.
+ */
+export function machineOwnedBy(p: Principal, machine: { accountId?: string; accountIds?: string[] }): boolean {
+  const owners = machine.accountIds && machine.accountIds.length
+    ? machine.accountIds
+    : (machine.accountId ? [machine.accountId] : [])
+  return owners.includes(p.accountId)
+}
+
 /** Whether a principal may view/manage a specific machine: owner, a manager of ANY of the machine's
  *  teams, OR one of the machine's owner accounts (a user managing a machine they own). A machine may
  *  have several owner accounts AND belong to several teams. */

@@ -708,3 +708,40 @@ test("migrateTeamConfig: a stored deniedRepos [''] becomes the `none` source, ne
   expect(out.connections[0]!.sources).toEqual([{ type: 'none', value: '' }])
   expect(out.connections[0]!.deniedRepos).toEqual([NO_REPO_KEY])
 })
+
+test('migrateTeamConfig preserves the remote-session switches — the field-by-field rebuild drops anything not listed', () => {
+  // The exact bug this file already records for `machineName`: the switches were written to disk
+  // correctly and read back as OFF, because every read runs the stored config through this
+  // reconstruction. The central is told whatever the read produces, so a dropped field is a
+  // consent silently reverted.
+  const out = migrateTeamConfig({
+    mode: 'member',
+    connections: [{
+      id: 'c_aaaaaaaaaaaa', endpoint: 'https://c.example.com', org: 'o', user: 'u', token: 't',
+      deniedRepos: [], allowRemoteSessions: true, allowRemoteScreens: true,
+    }],
+  })
+  expect(out.connections[0]!.allowRemoteSessions).toBe(true)
+  expect(out.connections[0]!.allowRemoteScreens).toBe(true)
+})
+
+test('migrateTeamConfig leaves an absent switch absent, and ignores a non-boolean one', () => {
+  // Absent must stay absent rather than becoming `false`: the two are read the same way, but
+  // writing one on every read would mark the config changed on every unrelated write.
+  const bare = migrateTeamConfig({
+    mode: 'member',
+    connections: [{ id: 'c_aaaaaaaaaaaa', endpoint: 'https://c.example.com', org: 'o', user: 'u', token: 't', deniedRepos: [] }],
+  })
+  expect(bare.connections[0]!.allowRemoteSessions).toBeUndefined()
+  expect(bare.connections[0]!.allowRemoteScreens).toBeUndefined()
+
+  const junk = migrateTeamConfig({
+    mode: 'member',
+    connections: [{
+      id: 'c_aaaaaaaaaaaa', endpoint: 'https://c.example.com', org: 'o', user: 'u', token: 't',
+      deniedRepos: [], allowRemoteSessions: 'yes', allowRemoteScreens: 1,
+    }],
+  })
+  expect(junk.connections[0]!.allowRemoteSessions).toBeUndefined()
+  expect(junk.connections[0]!.allowRemoteScreens).toBeUndefined()
+})

@@ -1,0 +1,20 @@
+{
+  // Press F5 with this repository open to run the extension in a second VS Code window
+  // ("Extension Development Host"). It loads `packages/vscode` from source — from its BUNDLES, so
+  // the preLaunchTask builds them first; editing `src/` and pressing the reload button in the
+  // debug toolbar picks the change up.
+  //
+  // It needs `agentop server` running on this machine. When nothing is answering, the panel says
+  // so and offers to start it, which is the state worth looking at at least once.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run the VS Code extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/packages/vscode"],
+      "outFiles": ["${workspaceFolder}/packages/vscode/dist/**/*.cjs"],
+      "preLaunchTask": "build the extension"
+    }
+  ]
+}

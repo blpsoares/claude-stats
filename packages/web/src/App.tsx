@@ -1,25 +1,28 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
-import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { version } from '../../../package.json'
 import {
-  MessageSquare, Zap, Clock, Flame, GitCommit,
-  Wrench, RefreshCw, FileCode, TrendingUp, BarChart2,
-  Sun, Moon, Globe, AlertTriangle, Download, FileDown,
-  Maximize2, X, Trophy, Activity, Bot, Sparkles, Settings, SlidersHorizontal,
-  Calendar, Database, FileText, Shield, FolderOpen, CheckCircle,
-  Target, Home, DollarSign, Layers, Code2, GitCompare, MoreHorizontal,
-  ChevronDown, ChevronUp, ChevronLeft, ChevronRight,
-  GitBranch, Users, LogOut, Server, KeyRound, Tag as TagIcon,
-  ShieldCheck, Cpu,
+  Activity, AlertTriangle, ArrowLeft, ArrowRight, BarChart2, Bot,
+  Calendar, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
+  Clock, Code2, Cpu, Database, DollarSign, Download,
+  FileCode, FileDown, FileText, Flame, FolderOpen, GitBranch,
+  GitCommit, GitCompare, Globe, Home, KeyRound, Layers,
+  LogOut, Maximize2, MessageSquare, MessagesSquare, Moon, MoreHorizontal,
+  PanelLeft, RefreshCw, Server, Settings, Shield, ShieldCheck,
+  SlidersHorizontal, Sparkles, Sun, Tag as TagIcon, Target, TerminalSquare,
+  TrendingUp, Trophy, Users, Wrench, X, Zap,
+  ZoomIn,
 } from 'lucide-react'
 import { useData, useDerivedStats, LIVE_INTERVAL_OPTIONS, LIVE_INTERVAL_OPTIONS_RISKY } from './hooks/useData'
 import { usePlanBasis } from './hooks/usePlanBasis'
 import { planScopeHarnesses, planScopeNote } from './lib/costBasis'
+import { bootLoading } from './lib/bootPhase'
 import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrder'
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
+import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
 import type { BillingSettings, CostBasis, Filters, HarnessId, HealthIssue, SavedComparison, TeamConfig } from '@agentistics/core'
@@ -35,6 +38,9 @@ import { ModelBreakdown } from './components/ModelBreakdown'
 import { ProjectsList } from './components/ProjectsList'
 import { FiltersBar } from './components/FiltersBar'
 import { NotificationToasts } from './components/NotificationToasts'
+import { MagnifierLayer } from './components/a11y/MagnifierLayer'
+import { HideLensesButton } from './components/a11y/HideLensesButton'
+import { MagnifierButton } from './components/a11y/MagnifierButton'
 import { NotificationBell } from './components/NotificationBell'
 import { HardwareModal } from './components/HardwareModal'
 import { useNotificationStream } from './hooks/useNotificationStream'
@@ -50,7 +56,7 @@ import { CacheHitRatePanel } from './components/CacheHitRatePanel'
 import { BudgetPanel } from './components/BudgetPanel'
 import { SessionDrilldownModal } from './components/SessionDrilldownModal'
 import { TranscriptModal } from './components/TranscriptModal'
-import type { PrefsDraft } from './lib/app-context'
+import type { PrefsDraft, AppContext } from './lib/app-context'
 import { TtyChat } from './components/TtyChat'
 import { UpdateModal } from './components/UpdateModal'
 import { InstallModal } from './components/InstallModal'
@@ -58,6 +64,23 @@ import { ArchiveConsentModal, type ArchiveMode } from './components/ArchiveConse
 import { resolveArchiveChoice } from './lib/archive'
 import { TeamLogin } from './components/TeamLogin'
 import { Login } from './components/Login'
+import { ModeSwitch } from './components/nav/ModeSwitch'
+import { TopBar } from './components/nav/TopBar'
+import { COST_BASIS_W, FULL_BAR_W, headerFit, stripPadding } from './lib/headerFit'
+import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
+import { SessionsAside } from './components/nav/SessionsAside'
+import { SessionsRail } from './components/nav/SessionsRail'
+import { getPinnedIds } from './lib/pinnedSessions'
+import { loadSharedPrefs } from './lib/sharedPref'
+import {
+  DEFAULT_ORDER, sortSessions, type ControlSession,
+} from '@agentistics/tui/control/session-fleet'
+import { AsideResizer } from './components/nav/AsideResizer'
+import { modeOfPath } from './lib/workspaceMode'
+import { ASIDE_DEFAULT } from './lib/asideWidth'
+import { useFleet, useFleetIndex, type FleetActionId } from './lib/fleet'
+import { Segment } from './components/sessions/SessionPanel'
+import { SessionActions } from './components/sessions/SessionActions'
 import { MemberConnectionStatus } from './components/MemberConnectionStatus'
 import { OwnerSetup } from './components/OwnerSetup'
 import { ChangePassword } from './components/ChangePassword'
@@ -67,6 +90,32 @@ import { StepUpPrompt } from './components/StepUpPrompt'
 import { type ChatModelId } from './lib/chatModels'
 import { HARNESS_LABELS } from './lib/harness'
 import { format, parseISO, parse } from 'date-fns'
+import { ToggleSwitch } from './components/ToggleSwitch'
+import { fleetFilterOptions, filterFleet, SESSION_FILTER_DIMS } from './lib/fleetFilter'
+import { runningConversationIds } from './lib/activeConversations'
+import { CentralSessions } from './components/sessions/CentralSessions'
+// The sessions workspace's container geometry, named ONCE (see FleetOverview's header): the
+// filter row in the strip and the body under it have to move together at every width.
+import { PAGE_INSET, PAGE_MAX_WIDTH } from './components/sessions/FleetOverview'
+import { setFleetSourceCentral } from './lib/fleet'
+import { sessionPath } from './lib/sessionRoute'
+import { SessionStatsMenu } from './components/sessions/SessionStatsMenu'
+
+/**
+ * What the SESSIONS filter bar may filter by — narrower than the dashboard's on purpose: a fleet
+ * row is a live session, so member, team, machine, presence and tag have nothing to say about one,
+ * and an option is a promise that something might be behind it.
+ *
+ * "Active only" is deliberately ABSENT: it is not a `Filters` dimension at all (see `FiltersBar`'s
+ * doc comment on `onActiveOnlyChange`) and is rendered by passing that callback instead.
+ */
+/**
+ * What the sessions workspace's filter bar may offer.
+ *
+ * Held in `fleetFilter.ts`, beside the function that HONOURS these dimensions, so the two can never
+ * disagree — see the note there for how they did.
+ */
+const SESSIONS_FILTER_DIMS = SESSION_FILTER_DIMS as unknown as Array<'activeOnly' | 'harnesses' | 'repos' | 'projects' | 'models'>
 
 // Team session state
 interface TeamSessionState {
@@ -450,23 +499,6 @@ function LiveSettingsModal({
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
-  const ToggleSwitch = ({ on, onToggle }: { on: boolean; onToggle: () => void }) => (
-    <button
-      onClick={onToggle}
-      style={{
-        position: 'relative', width: 32, height: 18, borderRadius: 9,
-        border: 'none', background: on ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
-        cursor: 'pointer', padding: 0, transition: 'background 0.2s', flexShrink: 0,
-      }}
-    >
-      <span style={{
-        position: 'absolute', top: 3, left: on ? 17 : 3,
-        width: 12, height: 12, borderRadius: '50%', background: '#fff',
-        transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-      }} />
-    </button>
-  )
-
   const allIntervals = [
     ...(riskyMode ? LIVE_INTERVAL_OPTIONS_RISKY : []),
     ...LIVE_INTERVAL_OPTIONS,
@@ -634,7 +666,7 @@ function fmtCostFull(usd: number, currency: 'USD' | 'BRL' = 'USD', rate = 1): st
 
 function MobileBottomNav({
   lang, harnesses, onRefresh, onOpenHardware, liveUpdates, onToggleLive, updateInterval, healthIssues, isCentral, hasWorkflows,
-  principal, theme, onToggleTheme, onToggleLang,
+  principal, theme, onToggleTheme, onToggleLang, a11yEnabled,
 }: {
   lang: Lang
   harnesses?: HarnessId[]
@@ -653,6 +685,9 @@ function MobileBottomNav({
   theme: Theme
   onToggleTheme: () => void
   onToggleLang: () => void
+  /** Whether the magnifier feature is on. Once it is, the header button is the way in — a tile
+   *  here too would be a second entry point to the same screen. */
+  a11yEnabled: boolean
 }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -691,8 +726,11 @@ function MobileBottomNav({
     accent?: boolean
     badge?: string
   }
+  // The switch's badge, from the SHARED fleet poll (see lib/fleet.ts) — no extra request.
+  const { fleet: mobileFleet } = useFleet(lang === 'pt' ? 'pt' : 'en')
+  const attention = mobileFleet.attention
+
   const navTiles: Tile[] = [
-    { key: 'sessions', label: pt ? 'Sessões' : 'Sessions', icon: Clock, onClick: () => { closeSheet(); navigate('/sessions') }, active: location.pathname.startsWith('/sessions') },
     { key: 'repositories', label: pt ? 'Repositórios' : 'Repositories', icon: GitBranch, onClick: () => { closeSheet(); navigate('/repositories') }, active: location.pathname.startsWith('/repositories') || location.pathname.startsWith('/repo') },
     // Members/machines only exist on a central — a solo machine has exactly one of each.
     ...(isCentral
@@ -705,6 +743,12 @@ function MobileBottomNav({
     // Unconditional: the page's filter mode compares two SCOPES and needs no second harness.
     // Only the by-harness mode inside it stays gated.
     { key: 'compare', label: pt ? 'Comparar' : 'Compare', icon: GitCompare, onClick: () => { closeSheet(); navigate('/compare') }, active: location.pathname.startsWith('/compare') },
+    // Only while the feature is OFF: once it's on, the header magnifier button (beside the bell)
+    // is the way in, and two entry points to the same screen on a phone is one too many. Same
+    // ZoomIn icon as the header button — one feature, one icon.
+    ...(a11yEnabled
+      ? []
+      : [{ key: 'accessibility', label: pt ? 'Acessibilidade' : 'Accessibility', icon: ZoomIn, onClick: () => { closeSheet(); navigate('/settings/accessibility') }, active: location.pathname.startsWith('/settings/accessibility') } as Tile]),
   ]
   const activeIssueCount = healthIssues?.length ?? 0
   const actionTiles: Tile[] = [
@@ -833,6 +877,12 @@ function MobileBottomNav({
             </button>
           </div>
         ) : (
+        <>
+        {/* The workspace switch. The aside that hosts it on desktop is not rendered on mobile, and
+            a mode a phone cannot reach is a mode a phone cannot leave. */}
+        <div style={{ marginBottom: 12 }}>
+          <ModeSwitch lang={lang === 'pt' ? 'pt' : 'en'} attention={attention} onNavigate={closeSheet} />
+        </div>
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(3, 1fr)',
@@ -874,6 +924,7 @@ function MobileBottomNav({
             )
           })}
         </div>
+        </>
         )}
       </div>
 
@@ -928,6 +979,11 @@ function MobileBottomNav({
   )
 }
 
+/**
+ * The fixed strip holding the mark, search and the sidebar toggle. The aside starts beneath it, so
+ * those three controls never move when the sidebar changes width, changes body, or is collapsed.
+ */
+const TOPBAR_H = 44
 const SIDEBAR_W = 248
 const SIDEBAR_W_COLLAPSED = 64
 
@@ -960,14 +1016,28 @@ function CollapsedTip({ label, show, children }: { label: string; show: boolean;
   )
 }
 
-function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, onToggle, theme, onToggleTheme, onToggleLang, onExport, principal }: {
+function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, onResize, onCommitWidth, onToggle, theme, onToggleTheme, onToggleLang, onExport, principal, sessionsFilters, sessionsActiveOnly }: {
   lang: Lang; harnesses?: HarnessId[]; isCentral?: boolean; hasWorkflows?: boolean
   collapsed: boolean; onToggle: () => void
+  /** The width in force. Fixed in the dashboard workspace, user-set in the sessions one. */
+  width: number
+  onResize: (w: number) => void
+  onCommitWidth: (w: number) => void
   theme: Theme; onToggleTheme: () => void; onToggleLang: () => void; onExport: () => void
   principal?: IamAccount
+  /** The SAME filters/switch the shared header's `FiltersBar` edits — see `App.tsx`'s own state.
+   *  `SideNav` only reads them, to hand to `SessionsAside`; it owns neither. */
+  sessionsFilters: Filters
+  sessionsActiveOnly: boolean
 }) {
   const location = useLocation()
+  // Which session is open, for the collapsed rail's selected highlight.
+  const { sessionId } = useParams()
   const pt = lang === 'pt'
+  // History, for the icon row. This ships as an installed PWA, where there is no browser chrome to
+  // fall back on — in a plain tab they duplicate the browser's own, which is a cost worth paying
+  // for the standalone case.
+  const navigate = useNavigate()
   // Profile menu (popover anchored to the avatar) + self-service change-password modal.
   const [menuOpen, setMenuOpen] = useState(false)
   const [pwOpen, setPwOpen] = useState(false)
@@ -999,9 +1069,35 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, onToggle
   // Repositories highlights across the whole section (list, detail, actions) — Actions lives as a
   // tab inside each repo, so there's no sidebar submenu.
   const inReposSection = location.pathname.startsWith('/repositories') || location.pathname.startsWith('/repo')
+  // How many sessions are waiting on a person, for the switch's badge. Read HERE rather than
+  // passed down, because the aside must carry it in BOTH workspaces — the badge exists precisely
+  // for the moment you are looking at the dashboard and a session starts needing you. `useFleet`
+  // shares one poll across every consumer, so this costs no extra request. Never on a central: it
+  // aggregates many machines and hosts none of their sessions.
+  const { fleet, loading: fleetLoading, unsupported: fleetUnsupported, stale: fleetStale, act: fleetAct } = useFleet(pt ? 'pt' : 'en')
+  const attention = fleet.attention
+  // The row's context menu (Task 6) needs the verb-carrying shape, not the arrangement-only one —
+  // `useFleetIndex` is the SAME map the header and the panel already build from `fleet.sessions`.
+  const asideRowIndex = useFleetIndex(fleet.sessions)
+  const mode = modeOfPath(location.pathname)
+  // The collapsed rail's order — the SAME order the open list draws, so collapsing the aside never
+  // reshuffles the sessions. Pinned first (that is what pinning is for), then `sortSessions(…,
+  // DEFAULT_ORDER)` — the ranking the terminal cockpit breaks ties on, so "sorted by status" means
+  // one thing everywhere.
+  const railRows = useMemo(() => {
+    const kept = filterFleet({ rows: fleet.rows, filters: sessionsFilters, activeOnly: sessionsActiveOnly }).rows
+    const pinnedSet = new Set(getPinnedIds())
+    const key = (r: ControlSession) => r.conversationId ?? r.id
+    return [
+      ...kept.filter(r => pinnedSet.has(key(r))),
+      ...sortSessions(kept.filter(r => !pinnedSet.has(key(r))), DEFAULT_ORDER),
+    ]
+  }, [fleet.rows, sessionsFilters, sessionsActiveOnly])
+  // A resize in progress. Only used to suspend the collapse animation — see the aside's `transition`.
+  const [dragging, setDragging] = useState(false)
+
   const items: { to: string; labelPt: string; labelEn: string; icon: React.ReactNode }[] = [
     { to: '/',          labelPt: 'Home',         labelEn: 'Home',         icon: <Home size={17} /> },
-    { to: '/sessions', labelPt: 'Sessões', labelEn: 'Sessions', icon: <Clock size={17} /> },
     { to: '/costs',     labelPt: 'Custos',       labelEn: 'Costs',        icon: <DollarSign size={17} /> },
     { to: '/top',       labelPt: 'Top de uso',   labelEn: 'Top usage',    icon: <Trophy size={17} /> },
     { to: '/projects',  labelPt: 'Projetos',     labelEn: 'Projects',     icon: <FolderOpen size={17} /> },
@@ -1021,26 +1117,55 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, onToggle
   }
   return (
     <aside style={{
-      position: 'fixed', top: 0, left: 0, bottom: 0, width: collapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W, zIndex: 200,
+      position: 'fixed', top: 'var(--ag-topbar-h)', left: 0, bottom: 0,
+      width: collapsed ? SIDEBAR_W_COLLAPSED : width, zIndex: 200,
       background: 'var(--bg-surface)', borderRight: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', padding: '14px 12px', boxSizing: 'border-box',
-      transition: 'width 0.22s cubic-bezier(0.22, 1, 0.36, 1)', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column', padding: collapsed ? '12px 8px' : '14px 12px', boxSizing: 'border-box',
+      // `fixed` is already a positioning context, so the resize handle on the edge places against
+      // it. Visible overflow, because that handle straddles the border by design and clipping it
+      // would leave half the hit area.
+      overflow: 'visible',
+      // The collapse ANIMATES; a drag must not. The width follows the pointer during a resize, and
+      // a transition on it makes the edge lag behind the cursor and then catch up.
+      transition: dragging ? 'none' : 'width 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
     }}>
-      {/* Logo + collapse toggle */}
-      <div style={{ padding: '0 4px 12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minHeight: 44 }}>
-          {!collapsed && <img src='/minimalistLogo.png' alt="agentistics" style={{ height: 40, width: 'auto', flexShrink: 0 }} />}
-          <button onClick={onToggle} title={collapsed ? (pt ? 'Expandir' : 'Expand') : (pt ? 'Recolher' : 'Collapse')}
-            style={{ ...footBtn, marginLeft: 'auto', width: 30, height: 30 }}>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-          </button>
-        </div>
-        {/* Member machine: live connection status + latency to the central (mirrors the
-            central's presence line). Renders null unless this instance is a connected member. */}
-        {!collapsed && !isCentral && <div style={{ marginTop: 6 }}><MemberConnectionStatus lang={lang} compact /></div>}
+      {/* The workspace switch, PINNED above the scrolling body. */}
+      <div style={{ padding: '0 2px 10px' }}>
+        <ModeSwitch lang={lang} collapsed={collapsed} attention={attention} />
+        {/* Member machine: live connection status + latency to the central. Null unless connected. */}
+        {!collapsed && !isCentral && <div style={{ marginTop: 8 }}><MemberConnectionStatus lang={lang} compact /></div>}
       </div>
 
-      <nav className="ag-noscroll" style={{ display: 'flex', flexDirection: 'column', gap: 3, overflowY: 'auto', overflowX: 'hidden', flex: 1 }}>
+      {/* ONE aside, two bodies — never two asides. The shell above and the footer below are the
+          same in both workspaces; only what sits between them changes. Collapsed, the sessions
+          workspace draws the RAIL — sessions, not the dashboard's Home/Costs/Tools nav, which is
+          the one thing this workspace certainly is not. */}
+      {mode === 'sessions' ? (
+        collapsed ? (
+          <SessionsRail rows={railRows} {...(sessionId ? { selectedId: sessionId } : {})} />
+        ) : (
+        <>
+        {/* On a central the workspace is ABOUT a machine, so the choice sits above the list it
+            governs. Absent on a machine, which is its own. */}
+        {isCentral && <div style={{ padding: '0 2px 8px' }}><CentralSessions lang={pt ? 'pt' : 'en'} /></div>}
+        <SessionsAside
+          lang={pt ? 'pt' : 'en'}
+          rows={fleet.rows}
+          finishedTasks={fleet.finishedTasks}
+          loading={fleetLoading}
+          unsupported={fleetUnsupported}
+          filters={sessionsFilters}
+          activeOnly={sessionsActiveOnly}
+          {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
+          stale={fleetStale}
+          {...(isCentral ? { hideNew: true } : {})}
+          rowsById={asideRowIndex}
+          act={req => fleetAct({ ...req, action: req.action as FleetActionId })}
+        />
+        </>
+        )
+      ) : (
+      <nav className="ag-noscroll" style={{ display: 'flex', flexDirection: 'column', gap: 5, overflowY: 'auto', overflowX: 'hidden', flex: 1, paddingTop: 4 }}>
         {items.map(item => {
           const active = item.to === '/'
             ? location.pathname === '/'
@@ -1055,9 +1180,11 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, onToggle
                 end={item.to === '/'}
                 aria-label={collapsed ? label : undefined}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 11, minWidth: 0,
-                  padding: collapsed ? '10px 0' : '10px 12px', justifyContent: collapsed ? 'center' : 'flex-start',
-                  borderRadius: 9, textDecoration: 'none',
+                  display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+                  // 40px of row. The list was laid out at 10px vertical padding and read as cramped
+                  // — a nav item is a target as well as a label, and 36px is the floor for one.
+                  padding: collapsed ? '11px 0' : '11px 12px', justifyContent: collapsed ? 'center' : 'flex-start',
+                  borderRadius: 10, textDecoration: 'none',
                   fontSize: 13.5, fontWeight: active ? 700 : 500, fontFamily: 'inherit', whiteSpace: 'nowrap',
                   color: active ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
                   background: active ? 'var(--anthropic-orange-dim)' : 'transparent',
@@ -1073,6 +1200,19 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, onToggle
           )
         })}
       </nav>
+      )}
+
+      {/* The resize handle. In BOTH workspaces — the dashboard's labels benefit from a wider
+          column too, and a control that exists on one screen and vanishes on the next reads as
+          broken. Only while the sidebar is open: there is nothing to resize about a 64px rail. */}
+      {!collapsed && (
+        <AsideResizer
+          width={width}
+          onResize={w => { setDragging(true); onResize(w) }}
+          onCommit={w => { setDragging(false); onCommitWidth(w) }}
+          lang={pt ? 'pt' : 'en'}
+        />
+      )}
 
       {/* Footer — Row A account · thin divider · Row B config actions */}
       <div style={{ paddingTop: 10, marginTop: 6, borderTop: '1px solid var(--border)' }}>
@@ -1223,6 +1363,21 @@ export default function AppLayout() {
 
   // IAM gate (central only)
   const [iam, setIam] = useState<IamState | undefined>(undefined)
+
+  // `useAccessibility` is mounted here — ABOVE the `if (!iam.authed) return <Login/>` gate below —
+  // so its own load effect always runs before that gate can block anything. On a central,
+  // `/api/accessibility` answers 401 before sign-in and 403 before an owner's MFA enrolment
+  // (`AUTH_PUBLIC` / `MFA_EXEMPT` in `server/index-routes.ts` name neither route), so a stable
+  // identity of `undefined` through both of those states — collapsing to the account id only once
+  // a session is fully authorized — is what lets the hook's load effect re-fire the moment one
+  // becomes available, instead of being stuck forever with whatever its first, pre-auth fetch saw.
+  // On a non-central machine the route is never gated, so a constant identity is correct: the
+  // effect runs once, exactly as it always has.
+  const a11yIdentity = !teamSession?.central
+    ? 'solo'
+    : (iam?.authed && !iam.mfaEnrollmentRequired ? (iam.account?.id ?? 'unknown-account') : undefined)
+  const a11y = useAccessibility(a11yIdentity)
+
   const reloadIam = useCallback(() => {
     Promise.all([
       fetch('/api/iam/status').then(r => r.ok ? r.json() : { needsBootstrap: false }),
@@ -1249,7 +1404,15 @@ export default function AppLayout() {
   // Flip to login screen when any API call returns 401 (team password set but cookie expired)
   useEffect(() => {
     if (error && error.includes('401') && teamSession?.required) {
-      setTeamSession({ required: true, authed: false })
+      // SPREAD, never a fresh object. This line predates centrals (it was written when the only
+      // gate was the shared team password) and replacing the whole state dropped `central`, which
+      // is the flag deciding WHICH login screen renders. On a central every /api/data call 401s
+      // until an account signs in, so the first one erased `central` and the app fell through to
+      // the legacy shared-password form — a form the server retired ("shared-password login
+      // retired; use account login"), so it could never succeed. Measured on a live central: the
+      // account login screen was unreachable, with a working `/api/team/session` reporting
+      // `central: true` on every poll.
+      setTeamSession(s => ({ ...(s ?? {}), required: true, authed: false }))
     }
     // 403 too, and for a reason that cost someone their whole first-run: the moment an owner
     // account is created, the gate starts refusing /api/data with `mfa_enrollment_required`
@@ -1258,7 +1421,11 @@ export default function AppLayout() {
     // what turns that into the enrolment screen, which is the only thing that can clear it.
     if (teamSession?.central && (String(error).includes('401') || String(error).includes('403'))) reloadIam()
   }, [error, teamSession?.required, teamSession?.central, reloadIam])
-  const [theme, setThemeState] = useState<Theme>('dark')
+  const [theme, setThemeState] = useState<Theme>(() => {
+    // The LOCAL copy decides the first paint; `/api/preferences` corrects it a moment later if they
+    // disagree. Starting from a constant meant a light-theme user got a dark flash on every load.
+    try { return localStorage.getItem('agentistics-theme') === 'light' ? 'light' : 'dark' } catch { return 'dark' }
+  })
   const [currency, setCurrencyState] = useState<'USD' | 'BRL'>('USD')
 
   // Surface server-pushed notifications (member connection/auth errors) as toasts + bell.
@@ -1270,7 +1437,27 @@ export default function AppLayout() {
   useEffect(() => { if (isCentral) setLiveUpdates(true) }, [isCentral, setLiveUpdates])
 
   const setLang = useCallback((l: Lang) => setLangState(l), [])
-  const setTheme = useCallback((t: Theme) => setThemeState(t), [])
+  /**
+   * Set the theme AND remember it.
+   *
+   * It used to only set state, so the sidebar's and the mobile sheet's toggles changed the theme
+   * for exactly as long as the tab lived and a refresh came back dark — only the Settings modal
+   * ever wrote it. Reported.
+   *
+   * BOTH stores, deliberately. `preferences.json` is the durable one and is what a second browser
+   * or a fresh profile reads; `localStorage` is what the pre-React guard in `index.html` reads to
+   * stamp `data-theme` BEFORE the bundle loads, which is what stops a light-theme user seeing a
+   * dark flash on every load. Writing only the server would keep that flash forever.
+   */
+  const setTheme = useCallback((t: Theme) => {
+    setThemeState(t)
+    try { localStorage.setItem('agentistics-theme', t) } catch { /* private mode */ }
+    fetch('/api/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ theme: t }),
+    }).catch(() => { /* the local copy still holds for this browser */ })
+  }, [])
   const setCurrency = useCallback((c: 'USD' | 'BRL') => setCurrencyState(c), [])
 
   // How this machine is actually billed. Local only — it never travels to a central.
@@ -1352,12 +1539,295 @@ export default function AppLayout() {
     } catch {}
     return DEFAULT_CARD_ORDER
   })
-  // Mobile-only: lets the user minimize the sticky filter bar while scrolling so
-  // it doesn't eat the viewport on small screens. Expanded by default.
-  const [filtersCollapsed, setFiltersCollapsed] = useState(false)
+  // Mobile-only: lets the user minimize the sticky filter bar while scrolling so it doesn't eat the
+  // viewport on small screens. **MINIMIZED BY DEFAULT**, asked for directly — and it is the right
+  // default on a phone for the same reason the control exists at all: the bar is the widest piece
+  // of chrome on the screen, it sits in the STICKY header so it costs its height at every scroll
+  // position, and the thing under it is what the page is for. It opens on one tap, and the slim row
+  // that replaces it carries a count of the active filters, so nothing about the current scope is
+  // hidden by the collapse.
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem('agentistics-sidebar-collapsed') === '1' } catch { return false }
   })
+  /**
+   * The sessions workspace's sidebar width. Only that workspace is resizable: the dashboard's body
+   * is a fixed list of labels with a known longest item, so a wider column buys nothing there and a
+   * narrower one truncates words that were sized to fit. A session list is the opposite — the titles
+   * are the user's own sentences.
+   */
+  const [asideWidth, setAsideWidth] = useState(ASIDE_DEFAULT)
+  /**
+   * Deliberately NOT persisted. The width holds for the whole visit — it survives switching
+   * workspaces and moving between sessions — and a reload starts from the default again. That is
+   * the user's call: a stored width is a decision that outlives the reason for it, and the one it
+   * outlives worst is "I widened it to read one long title".
+   */
+  const commitAsideWidth = (_w: number) => { /* session-scoped by design; see above */ }
+  // ONE width for both workspaces. Giving each its own made the aside jump every time the switch
+  // was pressed — the sidebar visibly resizing on a control whose job is to change what is IN it.
+  // Only the sessions workspace offers the handle, but whatever it is dragged to applies to both.
+  const liveAsideWidth = asideWidth
+  const inSessionsWorkspace = modeOfPath(location.pathname) === 'sessions'
+
+  /**
+   * THE PHONE'S SESSIONS WORKSPACE, AND THE TWO WAYS ITS DOCUMENT MOVED WHEN IT SHOULD NOT HAVE.
+   *
+   * Reported together: "quando eu tento scrollar as vezes no mobile, ele roda a página inteira e
+   * não deixa scrollar" and "quando o input sobe junto com o teclado, ao sair ele fica numa altura
+   * diferente do que estava antes". The workspace is a fixed-height column — the conversation, the
+   * list and the aside each scroll inside themselves — so a flick that runs off the end of one of
+   * them has nowhere to chain but the document, which bounces the whole page; and iOS scrolls the
+   * page for the caret and does not always undo it.
+   *
+   * BOTH FIXES ARE DELIBERATELY NON-STRUCTURAL. `overscroll-behavior: none` on the document
+   * (`html.ag-viewport-locked`, index.css) is paint-only, and the effect below simply puts the
+   * scroll back when the keyboard closes. iOS keeps doing the caret scroll, because the composer
+   * riding up with the keyboard is the half that WORKED.
+   *
+   * Preventing the scroll structurally — a fixed body, the usual recipe — was tried and reverted:
+   * it moves the initial containing block onto the small viewport, so every viewport unit and every
+   * `position: fixed` descendant measures against a different box, and three position reports came
+   * out of it in an hour. A layout that is correct must not be re-anchored to fix a scroll.
+   *
+   * Every other page keeps the window as its scroller, and nothing here changes that.
+   */
+  const lockViewport = isMobile && inSessionsWorkspace
+  useEffect(() => {
+    if (!lockViewport) return
+    const root = document.documentElement
+    root.classList.add('ag-viewport-locked')
+    return () => { root.classList.remove('ag-viewport-locked') }
+  }, [lockViewport])
+  /**
+   * SNAPSHOT WHEN A FIELD IS ENTERED, RESTORE WHEN THE KEYBOARD GOES AWAY.
+   *
+   * Asked for in these words: "não dá pra você resetar a posição dele pro estado anterior antes do
+   * teclado subir quando o usuário minimizar o teclado novamente?" — and it is a better shape than
+   * every previous attempt, which tried to work out where things should BE while the keyboard is up
+   * from measurements that do not mean the same thing in a Safari tab, a Safari-added web app and a
+   * Chrome-added shortcut. This asks nothing about the keyboard's size.
+   *
+   * THE TRIGGER IS THE VIEWPORT COMING BACK, NOT `focusout`, AND THAT WAS THE BUG IN THE FIRST
+   * VERSION OF THIS. iOS's accessory bar has a "done" control — the ✓ visible in the screenshots
+   * that reported this — and dismissing the keyboard with it hides the keyboard WITHOUT blurring
+   * the field. So `focusout` never fired, the restore never ran, and the fix looked like no fix at
+   * all. The visible band growing back is the one signal that is true however the keyboard was
+   * dismissed: the ✓, the ⌄, a tap outside, or the field losing focus.
+   *
+   * WHY THE POSITION MOVES AT ALL: `#root` is `overflow-x: clip` on a phone, and a lone `clip`
+   * computes the other axis to `clip` too, so it is a clip container — which anchors `position:
+   * fixed` descendants to ITSELF rather than to the window (CLAUDE.md records this for the bottom
+   * bar). iOS scrolls the DOCUMENT to reveal the caret; if it does not fully undo that, `#root`
+   * sits at `-scrollY` and the composer and the fixed bar both come back exactly that much higher.
+   * The two moving together is what named the cause.
+   *
+   * IT RESTORES EVERY SCROLLER ON THE PATH, not just the document, because the conversation's own
+   * column can be the one that moved and `window.scrollY` then sits innocently at 0.
+   */
+  useEffect(() => {
+    if (!lockViewport) return
+    const editable = (el: EventTarget | null): boolean => {
+      const e = el as HTMLElement | null
+      return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
+    }
+    /** Every scrolling ancestor of `el`, with what it was showing. */
+    const snapshot = (el: HTMLElement): { el: HTMLElement; top: number }[] => {
+      const out: { el: HTMLElement; top: number }[] = []
+      for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+        if (n.scrollHeight > n.clientHeight + 1) out.push({ el: n, top: n.scrollTop })
+      }
+      return out
+    }
+    let before: { page: number; scrollers: { el: HTMLElement; top: number }[] } | null = null
+    const onIn = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      before = { page: window.scrollY, scrollers: snapshot(ev.target as HTMLElement) }
+    }
+    const restore = () => {
+      const was = before
+      if (was === null) return
+      if (window.scrollY !== was.page) window.scrollTo(0, was.page)
+      // A scroller that was at its BOTTOM is put back at its bottom, not at the pixel it held: the
+      // conversation grows while you type, and the pixel that was the end is no longer it.
+      for (const { el, top } of was.scrollers) {
+        const wasAtEnd = top >= el.scrollHeight - el.clientHeight - 4
+        const target = wasAtEnd ? el.scrollHeight - el.clientHeight : top
+        if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
+      }
+    }
+    /**
+     * THE DOCUMENT SCROLL IS LEFT ALONE, IN BOTH SHELLS. A version of this cancelled it whenever
+     * the app was running standalone, on the reasoning that iOS resizes the WINDOW there and the
+     * caret scroll would then be a second lift on top of the first. It is not: reverted within the
+     * hour, because with the scroll cancelled the composer went behind the keyboard and could not
+     * be seen at all — "o input tá ficando fixo lá embaixo e agora eu nem consigo ver ele quando o
+     * teclado abre". Whatever the installed shell does about the viewport, that scroll is still
+     * carrying the composer, and taking it away costs the whole field.
+     *
+     * So this effect only ever RESTORES, after the keyboard is gone. It never fights it while it
+     * is up.
+     */
+
+    /** How much the band must lose before it counts as covered by something. */
+    const COVERED_BY = 120
+    const vv = window.visualViewport
+    let tallest = vv ? vv.height : window.innerHeight
+    let wasCovered = false
+    const onViewport = () => {
+      const h = vv ? vv.height : window.innerHeight
+      if (h <= 0) return
+      if (tallest - h >= COVERED_BY) {
+        wasCovered = true
+        return
+      }
+      if (h >= tallest) tallest = h
+      if (!wasCovered) return
+      wasCovered = false
+      // Repeated across the dismissal animation rather than fired once: iOS keeps adjusting during
+      // it, so a single write lands mid-animation and is overwritten a frame later. Each repeat is
+      // a no-op once the value is already back.
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    // `focusout` is kept as a SECOND trigger, not the only one: tapping outside the field dismisses
+    // the keyboard and blurs, and on a layout where the band never changed there is nothing else to
+    // notice it by.
+    const onOut = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    window.addEventListener('focusin', onIn)
+    window.addEventListener('focusout', onOut)
+    vv?.addEventListener('resize', onViewport)
+    window.addEventListener('resize', onViewport)
+    return () => {
+      window.removeEventListener('focusin', onIn)
+      window.removeEventListener('focusout', onOut)
+      vv?.removeEventListener('resize', onViewport)
+      window.removeEventListener('resize', onViewport)
+    }
+  }, [lockViewport])
+
+  /**
+   * The fixed strip is ONE row again.
+   *
+   * The active filters were briefly a full-width band inside it, which grew the strip and made
+   * every element positioned below it depend on a measured height. They now drop from the filter
+   * region itself (see `FiltersBar`'s "see active filters" panel), so the strip is a constant again
+   * — but the variable stays, because the sidebar and the page shell read it now and one place
+   * deciding where the header ends is the point of it.
+   */
+  useEffect(() => {
+    document.documentElement.style.setProperty('--ag-topbar-h', `${isMobile ? 0 : TOPBAR_H}px`)
+  }, [isMobile])
+
+  /**
+   * How much width the filter bar actually has in the strip, and what it therefore draws.
+   *
+   * The strip's middle is `overflow: hidden` so it can never paint over the view tabs again — but a
+   * clipped control is unreachable with nothing on screen saying so, which is worse. So the bar is
+   * TOLD how much room it has and gives the date block up first (`headerFit.ts` owns that order and
+   * its thresholds). Only one of the two strips is mounted at a time, so one ref serves both.
+   */
+  const [filterSlotEl, setFilterSlotEl] = useState<HTMLDivElement | null>(null)
+  const [filterSlotW, setFilterSlotW] = useState(0)
+  useEffect(() => {
+    if (!filterSlotEl) { setFilterSlotW(0); return }
+    const read = () => setFilterSlotW(filterSlotEl.clientWidth)
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(filterSlotEl)
+    return () => ro.disconnect()
+  }, [filterSlotEl])
+  /**
+   * The dashboard strip's right-hand cluster, measured.
+   *
+   * The filters must read as centred IN THE HEADER, not merely centred in the box left over beside
+   * the actions — those are different points, and the second one is visibly off. Centring inside a
+   * `flex: 1` slot puts the middle at `(W - actions) / 2`; padding that slot by the cluster's own
+   * width moves it back to `W / 2`.
+   *
+   * Measured rather than guessed because the cluster grows and shrinks with what it holds: the
+   * health warnings appear only when there are issues, the update dot comes and goes, and the
+   * central pill is absent on a solo machine. A constant would be right on one machine.
+   */
+  const [actionsEl, setActionsEl] = useState<HTMLDivElement | null>(null)
+  const [actionsW, setActionsW] = useState(0)
+  useEffect(() => {
+    if (!actionsEl) { setActionsW(0); return }
+    const read = () => setActionsW(actionsEl.offsetWidth)
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(actionsEl)
+    return () => ro.disconnect()
+  }, [actionsEl])
+
+  // The compensating padding is not space the bar may draw in, so it is taken off first.
+  /** The artifacts panel's open flag and count — see `artifactsStore` for why it is not a prop. */
+  const artifacts = useArtifacts()
+
+  /**
+   * Active sessions only — the fleet's own dimension (see `FiltersBar`'s doc comment on
+   * `onActiveOnlyChange`), not part of `Filters`. Defaults to ON the moment you land in the
+   * Sessions workspace and OFF the moment you leave it, on EVERY visit — not a preference
+   * remembered across navigation, because "what is running right now" and "everything on record"
+   * are the natural defaults for those two places respectively, and a stale opposite default from
+   * a previous visit would read as broken filtering rather than as a choice.
+   */
+  const [activeOnly, setActiveOnly] = useState(inSessionsWorkspace)
+  useEffect(() => { setActiveOnly(inSessionsWorkspace) }, [inSessionsWorkspace])
+
+  /**
+   * The selected session's title/tabs/actions row, lifted UP into this shared header from
+   * `SessionPanel` — which used to draw its own second bordered strip directly under this one, the
+   * same information said twice in two different boxes. `useFleet` is a SHARED poll (see
+   * `lib/fleet.ts`'s own header): calling it again here costs no extra request, it is the same
+   * subscription `SideNav` already holds.
+   */
+  const { sessionId: selectedSessionId } = useParams()
+  // A CENTRAL's fleet is the RELAY's, for the machine the aside's picker chose. Set once, here,
+  // because the poller is module-scoped and every surface reads the same snapshot.
+  useEffect(() => { setFleetSourceCentral(isCentral) }, [isCentral])
+  const { fleet: headerFleet, act: headerFleetAct, unsupported: headerFleetUnsupported } = useFleet(lang === 'pt' ? 'pt' : 'en')
+  /**
+   * "Active only" needs a fleet to intersect against, on EITHER page. An exposed profile with no
+   * host power, or a central with no machine chosen, both report `unsupported` here — offering the
+   * dimension there would be a filter whose only possible answer is "nothing", the confident-zero
+   * shape this whole file is written against.
+   */
+  const fleetReadable = !headerFleetUnsupported
+  /**
+   * What the SESSIONS filter bar may offer — derived from the FLEET, never from the dashboard's
+   * metrics. The two are different universes: the metrics knew six harnesses on this machine while
+   * the fleet held three, so the bar offered "antigravity" and picking it emptied the list. Nothing
+   * was broken — there were genuinely no antigravity rows — but a filter that can only ever answer
+   * "nothing" is indistinguishable from one that is failing, and it was reported as exactly that.
+   * An option is a promise that something might be behind it.
+   */
+  const fleetOptions = useMemo(() => fleetFilterOptions(headerFleet.rows, activeOnly), [headerFleet.rows, activeOnly])
+  const headerFleetIndex = useFleetIndex(headerFleet.sessions)
+  const selectedFleetSession = inSessionsWorkspace && selectedSessionId !== undefined
+    ? headerFleet.rows.find(r => r.id === selectedSessionId || r.conversationId === selectedSessionId)
+    : undefined
+  const selectedSessionRow = selectedFleetSession ? headerFleetIndex.get(selectedFleetSession.id) : undefined
+  // The Chat/Terminal choice lives in the URL (`?view=`) rather than in state here or in
+  // `SessionPanel`, so the ONE control (now in this shared header) and the ONE reader (the panel,
+  // still deciding which component to mount) can never disagree about which view is showing without
+  // threading a prop through `SessionsPage` for it.
+  /** A session's panel is open on this screen — mobile chrome steps out of its way. */
+  const sessionOpen = inSessionsWorkspace && selectedSessionId !== undefined
+
+  const [sessionViewParams, setSessionViewParams] = useSearchParams()
+  const sessionView: 'chat' | 'terminal' = sessionViewParams.get('view') === 'terminal' ? 'terminal' : 'chat'
+  const setSessionView = useCallback((v: 'chat' | 'terminal') => {
+    setSessionViewParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (v === 'chat') next.delete('view')
+      else next.set('view', v)
+      return next
+    }, { replace: true })
+  }, [setSessionViewParams])
+
   const toggleSidebar = useCallback(() => setSidebarCollapsed(v => {
     const next = !v
     try { localStorage.setItem('agentistics-sidebar-collapsed', next ? '1' : '0') } catch { /* ignore */ }
@@ -1399,6 +1869,21 @@ export default function AppLayout() {
       .then(prefs => { if (prefs) setDeniedRepoLabels(buildDeniedRepoLabels(readTeamConnections(prefs))) })
       .catch(() => { /* a failed refresh keeps the last-known map — never wipes the badges */ })
   }, [])
+  // THE SHARED PREFERENCES ARE READ HERE and re-read whenever this tab comes back to the front: a
+  // pin made on the phone, a warning dismissed on the tablet, a notification switched off at the
+  // desk must all reach the other devices without a reload, or "the same application from three
+  // devices" is three applications again. ONE request answers all of them — see `sharedPref.ts`.
+  useEffect(() => {
+    void loadSharedPrefs()
+    const again = () => { if (document.visibilityState === 'visible') void loadSharedPrefs() }
+    document.addEventListener('visibilitychange', again)
+    window.addEventListener('focus', again)
+    return () => {
+      document.removeEventListener('visibilitychange', again)
+      window.removeEventListener('focus', again)
+    }
+  }, [])
+
   const chooseArchive = useCallback((mode: ArchiveMode) => {
     setArchiveChoice(mode)
     fetch('/api/preferences', {
@@ -1480,9 +1965,6 @@ export default function AppLayout() {
     setCurrencyState(draft.currency)
     setCardOrder(draft.cardOrder as CardId[])
     setCardPrecisionState(draft.cardPrecision)
-    if (draft.chatModel) setChatModel(draft.chatModel)
-    setChatSoundEnabled(draft.chatSoundEnabled)
-    setChatSoundId(draft.chatSoundId)
     fetch('/api/preferences', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1492,9 +1974,6 @@ export default function AppLayout() {
         currency: draft.currency,
         cardOrder: draft.cardOrder,
         cardPrecision: draft.cardPrecision,
-        chatModel: draft.chatModel,
-        chatSoundEnabled: draft.chatSoundEnabled,
-        chatSoundId: draft.chatSoundId,
       }),
     }).catch(() => {})
   }, [setCardOrder])
@@ -1521,7 +2000,11 @@ export default function AppLayout() {
       setCostBasisState(nextBilling.costBasis ?? 'api')
       setComparisons(normalizeComparisons((prefs as Record<string, unknown>).comparisons))
       if (prefs.lang) setLangState(prefs.lang)
-      if (prefs.theme) setThemeState(prefs.theme)
+      if (prefs.theme) {
+        setThemeState(prefs.theme)
+        // The server is the durable answer; mirror it locally so the next first paint agrees.
+        try { localStorage.setItem('agentistics-theme', prefs.theme) } catch { /* private mode */ }
+      }
       if (prefs.currency) setCurrencyState(prefs.currency)
       if (prefs.cardOrder) setCardOrder(migrateCardOrder(prefs.cardOrder))
       if (prefs.chatModel) setChatModel(prefs.chatModel as ChatModelId)
@@ -1669,7 +2152,15 @@ export default function AppLayout() {
 
   // Tags visible to the viewer; back both the `tags` filter dimension and the derived stats.
   const [tagsList, setTagsList] = useState<TagDef[]>([])
-  const derived = useDerivedStats(data, filters, tagsList)
+  // "Active only" on the dashboard means "conversations running right now" — the stored session
+  // set intersected with the live fleet by conversation id (see `activeConversations.ts`'s
+  // header). `&& fleetReadable` rather than trusting `activeOnly` alone: the switch could still
+  // read true from before the fleet became unreadable (a central with no machine chosen), and an
+  // empty `runningIds` there would silently report a confident zero instead of the unfiltered
+  // totals — the exact defect `resolveMachineCacheScope` exists to prevent for team/machine scope.
+  const derivedActiveOnly = activeOnly && fleetReadable
+  const runningIds = useMemo(() => runningConversationIds(headerFleet.rows), [headerFleet.rows])
+  const derived = useDerivedStats(data, filters, tagsList, derivedActiveOnly, runningIds)
 
   // ── the plan cost basis ──────────────────────────────────────────────────────────────────
   // Computed ONCE here and passed down: two surfaces each cutting A their own way would tell two
@@ -1693,6 +2184,26 @@ export default function AppLayout() {
   // cannot support falls back rather than rendering a page of N/A.
   const costBasis: CostBasis =
     isCentral || !billingReady.ready || planBasis.basis === null ? 'api' : costBasisState
+  /**
+   * The centring padding the strip can AFFORD, and what the bar therefore has to draw in.
+   *
+   * The action cluster used to be charged twice — once for being a sibling that takes room, and
+   * again as the padding that pulls the filters onto the strip's own centre line. On a 1273px
+   * window with a 258px cluster that is 516px gone, and the bar compacted with most of the header
+   * empty beside it. `stripPadding` takes the centring out of the SLACK instead: centring is a
+   * nicety, a date control collapsed into a popover is something somebody has to go looking for.
+   *
+   * The cost-basis toggle is budgeted only where it is actually drawn — it is absent on a central
+   * and on a machine with no billing set up, and reserving room for a control that is not on screen
+   * compacts a bar that would have fitted.
+   */
+  const stripExtra = (!isCentral && billingReady.ready && planBasis.basis !== null) ? COST_BASIS_W : 0
+  // The SESSIONS strip does not centre its filters at all — its slot carries no padding — so it
+  // is charged none. It was being charged `actionsW` for a padding that is not there, which is
+  // the same double-subtraction seen from its other side.
+  const stripPad = inSessionsWorkspace ? 0 : stripPadding(filterSlotW, actionsW, FULL_BAR_W + stripExtra)
+  const stripFit = headerFit(Math.max(0, filterSlotW - stripPad), stripExtra)
+
   const setCostBasis = useCallback((b: CostBasis) => {
     setCostBasisState(b)
     void saveBilling({ ...billing, costBasis: b })
@@ -1928,8 +2439,18 @@ export default function AppLayout() {
   // mobile from the "More" sheet, where every other header action lives.
   const [hardwareOpen, setHardwareOpen] = useState(false)
   // Collapsible "fleet stats" tab below the header (updated/members/machines/teams/projects/repos).
+  // **CLOSED BY DEFAULT ON A PHONE, OPEN ON THE DESKTOP** — one preference, two defaults. A stored
+  // choice wins on both (it is shared on purpose, so it survives a resize); this is only what
+  // happens when there is no choice yet. On a phone this strip is a second band of chrome under a
+  // header that already carries the filters, and its own summary row keeps the three headline
+  // figures visible while it is shut — so closing it costs nothing and gives back the viewport.
+  // Desktop has the room and keeps what it had.
   const [fleetOpen, setFleetOpen] = useState<boolean>(() => {
-    try { return localStorage.getItem('agentistics-fleet-open') !== '0' } catch { return true }
+    try {
+      const stored = localStorage.getItem('agentistics-fleet-open')
+      if (stored !== null) return stored !== '0'
+    } catch { /* private mode */ }
+    return !isMobile
   })
   const toggleFleet = () => setFleetOpen(v => { const n = !v; try { localStorage.setItem('agentistics-fleet-open', n ? '1' : '0') } catch { /* ignore */ } return n })
 
@@ -2195,11 +2716,14 @@ export default function AppLayout() {
   // must resolve the session and show the login screen FIRST — otherwise the
   // expected 401 surfaces as a "failed to load" error and the login never shows.
   if (teamSession === undefined) {
-    return <div style={{ minHeight: '100vh', background: 'var(--bg-base)' }} />
+    // Still resolving the session — show the honest boot loader, not a silent blank. We also can't
+    // yet tell a 403 auth-hold from a real error (that needs `teamSession.central`), so holding the
+    // loader here is correct as well as honest.
+    return <LoadingScreen lang={lang} loadProgress={loadProgress} />
   }
   // Central: account-based IAM gate (bootstrap → login → app).
   if (teamSession.central) {
-    if (iam === undefined) return <div style={{ minHeight: '100vh', background: 'var(--bg-base)' }} />
+    if (iam === undefined) return <LoadingScreen lang={lang} loadProgress={loadProgress} />
     if (iam.needsBootstrap) return <OwnerSetup lang={lang} onDone={() => { reloadIam(); refetch() }} />
     if (!iam.authed) return <Login onAuthed={() => { reloadIam(); refetch() }} />
     // Changing a password is step-up-protected (`server/stepup.ts`), and this screen is returned
@@ -2226,9 +2750,8 @@ export default function AppLayout() {
     return <TeamLogin onAuthed={() => { setTeamSession(s => ({ ...(s ?? { required: true }), required: true, authed: true })); refetch() }} />
   }
 
-  if (loading) {
-    return <LoadingScreen lang={lang} loadProgress={loadProgress} />
-  }
+  // Errors are checked BEFORE the boot loader below: an error means the load settled (`complete()`
+  // cleared `loading`), and it must win — otherwise a failed load would spin the loader forever.
 
   // A 403 on a central is an AUTH state, not a broken server: the gate refuses data until the
   // enrolment (or the sign-in) it is waiting for happens, and the effect above is already
@@ -2278,7 +2801,16 @@ export default function AppLayout() {
     )
   }
 
-  if (!data || !derived) return null
+  // The boot loader stays until the app can actually paint: data fetched, derived stats computed,
+  // AND the first-run prefs (archive choice) resolved. `loading` alone flipped false the instant
+  // /api/data resolved, and the gaps here used to return a SILENT BLANK — the loader vanishing
+  // before the data was ready. `bootLoading` is the single predicate deciding this.
+  if (bootLoading({ loading, hasData: !!data, hasDerived: !!derived, prefsLoaded: archiveChoice !== undefined })) {
+    return <LoadingScreen lang={lang} loadProgress={loadProgress} />
+  }
+  // `bootLoading` already guaranteed both are present; this explicit guard is what narrows them for
+  // TypeScript below. It is not reachable as a blank — it returns the loader too, never `null`.
+  if (!data || !derived) return <LoadingScreen lang={lang} loadProgress={loadProgress} />
 
   // Capture non-null derived for use in nested functions (TypeScript can't narrow closures)
   const d = derived
@@ -2310,11 +2842,10 @@ export default function AppLayout() {
     (filters.models.length > 0 ? 1 : 0) +
     (harnessFilterActive ? 1 : 0)
 
-  // Block the app until the user makes the first-run archive choice. While prefs OR the
-  // team-session flag are still loading render a neutral background to avoid a flash.
-  if (archiveChoice === undefined || teamSession === undefined) {
-    return <div style={{ minHeight: '100vh', background: 'var(--bg-base)' }} />
-  }
+  // Block the app until the user makes the first-run archive choice. `archiveChoice` is guaranteed
+  // resolved here (undefined would have kept `bootLoading` on the loader above) and `teamSession` is
+  // non-undefined since the auth gate at the top — so `null` is the one remaining case: "loaded, not
+  // yet chosen", which is the consent prompt, never a silent blank.
   // A central never shows the archive consent gate: it aggregates members' computed metrics
   // (stored in Mongo) and any self-contributed host data defaults server-side — there's nothing
   // for the operator to consent to here, so the blocking prompt would only annoy.
@@ -2335,8 +2866,637 @@ export default function AppLayout() {
     )
   }
 
+  // Built once so the magnifier layer (Task 8) can be handed the exact same object the pages get
+  // via <Outlet context>; two separately-built objects would drift out of sync.
+  const appCtx: AppContext = {
+    data,
+    derived,
+    statsCache,
+    filters, setFilters, activeOnly, setActiveOnly,
+    availableProjects, availableHarnesses,
+    lang, theme, currency, setCurrency, brlRate,
+    billing, saveBilling, costBasis, setCostBasis, planBasis, billingReady, openBillingSetup,
+    comparisons, saveComparisons,
+    tags: tagsList, monthCommitment,
+    chatModel, setChatModel, chatSoundEnabled, setChatSoundEnabled, chatSoundId, setChatSoundId,
+    savePreferences,
+    pwaPrompt,
+    onPwaInstalled: () => { setPwaInstalled(true); setPwaPrompt(null) },
+    liveUpdates, setLiveUpdates, updateInterval, setUpdateInterval,
+    riskyMode, setRiskyMode, highlightUpdates, setHighlightUpdates,
+    monthlyBudgetUSD, updateBudget,
+    totalInputTokens, totalOutputTokens,
+    setExpandedChart, setSelectedSession, setInfoModalIndex,
+    infoItems,
+    cardOrder, setCardOrder,
+    cardPrecision, setCardPrecision,
+    sessionCountByProject, models, modelGroups, modelsInProject, users: usersWithMachines,
+    harnesses: data.harnesses,
+    isCentral,
+    capabilities: teamSession?.capabilities,
+    me: iam?.account,
+    teams: teamsList,
+    machines: machinesList,
+    deniedRepoLabels,
+    refreshDeniedRepoLabels,
+    a11y,
+  }
+
+  /**
+   * The sessions workspace's ONE bar: the selected session's title, the filters, the view tabs and
+   * the actions — drawn INTO the fixed top strip.
+   *
+   * It began inside `SessionPanel`, was lifted into the shared header as a second full-width row
+   * with its own rule, and now rides in the space the top strip has always left empty to the right
+   * of the mark. Each move removed a band of chrome; this one removes the last, because the sticky
+   * `<header>` under this strip existed in this workspace only to carry `FiltersBar` — a whole band
+   * for one row of controls, directly beneath a band that was already there.
+   *
+   * The FILTERS are here whether or not a session is open: they narrow the LIST, which is what the
+   * workspace shows with nothing selected.
+   *
+   * One line, not two: the title and its state share a row here, separated by a dot, because the
+   * strip is 44px and stacking a subtitle under the title would either overflow it or shrink both
+   * past reading. Desktop only — on mobile the strip is hidden and `SessionsPage` draws its own.
+   */
+  const sessionTopBar = (inSessionsWorkspace && !isMobile) ? (
+    /* The body below is centred in a `PAGE_MAX_WIDTH` box inset by `PAGE_INSET`, so this row has to
+       be too — `FleetOverview`'s own header records two failed attempts at this alignment, and both
+       failed by matching one of the two numbers. `TopBar`'s `trailingFlush` is what makes the box
+       this sits in exactly `<main>`'s content box; without it the strip's own padding leaves the two
+       a few pixels apart at every width. */
+    <div style={{
+      // FULL WIDTH, not the body's 1400px box. Centring the strip's content in that box left ~550px
+      // of dead bar on each side of a 2500px screen, with the title adrift in the middle and the
+      // actions nowhere near the edge they belong to — reported as "should be space-between".
+      // The body keeps its box; the BAR is chrome and runs edge to edge, the way a fixed header
+      // does everywhere else. The left inset still matches `PAGE_INSET`, so the title starts on the
+      // same vertical line the content below it does — that is the alignment worth keeping, and it
+      // is the left edge, which is the one the eye follows down the page.
+      width: '100%', padding: `0 ${PAGE_INSET}px`, boxSizing: 'border-box',
+      display: 'flex', alignItems: 'center', gap: 10, minWidth: 0,
+    }}>
+      {selectedFleetSession && (
+        <div style={{ minWidth: 0, flexShrink: 1, display: 'flex', alignItems: 'baseline', gap: 7 }}>
+          <span style={{
+            fontSize: 13.5, fontWeight: 650, color: 'var(--text-primary)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
+          }}>
+            {selectedFleetSession.title}
+          </span>
+          {/* Gives up before the title does: the name is what identifies the session, and the state
+              is repeated on its own row in the aside two centimetres away. */}
+          <span style={{
+            fontSize: 11, color: 'var(--text-tertiary)', flexShrink: 1000000,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
+          }}>
+            {selectedFleetSession.stateLabel}
+            {selectedFleetSession.project ? ` · ${selectedFleetSession.project}` : ''}
+          </span>
+        </div>
+      )}
+
+      {/* THE FILTERS, in the centre. They are the element that gives up width FIRST: the title
+          identifies what you are looking at and the actions are how you act on it, while a narrowed
+          filter bar is still a filter bar — its own `+ Filtro` popover holds everything it drops. */}
+      {/* NO `overflow: hidden` HERE. It was added as the no-overlap guarantee and it also clipped
+          the bar's own popovers — the `+ Filtro` menu opened into a hidden box, so the button read
+          as dead. A clipping ancestor cannot tell a popover from an overflowing row. The overlap is
+          prevented where it is caused instead: `headerFit` collapses the date block before the row
+          can outgrow this slot, and the bar's own root is capped at 100%. */}
+      <div ref={setFilterSlotEl} style={{ flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center' }}>
+        <FiltersBar
+          inline
+          dateCompact={stripFit.date === 'compact'}
+          activeFiltersIcon={stripFit.activeFilters === 'icon'}
+          addFilterIcon={stripFit.addFilter === 'icon'}
+          only={SESSIONS_FILTER_DIMS}
+          activeOnly={activeOnly}
+          onActiveOnlyChange={setActiveOnly}
+          filters={filters}
+          onChange={setFilters}
+          projects={availableProjects}
+          sessionCountByProject={sessionCountByProject}
+          models={models}
+          modelGroups={modelGroups}
+          modelsInProject={modelsInProject}
+          users={[]}
+          // HARNESSES come from the FLEET here and from the metrics everywhere else. The bar offered
+          // all six the metrics know while the list it filters holds whatever is running — three on
+          // this machine — so picking "antigravity" emptied the list. Nothing was broken; there were
+          // genuinely no antigravity rows. But a filter that can only ever answer "nothing" is
+          // indistinguishable from one that is failing, and it was reported as exactly that. An
+          // option is a promise that something might be behind it.
+          // The WHOLE fleet's assistants, not just the ones the current switches can show — see
+          // `fleetFilterOptions`. The ones being withheld are MARKED rather than dropped, because a
+          // dimension that disappears reads as "this product does not know about my other
+          // assistants", which the Compare page contradicts two clicks away.
+          harnesses={fleetOptions.harnessesAll as typeof availableHarnesses}
+          harnessesOutOfView={fleetOptions.harnessesAll.filter(h => !fleetOptions.harnesses.includes(h))}
+          lang={lang}
+        />
+      </div>
+
+      {/* The magnifier pair, here for the reason it is in the dashboard's strip: this workspace
+          renders no <header>, so without it the lenses would have no control on this route. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <MagnifierButton ctx={appCtx} />
+        <HideLensesButton ctx={appCtx} />
+      </div>
+
+      {/* HARDWARE, on this route too. The whole action cluster is hidden in the sessions workspace
+          — correctly, for the totals and the page-data Live toggle, neither of which describes a
+          fleet that polls itself — and this button went with it. It answers "what is this machine
+          doing right now", which is MORE relevant here than anywhere else: this is the screen where
+          you watch that machine run several assistants at once. Reported as missing.
+          It sits on the LIST side of the rule below, because it is about the machine and not about
+          the session you have open. */}
+      {!isCentral && (
+        <button
+          onClick={() => setHardwareOpen(true)}
+          title={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
+          aria-label={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
+          aria-haspopup="dialog"
+          style={{
+            width: 30, height: 30, flexShrink: 0, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border)',
+            background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
+          }}
+        >
+          <Cpu size={14} />
+        </button>
+      )}
+
+      {/* A RULE, not more gap. Everything to the left narrows the LIST; everything to the right is
+          about the session you have open — two different questions that were sitting in one
+          undifferentiated row of controls, which is what "entulhado" describes. A one-pixel line
+          costs nothing and says where the row changes subject; the group after it keeps a wider
+          gap of its own so the eye lands on the break rather than counting buttons. */}
+      {selectedFleetSession && (
+        <span aria-hidden style={{
+          width: 1, alignSelf: 'stretch', margin: '4px 4px 4px 2px', flexShrink: 0,
+          background: 'var(--border-subtle)',
+        }} />
+      )}
+
+      {/* NOT ON A CENTRAL. The conversation is not relayed — the reverse channel's chat route
+          answers 410 — so a Chat tab there is a control that cannot do what it says, and choosing
+          it drops the reader back onto the same relayed screen with a sentence explaining that the
+          screen is all there is. The release note for this claimed the toggle was already withheld;
+          it was not, because the gate keys on `conversationBlind`, a MACHINE-LOCAL sentence that
+          `reduceMachineFleetRow` deliberately strips from the wire — so on a relayed row it is
+          always `undefined` and the tab was always offered. `isCentral` is the fact that decides
+          this, and it is the one the relay cannot lose. */}
+      {selectedFleetSession && !isCentral && selectedFleetSession.conversationBlind === undefined && (
+        <div role="tablist" style={{
+          display: 'flex', gap: 3, padding: 2, borderRadius: 9, flexShrink: 0,
+          background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+        }}>
+          <Segment
+            on={sessionView === 'chat'} onClick={() => setSessionView('chat')}
+            icon={<MessagesSquare size={13} />} label={lang === 'pt' ? 'Conversa' : 'Chat'}
+          />
+          <Segment
+            on={sessionView === 'terminal'} onClick={() => setSessionView('terminal')}
+            icon={<TerminalSquare size={13} />} label="Terminal"
+          />
+        </div>
+      )}
+
+      {/* THE ARTIFACTS BUTTON, beside the view tabs — the panel is a view OF this session, so it
+          belongs with the two that already are.
+
+          ABSENT ON A CENTRAL, not disabled: the list is derived from the session's own
+          conversation, and the conversation does not leave the machine. A control that cannot work
+          is not rendered inert — the same rule the fleet's verbs keep. The sentence is on the row
+          in the panel's place, so the absence is explained where the button would have been. */}
+      {/* WHAT THIS CONVERSATION HAS SPENT. The context percentage rides the button, because it is
+          the one figure that changes what you do next: a session near its window is one to finish
+          rather than extend. The record comes from the store by CONVERSATION id — a session the
+          store has not seen yet reads as "not recorded yet", never as zero. */}
+      {selectedFleetSession && (
+        <SessionStatsMenu
+          harness={selectedFleetSession.harness}
+          sessionId={selectedFleetSession.conversationId ?? selectedFleetSession.id}
+          meta={selectedFleetSession.conversationId
+            ? data?.sessions?.find(x => x.session_id === selectedFleetSession.conversationId)
+            : undefined}
+          lang={lang === 'pt' ? 'pt' : 'en'}
+          currency={currency}
+          brlRate={brlRate}
+          {...(selectedFleetSession.model ? { startedModel: selectedFleetSession.model } : {})}
+          {...(selectedFleetSession.effort ? { startedEffort: selectedFleetSession.effort } : {})}
+        />
+      )}
+
+      {selectedFleetSession && !isCentral && (
+        <button
+          onClick={toggleArtifacts}
+          aria-pressed={artifacts.open}
+          title={lang === 'pt'
+            ? 'Conteúdo desta sessão — arquivos, docs, atividade, galeria e skills'
+            : 'This session’s contents — files, docs, activity, gallery and skills'}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+            height: 30, padding: '0 10px', borderRadius: 9, cursor: 'pointer',
+            border: '1px solid ' + (artifacts.open ? 'var(--anthropic-orange)' : 'var(--border-subtle)'),
+            background: artifacts.open ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',
+            color: artifacts.open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+            fontFamily: 'inherit', fontSize: 12,
+          }}
+        >
+          {/* A DOCUMENT, and no number.
+              The count went because it counts everything the session ever touched — past fifty on
+              an ordinary afternoon — and a figure nobody acts on is furniture with a number on it.
+              What deserves attention is a file being written NOW, which has its own announcement on
+              the edge of the screen (`edgeHint`) and names the action instead of counting it.
+              `FileText` rather than a panel glyph: a panel glyph says "something opens here" and
+              leaves the reader to find out what. No single icon covers docs, the live feed AND the
+              gallery, so it names what the panel opens on nine times out of ten and the tooltip
+              carries the rest. `Files` (two sheets) was tried and reads as "copy". */}
+          <FileText size={14} />
+        </button>
+      )}
+
+      {selectedSessionRow && (
+        <SessionActions
+          row={selectedSessionRow}
+          lang={lang === 'pt' ? 'pt' : 'en'}
+          act={headerFleetAct}
+          onGone={() => navigate('/sessions')}
+          // A reopen mints a NEW session; going to it is what makes the verb visibly do something.
+          onOpened={id => navigate(sessionPath(id))}
+        />
+      )}
+    </div>
+  ) : null
+
+  /**
+   * The DASHBOARD's own one bar — the same move the sessions workspace just made, for the same
+   * reason: a fixed strip holding a mark and one icon, with the entire filter row as a second band
+   * directly beneath it, is two bands doing one band's work.
+   *
+   * Everything that was in that band is here, unchanged: the filters, the filtered totals, the
+   * health warnings, the hardware overlay, the bell, the Live toggle, the refresh, and the
+   * collapsible fleet-stats tab that hangs under the row. This is a RELOCATION — dropping any of
+   * them would be a regression nobody asked for.
+   *
+   * MOBILE IS UNTOUCHED. The strip is a desktop element; the phone keeps its collapsible filter
+   * band and its bottom nav, which are sized for a viewport this row would not fit in.
+   */
+  const dashboardTopBar = (!inSessionsWorkspace && !isMobile && !isCustomPage) ? (
+    <div style={{
+      // Full width, for the reason the sessions strip records: a bar centred in the body's box
+      // leaves dead chrome at both ends and pulls the action cluster off the edge it belongs to.
+      width: '100%', padding: `0 ${PAGE_INSET}px`, boxSizing: 'border-box',
+      display: 'flex', alignItems: 'center', gap: 14, minWidth: 0,
+    }}>
+      {/* THE FILTERS give up width FIRST. The cluster to their right is how you act on the page
+          and how you read what it currently totals; a narrowed filter bar is still a filter bar,
+          because its own `+ Filtro` popover holds every row it drops. */}
+      {/* No clipping here either — see the sessions strip's note.
+          `paddingLeft` is the action cluster's own width, mirrored on this side so the filters land
+          on the STRIP's centre line rather than the centre of what is left beside them. */}
+      <div ref={setFilterSlotEl} style={{
+        flex: 1, minWidth: 90, display: 'flex', justifyContent: 'center',
+        paddingLeft: stripPad, boxSizing: 'border-box',
+      }}>
+        <FiltersBar
+          inline
+          dateCompact={stripFit.date === 'compact'}
+          activeFiltersIcon={stripFit.activeFilters === 'icon'}
+          addFilterIcon={stripFit.addFilter === 'icon'}
+          only={filterDimsForRoute}
+          // THE SWITCH BELONGS ON BOTH PAGES — the user asked for exactly that, and Task 8 put it
+          // inside the + Filter menu so it reads as a dimension rather than a pill beside them.
+          // The sessions strip carried it and this one did not, which would have left "active
+          // only" existing on one page of two.
+          //
+          // It stays ABSENT rather than disabled where no fleet can be read (an exposed profile,
+          // a central with no machine chosen): `fleetReadable` withholds the callback, and
+          // FiltersBar renders nothing for a dimension it was given no way to change. A control
+          // whose only possible answer is "nothing" is not offered.
+          activeOnly={activeOnly}
+          onActiveOnlyChange={fleetReadable ? setActiveOnly : undefined}
+          costBasis={costBasis}
+          onCostBasisChange={isCentral ? undefined : setCostBasis}
+          costBasisReady={billingReady.ready && planBasis.basis !== null}
+          onCostBasisSetup={openBillingSetup}
+          filters={filters}
+          onChange={setFilters}
+          projects={availableProjects}
+          sessionCountByProject={sessionCountByProject}
+          models={models}
+          modelGroups={modelGroups}
+          modelsInProject={modelsInProject}
+          users={usersWithMachines}
+          // The METRICS' harnesses, because this bar is the dashboard's. The fleet's own
+          // narrower list belongs to the sessions strip (see `sessionTopBar`), which is where
+          // that override moved when the workspace stopped rendering this header.
+          harnesses={availableHarnesses}
+          presence={data?.presence}
+          lang={lang}
+          teams={teamsList}
+          machines={machinesList}
+          tags={tagsList}
+          canFilterMembers={canFilterMembers}
+          onCreateTagFromFilters={createTagFromFilters}
+        />
+      </div>
+
+      {/* Right column: the action cluster (alerts/live/refresh) on top, and the fleet
+          stats strip right-aligned directly beneath it — so "Updated · members · machines ·
+          projects · repos" lines up under the refresh button instead of stretching the bar.
+          Absent for Sessions: those are stored-metrics totals and a page-data "Live" refresh
+          toggle, neither of which describes a fleet that already polls and shows its own
+          "Connected · last sync" in the aside. */}
+      {!inSessionsWorkspace && (
+      <div ref={setActionsEl} style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+        {/* The filtered totals used to sit here, immediately left of the action icons. They are in
+            the STATS strip now, which is where they were asked to be and where they read better:
+            that strip is already the row of facts about what is on screen, and the header is where
+            you ACT on the page. It also stopped the header carrying a "5 sessions" three
+            centimetres from the strip's own "5 sessions" — two different numbers (this one is
+            filtered, that one is all-time) whose agreement was a coincidence of this machine. */}
+        {/* The magnifier pair. It rode in the desktop filter band this strip replaced, so it moves
+            with everything else that band carried — a lens control that exists on the phone and
+            not on the desktop is the accessibility feature missing from the wider screen. */}
+        <MagnifierButton ctx={appCtx} />
+        <HideLensesButton ctx={appCtx} />
+        {data?.healthIssues && data.healthIssues.length > 0 && (
+          <HealthWarnings issues={data.healthIssues} lang={lang} />
+        )}
+        {/* Hardware — an overlay, beside the other header actions rather than in the sidebar,
+            because it is a question about this machine and not a place to go. */}
+        <button
+          onClick={() => setHardwareOpen(true)}
+          title={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
+          aria-label={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
+          aria-haspopup="dialog"
+          style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', transition: 'all 0.15s' }}
+          onMouseEnter={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-primary)'; t.style.borderColor = 'var(--text-tertiary)' }}
+          onMouseLeave={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-tertiary)'; t.style.borderColor = 'var(--border)' }}
+        >
+          <Cpu size={14} />
+        </button>
+        <NotificationBell lang={lang} buttonStyle={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 32, height: 32, borderRadius: 8,
+          border: '1px solid var(--border)', background: 'transparent',
+          color: 'var(--text-tertiary)', cursor: 'pointer', position: 'relative',
+        }} />
+        {!isCentral && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px 0 10px', height: 32,
+            borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+          }}>
+            <Activity size={12} style={{ color: liveUpdates ? 'var(--anthropic-orange)' : 'var(--text-tertiary)', flexShrink: 0, transition: 'color 0.2s' }} />
+            <span style={{ fontSize: 11, fontWeight: 500, color: liveUpdates ? 'var(--text-primary)' : 'var(--text-tertiary)', whiteSpace: 'nowrap', userSelect: 'none' }}>Live</span>
+            <button
+              onClick={() => setLiveUpdates(v => !v)}
+              title={liveUpdates ? 'Pause live updates' : 'Enable live updates'}
+              style={{ position: 'relative', width: 28, height: 16, borderRadius: 8, border: 'none', background: liveUpdates ? 'var(--anthropic-orange)' : 'var(--text-tertiary)', cursor: 'pointer', padding: 0, transition: 'background 0.2s', flexShrink: 0 }}
+            >
+              <span style={{ position: 'absolute', top: 2, left: liveUpdates ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
+            </button>
+            {liveUpdates && (
+              <span style={{ fontSize: 10, fontWeight: 700, color: riskyMode && updateInterval < 10 ? '#ef4444' : 'var(--anthropic-orange)', userSelect: 'none' }}>
+                {riskyMode && updateInterval < 10 ? `⚡ ${updateInterval}s` : `${updateInterval >= 60 ? `${updateInterval / 60}m` : `${updateInterval}s`}`}
+              </span>
+            )}
+          </div>
+        )}
+        <button
+          onClick={refetch}
+          title={lang === 'pt' ? 'Atualizar' : 'Refresh'}
+          style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', transition: 'all 0.15s' }}
+          onMouseEnter={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-primary)'; t.style.borderColor = 'var(--text-tertiary)' }}
+          onMouseLeave={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-tertiary)'; t.style.borderColor = 'var(--border)' }}
+        >
+          <RefreshCw size={14} />
+        </button>
+      </div>
+      )}
+      {/* The collapsible "fleet stats" tab, which hangs BELOW this row (position: absolute,
+          top: 100%) and is therefore anchored to the fixed strip now rather than to the sticky
+          header that used to hold it. Expands to updated/since + members/machines/teams/projects/
+          repos. Dashboard only — these are STORED metrics, and a live fleet already states its own
+          "Connected · last sync" in the aside. */}
+      {/* Guarded by this row's own condition — see `dashboardTopBar`. */}
+      {(() => {
+        const sep = <span style={{ color: 'var(--border)' }}>·</span>
+        const iconSt: React.CSSProperties = { color: 'var(--text-tertiary)', flexShrink: 0 }
+        return (
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 300, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+            <div style={{ maxWidth: PAGE_MAX_WIDTH, width: '100%', display: 'flex', justifyContent: 'flex-end', paddingRight: PAGE_INSET, boxSizing: 'border-box', pointerEvents: 'none' }}>
+              <div style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                <button
+                  onClick={toggleFleet}
+                  title={fleetOpen ? (lang === 'pt' ? 'Minimizar' : 'Collapse') : (lang === 'pt' ? 'Mostrar estatísticas' : 'Show stats')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, padding: '2px 10px 3px',
+                    border: '1px solid var(--border)', borderTop: 'none',
+                    borderRadius: '0 0 8px 8px', background: 'var(--bg-surface)',
+                    color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10.5,
+                  }}
+                >
+                  {lang === 'pt' ? 'Estatísticas' : 'Stats'}
+                  {fleetOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </button>
+                {fleetOpen && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: '2px 9px',
+                    marginTop: 4, padding: '7px 12px', borderRadius: 8, maxWidth: '80vw',
+                    border: '1px solid var(--border)', background: 'var(--bg-surface)', boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
+                    fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {/* WHAT IS ON SCREEN, first — the totals the filters actually produced. They
+                        lead because they are the numbers that move when you touch a filter;
+                        everything after them is the standing context of the whole machine.
+
+                        The group is NAMED. Without the word this strip would carry two counts of
+                        "sessions" — this one narrowed by the filters, the one inside `fleetSince`
+                        counting every session ever recorded — and on the machine this was reported
+                        from they happened to be the same number, which is exactly the coincidence
+                        that makes an unlabelled pair impossible to tell apart later. */}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ textTransform: 'uppercase', fontSize: 9.5, fontWeight: 700, letterSpacing: 0.4, opacity: 0.75 }}>
+                        {lang === 'pt' ? 'No filtro' : 'In view'}
+                      </span>
+                      <span><strong style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>{derived.totalSessions.toLocaleString()}</strong> {lang === 'pt' ? (derived.totalSessions === 1 ? 'sessão' : 'sessões') : (derived.totalSessions === 1 ? 'session' : 'sessions')}</span>
+                      <span style={{ opacity: 0.35 }}>·</span>
+                      <span style={{ color: 'var(--anthropic-orange)', fontWeight: 600 }} title={headerCostTitle}>{fmtCost(headerCostUSD, currency, brlRate)}</span>
+                      <span style={{ opacity: 0.35 }}>·</span>
+                      <span title={headerTokensTitle}><strong style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>{fmt(headerTokens)}</strong> tok</span>
+                    </span>
+                    {sep}
+                    <span>{lang === 'pt' ? 'Atualizado em' : 'Updated'} <span style={{ color: 'var(--text-secondary)' }}>{fleetUpdated}</span></span>
+                    {fleetSince && (<>{sep}<span style={{ color: 'var(--text-secondary)' }}>{fleetSince}</span></>)}
+                    {isCentral && (<>
+                      {sep}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <Users size={11} style={iconSt} />
+                        <span style={{ color: 'var(--text-secondary)' }}>{memberCount} {lang === 'pt' ? (memberCount === 1 ? 'membro' : 'membros') : (memberCount === 1 ? 'member' : 'members')}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />{onlineCount}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />{offlineCount}</span>
+                      </span>
+                      {sep}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <Server size={11} style={iconSt} />
+                        <span style={{ color: 'var(--text-secondary)' }}>{machineCount} {lang === 'pt' ? (machineCount === 1 ? 'máquina' : 'máquinas') : (machineCount === 1 ? 'machine' : 'machines')}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} title={lang === 'pt' ? 'Máquinas online' : 'Machines online'}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />{machinesOnline}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} title={lang === 'pt' ? 'Máquinas offline' : 'Machines offline'}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />{machinesOffline}</span>
+                      </span>
+                      {sep}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <Users size={11} style={iconSt} />
+                        <span style={{ color: 'var(--text-secondary)' }}>{teamCount} {lang === 'pt' ? (teamCount === 1 ? 'time' : 'times') : (teamCount === 1 ? 'team' : 'teams')}</span>
+                      </span>
+                    </>)}
+                    {sep}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      <FolderOpen size={11} style={iconSt} />
+                      <span style={{ color: 'var(--text-secondary)' }}>{projectCount} {lang === 'pt' ? (projectCount === 1 ? 'projeto' : 'projetos') : (projectCount === 1 ? 'project' : 'projects')}</span>
+                    </span>
+                    {sep}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      <GitBranch size={11} style={iconSt} />
+                      <span style={{ color: 'var(--text-secondary)' }}>{repoCount} {lang === 'pt' ? (repoCount === 1 ? 'repositório' : 'repositórios') : (repoCount === 1 ? 'repository' : 'repositories')}</span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+    </div>
+  ) : null
+
+  /**
+   * What rides in the strip. One of the two, never both — they are guarded by the same workspace
+   * test from opposite sides — and both centre themselves in the page's own max-width box, which is
+   * why the strip is asked to hand them the box the body has (`trailingFlush`).
+   */
+  const stripTrailing = sessionTopBar ?? dashboardTopBar
+
+  // Whether some chrome already draws the magnifier buttons — mirrored from the slots themselves
+  // (never re-hardcoded) so MagnifierLayer knows when NO slot exists and must draw its own
+  // floating button. Two slots host them: the phone's sticky <header> below, and the desktop top
+  // strip's trailing region. `stripTrailing` IS that region, so asking it is exact; a second copy
+  // of its conditions would be a second place for the two to disagree.
+  // The sessions workspace hosts it too, on a phone: `SessionsPage`'s own bar draws it (see its
+  // `magnifierButton`). Without this the layer ALSO drew its floating fallback at `top: 50%`, over
+  // the middle of the conversation — reported with a screenshot of it sitting on a paragraph. The
+  // condition names the three slots that exist; a fourth must be added here, or the floating button
+  // reappears on top of whatever that screen is showing.
+  const headerHostsMagnifier = isMobile || stripTrailing !== null
+
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-base)', display: 'flex', flexDirection: 'column', paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : SIDEBAR_W), transition: 'padding-left 0.22s cubic-bezier(0.22, 1, 0.36, 1)' }}>
+    <div style={{
+      // `min-height` is NOT set in the sessions workspace, and that is the whole fix.
+      //
+      // CSS resolves `min-height` AFTER `height`, so a `min-height: 100vh` beats any smaller
+      // `height` — the column below asked for `calc(100dvh - var(--mobile-nav-h))` (608px on an
+      // iPhone 12) and computed 664px anyway, because this line said it may never be shorter than
+      // the full window. The composer sits at the bottom of that column, so those 56 lost pixels
+      // put it exactly underneath the fixed bottom nav: rendered, inside the viewport, and covered.
+      // Measured before the fix — input at 606-642, nav starting at 608.
+      //
+      // Everywhere else it stays, because a short page still has to fill the window.
+      ...(inSessionsWorkspace ? {} : { minHeight: '100vh' }),
+      // The REAL cause of the session pane's header/composer "scrolling away" and landing at the
+      // wrong spot: `<main>` below sets an explicit `height` for the sessions workspace, but a flex
+      // item with `flex: 1 1 0%` computes its used size from the flex algorithm, not from its own
+      // `height` — and that algorithm needs the CONTAINER (this div) to have a DEFINITE height to
+      // distribute. `minHeight` alone leaves it auto/content-sized, so `<main>` silently grew to fit
+      // an 11.000px-tall conversation instead of clipping at the viewport, and every "scroll to the
+      // bottom" call landed on an inner div that never actually had room to scroll. `position:
+      // sticky` on the header/composer masked the visual symptom (they still track the PAGE's own
+      // scroll) without fixing the underlying non-clipping — this fixes it at the source instead.
+      // MOBILE GETS `dvh`, AND SUBTRACTS THE FIXED BOTTOM NAV — the desktop `100vh` is wrong on a
+      // phone twice over, and `<main>` below could not rescue it.
+      //
+      // `<main>` already asks for `calc(100dvh - var(--mobile-nav-h))`, which is the right figure.
+      // It never got it: `<main>` is `flex: 1 1 0%` inside THIS div, and a flex item's main-axis
+      // size comes from the flex algorithm distributing its CONTAINER's height, not from its own
+      // `height` — the very rule this comment block was written to record. So the child's careful
+      // arithmetic was overridden by the parent's `100vh`, and `100vh` on a phone is (a) taller
+      // than the visible area, because it does not shrink for the browser's collapsing URL bar,
+      // and (b) measured to the window's bottom edge, under the fixed 56px-plus-inset nav.
+      //
+      // The composer sits at the bottom of that column, so it was pushed below the fold and behind
+      // the nav — reported as "the input does not appear at all", with the conversation unable to
+      // scroll because the scrolling box never had a bounded height to scroll within.
+      //
+      // Fixing it HERE rather than on `<main>` is the point: the container is what the flex
+      // algorithm reads.
+      // The nav subtraction is conditional on the nav being THERE. With a session open the bar is
+      // not rendered (see its own note below), so still subtracting it would leave a 56px band of
+      // nothing under the composer — the same class of mismatch as the `min-height` that used to
+      // beat this line, seen from the other side.
+      //
+      // THE NAV'S ROOM IS PADDING, NOT A SHORTER BOX — and that distinction is the whole of the
+      // floating-nav bug. `calc(100dvh - var(--mobile-nav-h))` ended this div one nav-height above
+      // the bottom of the screen, and `MobileBottomNav` is rendered INSIDE it.
+      //
+      // A `position: fixed` descendant is supposed to ignore its ancestors and answer to the
+      // viewport. It stops doing that when an ancestor clips: `index.css` gives `#root`
+      // `overflow-x: clip` on mobile — deliberately, because `hidden` would compute `overflow-y`
+      // to `auto` and break every `position: sticky` header (its own note records that) — and a
+      // lone `clip` on one axis computes the other axis to `clip` as well. WebKit then clips and
+      // anchors fixed descendants to that box rather than to the window. So `bottom: 0` resolved
+      // against THIS div's bottom edge, and the bar hovered exactly one nav-height off the floor
+      // with the page's ground showing beneath it.
+      //
+      // The dashboard was correct on the same screen at the same moment, which is what names the
+      // cause: there this height is `undefined`, the div reaches the bottom, and anchoring to it
+      // or to the viewport gives the same answer. The sessions list was the only page where the
+      // two differed — by exactly the height of the thing that moved.
+      //
+      // `height: 100dvh` + `padding-bottom: var(--mobile-nav-h)` gives the flex algorithm the very
+      // same definite CONTENT height it had before — `box-sizing: border-box` is global, so the
+      // children see `100dvh - nav` either way, and every measurement in the notes above still
+      // holds. What changes is that this div's border box now reaches the real bottom of the
+      // screen, so a fixed descendant has nothing left to resolve against wrongly. The nav then
+      // overlays its own padding, which is what the padding is for.
+      // THE BOX REACHES THE FLOOR; THE KEYBOARD IS PADDING. This briefly took its height from
+      // `visualViewport.height` instead, and that is the SAME MISTAKE the long note above records
+      // for `calc(100dvh - nav)`, made again from a different direction: a shorter box ends above
+      // the bottom of the screen, and because `#root` clips (see below), a `position: fixed`
+      // descendant anchors to THAT edge rather than the window's — so the bottom bar and the
+      // composer came up already floating, before any keyboard. The visual viewport is also the
+      // one measurement that is not always trustworthy at rest: Safari's collapsing toolbars and a
+      // non-zero `offsetTop` both make it shorter than the screen with nothing covering anything.
+      //
+      // `100dvh` + `padding-bottom: <keyboard>` gives the flex algorithm the same definite content
+      // height the shorter box did — `box-sizing: border-box` is global — while the border box
+      // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
+      // pixel it left, and nothing anchors to an edge that is not the screen's.
+      // `dvh` EVERYWHERE, not only under the mobile breakpoint. The note above records why a phone
+      // cannot use `100vh` — it does not shrink for a collapsing browser toolbar, so it is taller
+      // than the visible area and the foot of the column goes below the fold — and then the fix was
+      // applied only where `useIsMobile()` is true, which is a WIDTH test at 768px. An iPad is
+      // 820pt wide in portrait: it took the desktop branch, got `100vh`, and the composer sat below
+      // the fold with nothing on screen saying so. Reported as the chat input simply not existing
+      // on a tablet, in the PWA and in the browser alike.
+      //
+      // There is no cost on a desktop: with no dynamic toolbars `dvh` and `vh` are the same number.
+      // A rule that holds on every screen does not need a breakpoint, and the breakpoint was the
+      // whole defect.
+      height: inSessionsWorkspace ? '100dvh' : undefined,
+      // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
+      // so reserving its band would leave a strip of nothing under the composer — the same
+      // mismatch the old subtraction made, seen from the other side.
+      ...(inSessionsWorkspace && isMobile && !sessionOpen
+        ? { paddingBottom: 'var(--mobile-nav-h)' }
+        : {}),
+      background: 'var(--bg-base)', display: 'flex', flexDirection: 'column',
+      paddingLeft: isMobile ? 0 : (sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth),
+      paddingTop: isMobile ? 0 : 'var(--ag-topbar-h)',
+      boxSizing: 'border-box',
+      transition: 'padding-left 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
+    }}>
       {/* The billing prompt. Mounted HERE, after the archive consent gate's early return above, so
           the two can never stack on a first launch — one blocking modal behind one dismissible one
           is a pile nobody reads. It is the same component for the first-run invite and for the
@@ -2352,6 +3512,20 @@ export default function AppLayout() {
           void saveBilling({ ...billing, introDismissed: true })
         }}
       />
+      {/* The fixed strip above the aside — desktop only. */}
+      {!isMobile && (
+        <TopBar
+          lang={lang === 'pt' ? 'pt' : 'en'}
+          height={TOPBAR_H}
+          asideWidth={sidebarCollapsed ? SIDEBAR_W_COLLAPSED : liveAsideWidth}
+          collapsed={sidebarCollapsed}
+          onToggleSidebar={toggleSidebar}
+          {...(modeOfPath(location.pathname) === 'sessions'
+            ? { onSearch: () => window.dispatchEvent(new CustomEvent('agentistics:focus-session-search')) }
+            : {})}
+          {...(stripTrailing ? { trailing: stripTrailing, trailingFlush: true } : {})}
+        />
+      )}
       {/* Left sidebar nav — desktop only (mobile uses the bottom nav) */}
       {!isMobile && <SideNav
         lang={lang}
@@ -2359,18 +3533,42 @@ export default function AppLayout() {
         isCentral={isCentral}
         hasWorkflows={(data.workflows?.length ?? 0) > 0}
         collapsed={sidebarCollapsed}
+        width={liveAsideWidth}
+        onResize={setAsideWidth}
+        onCommitWidth={commitAsideWidth}
         onToggle={toggleSidebar}
         theme={theme}
         onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         onToggleLang={() => { const next = lang === 'pt' ? 'en' : 'pt'; setLang(next); if (next === 'pt') setCurrency('BRL'); else if (currency === 'BRL') setCurrency('USD') }}
         onExport={() => navigate('/export')}
         principal={iam?.account}
+        sessionsFilters={filters}
+        sessionsActiveOnly={activeOnly}
       />}
       {/* Header */}
+      {/* Page chrome — the MOBILE dashboard's, and only that.
+          The sessions workspace used to render this too, on desktop, purely to carry `FiltersBar`:
+          a whole sticky band with its own rule, one row of controls in it, directly beneath the
+          fixed strip that was already there. The filters now ride IN that strip (see
+          `sessionTopBar`), so the workspace has ONE bar and this element is not rendered in it at
+          all — on mobile it never was, because `SessionsPage` draws its own bars.
+          The root cause of "the pane's own header scrolled away" was never this strip's presence —
+          it was `<main>` lacking a DEFINITE height to clip to, fixed at the wrapper `<div>` above.
+          On DESKTOP the dashboard now does the same thing, for the same reason (see
+          `dashboardTopBar`), so what is left in here is the phone's own chrome: the logo/bell row
+          and the collapsible filter band, both sized for a viewport the strip's row would not fit
+          in. Nothing about mobile changed. */}
+      {!inSessionsWorkspace && isMobile && (
       <header style={{
         background: 'var(--bg-surface)',
         position: 'sticky',
-        top: 0,
+        // Beneath the fixed strip, never at the viewport top: one is window chrome and the other is
+        // page chrome, and neither may slide under the other.
+        top: isMobile ? 0 : 'var(--ag-topbar-h)',
+        // The status-bar band belongs to the BAR, not to the page under it: the header's own
+        // background and blur run up behind the clock, and its content starts below. Zero in a
+        // browser tab — see `--safe-top`.
+        ...(isMobile ? { paddingTop: 'var(--safe-top)' } : {}),
         zIndex: 100,
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
@@ -2388,6 +3586,8 @@ export default function AppLayout() {
           }}>
             <img src='/minimalistLogo.png' alt="agentistics" style={{ height: 44, width: 'auto' }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <MagnifierButton ctx={appCtx} />
+              <HideLensesButton ctx={appCtx} />
               {data?.healthIssues && data.healthIssues.length > 0 && (
                 <HealthWarnings issues={data.healthIssues} lang={lang} />
               )}
@@ -2407,7 +3607,7 @@ export default function AppLayout() {
             (a slim summary row) so it doesn't eat the viewport while scrolling;
             the harness chips sit on their own row above the date/projects/models
             controls. Desktop always shows the full bar. */}
-        {data && !isCustomPage && isMobile && (
+        {data && !isCustomPage && !inSessionsWorkspace && isMobile && (
           <div style={{ borderTop: '1px solid var(--border)', width: '100%', boxSizing: 'border-box' }}>
             {/* Collapsed slim row — visible only when minimized; tap to expand. */}
             {filtersCollapsed && (
@@ -2452,6 +3652,8 @@ export default function AppLayout() {
                   onCostBasisChange={isCentral ? undefined : setCostBasis}
                   costBasisReady={billingReady.ready && planBasis.basis !== null}
                   onCostBasisSetup={openBillingSetup}
+                  activeOnly={activeOnly}
+                  onActiveOnlyChange={fleetReadable ? setActiveOnly : undefined}
                   filters={filters}
                   onChange={setFilters}
                   projects={availableProjects}
@@ -2517,6 +3719,20 @@ export default function AppLayout() {
                     display: 'flex', flexWrap: 'wrap', gap: 6, padding: '2px 14px 10px',
                     fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
                   }}>
+                    {/* The same "what is on screen" group the desktop strip leads with, as one
+                        chip. Parity is the point: the totals moved OUT of the desktop header into
+                        this strip, and a phone that never got them would be the one layout where
+                        the filters produce no readable total at all. */}
+                    <span style={chip}>
+                      <span style={{ textTransform: 'uppercase', fontSize: 9, fontWeight: 700, letterSpacing: 0.4, opacity: 0.75 }}>
+                        {lang === 'pt' ? 'No filtro' : 'In view'}
+                      </span>
+                      <span style={val}>{derived.totalSessions.toLocaleString()}</span>
+                      <span style={{ opacity: 0.35 }}>·</span>
+                      <span style={{ color: 'var(--anthropic-orange)', fontWeight: 600 }}>{fmtCost(headerCostUSD, currency, brlRate)}</span>
+                      <span style={{ opacity: 0.35 }}>·</span>
+                      <span style={val}>{fmt(headerTokens)}</span> tok
+                    </span>
                     <span style={chip}>{lang === 'pt' ? 'Atualizado' : 'Updated'} <span style={val}>{fleetUpdated}</span></span>
                     {fleetSince && <span style={chip}><span style={val}>{fleetSince}</span></span>}
                     {isCentral && (<>
@@ -2542,226 +3758,51 @@ export default function AppLayout() {
             </div>
           </div>
         )}
-        {data && !isCustomPage && !isMobile && (
-          <div style={{
-            maxWidth: 1400, margin: '0 auto', padding: '5px 32px', width: '100%', boxSizing: 'border-box',
-            display: 'flex', alignItems: 'flex-start', gap: 14,
-          }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <FiltersBar
-                only={filterDimsForRoute}
-                costBasis={costBasis}
-                onCostBasisChange={isCentral ? undefined : setCostBasis}
-                costBasisReady={billingReady.ready && planBasis.basis !== null}
-                onCostBasisSetup={openBillingSetup}
-                filters={filters}
-                onChange={setFilters}
-                projects={availableProjects}
-                sessionCountByProject={sessionCountByProject}
-                models={models}
-                modelGroups={modelGroups}
-                modelsInProject={modelsInProject}
-                users={usersWithMachines}
-                harnesses={availableHarnesses}
-                presence={data?.presence}
-                lang={lang}
-                teams={teamsList}
-                machines={machinesList}
-                tags={tagsList}
-                canFilterMembers={canFilterMembers}
-                onCreateTagFromFilters={createTagFromFilters}
-              />
-            </div>
-
-            {/* Right column: the action cluster (alerts/live/refresh) on top, and the fleet
-                stats strip right-aligned directly beneath it — so "Updated · members · machines ·
-                projects · repos" lines up under the refresh button instead of stretching the bar. */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0, paddingTop: 3 }}>
-              {/* Filtered totals, immediately left of the action icons */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                <span><strong style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>{derived.totalSessions.toLocaleString()}</strong> {lang === 'pt' ? 'sessões' : 'sessions'}</span>
-                <span style={{ opacity: 0.35 }}>·</span>
-                <span style={{ color: 'var(--anthropic-orange)', fontWeight: 600 }} title={headerCostTitle}>{fmtCost(headerCostUSD, currency, brlRate)}</span>
-                <span style={{ opacity: 0.35 }}>·</span>
-                <span title={headerTokensTitle}><strong style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>{fmt(headerTokens)}</strong> tok</span>
-              </div>
-              {data?.healthIssues && data.healthIssues.length > 0 && (
-                <HealthWarnings issues={data.healthIssues} lang={lang} />
-              )}
-              {/* Hardware — an overlay, beside the other header actions rather than in the sidebar,
-                  because it is a question about this machine and not a place to go. */}
-              <button
-                onClick={() => setHardwareOpen(true)}
-                title={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
-                aria-label={lang === 'pt' ? 'Recursos de hardware' : 'Hardware resources'}
-                aria-haspopup="dialog"
-                style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', transition: 'all 0.15s' }}
-                onMouseEnter={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-primary)'; t.style.borderColor = 'var(--text-tertiary)' }}
-                onMouseLeave={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-tertiary)'; t.style.borderColor = 'var(--border)' }}
-              >
-                <Cpu size={14} />
-              </button>
-              <NotificationBell lang={lang} buttonStyle={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                width: 32, height: 32, borderRadius: 8,
-                border: '1px solid var(--border)', background: 'transparent',
-                color: 'var(--text-tertiary)', cursor: 'pointer', position: 'relative',
-              }} />
-              {!isCentral && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px 0 10px', height: 32,
-                  borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-secondary)',
-                }}>
-                  <Activity size={12} style={{ color: liveUpdates ? 'var(--anthropic-orange)' : 'var(--text-tertiary)', flexShrink: 0, transition: 'color 0.2s' }} />
-                  <span style={{ fontSize: 11, fontWeight: 500, color: liveUpdates ? 'var(--text-primary)' : 'var(--text-tertiary)', whiteSpace: 'nowrap', userSelect: 'none' }}>Live</span>
-                  <button
-                    onClick={() => setLiveUpdates(v => !v)}
-                    title={liveUpdates ? 'Pause live updates' : 'Enable live updates'}
-                    style={{ position: 'relative', width: 28, height: 16, borderRadius: 8, border: 'none', background: liveUpdates ? 'var(--anthropic-orange)' : 'var(--text-tertiary)', cursor: 'pointer', padding: 0, transition: 'background 0.2s', flexShrink: 0 }}
-                  >
-                    <span style={{ position: 'absolute', top: 2, left: liveUpdates ? 14 : 2, width: 12, height: 12, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }} />
-                  </button>
-                  {liveUpdates && (
-                    <span style={{ fontSize: 10, fontWeight: 700, color: riskyMode && updateInterval < 10 ? '#ef4444' : 'var(--anthropic-orange)', userSelect: 'none' }}>
-                      {riskyMode && updateInterval < 10 ? `⚡ ${updateInterval}s` : `${updateInterval >= 60 ? `${updateInterval / 60}m` : `${updateInterval}s`}`}
-                    </span>
-                  )}
-                </div>
-              )}
-              <button
-                onClick={refetch}
-                title={lang === 'pt' ? 'Atualizar' : 'Refresh'}
-                style={{ width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', transition: 'all 0.15s' }}
-                onMouseEnter={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-primary)'; t.style.borderColor = 'var(--text-tertiary)' }}
-                onMouseLeave={e => { const t = e.currentTarget as HTMLButtonElement; t.style.color = 'var(--text-tertiary)'; t.style.borderColor = 'var(--border)' }}
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Nav moved to the left sidebar (SideNav) on desktop; mobile uses the bottom nav. */}
 
-      {/* Collapsible "fleet stats" tab — hangs BELOW the header (position:absolute top:100%). It
-          lives inside the sticky header so it stays pinned and scrolls down with it; high z-index
-          overlays the page. Expands to show updated/since + members/machines/teams/projects/repos. */}
-      {data && !isCustomPage && !isMobile && (() => {
-        const sep = <span style={{ color: 'var(--border)' }}>·</span>
-        const iconSt: React.CSSProperties = { color: 'var(--text-tertiary)', flexShrink: 0 }
-        return (
-          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 300, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-            <div style={{ maxWidth: 1400, width: '100%', display: 'flex', justifyContent: 'flex-end', paddingRight: 32, boxSizing: 'border-box', pointerEvents: 'none' }}>
-              <div style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                <button
-                  onClick={toggleFleet}
-                  title={fleetOpen ? (lang === 'pt' ? 'Minimizar' : 'Collapse') : (lang === 'pt' ? 'Mostrar estatísticas' : 'Show stats')}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 5, padding: '2px 10px 3px',
-                    border: '1px solid var(--border)', borderTop: 'none',
-                    borderRadius: '0 0 8px 8px', background: 'var(--bg-surface)',
-                    color: 'var(--text-tertiary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 10.5,
-                  }}
-                >
-                  {lang === 'pt' ? 'Estatísticas' : 'Stats'}
-                  {fleetOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                </button>
-                {fleetOpen && (
-                  <div style={{
-                    display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: '2px 9px',
-                    marginTop: 4, padding: '7px 12px', borderRadius: 8, maxWidth: '80vw',
-                    border: '1px solid var(--border)', background: 'var(--bg-surface)', boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
-                    fontSize: 11, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
-                  }}>
-                    <span>{lang === 'pt' ? 'Atualizado em' : 'Updated'} <span style={{ color: 'var(--text-secondary)' }}>{fleetUpdated}</span></span>
-                    {fleetSince && (<>{sep}<span style={{ color: 'var(--text-secondary)' }}>{fleetSince}</span></>)}
-                    {isCentral && (<>
-                      {sep}
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        <Users size={11} style={iconSt} />
-                        <span style={{ color: 'var(--text-secondary)' }}>{memberCount} {lang === 'pt' ? (memberCount === 1 ? 'membro' : 'membros') : (memberCount === 1 ? 'member' : 'members')}</span>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />{onlineCount}</span>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />{offlineCount}</span>
-                      </span>
-                      {sep}
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        <Server size={11} style={iconSt} />
-                        <span style={{ color: 'var(--text-secondary)' }}>{machineCount} {lang === 'pt' ? (machineCount === 1 ? 'máquina' : 'máquinas') : (machineCount === 1 ? 'machine' : 'machines')}</span>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} title={lang === 'pt' ? 'Máquinas online' : 'Machines online'}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />{machinesOnline}</span>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} title={lang === 'pt' ? 'Máquinas offline' : 'Machines offline'}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#ef4444', display: 'inline-block' }} />{machinesOffline}</span>
-                      </span>
-                      {sep}
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                        <Users size={11} style={iconSt} />
-                        <span style={{ color: 'var(--text-secondary)' }}>{teamCount} {lang === 'pt' ? (teamCount === 1 ? 'time' : 'times') : (teamCount === 1 ? 'team' : 'teams')}</span>
-                      </span>
-                    </>)}
-                    {sep}
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                      <FolderOpen size={11} style={iconSt} />
-                      <span style={{ color: 'var(--text-secondary)' }}>{projectCount} {lang === 'pt' ? (projectCount === 1 ? 'projeto' : 'projetos') : (projectCount === 1 ? 'project' : 'projects')}</span>
-                    </span>
-                    {sep}
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                      <GitBranch size={11} style={iconSt} />
-                      <span style={{ color: 'var(--text-secondary)' }}>{repoCount} {lang === 'pt' ? (repoCount === 1 ? 'repositório' : 'repositórios') : (repoCount === 1 ? 'repository' : 'repositories')}</span>
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )
-      })()}
       </header>
+      )}
 
       {/* Main content — routed pages render here via <Outlet /> */}
-      <main style={{
-        maxWidth: 1400,
-        margin: '0 auto',
-        width: '100%',
-        boxSizing: 'border-box',
-        flex: 1,
-        // Fill at least the viewport so the footer always sits below the fold (a scroll away),
-        // even on short pages — it never floats up into a half-empty screen.
-        minHeight: '100vh',
-        // The bottom padding clears the fixed nav, so it has to grow with it: installed as a PWA
-        // the bar is 56px + the home-indicator inset, and a flat 80px hid the last card.
-        padding: isMobile ? '16px 16px calc(24px + var(--mobile-nav-h))' : '24px 32px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: isMobile ? 14 : 20,
-      }}>
-        <Outlet context={{
-          data,
-          derived,
-          statsCache,
-          filters, setFilters,
-          lang, theme, currency, setCurrency, brlRate,
-          billing, saveBilling, costBasis, setCostBasis, planBasis, billingReady, openBillingSetup,
-          comparisons, saveComparisons,
-          tags: tagsList, monthCommitment,
-          chatModel, chatSoundEnabled, chatSoundId,
-          savePreferences,
-          pwaPrompt,
-          onPwaInstalled: () => { setPwaInstalled(true); setPwaPrompt(null) },
-          liveUpdates, setLiveUpdates, updateInterval, setUpdateInterval,
-          riskyMode, setRiskyMode, highlightUpdates, setHighlightUpdates,
-          monthlyBudgetUSD, updateBudget,
-          totalInputTokens, totalOutputTokens,
-          setExpandedChart, setSelectedSession, setInfoModalIndex,
-          infoItems,
-          cardOrder, setCardOrder: setCardOrder as (o: string[]) => void,
-          cardPrecision, setCardPrecision,
-          sessionCountByProject, models, modelGroups, modelsInProject, users: usersWithMachines,
-          harnesses: data.harnesses,
-          isCentral,
-          me: iam?.account,
-          teams: teamsList,
-          machines: machinesList,
-          deniedRepoLabels,
-          refreshDeniedRepoLabels,
-        }} />
+      {/* The sessions workspace is an APPLICATION PANE, not a document: it holds a terminal and a
+          conversation, both of which scroll inside themselves and must fill the window exactly.
+          Every dashboard page is the opposite — a column of cards, centred and padded, that grows
+          past the fold. So the two get different frames rather than one frame with the sessions
+          case fighting a max-width, a page-level scroll and a footer it has no use for. */}
+      <main style={
+        inSessionsWorkspace
+          ? {
+              width: '100%', boxSizing: 'border-box', flex: 1, minWidth: 0,
+              // The exact window minus the fixed strip. This is only correct because the filters
+              // bar is NOT rendered in this workspace — see the header's own condition. While it
+              // was, root content exceeded the viewport by that bar's height, the PAGE scrolled,
+              // and the session's own header scrolled away with it.
+              // On MOBILE this fills the parent, which already subtracts the fixed nav (see the
+              // root's own note) — repeating the arithmetic here is what let the two disagree.
+              // Desktop still subtracts its own fixed top strip, which the root does not know about.
+              height: isMobile ? undefined : 'calc(100vh - var(--ag-topbar-h))',
+              minHeight: 0,
+              display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            }
+          : {
+              maxWidth: 1400,
+              margin: '0 auto',
+              width: '100%',
+              boxSizing: 'border-box',
+              flex: 1,
+              // Fill at least the viewport so the footer always sits below the fold (a scroll away),
+              // even on short pages — it never floats up into a half-empty screen.
+              minHeight: '100vh',
+              // The bottom padding clears the fixed nav, so it has to grow with it: installed as a
+              // PWA the bar is 56px + the home-indicator inset, and a flat 80px hid the last card.
+              padding: isMobile ? '16px 16px calc(24px + var(--mobile-nav-h))' : '24px 32px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: isMobile ? 14 : 20,
+            }
+      }>
+        <Outlet context={appCtx} />
       </main>
 
       {/* Install Modal — shown once after first data load */}
@@ -2881,8 +3922,15 @@ export default function AppLayout() {
 
       {hardwareOpen && <HardwareModal lang={lang} onClose={() => setHardwareOpen(false)} />}
 
-      {/* Mobile bottom navigation bar */}
-      {isMobile && (
+      {/* Mobile bottom navigation bar — HIDDEN while a session is open.
+          A session's panel is a full-screen reading-and-typing surface: the conversation fills the
+          column and the composer sits at its foot. Five destinations under a keyboard is chrome
+          competing with the thing it wraps, on a screen only 664px tall to begin with — the nav
+          was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
+          its own back arrow in the top bar, which is the way out and the only one a reader needs
+          while they are in it. The root's height drops the matching subtraction — see its note.
+ */}
+      {isMobile && !sessionOpen && (
         <MobileBottomNav
           lang={lang}
           harnesses={data.harnesses}
@@ -2898,6 +3946,7 @@ export default function AppLayout() {
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           onToggleLang={() => { const next = lang === 'pt' ? 'en' : 'pt'; setLang(next); if (next === 'pt') setCurrency('BRL'); else if (currency === 'BRL') setCurrency('USD') }}
+          a11yEnabled={a11y.prefs.enabled}
         />
       )}
 
@@ -2927,7 +3976,10 @@ export default function AppLayout() {
         />
       )}
 
-      {/* Footer */}
+      {/* Footer — dashboard only. The sessions workspace is an application pane that fills the
+          window exactly and scrolls inside itself; a marketing footer under a terminal is a strip
+          of links nobody can reach without first scrolling a pane that does not scroll. */}
+      {!inSessionsWorkspace && (
       <footer style={{
         borderTop: '1px solid var(--border)',
         background: 'var(--bg-surface)',
@@ -3070,9 +4122,13 @@ export default function AppLayout() {
           </div>
         </div>
       </footer>
+      )}
 
       {/* Global notification toasts (auto-dismiss with an exit animation; history in the bell) */}
       <NotificationToasts lang={lang} />
+
+      {/* Accessibility magnifiers — a portal appended to document.body, outside #root. */}
+      <MagnifierLayer ctx={appCtx} hasHeaderSlot={headerHostsMagnifier} />
 
       {/* Mounted once, at the ROOT: stepUpFetch opens this whenever the server demands re-auth,
           and every page can trigger that. It used to live inside SideNav — desktop-only chrome —

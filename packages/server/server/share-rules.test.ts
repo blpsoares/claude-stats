@@ -1081,10 +1081,24 @@ const LIVE_SESSIONS = [
 const liveIndex = () => buildPathRepoIndex(LIVE_SESSIONS)
 
 test('an unrestricted connection gets the live snapshot untouched', () => {
-  const snap = { liveSessionIds: ['open-blocked', 'open-shared'], liveProcesses: [{ cwd: '/anywhere' }] }
+  const snap = {
+    liveSessionIds: ['open-blocked', 'open-shared'],
+    liveProcesses: [{ cwd: '/anywhere' }],
+    liveSessionActivities: { 'open-blocked': 'working', 'open-shared': 'waiting' } as const,
+  }
   const out = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied([])))
   expect(out.liveSessionIds).toEqual(['open-blocked', 'open-shared'])
   expect(out.liveProcesses).toHaveLength(1)
+  expect(out.liveSessionActivities).toEqual({ 'open-blocked': 'working', 'open-shared': 'waiting' })
+})
+
+test('a snapshot with no activities yields an empty map, never undefined', () => {
+  // The caller sends `shared.liveSessionActivities` verbatim; a missing map must still be a map,
+  // or the frame carries `undefined` where the central expects an object.
+  const snap = { liveSessionIds: ['open-shared'], liveProcesses: [] }
+  expect(filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied([]))).liveSessionActivities).toEqual({})
+  const restricted = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied(['github.com/acme/secret'])), liveIndex())
+  expect(restricted.liveSessionActivities).toEqual({})
 })
 
 // The leak this exists to close: the uploader withheld the repo's metrics while the reverse
@@ -1125,6 +1139,74 @@ test('the alias folding that guards filterShared guards the live channel too', (
   // Denied under a different SSH/case spelling of the same remote.
   const out = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied(['git@github.com:Acme/Secret.git'])), liveIndex())
   expect(out.liveSessionIds).toEqual([])
+})
+
+// The leak issue #214 closed: `sessionActivities` travelled beside the two filtered fields and was
+// itself unfiltered, so a withheld repo's session announced its id AND its state every 8 seconds.
+test("a denied session's activity is dropped while the shared one's survives", () => {
+  const snap = {
+    liveSessionIds: ['open-blocked', 'open-shared'],
+    liveProcesses: [],
+    liveSessionActivities: { 'open-blocked': 'waiting-approval', 'open-shared': 'working' } as const,
+  }
+  const out = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied(['github.com/acme/secret'])), liveIndex())
+  expect(out.liveSessionActivities).toEqual({ 'open-shared': 'working' })
+})
+
+test('an activity keyed by a session we cannot find is dropped, like the id would be', () => {
+  const snap = {
+    liveSessionIds: [],
+    liveProcesses: [],
+    liveSessionActivities: { ghost: 'working' } as const,
+  }
+  const out = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied(['github.com/acme/secret'])), liveIndex())
+  expect(out.liveSessionActivities).toEqual({})
+})
+
+test('an allowlist keeps only the allowed session\'s activity', () => {
+  const snap = {
+    liveSessionIds: ['open-blocked', 'open-shared'],
+    liveProcesses: [],
+    liveSessionActivities: { 'open-blocked': 'working', 'open-shared': 'waiting' } as const,
+  }
+  const rules = { mode: 'allowlist' as const, sources: new Set(['repo:github.com/acme/public']) }
+  const out = filterLiveShared(snap, LIVE_SESSIONS, rules, liveIndex())
+  expect(out.liveSessionIds).toEqual(['open-shared'])
+  expect(out.liveSessionActivities).toEqual({ 'open-shared': 'waiting' })
+})
+
+test('an EMPTY allowlist shares no activity at all', () => {
+  const snap = {
+    liveSessionIds: ['open-shared'],
+    liveProcesses: [],
+    liveSessionActivities: { 'open-shared': 'working' } as const,
+  }
+  const out = filterLiveShared(snap, LIVE_SESSIONS, { mode: 'allowlist', sources: new Set() }, liveIndex())
+  expect(out.liveSessionActivities).toEqual({})
+})
+
+// Enumerated over the RESULT'S OWN KEYS rather than field by field: the point of moving the
+// activities into this function is that ONE function decides the whole outgoing frame, so a field
+// added to it later is covered by this test instead of needing another one — which is precisely
+// what did not happen when `sessionActivities` was added at the call site.
+test("nothing about a denied session appears in ANY field of the outgoing frame", () => {
+  const snap = {
+    liveSessionIds: ['open-blocked', 'open-shared'],
+    liveProcesses: [{ cwd: '/w/secret' }, { cwd: '/w/public' }],
+    liveSessionActivities: { 'open-blocked': 'waiting-approval', 'open-shared': 'working' } as const,
+  }
+  const out = filterLiveShared(snap, LIVE_SESSIONS, denylistRules(normalizeDenied(['github.com/acme/secret'])), liveIndex())
+
+  expect(Object.keys(out).sort()).toEqual(['liveProcesses', 'liveSessionActivities', 'liveSessionIds'])
+  for (const value of Object.values(out)) {
+    const json = JSON.stringify(value)
+    expect(json).not.toContain('open-blocked')
+    expect(json).not.toContain('secret')
+  }
+  // ...and the shared half is still there, or an all-empty frame would pass the check above.
+  expect(out.liveSessionIds).toEqual(['open-shared'])
+  expect(out.liveProcesses.map(p => p.cwd)).toEqual(['/w/public'])
+  expect(out.liveSessionActivities).toEqual({ 'open-shared': 'working' })
 })
 
 // --- the cross-check that keeps THIS file the single source of the sharing semantics ------------

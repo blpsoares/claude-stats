@@ -14,9 +14,55 @@
     <title>Agentistics</title>
     <!-- Inter is self-hosted (see src/index.css @font-face + public/fonts). No external
          origin here, so the CSP can stay strict and no visitor IP leaves the instance. -->
+    <!-- Pre-React guard. index.css and the app bundle are separate requests that arrive AFTER this
+         document, so until they land the browser paints a bare, unstyled #root — a flash of blank
+         (or the UA's default light/blue chrome) before React ever mounts. These inline rules paint
+         the app's own dark ground on the very first frame and show a boot loader in #root, so the
+         opening is the app loading rather than a silent screen. It is CSP-safe (only inline <style>,
+         which `style-src 'self' 'unsafe-inline'` allows — no inline <script>), and it removes itself
+         with no JS: React's createRoot fills #root, and `#root:not(:empty) ~ #ag-preboot` then hides
+         the loader the instant real content commits. -->
+    <style>
+      html, body { margin: 0; background: #0a0a0f; color-scheme: dark; }
+      #ag-preboot {
+        position: fixed; inset: 0; z-index: 2147483647;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+        background: #0a0a0f;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      }
+      #ag-preboot .ag-preboot-bars { display: flex; align-items: flex-end; gap: 5px; height: 34px; }
+      #ag-preboot .ag-preboot-bars span {
+        width: 5px; height: 100%; border-radius: 3px;
+        background: #D97706; transform-origin: bottom;
+        animation: ag-preboot-pulse 1s ease-in-out infinite;
+      }
+      #ag-preboot .ag-preboot-bars span:nth-child(2) { animation-delay: .12s; }
+      #ag-preboot .ag-preboot-bars span:nth-child(3) { animation-delay: .24s; }
+      #ag-preboot .ag-preboot-bars span:nth-child(4) { animation-delay: .36s; }
+      #ag-preboot .ag-preboot-bars span:nth-child(5) { animation-delay: .48s; }
+      #ag-preboot .ag-preboot-label {
+        font-size: 13px; font-weight: 600; letter-spacing: .02em; color: rgba(255, 255, 255, .55);
+      }
+      @keyframes ag-preboot-pulse {
+        0%, 100% { transform: scaleY(.4); opacity: .5; }
+        50%      { transform: scaleY(1);  opacity: 1;  }
+      }
+      /* The moment React commits any content into #root it stops being :empty, and the following
+         sibling loader is hidden. `:not(:empty)` + `~` are universally supported — no `:has` needed. */
+      #root:not(:empty) ~ #ag-preboot { display: none; }
+      @media (prefers-reduced-motion: reduce) {
+        #ag-preboot .ag-preboot-bars span { animation: none; opacity: .85; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- Sibling AFTER #root (not a child) so React's createRoot never warns about pre-existing
+         children, and the `:has` rule above can hide it once #root holds real content. -->
+    <div id="ag-preboot" role="status" aria-label="Loading agentistics">
+      <div class="ag-preboot-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="ag-preboot-label">agentistics</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

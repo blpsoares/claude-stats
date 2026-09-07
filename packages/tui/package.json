@@ -1,6 +1,6 @@
 {
   "name": "@agentistics/tui",
-  "version": "1.23.1",
+  "version": "2.15.0",
   "private": true,
   "type": "module",
   "main": "src/control/index.ts",
@@ -10,6 +10,10 @@
     "./control/altScreen": "./src/control/altScreen.ts",
     "./control/stream": "./src/control/stream.ts",
     "./control/sessions": "./src/control/sessions.ts",
+    "./control/session-fleet": "./src/control/session-fleet.ts",
+    "./control/session-verbs": "./src/control/session-verbs.ts",
+    "./control/session-order": "./src/control/session-order.ts",
+    "./control/session-dimensions": "./src/control/session-dimensions.ts",
     "./control/search-scope": "./src/control/search-scope.ts",
     "./control/surface": "./src/control/surface.ts",
     "./control/i18n": "./src/control/i18n.ts"

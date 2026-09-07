@@ -39,6 +39,7 @@
     "packages/web/src",
     "packages/tui/src",
     "packages/tui/scripts",
+    "packages/vscode/src",
     "packages/mcp"
   ]
 }

@@ -28,7 +28,16 @@ const RANK: Record<SessionState, number> = {
   closed: 6,
 }
 
-export function sessionRank(s: ControlSession): number {
+/**
+ * Takes the STATE and nothing else, and says so in its signature.
+ *
+ * Widened from `ControlSession` so the surfaces that hold a reduced row can rank it through this
+ * very function instead of restating the table: the VS Code extension is handed `FleetRow` over
+ * HTTP — a strict subset — and a ranking copied into an editor client would be a third answer to
+ * "what is most urgent", after the cockpit's and the browser's. Every existing caller passes a
+ * `ControlSession` and is unaffected.
+ */
+export function sessionRank(s: Pick<ControlSession, 'state'>): number {
   return RANK[s.state]
 }
 
@@ -52,6 +61,19 @@ export interface SessionOrder {
 }
 
 export const DEFAULT_ORDER: SessionOrder = { by: 'state', dir: 'desc' }
+
+/**
+ * The last time anything HAPPENED on this row — the `recent` sort's key, exported so the `day`
+ * dimension can band on the very same expression.
+ *
+ * They must agree or the screen contradicts itself: a list ordered by "what was I just doing" whose
+ * bands are cut on when each session STARTED puts a row used ten minutes ago under Monday, at the
+ * top of the list, under the wrong heading. `undefined` where the row records neither — an absence,
+ * not epoch zero, which would file it under 1970.
+ */
+export function recencyOf(s: ControlSession): number | undefined {
+  return s.endedAt ?? s.startedAt
+}
 
 /**
  * Tokens as a NUMBER for ordering, from the already-formatted string the host sent.
@@ -94,7 +116,7 @@ export function sortSessions(
       // ten minutes ago sorts three days old under that key, which is the wrong answer to "what was
       // I just doing".
       case 'recent':
-        return (b.endedAt ?? b.startedAt ?? 0) - (a.endedAt ?? a.startedAt ?? 0)
+        return (recencyOf(b) ?? 0) - (recencyOf(a) ?? 0)
     }
   }
   const sign = order.dir === 'asc' ? -1 : 1

@@ -87,3 +87,6 @@ central.env.*
 # Anchored to the root: the PUBLISHED casts live in docs/media/casts/ and are
 # committed, and an unanchored `casts/` would silently swallow them too.
 /casts/
+
+# VS Code extension package
+*.vsix

@@ -7,10 +7,16 @@ doing without anyone opening a terminal and running `tmux attach`.
 This is the **server contract** the web dashboard consumes. The web side (the terminal panel and its
 emulator) must build on exactly this — it does not invent its own endpoint.
 
-**Phase 1 is read-only.** There is no write path yet: no keystrokes reach the session through this
-channel. A write channel (`Phase 2`) is a separate, later delivery with its own security contract;
-until it exists the web must show **no input box**, because a text field that does nothing is the
-same kind of lie as a frozen terminal that looks live.
+**This channel (Phase 1) is read-only.** No keystrokes reach the session through the *stream* — a
+`frame` only ever flows server → browser. The **write** half is a separate concern with its own
+contract: the line-oriented interactive composer built on `POST /api/fleet/act { action:'prompt' }`
+(**Phase 2**, web-only, no new endpoint) is documented in
+[`docs/terminal-interactive.md`](terminal-interactive.md); the raw key-by-key channel
+(**Phase 2b**, `WS /api/fleet/input`) is documented in
+[`docs/terminal-write-channel.md`](terminal-write-channel.md). The rule the read channel set still
+holds: the web shows **no input box
+that does nothing** — the composer is offered only where a live, managed, typable row backs it, and it
+reports every line's delivery honestly.
 
 ## Transport, and why
 
@@ -33,6 +39,34 @@ same kind of lie as a frozen terminal that looks live.
 Tuning constants live in `packages/server/server/sessions/terminal-stream.ts`
 (`TERMINAL_VIEW_LINES`, `TERMINAL_POLL_MS`) and `terminal-web.ts` (`MAX_TERMINAL_STREAMS`,
 `KEEPALIVE_MS`). The poll cadence is overridable with `AGENTISTICS_TERMINAL_POLL_MS`.
+
+### Tuning: two different "echo" cases, and why `TERMINAL_POLL_MS` is not lowered
+
+**Keystroke echo is already comfortable and does not need this constant touched.** A delivered
+keystroke on the write channel ([docs/terminal-write-channel.md](terminal-write-channel.md)) calls
+`hub.nudge(id)` (`terminal-hub.ts`), which captures the pane immediately instead of waiting for the
+next tick — three cheap reads over ~200ms rather than one on the clock. Measured against a real,
+disposable tmux session: median ~7.7 ms, worst ~31 ms (n=15) from the WS send to the character
+appearing in an SSE `frame`. That is already an order of magnitude inside anything a person can
+perceive as "instant"; chasing it lower buys nothing.
+
+**Continuous output with no keystroke is a separate case the nudge cannot reach**, because nothing
+calls `nudge` when a process prints on its own (an agent streaming its reply, a long build). That
+case stays bound by the plain tick: measured median ~275 ms, worst ~500 ms at the default 500 ms
+cadence (same method — a loop printing a timestamped line every 300ms inside the pane, no WS input
+involved).
+
+Lowering the base `TERMINAL_POLL_MS` would shrink that second number, but unlike `nudge` it is not a
+burst — it is a **per watched session, all the time** cost that every open terminal panel pays for as
+long as it stays open, active or not. Measured (isolated tmux socket, 9 concurrently watched idle
+panes — this machine's real fleet size the day this was measured): ~11% of one core at the current
+500 ms; ~41% at 150 ms; ~47% at 100 ms. A drop large enough to meaningfully shrink the
+continuous-output number costs a real, standing fraction of a core for as long as a few panels stay
+open — for a case that is not the one people report as uncomfortable (nobody is waiting on a
+round-trip; they are watching text scroll in). So the constant stays at 500 ms. If continuous-output
+lag becomes a stated priority, the cheaper lever is the same shape as `nudge` — a short burst
+triggered by the pane actually changing, not a lower floor every watched session pays regardless of
+activity — not implemented here because it is not what this measurement was asked to fix.
 
 ## Request
 
@@ -109,6 +143,20 @@ The stream emits named SSE events. `: keepalive` comment lines arrive ~every 15s
 
 A session that merely **exits** does **not** end the stream — it keeps arriving as `frame`s with
 `alive:false`, so the finished screen stays readable. `end` is only for a session that is gone.
+
+### A connection that never delivers must say so — not spin forever
+
+The client opens the stream in a `connecting` state and leaves it only on a `frame` (→ live/finished)
+or an `end`. If **neither** arrives — the stream opened but produced no frame, or the `EventSource`
+is queued behind the browser's per-origin connection limit (~6 over HTTP/1.1, several already spent
+on the dashboard's own live channels) and never actually connects — a "Connecting…" that never
+resolves is indistinguishable from death. So the client (`useTerminalStream`) raises a `stall` after
+`STALL_MS` (10s) without a first frame, and also on an `EventSource` error while still frame-less; the
+status line then reads an honest **"No response"** with a **reconnect** verb, instead of spinning
+forever. A stall **never** blanks a screen that already has a frame: there the last frame stays and
+`EventSource`'s own reconnect handles the blip. Because every watched terminal holds a persistent SSE
+against that same connection budget, the UI must not open more streams than it shows — in particular
+it does not keep the inline terminal mounted while the maximised modal is open for the same session.
 
 ## Security
 

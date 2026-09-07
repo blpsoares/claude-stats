@@ -96,6 +96,31 @@ export const APPROVAL_SPECS: Record<HarnessId, ApprovalSpec | null> = {
  * because confirming the highlighted row on a dialog the user is being shown four answers to is
  * choosing for them.
  */
+/**
+ * The option that means "let me write my own", by the label the harness gives it.
+ *
+ * MEASURED by driving a live `AskUserQuestion` (claude 2.1.263, 2026-09-06): the option is drawn as
+ * `Type something.` and its label is the harness's own chrome — it stayed English under a
+ * Portuguese question, so it is a constant rather than a translation.
+ *
+ * WHY IT NEEDS ITS OWN NAME. Picking it with the digit does NOT submit: it moves the cursor onto
+ * the option and turns it into a FIELD. Every further digit is then typed INTO that field —
+ * reported with a screenshot where the option read `33333333333333333` after repeated clicks, and
+ * the card said `answered: 3333333333333333`. Reproduced exactly: sending `3` then the literal
+ * `capivara` turned the row into `3. capivara`, and `Enter` submitted it.
+ *
+ * Absent for every other harness, because nobody has driven one.
+ */
+const FREE_TEXT_LABEL: Partial<Record<HarnessId, RegExp>> = {
+  claude: /^type something\.?$/i,
+}
+
+/** Is this option the free-text one — the one that must be typed into rather than confirmed? */
+export function isFreeTextOption(harness: HarnessId | undefined, label: string): boolean {
+  const re = harness ? FREE_TEXT_LABEL[harness] : undefined
+  return re ? re.test(label.trim()) : false
+}
+
 export function choiceKey(spec: ApprovalSpec | undefined, n: number): string | null {
   if (!spec?.choice || !Number.isInteger(n) || n < 1) return null
   // Only single digits are typeable as one key. A dialog with more than nine options would need a

@@ -11,8 +11,9 @@ import { validateOwnerInput, verifyBootstrapToken, consumeBootstrapToken } from 
 import { listTeams, createTeam, createOrgTeam, getTeam, deleteTeam } from './teams'
 import { backfillTokenTeamIds, listMachines, mintMachineToken, mintMachine, machineUserFor, revokeToken, rotateToken, setMachineTeams, setMachineTeamsAndExclusions, setMachineLabel, setMachineOwners, detachTeamFromAllMachines, detachAccountFromAllMachines } from './team-tokens'
 import { getCentralConfig } from './central-config'
-import { packConnectToken } from '@agentistics/core'
+import { packConnectToken, machineSessionsAllowed, canGrantMachineSessions, machineSessionAccounts, resolveSessionGrant } from '@agentistics/core'
 import { backfillRepoTeamIds } from './team-repos'
+import { deleteUserPrefs } from './user-prefs-store'
 import {
   makePrincipalSessionCookieHeader,
   getPrincipal,
@@ -25,7 +26,7 @@ import { TEAM_SESSION_SECRET, TEAM_ORG } from './config'
 import { CAPS } from './exposure'
 import { generateSecret, otpauthUri, verifyTotp, generateRecoveryCodes, hashRecoveryCode, totpSkewSteps, TOTP_STEP_SECONDS } from './totp'
 import { getMfa, isMfaEnabled, enableMfa, disableMfa, consumeRecoveryCode } from './mfa-store'
-import { publicAccount, accountVisibleTo, canCreateAccount, canDeleteAccount, teamVisibleTo, canManageMachineTeam, canManageMachine, authorizeAccountPatch, mfaDisableAllowed } from './iam-view'
+import { publicAccount, accountVisibleTo, canCreateAccount, canDeleteAccount, teamVisibleTo, canManageMachineTeam, canManageMachine, machineOwnedBy, authorizeAccountPatch, mfaDisableAllowed } from './iam-view'
 import type { AccountDoc, Membership, Role } from './iam-types'
 import { normalizeEmail } from './iam-types'
 import { limiter, RULES, tooManyRequests } from './rate-limit'
@@ -863,6 +864,9 @@ export async function handleAccounts(req: Request, ip = 'unknown'): Promise<Resp
     // Detach the deleted account from any machines it owned — the machines survive, they just lose
     // the dead owner relation (no orphaned accountId left dangling).
     await detachAccountFromAllMachines(id).catch(() => {})
+    // Their UI preferences have no owner left. Best effort: a failure here must not fail a delete
+    // that already happened.
+    await deleteUserPrefs(id).catch(() => {})
     void writeAudit({ action: 'account.delete', ip, actorId: principal.accountId, targetId: id })
     return json({ ok: true })
   }
@@ -946,6 +950,14 @@ export async function handleMachines(req: Request, ip = 'unknown'): Promise<Resp
     // one key, which is exactly what this row-per-machine list must not do.
     const presence = await import('./team-presence').then(m => m.computeMachinePresence()).catch(() => ({} as Record<string, { online: boolean; latencyMs: number | null }>))
 
+    // What each machine has agreed this central may do with its sessions. Read only for the
+    // machine's OWN accounts (`machineOwnedBy`, deliberately narrower than the `canManageMachine`
+    // that decided visibility above): administering a machine belongs to whoever runs the
+    // instance, reaching into its live sessions belongs to its user. Every other caller — the
+    // instance owner included — sees the field absent, which is the same shape as a machine that
+    // has not spoken, so nothing downstream has to special-case being told nothing.
+    const { machineConsent } = await import('./machine-consent')
+
     const enriched = visible.map(m => {
       // Resolve every owner account the caller may actually see (no cross-scope name/email leak).
       const owners = m.accountIds
@@ -959,6 +971,16 @@ export async function handleMachines(req: Request, ip = 'unknown'): Promise<Resp
         ...(owners[0] ? { accountName: owners[0].name, accountEmail: owners[0].email } : {}),
         online: presence[m.id]?.online ?? false,
         latencyMs: presence[m.id]?.latencyMs ?? null,
+        // `null` (has not said) and `{sessions:false}` (says no) are DIFFERENT facts and both
+        // travel — one sends the owner to check whether the machine is running, the other to the
+        // switch. Absent means the caller may not ask.
+        // The SESSION gate, deliberately narrower than `machineOwnedBy`: linking an account is
+        // administration, reaching into the machine's terminals is a grant the owner makes on
+        // purpose. See `@agentistics/core/machineSessions`.
+        ...(machineSessionsAllowed(principal, m) ? { remoteConsent: machineConsent(m.id) } : {}),
+        // The grant list itself, so the owner's drawer can draw a switch per linked account. Only
+        // the person who may CHANGE it is told what it currently is.
+        ...(canGrantMachineSessions(principal, m) ? { sessionAccountIds: machineSessionAccounts(m) } : {}),
       }
     })
 
@@ -989,8 +1011,20 @@ export async function handleMachines(req: Request, ip = 'unknown'): Promise<Resp
       }
       // The machine's display identity follows its (first) owner account, so a re-assigned machine
       // stops showing the previous — possibly deleted — account's name.
+      // The SESSION grant, when the body carries one. Only the machine's OWNER may decide it —
+      // not an instance owner, who administers the installation and is deliberately not given the
+      // ability to hand out other people's terminals. A body that asks for it without the right is
+      // REFUSED rather than silently ignored: a switch that reports success and changes nothing is
+      // worse than one that says no.
+      let grant: string[] | undefined
+      if (Array.isArray(b.sessionAccountIds)) {
+        if (!canGrantMachineSessions(principal, machine)) {
+          return json({ error: 'only the machine owner may grant session management' }, 403)
+        }
+        grant = resolveSessionGrant(accountIds, b.sessionAccountIds.filter((x): x is string => typeof x === 'string'))
+      }
       const nextUser = accountIds[0] ? (await getAccount(accountIds[0]))?.name : undefined
-      await setMachineOwners(ownerId, accountIds, nextUser)
+      await setMachineOwners(ownerId, accountIds, nextUser, grant)
       // Tell the machine over the reverse WebSocket so a solo/member instance refreshes the
       // "Connected as" panel instead of showing the old account until its next handshake.
       try {

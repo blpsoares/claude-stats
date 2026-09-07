@@ -1,0 +1,11 @@
+# What does NOT go into the .vsix. The bundles in `dist/` are the extension; the TypeScript that
+# produced them is not, and shipping `src/` would ship the workspace's own package graph with it.
+src/**
+# The gallery icon's VECTOR source. It is kept in the repo so `media/icon.png` can be regenerated
+# (see README), and it is not an asset the extension loads at runtime.
+media/logo.svg
+tsconfig.json
+node_modules/**
+**/*.test.ts
+**/*.map
+.vscode/**

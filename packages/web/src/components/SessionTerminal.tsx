@@ -48,6 +48,13 @@ interface Props {
   /** Display multiplier from the zoom control. Scales the PIXELS only — never the column count — so
    *  a bigger font can never reflow the capture. Above the fit-to-box scale the box scrolls. */
   zoom?: number
+  /** Phase 2b — when true, the emulator accepts keyboard input (`disableStdin` off) and every
+   *  `xterm.onData` chunk is handed to `onInput`. NOTHING is echoed locally: the character appears
+   *  only when the session draws it back over the read channel, so a key that did not land is never
+   *  on screen. False (the default) keeps the Phase-1 read-only terminal exactly as it was. */
+  interactive?: boolean
+  /** Receives each raw `onData` chunk while `interactive`. Wired to the write channel by the parent. */
+  onInput?: (data: string) => void
 }
 
 const FONT_SIZE = 13
@@ -101,7 +108,7 @@ function naturalSize(term: Terminal): { w: number; h: number } | null {
   return null
 }
 
-export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: Props) {
+export default function SessionTerminal({ frame, theme, showCursor, zoom = 1, interactive = false, onInput }: Props) {
   // boxRef is the fixed viewport the parent sizes; scaleRef takes the SCALED footprint so the page
   // lays out correctly; hostRef holds the emulator at its natural cols×rows pixels and is the thing
   // the transform shrinks.
@@ -121,6 +128,10 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
   // a zoom change) always uses the current multiplier.
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
+  // The write handler, read through a ref so the once-created `onData` listener always calls the
+  // latest one without re-subscribing (and never captures a stale closure).
+  const onInputRef = useRef<Props['onInput']>(onInput)
+  onInputRef.current = onInput
 
   /**
    * Fit the natural cols×rows grid into the box by scaling the PIXELS — never by resizing the
@@ -235,6 +246,7 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
     let fallback: ReturnType<typeof setInterval> | null = null
     let ro: ResizeObserver | null = null
     let disposeRender: { dispose: () => void } | null = null
+    let disposeData: { dispose: () => void } | null = null
     const stopFallback = () => { if (fallback) { clearInterval(fallback); fallback = null } }
 
     // Gate the first paint on the renderer having actually MEASURED its cells — not merely on a
@@ -262,9 +274,10 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
       const term = new Terminal({
         fontFamily: FONT_FAMILY,
         fontSize: FONT_SIZE,
-        // Read-only: Phase 1 has no write channel, so the terminal accepts no input at all. A cursor
-        // is drawn for fidelity, but nothing typed here reaches the session.
-        disableStdin: true,
+        // Phase 2b — stdin is gated by `interactive`. Read-only rows (history, or a page with no
+        // write channel) keep it OFF and behave exactly as Phase 1. When on, keystrokes reach
+        // `onData` below; NOTHING is echoed here — the character comes back over the read channel.
+        disableStdin: !interactive,
         cursorBlink: false,
         cursorStyle: 'block',
         scrollback: 5000,
@@ -278,6 +291,9 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
       })
       termRef.current = term
       disposeRender = term.onRender(onRender)
+      // One input listener for the emulator's life; it forwards to the LATEST handler through the ref.
+      // xterm only fires `onData` while stdin is enabled, so a read-only terminal delivers nothing.
+      disposeData = term.onData((d: string) => onInputRef.current?.(d))
       term.open(host)
       fallback = setInterval(markReady, 60)
 
@@ -298,6 +314,7 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
       stopFallback()
       ro?.disconnect()
       disposeRender?.dispose()
+      disposeData?.dispose()
       readyRef.current = false
       geomRef.current = { cols: 0, rows: 0 }
       if (termRef.current) { termRef.current.dispose(); termRef.current = null }
@@ -328,6 +345,16 @@ export default function SessionTerminal({ frame, theme, showCursor, zoom = 1 }: 
     fit()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoom])
+
+  // Arming/disarming flips stdin on the already-created emulator (it is created once). When it turns
+  // interactive, focus it so the very first keystroke lands without a second click. Guarded so a
+  // version bump that renames the option degrades to "no input" rather than throwing.
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    try { term.options.disableStdin = !interactive } catch { /* option gone — stays read-only */ }
+    if (interactive) { try { term.focus() } catch { /* not ready yet; a click will focus it */ } }
+  }, [interactive])
 
   return (
     <div

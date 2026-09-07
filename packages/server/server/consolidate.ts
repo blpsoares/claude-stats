@@ -3,7 +3,7 @@ import { mkdir, writeFile, readFile } from 'fs/promises'
 import type { SessionMeta, HarnessId } from '@agentistics/core'
 import { CONSOLIDATED_DIR } from './config'
 import { createLimiter, safeReadDir, safeReadJson } from './utils'
-import { HARNESS_ORDER, normalizeSessionTimes } from '@agentistics/core'
+import { HARNESS_ORDER, migrateAgentMetrics, normalizeSessionTimes } from '@agentistics/core'
 
 const writeLimit = createLimiter(20)
 const readyDirs = new Set<string>()
@@ -65,6 +65,12 @@ export async function loadConsolidated(): Promise<Map<string, SessionMeta>> {
       // method on it threw. Repaired HERE, on the way in, because the file on disk is already
       // wrong and fixing the adapter cannot reach it. See normalizeSessionTimes.
       normalizeSessionTimes(s)
+      // …and for the same reason, a record written before `AgentInvocation.unmeasured` existed is
+      // read honestly rather than at face value. #373 stopped the READER publishing an async
+      // agent priced at nothing; it does not reach what is already in this store, where such a row
+      // has zeros and no mark and the new rule reads it as "measured, and it cost nothing".
+      // `migrateAgentMetrics` is idempotent and recovers the shape from the content.
+      if (s.agentMetrics) s.agentMetrics = migrateAgentMetrics(s.agentMetrics)
       // (harness, id) key; first writer wins per key
       const key = `${s.harness}:${s.session_id}`
       if (!map.has(key)) map.set(key, s)

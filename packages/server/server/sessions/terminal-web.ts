@@ -58,6 +58,17 @@ async function getHub(): Promise<TerminalHub> {
   return hub
 }
 
+/**
+ * A keystroke just landed — capture the screen now rather than at the next poll.
+ *
+ * Deliberately reads the module's `hub` directly instead of `getHub()`: if no hub exists, nobody is
+ * watching anything, and building one to nudge a session no surface is showing would start a
+ * capture loop for a screen nobody can see.
+ */
+export function nudgeTerminal(id: string): void {
+  hub?.nudge(id)
+}
+
 /** Scope check for the route, so a session outside this machine's fleet is a clean 404 rather than
  *  a 200 stream that immediately says `not-found`. The hub re-checks on subscribe regardless. */
 export async function terminalSessionExists(id: string): Promise<boolean> {

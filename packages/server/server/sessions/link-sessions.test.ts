@@ -94,4 +94,31 @@ describe('applySessionLabels', () => {
     applySessionLabels(sessions, linkManagedSessions([m], sessions))
     expect(sessions[0]!.user_label).toBeUndefined()
   })
+
+  it('a /rename made inside the harness wins when agentop never labelled the session', () => {
+    // The bug this whole change exists to fix: a rename typed inside Claude was invisible on the
+    // web dashboard because the old code only ever looked at `m.label`.
+    const sessions = [meta()]
+    const m = managed({ harnessName: 'principal do cockpit', label: undefined })
+    delete m.label
+    applySessionLabels(sessions, linkManagedSessions([m], sessions))
+    expect(sessions[0]!.user_label).toBe('principal do cockpit')
+  })
+
+  it('the NEWER rename wins when both sides named the session and both timestamps are known', () => {
+    const sessions = [meta()]
+    const m = managed({
+      label: 'old agentop name', labelSince: T0 + 1000,
+      harnessName: 'newer harness name', harnessNameSince: T0 + 2000,
+    })
+    applySessionLabels(sessions, linkManagedSessions([m], sessions))
+    expect(sessions[0]!.user_label).toBe('newer harness name')
+  })
+
+  it('falls back to the harness name when timestamps cannot be compared — same judgement call pickTitle makes for the CLI', () => {
+    const sessions = [meta()]
+    const m = managed({ label: 'agentop label', harnessName: 'harness name' })
+    applySessionLabels(sessions, linkManagedSessions([m], sessions))
+    expect(sessions[0]!.user_label).toBe('harness name')
+  })
 })
