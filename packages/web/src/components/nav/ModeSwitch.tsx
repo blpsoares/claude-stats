@@ -34,9 +34,20 @@ export interface ModeSwitchProps {
    * the same count the terminal cockpit puts in its header, and for the same reason.
    */
   attention?: number
+  /**
+   * Called after the switch navigates.
+   *
+   * It exists for the phone, where this control is rendered INSIDE the "More" sheet: switching
+   * workspace is a navigation, and a sheet still covering the page you just asked for is a sheet
+   * you have to dismiss before you can see what you chose. Every other control in that sheet
+   * already closes it; this one was the exception because it is a shared component that knows
+   * nothing about the sheet — so the sheet tells it what to do rather than the component guessing.
+   * The desktop aside passes nothing and nothing changes there.
+   */
+  onNavigate?: () => void
 }
 
-export function ModeSwitch({ lang, collapsed = false, attention = 0 }: ModeSwitchProps) {
+export function ModeSwitch({ lang, collapsed = false, attention = 0, onNavigate }: ModeSwitchProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const active = modeOfPath(location.pathname)
@@ -79,7 +90,7 @@ export function ModeSwitch({ lang, collapsed = false, attention = 0 }: ModeSwitc
             aria-selected={on}
             aria-label={collapsed ? label : undefined}
             title={collapsed ? label : undefined}
-            onClick={() => navigate(pathForMode(mode, back))}
+            onClick={() => { navigate(pathForMode(mode, back)); onNavigate?.() }}
             style={{
               flex: '1 1 0', minWidth: 0, boxSizing: 'border-box',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,

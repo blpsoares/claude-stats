@@ -881,7 +881,7 @@ function MobileBottomNav({
         {/* The workspace switch. The aside that hosts it on desktop is not rendered on mobile, and
             a mode a phone cannot reach is a mode a phone cannot leave. */}
         <div style={{ marginBottom: 12 }}>
-          <ModeSwitch lang={lang === 'pt' ? 'pt' : 'en'} attention={attention} />
+          <ModeSwitch lang={lang === 'pt' ? 'pt' : 'en'} attention={attention} onNavigate={closeSheet} />
         </div>
         <div style={{
           display: 'grid',
@@ -1539,9 +1539,14 @@ export default function AppLayout() {
     } catch {}
     return DEFAULT_CARD_ORDER
   })
-  // Mobile-only: lets the user minimize the sticky filter bar while scrolling so
-  // it doesn't eat the viewport on small screens. Expanded by default.
-  const [filtersCollapsed, setFiltersCollapsed] = useState(false)
+  // Mobile-only: lets the user minimize the sticky filter bar while scrolling so it doesn't eat the
+  // viewport on small screens. **MINIMIZED BY DEFAULT**, asked for directly — and it is the right
+  // default on a phone for the same reason the control exists at all: the bar is the widest piece
+  // of chrome on the screen, it sits in the STICKY header so it costs its height at every scroll
+  // position, and the thing under it is what the page is for. It opens on one tap, and the slim row
+  // that replaces it carries a count of the active filters, so nothing about the current scope is
+  // hidden by the collapse.
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem('agentistics-sidebar-collapsed') === '1' } catch { return false }
   })
@@ -2344,8 +2349,18 @@ export default function AppLayout() {
   // mobile from the "More" sheet, where every other header action lives.
   const [hardwareOpen, setHardwareOpen] = useState(false)
   // Collapsible "fleet stats" tab below the header (updated/members/machines/teams/projects/repos).
+  // **CLOSED BY DEFAULT ON A PHONE, OPEN ON THE DESKTOP** — one preference, two defaults. A stored
+  // choice wins on both (it is shared on purpose, so it survives a resize); this is only what
+  // happens when there is no choice yet. On a phone this strip is a second band of chrome under a
+  // header that already carries the filters, and its own summary row keeps the three headline
+  // figures visible while it is shut — so closing it costs nothing and gives back the viewport.
+  // Desktop has the room and keeps what it had.
   const [fleetOpen, setFleetOpen] = useState<boolean>(() => {
-    try { return localStorage.getItem('agentistics-fleet-open') !== '0' } catch { return true }
+    try {
+      const stored = localStorage.getItem('agentistics-fleet-open')
+      if (stored !== null) return stored !== '0'
+    } catch { /* private mode */ }
+    return !isMobile
   })
   const toggleFleet = () => setFleetOpen(v => { const n = !v; try { localStorage.setItem('agentistics-fleet-open', n ? '1' : '0') } catch { /* ignore */ } return n })
 
