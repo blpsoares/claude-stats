@@ -33,6 +33,28 @@ impossible. One control per selection: the excerpt menu and the message menu use
 browser, so returning to a session that had answered showed the last message you sent for several
 seconds before catching up. `visibilitychange` now forces a read.
 
+**Coming back to the CHAT is a different thing, and it has its own answer** (`lib/chatFeed.ts`). The
+poll used to live inside the view, so the cached conversation was only ever written while that view
+was mounted — and mounting is what returning to a session IS. The first frame was therefore exactly
+as old as the time spent elsewhere: leave mid-turn, come back two minutes later, see your own last
+message, and then watch every reply since arrive in one jump. Not a slow fetch — the read answers in
+66-143 ms on every session on this machine — but a first frame that was two minutes old.
+
+The read is now a shared feed that **keeps reading the conversation you just left**, and every half
+of that is bounded, because a background poll nobody asked for is how a machine quietly gets slower:
+only the two most recently left conversations, only while the document is visible, only for five
+minutes, at a tenth of the foreground cadence, and never for a session that has ENDED — its
+transcript is final. When the frame IS stale anyway (the tab was hidden, or you were away longer
+than that), the view SAYS it is updating rather than presenting old content as current, and waits
+400 ms first so the label is not itself a flicker.
+
+**Nothing in that feed may pin a conversation the cache has released.** `sessionScratch` caps itself
+at ten parsed conversations precisely because a conversation is hundreds of turns; a reference held
+in the feed would defeat that cap from outside. So the feed keeps the last answer's BYTES (to tell a
+changed read from an unchanged one, and hand back the same instance when nothing moved — React then
+renders nothing) and reads the object back from the cache, never holding one. Entries exist only for
+what is actually polled; what outlives them is a read STAMP, a number, in its own capped map.
+
 ---
 
 ## Answering a dialog
