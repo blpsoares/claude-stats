@@ -126,7 +126,7 @@ import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey } from './sessions/approval-spec'
+import { approvalFor, choiceKey, isFreeTextOption} from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
@@ -148,6 +148,7 @@ import {
   addSession, newSessionId, patchSession, readRegistry, removeSession, retireFallenSessions, touchSessions,
 } from './sessions/registry'
 import { createSessionsPoller, type SessionsPoller, type SessionSnapshot } from './sessions/sessions-host'
+import { modeSpecFor } from './sessions/mode-spec'
 import { isServerProcess, readServerSnapshot } from './sessions/shared-snapshot'
 import { conversationForProcess, forgetConversations, loadConversations } from './sessions/conversations'
 
@@ -2815,6 +2816,38 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * picker, a dialog, its own transcript view), which is not what "stop" means and is not undone
      * by pressing it again.
      */
+    /**
+     * Advance a session's harness to its next mode — see `mode-spec.ts`.
+     *
+     * The liveness is re-read from the BACKEND rather than from a poll snapshot, exactly as
+     * `interruptSession` and `answerSession` do: this sends a keystroke into a real terminal, and a
+     * five-second-old view of what is running is what would send it into a session that has ended.
+     *
+     * A harness with no probed spec is refused BY NAME. There is no safe fallback key: shift+tab
+     * means something else in most terminals, and sending it blind into an assistant is a keypress
+     * nobody asked for — the same refusal `choiceKey` makes for a numbered dialog.
+     */
+    async cycleSessionMode(id: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      const managed = (await readRegistry()).find(m => m.id === id)
+      if (!managed) return { ok: false, message: s.sessNoRegistryEntry }
+      const spec = modeSpecFor(managed.harness)
+      if (!spec) return { ok: false, message: s.sessModeUnknown(managed.harness) }
+
+      const live = (await backend.list().catch(() => [])).find(b => b.id === id)
+      if (!live?.alive) return { ok: false, message: s.sessNotRunning }
+
+      // The mode AFTER the key is whatever the harness moved to, and only the next poll can say —
+      // so the answer names the act rather than claiming an outcome it has not read.
+      return (await backend.sendKey(id, spec.cycleKey))
+        ? { ok: true, message: s.sessModeCycled }
+        : { ok: false, message: s.sessSendFailed(id) }
+    },
+
     async interruptSession(id: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
@@ -3183,7 +3216,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * a verified way to select the one they picked. A snapshot is up to five seconds old, and an
      * answer sent to a question that has changed underneath it is both wrong and silent.
      */
-    async answerSession(id: string, choice?: number): Promise<ActionResult> {
+    async answerSession(id: string, choice?: number, text?: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
       const blocked = await backend.unavailable()
@@ -3219,6 +3252,30 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         if (!picked) return { ok: false, message: s.sessChoiceGone }
         const key = choiceKey(spec, choice)
         if (!key) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+
+        /*
+         * THE FREE-TEXT OPTION IS NOT ANSWERED BY PICKING IT.
+         *
+         * Measured on a live dialog: the digit moves the cursor onto `Type something.` and turns
+         * the row into a FIELD — it does not submit. Every further digit is then typed INTO that
+         * field, which is how a card that kept being pressed produced `33333333333333333`.
+         *
+         * So the three steps the person would take by hand are taken here: the digit, the words,
+         * the return. Reproduced exactly before it was written — `3`, then the literal `capivara`,
+         * then Enter, and the session answered "você respondeu capivara".
+         *
+         * WITH NO TEXT it is refused rather than confirmed. Pressing Enter on an empty field reads
+         * as declining the question outright — measured, the session logged "User declined to
+         * answer questions" — which is a different answer from the one anybody meant to give.
+         */
+        if (isFreeTextOption(managed.harness, picked.label)) {
+          const answer = (text ?? '').trim()
+          if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
+          if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+          return (await backend.sendChoiceText(id, key, answer))
+            ? { ok: true, message: s.sessAnswered(answer) }
+            : { ok: false, message: s.sessSendFailed(id) }
+        }
         return (await backend.sendKey(id, key))
           ? { ok: true, message: s.sessAnswered(picked.label) }
           : { ok: false, message: s.sessSendFailed(id) }

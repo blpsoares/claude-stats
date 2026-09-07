@@ -117,7 +117,17 @@ export function dictationError(code: string, lang: 'en' | 'pt'): string {
  * Only a literal IPv4 host is rewritten. A hostname could be anything, and sending someone from
  * `dash.example.com` to `localhost` would be a guess about which machine they are sitting at.
  */
-export function insecureAlternative(href: string): string | null {
+export function insecureAlternative(href: string, onThisMachine = true): string | null {
+  // ON A PHONE THERE IS NO ALTERNATIVE, and offering one is worse than offering none: `localhost`
+  // there is the PHONE, which runs no agentop, so the row sent somebody to a page that cannot load
+  // — from the one device where this refusal fires most, since a phone reaches the dashboard by
+  // its LAN address and nothing else. Reported as "na versão mobile o mic n funciona tbm": true,
+  // and the browser will not give a microphone over plain http whatever this row says.
+  //
+  // The caller states whether the browser is on the machine serving the page. It cannot be
+  // inferred: `172.23.255.165` looks identical from the machine itself and from the phone beside
+  // it, and guessing wrong is what produced the dead link.
+  if (!onThisMachine) return null
   let url: URL
   try { url = new URL(href) } catch { return null }
   if (url.protocol !== 'http:') return null

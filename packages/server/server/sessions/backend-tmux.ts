@@ -251,6 +251,36 @@ export const tmuxBackend: SessionBackend = {
 
   sendText: sendTextTo,
 
+  /**
+   * Pick a numbered option, then WRITE INTO THE FIELD it opens, then submit.
+   *
+   * The three keystrokes a person would make by hand, with the wait between them that a person
+   * takes without noticing — and that wait is the whole reason this is one backend call rather than
+   * three from the caller.
+   *
+   * MEASURED. Driven by hand with a pause, the digit moved the cursor onto `Type something.`, the
+   * literal text turned the row into `3. capivara`, and Enter submitted it. Sent as one burst from
+   * the caller, the very same three steps produced the answer **`3jabuticaba`**: the dialog was
+   * still switching from list mode to field mode when the text arrived, so the digit landed in the
+   * field with it. The failure is invisible at the API — it answered `ok` — and only shows up in
+   * what the session recorded.
+   *
+   * So the text waits for the pane to MOVE, which is the same signal `sendTextTo` already uses to
+   * know a submit showed. A frame that never moves still gets the text: the budget is spent, not
+   * the answer, exactly as it is there.
+   */
+  async sendChoiceText(id: string, key: string, text: string): Promise<boolean> {
+    const before = await captureFrame(id)
+    if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return false
+    // The option turning into a field IS a frame change; waiting for it is waiting for the mode to
+    // switch. Bounded, because a pane that will not move must not hold the request open.
+    await paneMoved(id, before)
+    await sleep(SUBMIT_SETTLE_MS)
+    if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return false
+    await sleep(SUBMIT_SETTLE_MS)
+    return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+  },
+
   async sendTextRaw(id: string, text: string) {
     // Literal only, NO Enter — the first half of `sendTextTo`. This is what the browser's key-by-key
     // channel needs: a character appears without submitting a turn.

@@ -28,9 +28,10 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, Square, X } from 'lucide-react'
+import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
+import { modeStyle } from '../../lib/modeStyle'
 import { ApprovalCard } from './ApprovalCard'
 import { ChatBubble, type ChatTurn } from './ChatBubble'
 import { WorkingNote } from './WorkingNote'
@@ -616,7 +617,26 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     nudgeChat.current = () => { void poll() }
     void poll()
     const t = setInterval(poll, CHAT_POLL_MS)
-    return () => { alive = false; nudgeChat.current = () => {}; clearInterval(t) }
+    /*
+     * A BACKGROUND TAB DOES NOT POLL, and nothing here noticed it coming back.
+     *
+     * Chrome throttles `setInterval` in a hidden tab to roughly once a minute, so leaving the
+     * session to do something else and returning meant the conversation on screen was as old as the
+     * last tick — the cached turns ending at your own last message — until the throttled interval
+     * happened to fire. Reported as "fica um tempo na minha última mensagem e depois de uns 5
+     * segundos aparece as mensagens". Measured against the server, which is not the slow part: the
+     * chat read answers in 100-220ms on every session on this machine.
+     *
+     * Coming back into view is the exact moment somebody wants what they missed, so it asks then.
+     */
+    const onVisible = () => { if (document.visibilityState === 'visible') void poll() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      alive = false
+      nudgeChat.current = () => {}
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [session.id, lang])
 
   /**
@@ -1028,7 +1048,15 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px' }}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px',
+          // A flick that reaches the top of the conversation stops HERE. Without it the
+          // gesture chains to the document, which has nothing to scroll and rubber-bands the
+          // whole page instead — reported as "ele roda a página inteira e não deixa scrollar",
+          // with the header dragged out from under the status bar. The document lock in
+          // App.tsx is the other half; this is the half that keeps the gesture where it began.
+          overscrollBehavior: 'contain',
+        }}
       >
         <div style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
           {loading ? (
@@ -1515,7 +1543,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (skillPickerOpen && slashFlat.length > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
                         e.preventDefault()
                         const picked = slashFlat[Math.min(slashIndex, slashFlat.length - 1)]
                         if (picked) insertSkill(picked.name)
@@ -1525,7 +1553,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // Escape closes the picker BEFORE it reaches the stop verb: a person dismissing
                     // a list they opened by accident must not interrupt the session's turn.
                     if (e.key === 'Escape' && skillPickerOpen) { e.preventDefault(); setSlashDismissed(true); return }
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+                    // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
+                    // convention every messaging app on a touch keyboard follows: the return key is
+                    // the only way to write a second line there, because `shift+enter` needs a
+                    // shift key the software keyboard does not have. Sending is the ✈ button, which
+                    // is a 44px target sitting right beside the field. On a hardware keyboard the
+                    // rule is the opposite one and unchanged — enter sends, shift+enter breaks —
+                    // and the picker above follows the same split for the same reason.
+                    if (e.key === 'Enter' && !e.shiftKey && !isMobile) { e.preventDefault(); void send() }
                     // The composer's own "esc": stops the CURRENT turn without touching the draft
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
@@ -1640,6 +1675,49 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     whether or not the stop is there — a margin on send alone would push the more
                     button off to the right on its own the moment a turn ended. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                {/* THE HARNESS MODE, and the one control that changes it.
+                    Asked for: "nao consigo alternar entre os modos que os harnesses possuem (auto
+                    mode, plan mode etc)", to sit left of the recent-message button.
+
+                    IT CYCLES, and the label says which mode it is IN — not which one it would move
+                    to. The harness offers one keystroke and no way to jump to a named mode, so a
+                    menu of four would reach three of them by luck; `mode-spec.ts` records the key
+                    and the order, driven against a live session.
+
+                    ABSENT when the row carries no mode: a harness nobody has probed, or a frame
+                    whose footer has not been read. A chip naming the wrong mode is worse than no
+                    chip — it is read at a glance and believed. */}
+                {row?.mode && (
+                  <button
+                    onClick={() => void act({ id: session.id, action: 'cycleMode' })
+                      .then(out => setNotice(out.message))}
+                    disabled={!canPrompt}
+                    aria-label={pt ? `Modo: ${row.mode.label}. Trocar para o próximo.` : `Mode: ${row.mode.label}. Switch to the next.`}
+                    title={pt
+                      ? `${row.mode.label} — clique para ir ao próximo modo`
+                      : `${row.mode.label} — click to move to the next mode`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5, height: 30, padding: '0 9px',
+                      borderRadius: 9, flexShrink: 0, maxWidth: 150,
+                      // The colour IS the mode — see `modeStyle.ts`. Ordered by how much the
+                      // session proceeds without asking, and never the fault colour: `auto` is how
+                      // this product is normally used, and a red ordinary state is the cry-wolf
+                      // this codebase avoids everywhere else.
+                      border: `1px solid ${modeStyle(row.mode.id).border}`,
+                      background: modeStyle(row.mode.id).bg,
+                      color: modeStyle(row.mode.id).fg,
+                      fontFamily: 'inherit', fontSize: 11.5,
+                      cursor: canPrompt ? 'pointer' : 'default',
+                      opacity: canPrompt ? 1 : 0.55,
+                    }}
+                  >
+                    <SlidersHorizontal size={13} style={{ flexShrink: 0 }} />
+                    <span style={{
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{row.mode.label}</span>
+                  </button>
+                )}
+
                 {/* THE LAST MESSAGE YOU SENT. ABSENT until there is one — `lastSent` is null on a
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting
@@ -1769,19 +1847,39 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                           `localhost` would be a guess about which machine they are sitting at, so
                           where there is no answer this row is simply absent. */}
                       {dictation.state === 'insecure' && (() => {
-                        const alt = typeof window === 'undefined' ? null : insecureAlternative(window.location.href)
-                        return alt === null ? null : (
-                          <a
-                            href={alt}
-                            style={{
-                              display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
-                              lineHeight: 1.4, color: 'var(--anthropic-orange)',
-                              overflowWrap: 'anywhere', textDecoration: 'none',
-                            }}
-                          >
-                            {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
-                          </a>
-                        )
+                        // `!isMobile` is the "am I sitting at the machine serving this page" the
+                        // rewrite needs. A phone reaches the dashboard by its LAN address and
+                        // nothing else, so `localhost` there is the PHONE — a link to a page that
+                        // cannot load, offered on the one device where this refusal always fires.
+                        const alt = typeof window === 'undefined'
+                          ? null
+                          : insecureAlternative(window.location.href, !isMobile)
+                        return alt === null
+                          ? (
+                            // Said rather than left blank: "the microphone needs HTTPS" with no
+                            // follow-up reads as a bug in this product, and it is a rule of the
+                            // browser that nothing here can lift.
+                            <p style={{
+                              margin: 0, padding: '4px 8px 8px 30px', fontSize: 10.5,
+                              lineHeight: 1.45, color: 'var(--text-tertiary)',
+                            }}>
+                              {pt
+                                ? 'Num celular não há alternativa: o navegador só libera o microfone em HTTPS, e este painel está em HTTP na rede local. Dite no computador ou sirva o painel por HTTPS.'
+                                : 'On a phone there is no alternative: the browser only allows the microphone over HTTPS, and this dashboard is on plain HTTP over the local network. Dictate on the computer, or serve it over HTTPS.'}
+                            </p>
+                          )
+                          : (
+                            <a
+                              href={alt}
+                              style={{
+                                display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
+                                lineHeight: 1.4, color: 'var(--anthropic-orange)',
+                                overflowWrap: 'anywhere', textDecoration: 'none',
+                              }}
+                            >
+                              {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
+                            </a>
+                          )
                       })()}
 
                       {/* MODEL. Same treatment: where it cannot work, the menu says why instead of

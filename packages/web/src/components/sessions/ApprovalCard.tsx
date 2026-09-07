@@ -62,12 +62,20 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
    */
   const alreadyAnswered = answeredShape !== null && answeredShape === shape
 
-  async function answer(choice?: number) {
+  /** The free-text option's draft, while it is open. `null` means it is not open. */
+  const [writing, setWriting] = useState<{ number: number; text: string } | null>(null)
+
+  async function answer(choice?: number, text?: string) {
     setBusy(choice ?? 'confirm')
-    const out = await act({ id: row.id, action: 'approve', ...(choice !== undefined ? { choice } : {}) })
+    const out = await act({
+      id: row.id,
+      action: 'approve',
+      ...(choice !== undefined ? { choice } : {}),
+      ...(text !== undefined ? { text } : {}),
+    })
     setBusy(null)
     setNotice(out.message)
-    if (out.ok) setAnsweredShape(shape)
+    if (out.ok) { setAnsweredShape(shape); setWriting(null) }
   }
 
   return (
@@ -112,7 +120,13 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
             {options.map(o => (
               <button
                 key={o.number}
-                onClick={() => void answer(o.number)}
+                onClick={() => {
+                  // THE FREE-TEXT OPTION OPENS A FIELD instead of answering. Picking it with the
+                  // digit does not submit — it turns the row into one — and every further press
+                  // then types that digit into it, which is how `33333333333333333` happened.
+                  if (o.freeText) { setWriting({ number: o.number, text: '' }); return }
+                  void answer(o.number)
+                }}
                 disabled={busy !== null || alreadyAnswered}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
@@ -142,6 +156,45 @@ export function ApprovalCard({ row, lang, act }: ApprovalCardProps) {
                 )}
               </button>
             ))}
+
+            {/* THE FIELD. Shown under the options, so the question and the answers stay readable
+                while it is being written. `Enter` sends because that is what it does in the session
+                itself; `Escape` closes it without answering, which the dialog cannot offer once a
+                digit has been sent. */}
+            {writing && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                <input
+                  autoFocus
+                  value={writing.text}
+                  onChange={e => setWriting({ ...writing, text: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { e.preventDefault(); setWriting(null); return }
+                    if (e.key === 'Enter' && writing.text.trim() !== '') {
+                      e.preventDefault(); void answer(writing.number, writing.text.trim())
+                    }
+                  }}
+                  placeholder={pt ? 'Escreva a sua resposta…' : 'Write your own answer…'}
+                  style={{
+                    flex: 1, minWidth: 0, height: 38, padding: '0 12px', borderRadius: 10,
+                    border: '1px solid var(--anthropic-orange)', background: 'var(--bg-card)',
+                    color: 'var(--text-primary)', fontFamily: 'inherit',
+                    // 16px on a phone or iOS Safari zooms the viewport and breaks the sticky header.
+                    fontSize: 16,
+                  }}
+                />
+                <button
+                  onClick={() => void answer(writing.number, writing.text.trim())}
+                  disabled={busy !== null || writing.text.trim() === ''}
+                  style={{
+                    padding: '0 14px', height: 38, borderRadius: 10, border: 'none', flexShrink: 0,
+                    background: 'var(--anthropic-orange)', color: '#fff',
+                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+                    cursor: writing.text.trim() === '' ? 'default' : 'pointer',
+                    opacity: writing.text.trim() === '' ? 0.5 : 1,
+                  }}
+                >{pt ? 'Responder' : 'Answer'}</button>
+              </div>
+            )}
           </div>
         )
       ) : approve?.enabled ? (

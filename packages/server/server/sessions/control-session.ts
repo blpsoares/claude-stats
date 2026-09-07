@@ -16,7 +16,7 @@
 import { contextFraction, fmt, fmtCost } from '@agentistics/core'
 import type { ControlSession, SessionState } from '@agentistics/tui/control'
 import type { CliStrings } from '../cli-i18n'
-import { approvalFor } from './approval-spec'
+import { approvalFor, isFreeTextOption } from './approval-spec'
 import { needsChoice } from './dialog-choice'
 import { pickTitle } from './harness-session-file'
 import type { ResolvedRepoFacts } from './repo-facts'
@@ -109,6 +109,7 @@ export function toControlSession(
     project,
     ...(v.model ? { model: v.model } : {}),
     ...(v.effort ? { effort: v.effort } : {}),
+    ...(v.mode ? { mode: v.mode } : {}),
     ...(v.note ? { note: v.note } : {}),
     state,
     // The mark rides ON the state word rather than in a cell of its own, so it reaches every
@@ -164,7 +165,16 @@ export function toControlSession(
     ...(v.lastLines?.length ? { lastLines: v.lastLines } : {}),
     ...(v.chatTurns?.length ? { chatTurns: v.chatTurns } : {}),
     ...(v.approvalLines?.length ? { approvalLines: v.approvalLines } : {}),
-    ...(v.dialogOptions?.length ? { dialogOptions: v.dialogOptions } : {}),
+    // Each option carries whether it is the FREE-TEXT one, decided HERE — the browser must not
+    // re-derive it from a label, or the marker and the action would be two rules that can disagree
+    // about which option is a field. See `isFreeTextOption`.
+    ...(v.dialogOptions?.length
+      ? {
+          dialogOptions: v.dialogOptions.map(o => (isFreeTextOption(v.harness, o.label)
+            ? { ...o, freeText: true }
+            : o)),
+        }
+      : {}),
     // Picking one of them needs a VERIFIED way to select by number on this harness. Only claude has
     // one; everywhere else the options are shown and the answer is a refusal that names why, because
     // falling back to the confirm key would choose for the user among things that differ.

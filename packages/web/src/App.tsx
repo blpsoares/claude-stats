@@ -22,6 +22,7 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
+import { useVisualViewport } from './hooks/useVisualViewport'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -1563,6 +1564,60 @@ export default function AppLayout() {
   // Only the sessions workspace offers the handle, but whatever it is dragged to applies to both.
   const liveAsideWidth = asideWidth
   const inSessionsWorkspace = modeOfPath(location.pathname) === 'sessions'
+
+  /**
+   * THE PHONE'S SESSIONS WORKSPACE, AND THE TWO WAYS ITS DOCUMENT MOVED WHEN IT SHOULD NOT HAVE.
+   *
+   * Reported together: "quando eu tento scrollar as vezes no mobile, ele roda a página inteira e
+   * não deixa scrollar" and "quando o input sobe junto com o teclado, ao sair ele fica numa altura
+   * diferente do que estava antes". The workspace is a fixed-height column — the conversation, the
+   * list and the aside each scroll inside themselves — so a flick that runs off the end of one of
+   * them has nowhere to chain but the document, which bounces the whole page; and iOS scrolls the
+   * page for the caret and does not always undo it.
+   *
+   * BOTH FIXES ARE DELIBERATELY NON-STRUCTURAL. `overscroll-behavior: none` on the document
+   * (`html.ag-viewport-locked`, index.css) is paint-only, and the effect below simply puts the
+   * scroll back when the keyboard closes. iOS keeps doing the caret scroll, because the composer
+   * riding up with the keyboard is the half that WORKED.
+   *
+   * Preventing the scroll structurally — a fixed body, the usual recipe — was tried and reverted:
+   * it moves the initial containing block onto the small viewport, so every viewport unit and every
+   * `position: fixed` descendant measures against a different box, and three position reports came
+   * out of it in an hour. A layout that is correct must not be re-anchored to fix a scroll.
+   *
+   * Every other page keeps the window as its scroller, and nothing here changes that.
+   */
+  const lockViewport = isMobile && inSessionsWorkspace
+  const viewport = useVisualViewport(lockViewport)
+  useEffect(() => {
+    if (!lockViewport) return
+    const root = document.documentElement
+    root.classList.add('ag-viewport-locked')
+    window.scrollTo(0, 0)
+    return () => { root.classList.remove('ag-viewport-locked') }
+  }, [lockViewport])
+  /**
+   * THE KEYBOARD CLOSED — PUT THE SCROLL BACK.
+   *
+   * iOS scrolls the PAGE to bring the caret into view and is supposed to undo it on dismissal.
+   * Routinely it does not, and the document is then left permanently scrolled: the composer and the
+   * fixed bottom bar both come back a little higher than they went, which is the second half of the
+   * report. This is the whole fix for it, and it is deliberately the smallest one — iOS keeps doing
+   * the scroll, because the composer riding up with the keyboard is the part that WORKED.
+   *
+   * Preventing the scroll instead (a fixed body) was tried and reverted: it moves the initial
+   * containing block onto the small viewport, and every viewport unit and `position: fixed`
+   * descendant in the tree then measures against a different box. Three position reports came out
+   * of that. A layout that is correct must not be re-anchored to fix a scroll.
+   */
+  const keyboardUp = viewport.keyboard
+  useEffect(() => {
+    if (!lockViewport || keyboardUp) return
+    // Two frames: WebKit settles the visual viewport after the resize event, and a scroll written
+    // into that settling is undone by it.
+    const id = window.setTimeout(() => window.scrollTo(0, 0), 120)
+    return () => window.clearTimeout(id)
+  }, [lockViewport, keyboardUp])
 
   /**
    * The fixed strip is ONE row again.
@@ -3208,7 +3263,12 @@ export default function AppLayout() {
   // floating button. Two slots host them: the phone's sticky <header> below, and the desktop top
   // strip's trailing region. `stripTrailing` IS that region, so asking it is exact; a second copy
   // of its conditions would be a second place for the two to disagree.
-  const headerHostsMagnifier = (!inSessionsWorkspace && isMobile) || stripTrailing !== null
+  // The sessions workspace hosts it too, on a phone: `SessionsPage`'s own bar draws it (see its
+  // `magnifierButton`). Without this the layer ALSO drew its floating fallback at `top: 50%`, over
+  // the middle of the conversation — reported with a screenshot of it sitting on a paragraph. The
+  // condition names the three slots that exist; a fourth must be added here, or the floating button
+  // reappears on top of whatever that screen is showing.
+  const headerHostsMagnifier = isMobile || stripTrailing !== null
 
   return (
     <div style={{
@@ -3278,6 +3338,19 @@ export default function AppLayout() {
       // holds. What changes is that this div's border box now reaches the real bottom of the
       // screen, so a fixed descendant has nothing left to resolve against wrongly. The nav then
       // overlays its own padding, which is what the padding is for.
+      // THE BOX REACHES THE FLOOR; THE KEYBOARD IS PADDING. This briefly took its height from
+      // `visualViewport.height` instead, and that is the SAME MISTAKE the long note above records
+      // for `calc(100dvh - nav)`, made again from a different direction: a shorter box ends above
+      // the bottom of the screen, and because `#root` clips (see below), a `position: fixed`
+      // descendant anchors to THAT edge rather than the window's — so the bottom bar and the
+      // composer came up already floating, before any keyboard. The visual viewport is also the
+      // one measurement that is not always trustworthy at rest: Safari's collapsing toolbars and a
+      // non-zero `offsetTop` both make it shorter than the screen with nothing covering anything.
+      //
+      // `100dvh` + `padding-bottom: <keyboard>` gives the flex algorithm the same definite content
+      // height the shorter box did — `box-sizing: border-box` is global — while the border box
+      // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
+      // pixel it left, and nothing anchors to an edge that is not the screen's.
       height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
@@ -3722,7 +3795,8 @@ export default function AppLayout() {
           competing with the thing it wraps, on a screen only 664px tall to begin with — the nav
           was costing 56 of them plus the safe-area inset. It costs nothing to leave: the panel has
           its own back arrow in the top bar, which is the way out and the only one a reader needs
-          while they are in it. The root's height drops the matching subtraction — see its note. */}
+          while they are in it. The root's height drops the matching subtraction — see its note.
+ */}
       {isMobile && !sessionOpen && (
         <MobileBottomNav
           lang={lang}

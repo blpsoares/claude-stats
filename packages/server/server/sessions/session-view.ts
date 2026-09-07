@@ -95,6 +95,13 @@ export interface SessionView {
    */
   approvalLines?: string[]
   /**
+   * The MODE the harness is in — its own word for it, read off the footer. See `mode-spec.ts`.
+   *
+   * Absent for a harness nobody has probed and for a frame that has not drawn its footer yet. A
+   * chip naming the wrong mode is worse than no chip, so absence is the honest answer for both.
+   */
+  mode?: { id: string; label: string }
+  /**
    * The OPTIONS that dialog is offering, when they could be read with confidence.
    *
    * Present only alongside `approvalLines`, and empty rather than invented when the screen cannot be
@@ -429,6 +436,8 @@ export function buildSessionViews(o: {
   chatTails?: ReadonlyMap<string, ChatTurn[]>
   /** The DIALOG a blocked session is showing, keyed by session id — see `SessionView.approvalLines`. */
   approvals?: ReadonlyMap<string, string[]>
+  /** The harness MODE each running session is in, keyed by row id — see `mode-spec.ts`. */
+  modes?: ReadonlyMap<string, { id: string; label: string }>
   /** The options that dialog offers, keyed by session id. Absent where they could not be read. */
   dialogOptions?: ReadonlyMap<string, DialogOption[]>
   /** The ids `crash-group.ts` decided fell together. A set, because the question is about a set. */
@@ -572,6 +581,10 @@ export function buildSessionViews(o: {
       ...(activity === 'waiting-approval' && (o.dialogOptions?.get(r.id)?.length ?? 0) > 0
         ? { dialogOptions: o.dialogOptions!.get(r.id)! }
         : {}),
+      // Unlike the dialog above, the mode is NOT gated on an activity: a session is in a mode while
+      // it works, while it waits, and while it is asking. It is gated on the frame having named
+      // one, which `modeOf` already answers.
+      ...(o.modes?.get(r.id) ? { mode: o.modes.get(r.id)! } : {}),
       ...(o.fell?.has(r.id) ? { fell: true as const } : {}),
       ...(r.managed?.label ? { label: r.managed.label } : {}),
       ...(r.managed?.labelSince !== undefined ? { labelSince: r.managed.labelSince } : {}),

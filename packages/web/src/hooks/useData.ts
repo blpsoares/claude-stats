@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { activeInDays, daysBetween, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
+import { activeInDays, activeInWindow, daysBetween, MAX_RANGE_DAYS, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -1201,6 +1201,25 @@ export function computeDerivedStats(
      */
     const rangeDays = new Set(daysBetween(start.getTime(), end.getTime()))
     /**
+     * IS THE DAY SET AN ANSWER AT ALL?
+     *
+     * `daysBetween` STOPS at `MAX_RANGE_DAYS` instead of refusing, and `all` starts at the EPOCH —
+     * so the set was `1970-01-01 … 1971-02-04`, and every session carrying a per-day split was
+     * tested for membership in a window it could not possibly fall in. They were all dropped.
+     *
+     * Measured on a real machine before the fix: with the default `All` range and any
+     * session-scoped filter on (a project, a repo, a tag, a model, a harness, `active only`), 397
+     * of 662 sessions vanished from `filteredSessions` — silently, because the ones that survived
+     * are exactly the older records that have no `daily` to be judged by. It surfaced as the
+     * sessions workspace's Activity calendar rendering "no activity in the chosen window" over a
+     * fleet that was plainly running, which is how a wrong day rule always shows up: not as an
+     * error, as an emptiness.
+     *
+     * A set at the cap is treated as UNUSABLE rather than complete. It may be either, and nothing
+     * in it says which; the window test below is correct for both, so there is no reason to guess.
+     */
+    const daySetUsable = rangeDays.size > 0 && rangeDays.size < MAX_RANGE_DAYS
+    /**
      * Is this session IN the range?
      *
      * A session that records its per-day split answers exactly — it is in the range if it did
@@ -1208,11 +1227,16 @@ export function computeDerivedStats(
      * under "today". One that does not is filed on the day it STARTED, the answer this product has
      * always given: falling back to the whole session would put its lifetime totals into every day
      * it touches, measured at 86x on a real machine.
+     *
+     * Over a range too long to enumerate, the same question is asked of the SESSION's own days
+     * (`activeInWindow`) — a handful of keys whatever the range — rather than of the range's.
      */
     const inDateRange = (s: { start_time?: string; daily?: Record<string, DayUsage> }) =>
-      s.daily
-        ? activeInDays(s, rangeDays)
-        : isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
+      daySetUsable
+        ? (s.daily
+            ? activeInDays(s, rangeDays)
+            : isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end))
+        : activeInWindow(s, start.getTime(), end.getTime())
 
     // Filter sessions (date + projects + model + active-only)
     const selectedSessions = harnessSessions.filter(s => {

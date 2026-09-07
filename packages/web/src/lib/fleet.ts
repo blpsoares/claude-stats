@@ -29,6 +29,8 @@ export type FleetActionId =
   | 'openTask' | 'finishTask'
   /** Stop the current turn without ending the session. See the server's own union. */
   | 'interrupt'
+  /** Advance the harness to its NEXT mode. It cycles; there is no key that picks one. */
+  | 'cycleMode'
 
 /** The verbs this page can PERFORM. The rest are shown, dimmed, with their reason. */
 export const PERFORMABLE: ReadonlySet<FleetActionId> = new Set<FleetActionId>([
@@ -63,9 +65,12 @@ export interface FleetRow {
   model?: string
   /** The reasoning effort this session was started with. Absent = the harness's own default. */
   effort?: string
+  /** The harness mode, in its own words. Absent where nobody has driven that harness's modes. */
+  mode?: { id: string; label: string }
   conversationId?: string
   approvalLines?: string[]
-  dialogOptions?: { number: number; label: string; selected?: boolean }[]
+  /** `freeText` marks the option that is a FIELD — picking it opens one. See `approval-spec.ts`. */
+  dialogOptions?: { number: number; label: string; selected?: boolean; freeText?: boolean }[]
   approvalBlind?: string
   approveBlind?: string
   chooseBlind?: string
@@ -302,6 +307,9 @@ async function pollOnce(): Promise<void> {
   }
 }
 
+/** The visibility listener, held beside the timer so the two are added and removed together. */
+let onVisible: (() => void) | null = null
+
 function ensurePolling(lang: 'pt' | 'en'): void {
   if (lang !== pollLang) {
     // The payload is localized by the server, so a language change invalidates the snapshot's
@@ -312,12 +320,32 @@ function ensurePolling(lang: 'pt' | 'en'): void {
   if (timer !== null) return
   void pollOnce()
   timer = setInterval(() => { void pollOnce() }, FLEET_POLL_MS)
+  /*
+   * A HIDDEN TAB IS NOT POLLING, whatever this interval says.
+   *
+   * Chrome throttles `setInterval` in a background tab to roughly once a minute, so a fleet left
+   * behind while you do something else is as old as the last throttled tick — and coming back
+   * showed states from a minute ago until the next one happened to fire. The same throttle is what
+   * made the conversation look stuck on the reader's own last message.
+   *
+   * Refcounted with the timer so the listener is added once and removed with it: this poll is
+   * module-level and shared by every mounted consumer, and a listener per consumer would fire N
+   * requests on every return to the tab.
+   */
+  if (onVisible === null) {
+    onVisible = () => { if (document.visibilityState === 'visible') void pollOnce() }
+    document.addEventListener('visibilitychange', onVisible)
+  }
 }
 
 function stopPolling(): void {
   if (timer === null) return
   clearInterval(timer)
   timer = null
+  if (onVisible !== null) {
+    document.removeEventListener('visibilitychange', onVisible)
+    onVisible = null
+  }
 }
 
 export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {

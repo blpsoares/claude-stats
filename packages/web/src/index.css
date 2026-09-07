@@ -212,6 +212,30 @@ html, body {
      which is what actually sits over it. Padding #root too double-counted the inset. */
 }
 
+/* ── The sessions workspace: no page bounce, no stranded scroll ──────────────
+   Two reports, one cause: on a phone that workspace is a fixed-height column whose conversation,
+   list and aside each scroll inside themselves, so it has nothing to scroll — yet the DOCUMENT
+   moved, two ways. A flick that ran off the end of an inner scroller chained out and rubber-banded
+   the whole page (the header dragged out from under the status bar), and iOS scrolled the page to
+   reveal the caret and did not always undo it, leaving the composer and the bar a little higher
+   than they went.
+
+   `overscroll-behavior: none` answers the first and is PAINT-ONLY — it changes no box, no
+   containing block and no unit. That distinction is the whole lesson here: this rule was first
+   written as `position: fixed` on the body, which is the usual iOS scroll-lock recipe and which
+   ALSO moves the initial containing block onto the small viewport. Three separate position reports
+   came out of it — a bar floating off the floor, a composer below the visible edge — because every
+   viewport unit and every `position: fixed` descendant in the tree then measured against a
+   different box than before. A layout that was correct must not be re-anchored to fix a scroll.
+
+   The second is answered in App.tsx, by putting the scroll back where it was when the keyboard
+   closes. iOS is left free to scroll the page for the caret in the first place — that is the part
+   that WORKED, and the composer riding up with the keyboard is it. */
+html.ag-viewport-locked,
+html.ag-viewport-locked > body {
+  overscroll-behavior: none;
+}
+
 /* Bottom nav safe-area padding.
    `box-sizing: border-box` is global, so this padding EATS the nav's height instead of adding to
    it: installed as a PWA (standalone, no browser toolbar) the inset is ~34-48px, which crushed a

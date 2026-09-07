@@ -6,6 +6,12 @@
  * than a split because the panel is already the narrow column: a list and a document sharing 440px
  * would give the document less room than the conversation it was opened from.
  *
+ * EVERY SCROLLING REGION HERE IS `overscroll-behavior: contain`. On a phone this panel is a
+ * full-screen layer over a workspace whose document is deliberately locked (`lib/mobileViewport.ts`),
+ * so a flick that runs off the end of a list must stop where it began rather than chain outward and
+ * drag the layer under it. It was reported the other way round — "ele roda a página inteira e não
+ * deixa scrollar" — with the whole page rubber-banding out from under the header.
+ *
  * IT NEVER CHANGES WHAT IT SHOWS ON ITS OWN. The list updates with each poll of the conversation —
  * that is the "in real time" half — but the OPEN FILE changes only on a click. There is deliberately
  * no effect here that selects an artifact from incoming data: a panel that swaps the document you
@@ -930,7 +936,7 @@ export function ArtifactsAside({
         : 'This conversation has not delegated anything to a subagent.'} />
     }
     return (
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
         {/* A PAGE SAYS IT IS A PAGE. Newest first, by each agent's last activity. */}
         {st.total > st.rows.length && (
           <p style={{ margin: '0 8px 6px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
@@ -1021,7 +1027,7 @@ export function ArtifactsAside({
         : 'Nothing has happened in this conversation yet.'} />
     }
     return (
-      <div ref={feedRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+      <div ref={feedRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
         {/* THE DIRECTION, said rather than inferred. A reader arriving at a scrolled list cannot
             tell which end is the newest, and asked exactly that. It sits at the TOP because that is
             the end somebody scrolls away from — the bottom explains itself by being where the view
@@ -1070,7 +1076,7 @@ export function ArtifactsAside({
     const liveOnes = list.filter(a => a.live)
     const pastOnes = list.filter(a => !a.live)
     return (
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
         {liveOnes.length > 0 && (
           <Band label={pt ? 'agora' : 'now'}>
             {liveOnes.map(a => <Row key={a.path} a={a} pt={pt} fact={facts?.get(a.path)} onOpen={() => setOpen(a)} />)}
@@ -1145,7 +1151,7 @@ export function ArtifactsAside({
               <Sparkles size={12} />{pt ? 'Usar esta skill' : 'Use this skill'}
             </button>
           </div>
-          <div style={{ padding: '10px 12px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+          <div style={{ padding: '10px 12px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
             {sk?.description && (
               <p style={{ margin: '0 0 10px', fontSize: 11.5, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
                 {sk.description}
@@ -1253,7 +1259,7 @@ export function ArtifactsAside({
             />
           </div>
         )}
-        <div style={{ padding: '0 12px 10px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+        <div style={{ padding: '0 12px 10px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
           {skills === null ? (
             <Note text={pt ? 'Lendo as skills desta sessão…' : 'Reading this session’s skills…'} />
           ) : skills.length === 0 ? (
@@ -1337,7 +1343,7 @@ export function ArtifactsAside({
   }
 
   const prsBody = () => (
-    <div style={{ padding: '10px 12px', overflowY: 'auto', minHeight: 0, flex: 1 }}>
+    <div style={{ padding: '10px 12px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
       {prs === null ? (
         <Note icon={<Loader size={13} className="ag-working-spin" />}
           text={pt ? 'Lendo os pull requests…' : 'Reading the pull requests…'} />
@@ -1733,11 +1739,18 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
           flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, margin: '4px 4px 0 0',
           borderRadius: 6, padding: 0,
-          border: '1px solid var(--border-subtle)', background: 'transparent',
-          color: 'var(--text-tertiary)', cursor: 'pointer',
+          // THE TOUCH TARGET GREW AND THE ICON DID NOT. At 44px this was an 11px tertiary glyph in
+          // an empty square — present, hit-testable, and invisible on a phone: reported as "só
+          // falta colocar um ícone que me leve até o arquivo" about a button that was already
+          // there. Measured on a 390px viewport: sixteen of them rendered at x=336, 44px wide, and
+          // the reader saw none. The target is a rule; the icon has to be read at the same size.
+          border: `1px solid ${isMobile ? 'color-mix(in srgb, var(--anthropic-orange) 40%, transparent)' : 'var(--border-subtle)'}`,
+          background: 'transparent',
+          color: isMobile ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+          cursor: 'pointer',
         }}
       >
-        <ExternalLink size={11} />
+        <ExternalLink size={isMobile ? 17 : 11} />
       </button>
     )}
     </div>
@@ -2065,7 +2078,7 @@ function SubagentActivity({ sessionId, row, pt, now, onBack }: {
           ? (pt ? 'Este subagente começou e ainda não fez nada.' : 'This subagent has started and has not done anything yet.')
           : (pt ? 'Este subagente não registrou nenhuma ação.' : 'This subagent recorded no actions.')} />
       ) : (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
           {/* A feed that silently starts in the middle reads as an agent that began there. */}
           {older && (
             <p style={{
@@ -2154,7 +2167,7 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
   if (list === null) return <Note icon={<Spinner />} text={pt ? 'Lendo os MCPs…' : 'Reading the MCP servers…'} />
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '6px 6px 10px' }}>
       {/* The one thing a machine without the harness's CLI cannot do, said before anything offers
           to do it. */}
       {!list.canWrite && (

@@ -762,7 +762,7 @@ export interface ControlSession {
    * prod?" with four different answers, in front of a key called `approve` that would have silently
    * taken whichever was highlighted.
    */
-  dialogOptions?: Array<{ number: number; label: string; selected: boolean }>
+  dialogOptions?: Array<{ number: number; label: string; selected: boolean; freeText?: boolean }>
   /**
    * Whether the user may pick one of `dialogOptions` from here.
    *
@@ -845,6 +845,14 @@ export interface ControlSession {
    * force. A blank would read as "none", which is a different claim.
    */
   effort?: string
+  /**
+   * The MODE the harness is in — its own word for it (`auto mode`, `plan mode`, …).
+   *
+   * Absent for a harness whose modes nobody has driven, and for a session whose footer has not been
+   * read yet. See `mode-spec.ts`: the cycle key is a keystroke, so a guessed one would be a
+   * keypress nobody asked for.
+   */
+  mode?: { id: string; label: string }
   /**
    * Whether this row can be acted on at all.
    *
@@ -1519,6 +1527,15 @@ export interface ControlHost {
   interruptSession?(id: string): Promise<ActionResult>
 
   /**
+   * Advance a session's harness to its NEXT mode, without attaching to it.
+   *
+   * One keystroke, and the harness decides which mode comes next — there is no key that picks one
+   * by name, so this is a cycle rather than a chooser. Refused, in words, for a harness whose modes
+   * nobody has driven: a guessed key is a keypress nobody asked for. See `mode-spec.ts`.
+   */
+  cycleSessionMode?(id: string): Promise<ActionResult>
+
+  /**
    * Type one line into a session and submit it, WITHOUT attaching to it.
    *
    * The ordinary case is a session that is working or waiting: the text lands in its prompt and it
@@ -1544,7 +1561,7 @@ export interface ControlHost {
    * asking, or when the options on screen no longer match what the user was shown. A snapshot is up
    * to five seconds old, and an answer to a question that has changed is worse than no answer.
    */
-  answerSession?(id: string, choice?: number): Promise<ActionResult>
+  answerSession?(id: string, choice?: number, text?: string): Promise<ActionResult>
 
   /**
    * Reopen every session of the last fall, in the background.

@@ -135,6 +135,18 @@ the signed-in identity changes.
 - **No DOM test environment.** The pure modules are unit-tested; the mirror's effects and the
   forwarded interaction can only be verified in a browser.
 
+## Where the button lives
+
+The magnifier's own control is hosted by whatever chrome is on screen, and the layer draws its
+floating fallback **only when no slot exists**. There are three slots — the phone's sticky header,
+the desktop top strip's trailing region, and the Sessions workspace's own bar on a phone — and the
+third had to be added: without it the fallback appeared at `top: 50%`, on top of the middle of a
+conversation. It was reported with a screenshot of it sitting on a paragraph.
+
+`headerHostsMagnifier` in `App.tsx` names the slots that exist, mirrored from the slots themselves
+rather than restated, so a fourth screen with its own chrome must be added there — or the floating
+button reappears over whatever that screen is showing.
+
 ## Where the code is
 
 | file | responsibility |

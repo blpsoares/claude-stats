@@ -129,3 +129,21 @@ describe('appendDictation', () => {
     expect(appendDictation('', '')).toBe('')
   })
 })
+
+describe('insecureAlternative on a phone', () => {
+  it('offers NOTHING when the browser is not on the machine serving the page', () => {
+    // `localhost` on a phone is the PHONE, which runs no agentop — a link to a page that cannot
+    // load, offered on the one device where this refusal always fires, because a phone reaches the
+    // dashboard by its LAN address and nothing else.
+    expect(insecureAlternative('http://172.23.255.165:47292/sessions', false)).toBeNull()
+  })
+
+  it('still rewrites when the browser IS on that machine', () => {
+    expect(insecureAlternative('http://172.23.255.165:47292/sessions', true))
+      .toBe('http://localhost:47292/sessions')
+  })
+
+  it('defaults to the old behaviour, so no caller loses it by omission', () => {
+    expect(insecureAlternative('http://10.0.0.4:47292/')).toBe('http://localhost:47292/')
+  })
+})
