@@ -131,6 +131,8 @@ export interface Preferences {
     /** Hours between runs when `schedule` is `'custom'`. Clamped and defaulted by `intervalMs`
      *  (backup/schedule.ts), never here — a preferences file is hand-editable. */
     customHours?: number
+    /** Local hour (0–23) a daily/weekly run is anchored to. */
+    atHour?: number
     /** Layers a MANUAL run writes when no `--with-*` flag is given. An explicit flag wins. */
     layers?: ('metrics' | 'repos' | 'archive' | 'raw')[]
     /** Layers a SCHEDULED run writes. Deliberately separate: `raw` is 2.4 GB a copy, so a daily

@@ -10,7 +10,7 @@
  */
 import { readPreferences } from '../preferences'
 import { performBackup, readBackupPrefs } from '../cli-backup'
-import { lastBackup, loadBackupHistory } from './backup-store'
+import { lastBackupRun, loadBackupHistory } from './backup-store'
 import { isDue } from './schedule'
 
 const CHECK_MS = 15 * 60_000
@@ -30,10 +30,14 @@ export function startScheduledBackup(log: (line: string) => void = console.log):
     try {
       const prefs = readBackupPrefs(await readPreferences())
       const entries = await loadBackupHistory()
-      const last = lastBackup(entries)
+      // `lastBackupRun`, NOT `lastBackup`: the schedule asks when one last RAN, and a run whose
+      // archive was uploaded and then deleted locally still ran. Reading the restorable-from one
+      // here made a daily schedule fire every fifteen minutes — see backup-store.ts.
+      const last = lastBackupRun(entries)
       // serverRunning is true by construction: this code only runs inside the daemon.
       const verdict = isDue({
         schedule: prefs.schedule, customHours: prefs.customHours,
+        atHour: prefs.atHour, tzOffsetMinutes: new Date().getTimezoneOffset(),
         lastAt: last?.at ?? null, nowMs: Date.now(), serverRunning: true,
       })
       if (!verdict.due) return

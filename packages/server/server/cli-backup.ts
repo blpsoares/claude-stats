@@ -50,6 +50,9 @@ export interface BackupPrefs {
   schedule: ScheduleId
   /** Hours between runs when `schedule` is `'custom'`. Undefined otherwise. */
   customHours?: number
+  /** The local hour a `daily`/`weekly` run is anchored to. Undefined reads as `DEFAULT_HOUR`
+   *  in `schedule.ts`, which is the one place that clamps and defaults it. */
+  atHour?: number
   layers: BackupLayer[]
   scheduleLayers: BackupLayer[]
   harnesses: HarnessId[]
@@ -68,6 +71,9 @@ export function readBackupPrefs(p: Preferences): BackupPrefs {
     // Carried raw. `intervalMs` is the ONE place that clamps and defaults it, so a hand-edited
     // preferences file cannot smuggle a five-minute backup past a validation that lives elsewhere.
     customHours: typeof b.customHours === 'number' ? b.customHours : undefined,
+    // Carried raw for the same reason as `customHours`: `normalizeHour` is the one place that
+    // clamps it, so a hand-edited file cannot smuggle an hour past a validation living elsewhere.
+    atHour: typeof b.atHour === 'number' ? b.atHour : undefined,
     layers,
     scheduleLayers: (b.scheduleLayers as BackupLayer[] | undefined) ?? DEFAULT_LAYERS,
     harnesses: (b.harnesses as HarnessId[] | undefined)?.filter(h => HARNESS_ORDER.includes(h)) ?? [...HARNESS_ORDER],
@@ -156,16 +162,19 @@ export async function writeBackupScheduleLayers(layers: BackupLayer[]): Promise<
   return normalized
 }
 
-export async function writeBackupSchedule(schedule: ScheduleId, customHours?: number): Promise<void> {
+export async function writeBackupSchedule(
+  schedule: ScheduleId, customHours?: number, atHour?: number,
+): Promise<void> {
   const p = await readPreferences()
-  // `customHours` is written only when it was given, so switching to `weekly` and back to `custom`
-  // returns to the number the user had chosen rather than to a default they never picked.
+  // `customHours` and `atHour` are written only when given, so switching to `weekly` and back to
+  // `custom` returns to the number the user had chosen rather than to a default they never picked.
   await writePreferences({
     ...p,
     backup: {
       ...(p.backup ?? {}),
       schedule,
       ...(customHours === undefined ? null : { customHours }),
+      ...(atHour === undefined ? null : { atHour }),
     },
   })
 }
