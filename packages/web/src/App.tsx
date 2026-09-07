@@ -3398,7 +3398,10 @@ export default function AppLayout() {
       {/* A DIAGNOSTIC, behind `?vpdebug=1` and nothing else — see ViewportProbe's own header. The
           keyboard bug lives in numbers this repo cannot reproduce, so it puts them where the device
           is. */}
-      {typeof window !== 'undefined' && window.location.search.includes('vpdebug=1') && <ViewportProbe />}
+      {/* TEMPORARILY UNCONDITIONAL. A Home Screen app launches from the manifest's `start_url`, so
+          the `?vpdebug=1` on the shortcut never reaches the page — which is exactly where the
+          readings are needed. Back behind the flag, and then deleted, once they are in. */}
+      <ViewportProbe />
       {/* The billing prompt. Mounted HERE, after the archive consent gate's early return above, so
           the two can never stack on a first launch — one blocking modal behind one dismissible one
           is a pile nobody reads. It is the same component for the first-run invite and for the

@@ -1,7 +1,11 @@
 /**
  * ViewportProbe — a live readout of the numbers the keyboard bug is made of.
  *
- * Mounted only for `?vpdebug=1`, and it exists because five attempts at that bug were correct in a
+ * TEMPORARILY UNCONDITIONAL — asked for, because a Home Screen app launches from the manifest's
+ * `start_url` and the `?vpdebug=1` on the shortcut never reaches the page. It goes back behind the
+ * flag, and then away entirely, once the readings are in.
+ *
+ * It exists because five attempts at that bug were correct in a
  * headless emulation and wrong on the device. The measurements involved (`window.innerHeight`,
  * `visualViewport.height`, `visualViewport.offsetTop`, `scrollY`) do not mean the same thing in a
  * Safari tab, in a Safari-added web app and in a Chrome-added Home Screen shortcut — and nothing in
@@ -19,6 +23,10 @@ interface Reading {
   innerW: number
   vvH: number
   vvTop: number
+  /** `visualViewport.pageTop` — where the visible band sits in the DOCUMENT. This is the one that
+   *  separates the two candidate causes: `pageTop - scrollY` is the part of the offset that is the
+   *  VISUAL viewport's and cannot be put back by scrolling. */
+  vvPageTop: number
   scrollY: number
   docTop: number
   bodyTop: number
@@ -35,6 +43,7 @@ const read = (): Reading => {
     innerW: Math.round(window.innerWidth),
     vvH: vv ? Math.round(vv.height) : -1,
     vvTop: vv ? Math.round(vv.offsetTop) : -1,
+    vvPageTop: vv ? Math.round(vv.pageTop) : -1,
     scrollY: Math.round(window.scrollY),
     docTop: Math.round(document.documentElement.scrollTop),
     bodyTop: shell ? Math.round(shell.getBoundingClientRect().top) : -1,
@@ -43,11 +52,39 @@ const read = (): Reading => {
   }
 }
 
+const line = (tag: string, r: Reading | null): string =>
+  r === null
+    ? `${tag} —`
+    : `${tag} win ${r.innerW}x${r.innerH} vv ${r.vvH} @${r.vvTop} page ${r.vvPageTop} `
+      + `sY ${r.scrollY} dT ${r.docTop} shell ${r.bodyTop}..${r.shellBottom} ${r.focus}`
+
 export function ViewportProbe() {
   const [r, setR] = useState<Reading>(read)
+  // TWO FROZEN FRAMES, so ONE screenshot answers the question. The state that matters is a
+  // transition, and a live readout only ever shows where it ended — which is why the first attempt
+  // at this asked for two photographs taken seconds apart.
+  const [openR, setOpenR] = useState<Reading | null>(null)   // last reading while a field had focus
+  const [closedR, setClosedR] = useState<Reading | null>(null) // the reading 400ms after it lost it
 
   useEffect(() => {
-    const update = () => setR(read())
+    const editable = (el: EventTarget | null): boolean => {
+      const e = el as HTMLElement | null
+      return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
+    }
+    const onOut = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      window.setTimeout(() => setClosedR(read()), 400)
+    }
+    window.addEventListener('focusout', onOut)
+    return () => window.removeEventListener('focusout', onOut)
+  }, [])
+
+  useEffect(() => {
+    const update = () => {
+      const next = read()
+      if (next.focus === 'input' || next.focus === 'textarea') setOpenR(next)
+      setR(next)
+    }
     const id = window.setInterval(update, 250)
     const vv = window.visualViewport
     window.addEventListener('resize', update)
@@ -68,13 +105,11 @@ export function ViewportProbe() {
       style={{
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 99999,
         background: 'rgba(0,0,0,0.86)', color: '#22c55e',
-        font: '600 11px/1.35 ui-monospace, monospace', padding: '4px 6px',
+        font: '600 9.5px/1.3 ui-monospace, monospace', padding: '3px 5px',
         pointerEvents: 'none', whiteSpace: 'pre-wrap',
       }}
     >
-      {`win ${r.innerW}x${r.innerH}  vv ${r.vvH} @${r.vvTop}
-scrollY ${r.scrollY}  docTop ${r.docTop}  focus ${r.focus}
-shell top ${r.bodyTop} bottom ${r.shellBottom}`}
+      {[line('now ', r), line('open', openR), line('shut', closedR)].join('\n')}
     </div>
   )
 }
