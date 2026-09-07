@@ -1656,28 +1656,17 @@ export default function AppLayout() {
       }
     }
     /**
-     * STANDALONE AND A TAB LIFT THE COMPOSER BY DIFFERENT MEANS, AND ONLY ONE OF THEM MAY RUN.
+     * THE DOCUMENT SCROLL IS LEFT ALONE, IN BOTH SHELLS. A version of this cancelled it whenever
+     * the app was running standalone, on the reasoning that iOS resizes the WINDOW there and the
+     * caret scroll would then be a second lift on top of the first. It is not: reverted within the
+     * hour, because with the scroll cancelled the composer went behind the keyboard and could not
+     * be seen at all — "o input tá ficando fixo lá embaixo e agora eu nem consigo ver ele quando o
+     * teclado abre". Whatever the installed shell does about the viewport, that scroll is still
+     * carrying the composer, and taking it away costs the whole field.
      *
-     * This is the discriminator every previous attempt was missing: "só acontece na versão PWA,
-     * acessando direto pelo navegador funciona normalmente."
-     *
-     *  - In a TAB, iOS does not change the layout viewport for the keyboard. It SCROLLS the
-     *    document to reveal the caret, and that scroll is the only thing lifting the composer.
-     *    Cancelling it is how the composer ends up behind the keyboard — which is what happened the
-     *    one time this was pinned unconditionally.
-     *  - INSTALLED, iOS resizes the WINDOW. `100dvh` follows it down, the column gets shorter and
-     *    the composer rises on its own, correctly. Then the caret scroll happens ANYWAY and lifts
-     *    it a second time, by roughly the keyboard again — "o input continua subindo".
-     *
-     * So the scroll is cancelled in standalone and left alone in a tab. Read once: `display-mode`
-     * cannot change without the page being reloaded, and `navigator.standalone` is iOS's own flag
-     * for a Safari-added web app, which is the case the media query misses on older versions.
+     * So this effect only ever RESTORES, after the keyboard is gone. It never fights it while it
+     * is up.
      */
-    const nav = navigator as Navigator & { standalone?: boolean }
-    const standalone = nav.standalone === true
-      || (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
-    const pin = () => { if (standalone && window.scrollY !== 0) window.scrollTo(0, 0) }
-    if (standalone) window.addEventListener('scroll', pin, { passive: true })
 
     /** How much the band must lose before it counts as covered by something. */
     const COVERED_BY = 120
@@ -1713,7 +1702,6 @@ export default function AppLayout() {
     return () => {
       window.removeEventListener('focusin', onIn)
       window.removeEventListener('focusout', onOut)
-      window.removeEventListener('scroll', pin)
       vv?.removeEventListener('resize', onViewport)
       window.removeEventListener('resize', onViewport)
     }
