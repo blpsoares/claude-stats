@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { sessionTime } from '../../lib/sessionTime'
 import { asideCache, asideKey } from '../../lib/asideCache'
 import { BarChart3, X } from 'lucide-react'
 import { fmt, fmtCost, type HarnessId, type SessionMeta } from '@agentistics/core'
@@ -222,6 +223,26 @@ export function SessionStatsMenu({
             {s.costUSD === null
               ? <Absent text={na('cost')} />
               : <Line k={pt ? 'Estimado (API)' : 'Estimated (API)'} v={money(s.costUSD)} />}
+          </Block>
+
+          {/* ASKED FOR: how long this session has been going. Two figures, not one, and the pair is
+              the point — `sessionTime` is the same helper the dashboard's longest-session card uses,
+              so the two surfaces cannot disagree about what "active" means.
+              ACTIVE is the time the conversation was actually working; ELAPSED is wall clock from
+              its first turn to its last. On a session left open overnight they differ by hours, and
+              reporting only the second would say a session cost twelve hours when it cost forty
+              minutes. Absent rather than zero when the record has no timing at all — a conversation
+              the store has not seen yet is not one that took no time. */}
+          <Block title={pt ? 'Tempo' : 'Time'}>
+            {meta && (meta.duration_minutes ?? 0) > 0 ? (() => {
+              const t = sessionTime(meta, lang)
+              return (
+                <>
+                  {t.active !== null && <Line k={pt ? 'Ativo' : 'Active'} v={t.active} />}
+                  <Line k={pt ? 'Decorrido' : 'Elapsed'} v={t.elapsed} />
+                </>
+              )
+            })() : <Absent text={pt ? 'ainda não registrado' : 'not recorded yet'} />}
           </Block>
 
           <Block title={pt ? 'Mensagens' : 'Messages'}>

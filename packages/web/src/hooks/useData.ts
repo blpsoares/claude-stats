@@ -1491,7 +1491,44 @@ export function computeDerivedStats(
     let heatmapData: { date: string; value: number; sessions: number; tools: number }[]
     if (sessionFiltered) {
       const byDay: Record<string, { value: number; sessions: number; tools: number }> = {}
-      for (const s of filteredSessions) {
+      // A DAY THE SESSION WORKED, NOT THE DAY IT STARTED.
+      //
+      // Reported: "estou há alguns dias trabalhando e dia 4 foi pulado". It was: 20 sessions
+      // touched 2026-09-04 on this machine and 17 of them STARTED on it, while the calendar showed
+      // nothing. The day filter learned to read `SessionMeta.daily` and this did not — it still
+      // filed each session entirely on `start_time`, so a conversation open since Tuesday drew one
+      // cell on Tuesday and left every day it actually worked blank. A calendar of when work
+      // BEGAN is not a calendar of when work happened.
+      //
+      // `selectedSessions` and not `filteredSessions`: the second has already been cut to the
+      // range by `sliceSession`, which spends `daily` and drops it — exactly the field this needs.
+      // A session with no `daily` keeps the start-day rule, as everywhere else: it cannot be split
+      // and inventing a spread for it would be worse than filing it where it began.
+      for (const s of selectedSessions) {
+        const daily = s.daily
+        if (daily) {
+          const lifeMsgs = (s.user_message_count ?? 0) + (s.assistant_message_count ?? 0)
+          const lifeTools = Object.values(s.tool_counts ?? {}).reduce((a, b) => a + b, 0)
+          for (const [day, u] of Object.entries(daily)) {
+            const msgs = u.messages ?? 0
+            // A day the session merely EXISTED through, with no turn on it, is not activity —
+            // the same rule `activeInDays` applies, so the two cannot disagree about which days
+            // a session was alive on.
+            if (msgs <= 0 && (u.input_tokens ?? 0) <= 0 && (u.output_tokens ?? 0) <= 0) continue
+            if (!byDay[day]) byDay[day] = { value: 0, sessions: 0, tools: 0 }
+            byDay[day].value += msgs
+            // ONE PER DAY IT WORKED. "Sessions per day" is how many conversations were alive that
+            // day, which is the question the chart's own title asks — counting each only on its
+            // first day is what made a week of work look like a single spike.
+            byDay[day].sessions += 1
+            // Tool calls are NOT recorded per day, so this is an apportionment by that day's share
+            // of the session's messages — the same treatment `splitMessages` already gives the
+            // user/assistant split for the same reason, and it is stated rather than passed off as
+            // a measurement. It only ever feeds the tooltip.
+            byDay[day].tools += lifeMsgs > 0 ? Math.round((msgs / lifeMsgs) * lifeTools) : 0
+          }
+          continue
+        }
         if (!isDateStr(s.start_time)) continue
         const day = format(parseISO(s.start_time), 'yyyy-MM-dd')
         if (!byDay[day]) byDay[day] = { value: 0, sessions: 0, tools: 0 }

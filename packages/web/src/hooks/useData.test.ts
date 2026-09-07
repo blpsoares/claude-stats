@@ -1742,3 +1742,58 @@ describe('the `all` range claims sessions that record a per-day split', () => {
     expect(d.filteredSessions).toEqual([])
   })
 })
+
+describe('the activity calendar counts the days a session WORKED', () => {
+  // "Estou há alguns dias trabalhando e dia 4 foi pulado." It was: the day filter learned to read
+  // `SessionMeta.daily` and the calendar did not, so a conversation open since Tuesday drew one
+  // cell on Tuesday and left every day it actually worked blank.
+  const day = (n: number) => ({
+    input_tokens: n, output_tokens: n, cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0, messages: n,
+  })
+  const long: SessionMeta = {
+    session_id: 'long', harness: 'claude', project_path: '/p', model: 'claude-sonnet-4-5',
+    start_time: '2026-09-03T10:00:00.000Z',
+    user_message_count: 30, assistant_message_count: 30,
+    tool_counts: { Bash: 100 },
+    daily: { '2026-09-03': day(10), '2026-09-04': day(20), '2026-09-05': day(30) },
+  } as unknown as SessionMeta
+  const older: SessionMeta = {
+    session_id: 'older', harness: 'claude', project_path: '/p', model: 'claude-sonnet-4-5',
+    start_time: '2026-09-04T09:00:00.000Z',
+    user_message_count: 4, assistant_message_count: 4,
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: { version: 1, lastComputedDate: '2026-08-01', dailyActivity: [], dailyModelTokens: [], modelUsage: {}, totalSessions: 0, totalMessages: 0, hourCounts: {} },
+    sessions: [long, older], allSessions: [], projects: [], harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  // A session-scoped filter, so the calendar is built from sessions rather than the Claude cache.
+  const filters = { dateRange: 'all', customStart: '', customEnd: '', projects: ['/p'], models: [] } as unknown as import('@agentistics/core').Filters
+
+  test('a day in the MIDDLE of a long session is not skipped', () => {
+    const d = computeDerivedStats(data, filters)!
+    const on4 = d.heatmapData.find(x => x.date === '2026-09-04')
+    expect(on4).toBeDefined()
+    expect(on4!.value).toBeGreaterThan(0)
+  })
+
+  test('every day it worked is counted, and it counts as a session on each', () => {
+    const d = computeDerivedStats(data, filters)!
+    const days = Object.fromEntries(d.heatmapData.map(x => [x.date, x]))
+    expect(days['2026-09-03']!.value).toBe(10)
+    expect(days['2026-09-04']!.value).toBe(20 + 8)   // the long session's day, plus the one that started then
+    expect(days['2026-09-05']!.value).toBe(30)
+    expect(days['2026-09-04']!.sessions).toBe(2)
+  })
+
+  test('a session with no `daily` keeps the start-day rule', () => {
+    const d = computeDerivedStats(data, filters)!
+    const on4 = d.heatmapData.find(x => x.date === '2026-09-04')!
+    // `older` has no daily and started on the 4th: its 8 messages land there and nowhere else.
+    expect(d.heatmapData.filter(x => x.value > 0).map(x => x.date).sort())
+      .toEqual(['2026-09-03', '2026-09-04', '2026-09-05'])
+    expect(on4.sessions).toBe(2)
+  })
+})

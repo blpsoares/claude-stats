@@ -52,7 +52,7 @@ import {
   slashQuery, stepSkill,
 } from '../../lib/skillMenu'
 import { markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
-import { pendingEchoes } from '../../lib/echoMatch'
+import { pendingEchoes } from '@agentistics/core'
 import {
   applyDraftRequest, consumeDraftRequest, getDraftRequest, useDraftRequest,
 } from '../../lib/composerStore'
@@ -70,6 +70,8 @@ interface ChatPayload {
   live: boolean
   /** Already-localized: these turns are the END of a longer conversation. See `chat-web.ts`. */
   older?: string
+  /** Messages the SERVER is holding for this conversation — see `pending-prompts.ts`. */
+  pending?: { text: string; at: number }[]
 }
 
 export interface SessionChatProps {
@@ -678,6 +680,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    */
   const lastSent = useMemo(() => lastSentMessage(turns, echo), [turns, echo])
 
+
+
   /**
    * When each echo was first seen, so its bubble can say how long it has been waiting.
    *
@@ -691,6 +695,46 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     for (const t of echo) if (!m.has(t)) m.set(t, Date.now())
     for (const t of [...m.keys()]) if (!echo.includes(t)) m.delete(t)
   }, [echo])
+
+  // DECLARED AFTER `echoSeen`, and that is not cosmetic. `useMemo` runs its factory DURING the
+  // render, at the point it is called — so a memo that reads `echoSeen.current` written above the
+  // `useRef` reads a binding still in its temporal dead zone. It threw
+  // `ReferenceError: Cannot access 'W' before initialization` the moment `echo` had anything in
+  // it, which is to say the moment a message was sent, and the error boundary caught it AFTER the
+  // message had already gone — "dá esse erro (mas envia)". Hooks read like declarations and are
+  // executed like statements; order is part of the meaning.
+  /**
+   * WHAT IS STILL WAITING, from BOTH sides, and the server's copy wins on age.
+   *
+   * The local echo is what makes a sent message appear instantly — it exists before any poll — and
+   * the server's list is what makes it appear on every OTHER device, and survive this one being
+   * closed and reopened. Neither replaces the other: without the local half the sender waits a poll
+   * to see their own message, without the server half nobody else ever sees it.
+   *
+   * The union is by TEXT, which is the same key both sides already retire on. Where both have it,
+   * the server's `at` is used: it is when the message was actually handed over, while the local
+   * timestamp is when THIS tab first drew it — and after a reload the local one is the reload, which
+   * is exactly how a queued message became a bubble with no age and no way to tell it from a lost
+   * one. `at` may still be undefined for a purely local entry that has not been through a poll yet,
+   * and the bubble then shows no age rather than inventing one.
+   */
+  const queued = useMemo(() => {
+    const out: { text: string; at?: number }[] = []
+    const server = new Map((payload?.pending ?? []).map(p => [p.text, p.at]))
+    const seen = new Set<string>()
+    for (const text of echo) {
+      if (seen.has(text)) continue
+      seen.add(text)
+      const at = server.get(text) ?? echoSeen.current.get(text)
+      out.push(at === undefined ? { text } : { text, at })
+    }
+    for (const p of payload?.pending ?? []) {
+      if (seen.has(p.text)) continue
+      seen.add(p.text)
+      out.push({ text: p.text, at: p.at })
+    }
+    return out
+  }, [echo, payload?.pending])
 
   /** A clock, so an ageing echo ages on screen instead of freezing at its first render. */
   const [now, setNow] = useState(() => Date.now())
@@ -990,10 +1034,25 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     pick(e.dataTransfer.files)
   }
 
+  /**
+   * IS THE PERSON TYPING RIGHT NOW.
+   *
+   * It exists for one rule, asked for in these words: "enquanto eu estiver digitando no input NADA
+   * tira o foco dele". A `disabled` attribute is not a style — the browser BLURS an element the
+   * moment it becomes disabled — and this field was disabled from `canPrompt`, which is recomputed
+   * on every 5s fleet poll. So a poll that briefly reported the session blocked, or not live, or
+   * mid-send took the caret out from under someone mid-sentence, and they had to tap back in. "Do
+   * nada o foco sai do input."
+   */
+  const [typing, setTyping] = useState(false)
+
   async function send() {
     const text = draft.trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
-    if ((text === '' && attached.length === 0) || sending) return
+    // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
+    // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
+    // about what may be DELIVERED, not about what may be typed.
+    if ((text === '' && attached.length === 0) || sending || !canPrompt) return
     // Paths first, on their own lines, then what was typed — the assistant reads the files it is
     // pointed at, and burying the paths inside a sentence makes them easy to miss.
     // Quote first, then the paths, then what was typed. The quote is trimmed to a few lines: a
@@ -1095,18 +1154,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               carries the same text — so it is drawn as one: faded, with the wait said in words
               under it. It used to be indistinguishable from a delivered message, and on a session
               mid-turn the wait is minutes. */}
-          {echo.map((text, i) => (
+          {queued.map((q, i) => (
             <ChatBubble
               key={`echo-${i}`}
-              turn={{ role: 'user', text }}
+              turn={{ role: 'user', text: q.text }}
               lang={lang}
               harness={session.harness}
               anchorId={turnAnchorId('echo', i)}
               awaiting
               awaitingWorking={working}
-              {...(echoSeen.current.get(text) !== undefined
-                ? { awaitingSinceMs: now - echoSeen.current.get(text)! }
-                : {})}
+              {...(q.at !== undefined ? { awaitingSinceMs: Math.max(0, now - q.at) } : {})}
             />
           ))}
 
@@ -1530,7 +1587,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   // written prompt changes whether the caret is inside a `/command`, and a picker
                   // that only listened to typing would answer for wherever the caret used to be.
                   onSelect={e => setCaret(e.currentTarget.selectionStart ?? 0)}
+                  onFocus={() => setTyping(true)}
                   onBlur={e => {
+                    setTyping(false)
                     // Leaving the field closes the picker — unless the focus went INTO it, which
                     // is what a keyboard user tabbing onto an entry does.
                     if (!skillPickerRef.current?.contains(e.relatedTarget as Node | null)) setSlashDismissed(true)
@@ -1565,7 +1624,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
                   }}
-                  disabled={!canPrompt || sending}
+                  // NEVER WHILE IT HAS THE CARET. `disabled` blurs, so making it depend on a
+                  // 5s poll makes the poll able to interrupt a sentence. What the state actually
+                  // has to stop is SENDING, and `send()` refuses on its own — a field that accepts
+                  // text it cannot deliver yet costs nothing, while a field that empties your focus
+                  // mid-word costs the sentence.
+                  disabled={!typing && (!canPrompt || sending)}
                   rows={1}
                   placeholder={canPrompt
                     ? (pt ? 'Escreva para esta sessão…' : 'Write to this session…')

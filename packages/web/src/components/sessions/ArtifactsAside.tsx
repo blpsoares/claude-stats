@@ -2083,6 +2083,20 @@ function SubagentCard({ row, pt, now, onOpen }: {
   const unmeasured = unmeasuredText(row, pt)
   const unpriced = unpricedText(row, pt)
   const title = row.description ?? row.agentType ?? row.agentId
+  /**
+   * A FORK IS NOT A SUBAGENT, AND THE ROW HAS TO SAY SO.
+   *
+   * Reported as the two halves of one screen contradicting each other: this panel showed
+   * "Subagents 1" while the session's own metrics card said none had run. The card was RIGHT. What
+   * is listed here is a conversation FORK — `agentType: 'fork'`, no `toolUseId`, claimed by no
+   * `tool_use` anywhere — and `agent-metrics.ts` deliberately files those outside the invocation
+   * list for exactly that reason: nothing dispatched it, so counting it as an agent this session
+   * ran would make the totals wrong in the direction that reads as work you did not do.
+   *
+   * It is still SHOWN, because it is real work with real tokens against this conversation and
+   * finding it any other way means a file manager. It is shown as what it is.
+   */
+  const isFork = row.agentType === 'fork'
   return (
     <button
       onClick={onOpen}
@@ -2108,6 +2122,16 @@ function SubagentCard({ row, pt, now, onOpen }: {
           )}
           {st.text}
         </span>
+        {/* Named, not merely styled: "fork" beside a status a reader already knows how to read is
+            the shortest way to say this row is a different KIND of thing from the ones around it. */}
+        {isFork && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+            flexShrink: 0, padding: '1px 5px', borderRadius: 5,
+            color: 'var(--text-secondary)', background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-subtle)',
+          }}>{pt ? 'fork' : 'fork'}</span>
+        )}
         <span style={{
           fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',

@@ -19,6 +19,8 @@
 import type { HarnessId } from '@agentistics/core'
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
+import { recordPrompt } from './pending-prompts'
+import { conversationOfRow } from './row-conversation'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions' 
@@ -200,9 +202,20 @@ export async function runFleetAction(
       // `text` rides along for the FREE-TEXT option, where picking is only the first of three
       // steps — see `answerSession`. Every other option ignores it.
       return await host.answerSession(req.id, req.choice, text)
-    case 'prompt':
+    case 'prompt': {
       if (!host.promptSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.promptSession(req.id, text)
+      const out = await host.promptSession(req.id, text)
+      // RECORDED ONLY ON A CONFIRMED DELIVERY, and recorded HERE rather than in the browser: a
+      // queue held by the tab that sent it is a queue no other device can see, which is the whole
+      // of the report. `conversationOfRow` because a message belongs to the CONVERSATION, not to
+      // the session that happened to host it — reopening one must not lose what is still waiting.
+      if (out.ok) {
+        const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
+        const conv = row ? conversationOfRow(row) : ''
+        if (conv) recordPrompt(conv, text)
+      }
+      return out
+    }
     case 'cycleMode':
       if (!host.cycleSessionMode) return { ok: false, message: s.sessionsNoHost }
       return await host.cycleSessionMode(req.id)

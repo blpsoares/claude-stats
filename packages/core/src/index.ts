@@ -18,6 +18,11 @@ export * from './iam'
 export * from './org'
 export * from './siblingRules'
 export * from './proposalApply'
+// The echo rules live here rather than in the web bundle because the SERVER needs them too: a
+// queued message is now held server-side so every device sees it, and it is retired by the same
+// comparison the browser uses. One implementation, or the two disagree about a message that is
+// still waiting.
+export * from './echoMatch'
 export * from './comparison'
 export * from './billing'
 export * from './plan-catalog'

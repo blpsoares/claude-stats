@@ -22,7 +22,6 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
-import { ViewportProbe } from './components/ViewportProbe'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -1600,26 +1599,30 @@ export default function AppLayout() {
     return () => { root.classList.remove('ag-viewport-locked') }
   }, [lockViewport])
   /**
-   * PUT THE PAGE BACK WHEN THE FIELD IS LEFT — and do NOTHING else about the keyboard.
+   * SNAPSHOT WHEN A FIELD IS ENTERED, RESTORE WHEN THE KEYBOARD GOES AWAY.
    *
-   * iOS scrolls the page to bring the caret into view, and that is the half that has always
-   * WORKED: the composer rides up with the keyboard by itself. What it does not reliably do is undo
-   * that scroll on dismissal, and since this shell is exactly one viewport tall, the leftover shows
-   * as a band of nothing at the foot — the composer and the bottom bar both sitting higher than
-   * they started. That, and only that, is what this fixes.
+   * Asked for in these words: "não dá pra você resetar a posição dele pro estado anterior antes do
+   * teclado subir quando o usuário minimizar o teclado novamente?" — and it is a better shape than
+   * every previous attempt, which tried to work out where things should BE while the keyboard is up
+   * from measurements that do not mean the same thing in a Safari tab, a Safari-added web app and a
+   * Chrome-added shortcut. This asks nothing about the keyboard's size.
    *
-   * FIVE ATTEMPTS TO DO MORE WERE REVERTED, and the reason is worth keeping. Each tried to take
-   * the keyboard over from iOS — a fixed body, a shell sized to the visible band, a shell sized to
-   * the locked box, the keyboard's height reserved as padding, that height measured against a
-   * remembered resting one. Every version was correct in a headless emulation and wrong on the
-   * device, in a different way each time: a bar floating off the floor, a composer under the fold,
-   * a composer that never rose, a composer pushed to the top of the screen. The measurements those
-   * versions rest on — `window.innerHeight`, `visualViewport.height` — do not mean the same thing
-   * in a Safari tab and in an installed web app, and this repo has no way to test the second.
+   * THE TRIGGER IS THE VIEWPORT COMING BACK, NOT `focusout`, AND THAT WAS THE BUG IN THE FIRST
+   * VERSION OF THIS. iOS's accessory bar has a "done" control — the ✓ visible in the screenshots
+   * that reported this — and dismissing the keyboard with it hides the keyboard WITHOUT blurring
+   * the field. So `focusout` never fired, the restore never ran, and the fix looked like no fix at
+   * all. The visible band growing back is the one signal that is true however the keyboard was
+   * dismissed: the ✓, the ⌄, a tap outside, or the field losing focus.
    *
-   * So the rule is the one this file already states for the desktop: do not re-anchor a layout that
-   * is correct. `focusout` is a fact, not a measurement, and putting a scroll back is not a layout
-   * change.
+   * WHY THE POSITION MOVES AT ALL: `#root` is `overflow-x: clip` on a phone, and a lone `clip`
+   * computes the other axis to `clip` too, so it is a clip container — which anchors `position:
+   * fixed` descendants to ITSELF rather than to the window (CLAUDE.md records this for the bottom
+   * bar). iOS scrolls the DOCUMENT to reveal the caret; if it does not fully undo that, `#root`
+   * sits at `-scrollY` and the composer and the fixed bar both come back exactly that much higher.
+   * The two moving together is what named the cause.
+   *
+   * IT RESTORES EVERY SCROLLER ON THE PATH, not just the document, because the conversation's own
+   * column can be the one that moved and `window.scrollY` then sits innocently at 0.
    */
   useEffect(() => {
     if (!lockViewport) return
@@ -1627,17 +1630,81 @@ export default function AppLayout() {
       const e = el as HTMLElement | null
       return !!e && (e.tagName === 'INPUT' || e.tagName === 'TEXTAREA' || e.isContentEditable)
     }
-    const onBlur = (ev: FocusEvent) => {
+    /** Every scrolling ancestor of `el`, with what it was showing. */
+    const snapshot = (el: HTMLElement): { el: HTMLElement; top: number }[] => {
+      const out: { el: HTMLElement; top: number }[] = []
+      for (let n: HTMLElement | null = el; n; n = n.parentElement) {
+        if (n.scrollHeight > n.clientHeight + 1) out.push({ el: n, top: n.scrollTop })
+      }
+      return out
+    }
+    let before: { page: number; scrollers: { el: HTMLElement; top: number }[] } | null = null
+    const onIn = (ev: FocusEvent) => {
       if (!editable(ev.target)) return
-      // The keyboard's dismissal is animated and iOS keeps adjusting the scroll across it, so one
-      // reset lands mid-animation and is overwritten. These cover the whole of it, and each is a
-      // no-op once the page is already home.
-      for (const ms of [0, 120, 300, 600]) {
-        window.setTimeout(() => { if (window.scrollY !== 0) window.scrollTo(0, 0) }, ms)
+      before = { page: window.scrollY, scrollers: snapshot(ev.target as HTMLElement) }
+    }
+    const restore = () => {
+      const was = before
+      if (was === null) return
+      if (window.scrollY !== was.page) window.scrollTo(0, was.page)
+      // A scroller that was at its BOTTOM is put back at its bottom, not at the pixel it held: the
+      // conversation grows while you type, and the pixel that was the end is no longer it.
+      for (const { el, top } of was.scrollers) {
+        const wasAtEnd = top >= el.scrollHeight - el.clientHeight - 4
+        const target = wasAtEnd ? el.scrollHeight - el.clientHeight : top
+        if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
       }
     }
-    window.addEventListener('focusout', onBlur)
-    return () => window.removeEventListener('focusout', onBlur)
+    /**
+     * THE DOCUMENT SCROLL IS LEFT ALONE, IN BOTH SHELLS. A version of this cancelled it whenever
+     * the app was running standalone, on the reasoning that iOS resizes the WINDOW there and the
+     * caret scroll would then be a second lift on top of the first. It is not: reverted within the
+     * hour, because with the scroll cancelled the composer went behind the keyboard and could not
+     * be seen at all — "o input tá ficando fixo lá embaixo e agora eu nem consigo ver ele quando o
+     * teclado abre". Whatever the installed shell does about the viewport, that scroll is still
+     * carrying the composer, and taking it away costs the whole field.
+     *
+     * So this effect only ever RESTORES, after the keyboard is gone. It never fights it while it
+     * is up.
+     */
+
+    /** How much the band must lose before it counts as covered by something. */
+    const COVERED_BY = 120
+    const vv = window.visualViewport
+    let tallest = vv ? vv.height : window.innerHeight
+    let wasCovered = false
+    const onViewport = () => {
+      const h = vv ? vv.height : window.innerHeight
+      if (h <= 0) return
+      if (tallest - h >= COVERED_BY) {
+        wasCovered = true
+        return
+      }
+      if (h >= tallest) tallest = h
+      if (!wasCovered) return
+      wasCovered = false
+      // Repeated across the dismissal animation rather than fired once: iOS keeps adjusting during
+      // it, so a single write lands mid-animation and is overwritten a frame later. Each repeat is
+      // a no-op once the value is already back.
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    // `focusout` is kept as a SECOND trigger, not the only one: tapping outside the field dismisses
+    // the keyboard and blurs, and on a layout where the band never changed there is nothing else to
+    // notice it by.
+    const onOut = (ev: FocusEvent) => {
+      if (!editable(ev.target)) return
+      for (const ms of [0, 120, 300, 600]) window.setTimeout(restore, ms)
+    }
+    window.addEventListener('focusin', onIn)
+    window.addEventListener('focusout', onOut)
+    vv?.addEventListener('resize', onViewport)
+    window.addEventListener('resize', onViewport)
+    return () => {
+      window.removeEventListener('focusin', onIn)
+      window.removeEventListener('focusout', onOut)
+      vv?.removeEventListener('resize', onViewport)
+      window.removeEventListener('resize', onViewport)
+    }
   }, [lockViewport])
 
   /**
@@ -2956,7 +3023,15 @@ export default function AppLayout() {
         }} />
       )}
 
-      {selectedFleetSession && selectedFleetSession.conversationBlind === undefined && (
+      {/* NOT ON A CENTRAL. The conversation is not relayed — the reverse channel's chat route
+          answers 410 — so a Chat tab there is a control that cannot do what it says, and choosing
+          it drops the reader back onto the same relayed screen with a sentence explaining that the
+          screen is all there is. The release note for this claimed the toggle was already withheld;
+          it was not, because the gate keys on `conversationBlind`, a MACHINE-LOCAL sentence that
+          `reduceMachineFleetRow` deliberately strips from the wire — so on a relayed row it is
+          always `undefined` and the tab was always offered. `isCentral` is the fact that decides
+          this, and it is the one the relay cannot lose. */}
+      {selectedFleetSession && !isCentral && selectedFleetSession.conversationBlind === undefined && (
         <div role="tablist" style={{
           display: 'flex', gap: 3, padding: 2, borderRadius: 9, flexShrink: 0,
           background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
@@ -3382,7 +3457,18 @@ export default function AppLayout() {
       // height the shorter box did — `box-sizing: border-box` is global — while the border box
       // still reaches the real bottom. So the composer rises exactly as far, and comes back to the
       // pixel it left, and nothing anchors to an edge that is not the screen's.
-      height: inSessionsWorkspace ? (isMobile ? '100dvh' : '100vh') : undefined,
+      // `dvh` EVERYWHERE, not only under the mobile breakpoint. The note above records why a phone
+      // cannot use `100vh` — it does not shrink for a collapsing browser toolbar, so it is taller
+      // than the visible area and the foot of the column goes below the fold — and then the fix was
+      // applied only where `useIsMobile()` is true, which is a WIDTH test at 768px. An iPad is
+      // 820pt wide in portrait: it took the desktop branch, got `100vh`, and the composer sat below
+      // the fold with nothing on screen saying so. Reported as the chat input simply not existing
+      // on a tablet, in the PWA and in the browser alike.
+      //
+      // There is no cost on a desktop: with no dynamic toolbars `dvh` and `vh` are the same number.
+      // A rule that holds on every screen does not need a breakpoint, and the breakpoint was the
+      // whole defect.
+      height: inSessionsWorkspace ? '100dvh' : undefined,
       // Only on the LIST. With a session open the bar is not rendered at all (see its own note),
       // so reserving its band would leave a strip of nothing under the composer — the same
       // mismatch the old subtraction made, seen from the other side.
@@ -3395,13 +3481,6 @@ export default function AppLayout() {
       boxSizing: 'border-box',
       transition: 'padding-left 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
     }}>
-      {/* A DIAGNOSTIC, behind `?vpdebug=1` and nothing else — see ViewportProbe's own header. The
-          keyboard bug lives in numbers this repo cannot reproduce, so it puts them where the device
-          is. */}
-      {/* TEMPORARILY UNCONDITIONAL. A Home Screen app launches from the manifest's `start_url`, so
-          the `?vpdebug=1` on the shortcut never reaches the page — which is exactly where the
-          readings are needed. Back behind the flag, and then deleted, once they are in. */}
-      <ViewportProbe />
       {/* The billing prompt. Mounted HERE, after the archive consent gate's early return above, so
           the two can never stack on a first launch — one blocking modal behind one dismissible one
           is a pile nobody reads. It is the same component for the first-run invite and for the
