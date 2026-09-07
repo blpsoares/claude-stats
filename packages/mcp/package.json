@@ -1,6 +1,6 @@
 {
   "name": "@agentistics/mcp",
-  "version": "2.16.0",
+  "version": "2.16.1",
   "description": "Agentistics MCP server — Claude Code analytics for Claude Desktop and Claude Code",
   "type": "module",
   "main": "./dist/agentistics-mcp.js",
