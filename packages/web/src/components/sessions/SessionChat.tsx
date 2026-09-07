@@ -679,6 +679,30 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * whose only outcome is a modal saying "nothing" is a control that exists to refuse.
    */
   const lastSent = useMemo(() => lastSentMessage(turns, echo), [turns, echo])
+
+
+
+  /**
+   * When each echo was first seen, so its bubble can say how long it has been waiting.
+   *
+   * Not persisted, and that is deliberate: an echo restored from storage after a reload has an
+   * age this tab cannot know, and `echoStatus` shows none rather than measuring from the reload —
+   * a duration that restarts when you refresh is worse than no duration at all.
+   */
+  const echoSeen = useRef(new Map<string, number>())
+  useEffect(() => {
+    const m = echoSeen.current
+    for (const t of echo) if (!m.has(t)) m.set(t, Date.now())
+    for (const t of [...m.keys()]) if (!echo.includes(t)) m.delete(t)
+  }, [echo])
+
+  // DECLARED AFTER `echoSeen`, and that is not cosmetic. `useMemo` runs its factory DURING the
+  // render, at the point it is called — so a memo that reads `echoSeen.current` written above the
+  // `useRef` reads a binding still in its temporal dead zone. It threw
+  // `ReferenceError: Cannot access 'W' before initialization` the moment `echo` had anything in
+  // it, which is to say the moment a message was sent, and the error boundary caught it AFTER the
+  // message had already gone — "dá esse erro (mas envia)". Hooks read like declarations and are
+  // executed like statements; order is part of the meaning.
   /**
    * WHAT IS STILL WAITING, from BOTH sides, and the server's copy wins on age.
    *
@@ -711,22 +735,6 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     }
     return out
   }, [echo, payload?.pending])
-
-
-
-  /**
-   * When each echo was first seen, so its bubble can say how long it has been waiting.
-   *
-   * Not persisted, and that is deliberate: an echo restored from storage after a reload has an
-   * age this tab cannot know, and `echoStatus` shows none rather than measuring from the reload —
-   * a duration that restarts when you refresh is worse than no duration at all.
-   */
-  const echoSeen = useRef(new Map<string, number>())
-  useEffect(() => {
-    const m = echoSeen.current
-    for (const t of echo) if (!m.has(t)) m.set(t, Date.now())
-    for (const t of [...m.keys()]) if (!echo.includes(t)) m.delete(t)
-  }, [echo])
 
   /** A clock, so an ageing echo ages on screen instead of freezing at its first render. */
   const [now, setNow] = useState(() => Date.now())
