@@ -38,6 +38,7 @@ import { ModelBreakdown } from './components/ModelBreakdown'
 import { ProjectsList } from './components/ProjectsList'
 import { FiltersBar } from './components/FiltersBar'
 import { NotificationToasts } from './components/NotificationToasts'
+import { KeyboardProbe, keyboardProbeOn } from './components/KeyboardProbe'
 import { MagnifierLayer } from './components/a11y/MagnifierLayer'
 import { HideLensesButton } from './components/a11y/HideLensesButton'
 import { MagnifierButton } from './components/a11y/MagnifierButton'
@@ -1591,6 +1592,9 @@ export default function AppLayout() {
    *
    * Every other page keeps the window as its scroller, and nothing here changes that.
    */
+  // Read once — a query string does not change under the app.
+  const [probeOn] = useState(keyboardProbeOn)
+
   const lockViewport = isMobile && inSessionsWorkspace
   useEffect(() => {
     if (!lockViewport) return
@@ -1643,6 +1647,36 @@ export default function AppLayout() {
       if (!editable(ev.target)) return
       before = { page: window.scrollY, scrollers: snapshot(ev.target as HTMLElement) }
     }
+    /**
+     * LETTING GO OF THE FIELD IS PART OF PUTTING THE PAGE BACK, and it is the half that was missing.
+     *
+     * There are THREE quantities that can hold this displacement and the restore below knows two of
+     * them: the document scroll, an inner scroller — and `visualViewport.offsetTop`, the visual
+     * viewport panned inside the layout viewport. Nothing in a page can write that third one.
+     * `window.scrollTo` does not reach it, and neither did any of the six attempts before this,
+     * every one of which moved a box or a scroll.
+     *
+     * iOS holds that pan WHILE A FIELD IS FOCUSED, to keep the caret visible. The accessory bar's ✓
+     * — the control this was reported with — hides the keyboard and LEAVES THE FIELD FOCUSED, which
+     * this effect's own note already records as the reason `focusout` could not be the trigger. So
+     * the pan is held with no keyboard under it, and every scroll the restore performs is correct
+     * and changes nothing anyone can see.
+     *
+     * Blurring releases it. It costs nothing on the other three dismissals — a tap outside and the
+     * ⌄ have already blurred, and a send blurs itself — and it costs nothing that a person wanted
+     * kept: the keyboard is gone, so there is nothing to type into, and the draft is React state
+     * rather than the field's own value.
+     *
+     * IT IS CALLED FROM THE VIEWPORT PATH ONLY, never from `focusout`, and that is not a detail.
+     * `focusout` fires when focus moves from one field to ANOTHER with the keyboard still up, and
+     * the browser's order there is blur, focusout, focus, focusin — so a release scheduled by
+     * `focusout` runs after the focus has landed and would blur the field somebody just moved into.
+     * The band growing back cannot mean that: while the keyboard is up it never grows.
+     */
+    const release = () => {
+      const el = document.activeElement
+      if (editable(el)) (el as HTMLElement).blur()
+    }
     const restore = () => {
       const was = before
       if (was === null) return
@@ -1683,6 +1717,11 @@ export default function AppLayout() {
       if (h >= tallest) tallest = h
       if (!wasCovered) return
       wasCovered = false
+      // FIRST let go of the field, THEN put the scroll back. In that order: while iOS is holding
+      // the visual viewport panned to a caret, the scroll writes below are correct and invisible.
+      // Once per dismissal, because this branch is reached once — `wasCovered` has just been
+      // cleared, and the blur's own `focusout` cannot come back through here.
+      release()
       // Repeated across the dismissal animation rather than fired once: iOS keeps adjusting during
       // it, so a single write lands mid-animation and is overwritten a frame later. Each repeat is
       // a no-op once the value is already back.
@@ -4102,6 +4141,13 @@ export default function AppLayout() {
 
       {/* Global notification toasts (auto-dismiss with an exit animation; history in the bell) */}
       <NotificationToasts lang={lang} />
+
+      {/* THE KEYBOARD PROBE, and only when the URL asks for it (`?kbdebug=1`). It reads the three
+          quantities that can hold the iOS displacement — the document scroll, the visual viewport's
+          own offset and `#root`'s edge — because six attempts at that bug were reasoned from the
+          code and none of them from a measurement, on a machine with no iOS device. It comes out
+          the day the question is answered. */}
+      {probeOn && <KeyboardProbe pt={lang === 'pt'} />}
 
       {/* Accessibility magnifiers — a portal appended to document.body, outside #root. */}
       <MagnifierLayer ctx={appCtx} hasHeaderSlot={headerHostsMagnifier} />
