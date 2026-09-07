@@ -176,13 +176,21 @@ export default function NotificationsSettings() {
                 <>
                   <ShieldAlert size={12} style={{ color: 'var(--anthropic-orange)' }} />
                   <span>
-                    {support === 'needs-install'
+                    {support === 'insecure'
                       ? (pt
-                          ? 'O iPhone só permite notificações depois que o app é instalado na tela de início — abra o menu de compartilhar e escolha “Adicionar à Tela de Início”.'
-                          : 'iPhone only allows notifications once the app is installed on the Home Screen — open the share menu and choose “Add to Home Screen”.')
-                      : (pt
-                          ? 'Este navegador não oferece notificações. Os alertas sonoros continuam funcionando.'
-                          : 'This browser offers no notifications. The sound alerts still work.')}
+                          ? 'Esta página está em http://, e notificações (assim como o service worker e a instalação) só existem em uma origem segura. Se você acessa por Tailscale, use `tailscale serve` para servir em https:// pelo nome da máquina — é o que destrava tudo isto.'
+                          : 'This page is on http://, and notifications — like the service worker and installability — exist only on a secure origin. If you reach it over Tailscale, use `tailscale serve` to serve it over https:// on the machine name; that is what unlocks all of this.')
+                      : support === 'needs-safari'
+                        ? (pt
+                            ? 'Este app foi adicionado à tela de início pelo Chrome, e no iPhone só um app adicionado pelo Safari roda de verdade em modo standalone — que é o único que recebe notificações. Remova este ícone e adicione de novo pelo Safari.'
+                            : 'This app was added to the Home Screen from Chrome, and on iPhone only an app added from Safari actually runs standalone — the only mode given notifications. Remove this icon and add it again from Safari.')
+                        : support === 'needs-install'
+                          ? (pt
+                              ? 'O iPhone só permite notificações depois que o app é instalado na tela de início pelo Safari — abra o menu de compartilhar e escolha “Adicionar à Tela de Início”.'
+                              : 'iPhone only allows notifications once the app is installed on the Home Screen from Safari — open the share menu and choose “Add to Home Screen”.')
+                          : (pt
+                              ? 'Este navegador não oferece notificações. Os alertas sonoros continuam funcionando.'
+                              : 'This browser offers no notifications. The sound alerts still work.')}
                   </span>
                 </>
               ) : permission === 'granted' ? (

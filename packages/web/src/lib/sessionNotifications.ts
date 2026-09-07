@@ -228,18 +228,61 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
  * `'unsupported'` is deliberately not folded into `'denied'`: one is a decision the user can
  * reverse from this screen, the other is a step they have to take somewhere else.
  */
-export type NotificationSupport = 'ok' | 'needs-install' | 'unsupported'
+export type NotificationSupport = 'ok' | 'insecure' | 'needs-safari' | 'needs-install' | 'unsupported'
+
+/**
+ * A window this module can read without asserting a DOM in a test. Only the four things it asks.
+ */
+export interface SupportEnv {
+  hasNotification: boolean
+  secure: boolean
+  standalone: boolean
+  ios: boolean
+}
+
+/**
+ * Which of the four reasons this browser cannot notify — PURE, so each one can be pinned.
+ *
+ * The order is the order the obstacles have to be cleared in, and it matters: telling somebody to
+ * add the app to their Home Screen while they are on `http://` sends them to do the second step
+ * first and land in the same place.
+ *
+ *  1. `insecure` — **the one that was actually happening.** Notifications, service workers and
+ *     installability all require a SECURE CONTEXT. Reached over Tailscale as `http://100.x.y.z:47292`
+ *     the origin is not one, so `navigator.serviceWorker` is undefined and the permission can never
+ *     be granted however many times it is asked for. Tailscale hands out a real certificate —
+ *     `tailscale serve` — and that is the whole fix; nothing in this app can substitute for it.
+ *  2. `needs-safari` — an iOS home-screen app added from CHROME. Every browser on iOS is WebKit
+ *     underneath, but only a web app added from SAFARI runs standalone, and only a standalone one is
+ *     given the Notification API. A shortcut added from Chrome opens inside Chrome and never will be.
+ *  3. `needs-install` — iOS, in a browser tab. Add it to the Home Screen (from Safari) and it works.
+ *  4. `unsupported` — anything else with no API. Sound alerts still work; nothing else will.
+ *
+ * `denied` is deliberately none of these: it is a decision the user made and can reverse in the
+ * system's own settings, and folding it in here would send them to fix the wrong thing.
+ */
+export function supportFrom(env: SupportEnv): NotificationSupport {
+  if (!env.secure) return 'insecure'
+  if (env.hasNotification) return 'ok'
+  if (env.ios) return env.standalone ? 'needs-safari' : 'needs-install'
+  return 'unsupported'
+}
 
 export function notificationSupport(): NotificationSupport {
   if (typeof window === 'undefined') return 'unsupported'
-  if ('Notification' in window) return 'ok'
-  // An iOS device with the API missing: installing it to the Home Screen is what turns it on. The
-  // test is for the PLATFORM rather than for standalone-ness, because a tab is exactly where the
-  // user is when they need to be told. iPadOS reports itself as a Mac, hence the touch check.
-  const ua = navigator.userAgent
-  const iOS = /iPad|iPhone|iPod/.test(ua)
-    || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1)
-  return iOS ? 'needs-install' : 'unsupported'
+  const nav = navigator as Navigator & { standalone?: boolean }
+  // iPadOS reports itself as a Mac, hence the touch check.
+  const ios = /iPad|iPhone|iPod/.test(nav.userAgent)
+    || (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1)
+  return supportFrom({
+    hasNotification: 'Notification' in window,
+    secure: window.isSecureContext !== false,
+    // `navigator.standalone` is iOS's own flag for a Safari-added web app; the media query catches
+    // the installed case on every other platform. Either one means "not in a tab".
+    standalone: nav.standalone === true
+      || (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches),
+    ios,
+  })
 }
 
 export function getBrowserNotificationPermission(): NotificationPermission {

@@ -22,6 +22,7 @@ import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrd
 import { BillingIntroModal } from './components/BillingIntroModal'
 import type { LoadProgress } from './hooks/useData'
 import { useIsMobile } from './hooks/useIsMobile'
+import { ViewportProbe } from './components/ViewportProbe'
 import { useAccessibility } from './hooks/useAccessibility'
 import type { TagDef } from './lib/tagMatch'
 import { canCreateTagFromFilters, filtersToTagDraft } from './lib/filtersToTag'
@@ -3394,6 +3395,10 @@ export default function AppLayout() {
       boxSizing: 'border-box',
       transition: 'padding-left 0.22s cubic-bezier(0.22, 1, 0.36, 1)',
     }}>
+      {/* A DIAGNOSTIC, behind `?vpdebug=1` and nothing else — see ViewportProbe's own header. The
+          keyboard bug lives in numbers this repo cannot reproduce, so it puts them where the device
+          is. */}
+      {typeof window !== 'undefined' && window.location.search.includes('vpdebug=1') && <ViewportProbe />}
       {/* The billing prompt. Mounted HERE, after the archive consent gate's early return above, so
           the two can never stack on a first launch — one blocking modal behind one dismissible one
           is a pile nobody reads. It is the same component for the first-run invite and for the

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { SessionMeta } from '@agentistics/core'
 import {
-  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notificationSupport, notifyFleetTransitions,
+  DEFAULT_NOTIFICATION_SETTINGS, handleSessionStateTransitions, notificationSupport, notifyFleetTransitions, supportFrom,
   resetNotificationMemory, type SessionActivity,
 } from './sessionNotifications'
 
@@ -269,5 +269,33 @@ describe('notificationSupport', () => {
     g.window = {}
     g.navigator = { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox', platform: 'Linux x86_64', maxTouchPoints: 0 }
     expect(notificationSupport()).toBe('unsupported')
+  })
+})
+
+describe('supportFrom — the four reasons, in the order they must be cleared', () => {
+  const env = (over: Partial<Parameters<typeof supportFrom>[0]>) =>
+    supportFrom({ hasNotification: true, secure: true, standalone: false, ios: false, ...over })
+
+  it('THE REPORTED CASE: an insecure origin outranks everything else', () => {
+    // Reached over Tailscale as `http://100.x.y.z:47292`. Notifications, service workers and
+    // installability all need a secure context, so no amount of asking can ever grant one — and
+    // telling somebody to install the app first sends them to do the second step first.
+    expect(env({ secure: false })).toBe('insecure')
+    expect(env({ secure: false, hasNotification: false, ios: true, standalone: true })).toBe('insecure')
+  })
+
+  it('an iOS app added from CHROME is standalone-shaped and still cannot notify', () => {
+    // Every iOS browser is WebKit underneath, but only a Safari-added web app runs standalone, and
+    // only a standalone one is given the API.
+    expect(env({ hasNotification: false, ios: true, standalone: true })).toBe('needs-safari')
+  })
+
+  it('an iOS tab is told to install it', () => {
+    expect(env({ hasNotification: false, ios: true, standalone: false })).toBe('needs-install')
+  })
+
+  it('anything else with no API is unsupported, and a working one is ok', () => {
+    expect(env({ hasNotification: false })).toBe('unsupported')
+    expect(env({})).toBe('ok')
   })
 })
