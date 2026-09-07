@@ -365,7 +365,9 @@ export interface WorkflowRun {
   sessionId: string
   /** Owning user in team mode (set by the central on ingest). Undefined for local runs. */
   user?: string
-  status: 'completed' | 'failed' | 'partial'
+  /** `running` and `abandoned` exist because absence of a completion report is not evidence of
+   *  completion — see workflow-live.ts. A run in flight used to be published as `completed`. */
+  status: 'completed' | 'failed' | 'partial' | 'running' | 'abandoned' | 'killed'
   startedAt: string        // ISO; '' if unknown
   durationMs: number
   phases: WorkflowPhase[]

@@ -1790,6 +1790,33 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // The session's DYNAMIC WORKFLOW runs, as something happening rather than history. Same
+    // `/api/fleet` prefix guard as its neighbours — a new fleet route is guarded by having been
+    // ADDED, never by remembering a second table.
+    if (url.pathname === '/api/fleet/workflows' && req.method === 'GET') {
+      const id = url.searchParams.get('id')
+      if (!id) {
+        return new Response(JSON.stringify({ error: 'bad_request' }), {
+          status: 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { readSessionWorkflows } = await import('./sessions/workflows-web')
+        const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+        const lang = fleetLang(url.searchParams.get('lang'))
+        const payload = await readSessionWorkflows(await hostForFleet(lang), lang, id)
+        return new Response(JSON.stringify(payload), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     // ONE STEP of that conversation, opened up — the Live feed's rows expand into the command that
     // ran and what it printed, WHILE it runs. Guarded by the `/api/fleet` PREFIX in
     // `capability-guard.ts` (localShell) and 404'd on a central with the rest of `/api/fleet*`, both

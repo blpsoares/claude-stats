@@ -1,18 +1,46 @@
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { readFile } from 'fs/promises'
 import type { WorkflowRun, WorkflowAgent } from '@agentistics/core'
-import { safeReadDir } from './utils'
+import { safeReadDir, safeStat } from './utils'
 import { parseWorkflowScript } from './workflow-script'
 import { parseWorkflowUsage } from './workflow-usage'
 import { aggregateWorkflowAgent } from './workflow-agent'
 import { matchTranscriptsToCalls } from './workflow-match'
+import { workflowRunState, recordedRunState } from './workflow-live'
 
-interface DiscoveredRun {
+export interface DiscoveredRun {
   runId: string
   name: string
   scriptPath?: string
   startedAt: string
   notificationText: string
+}
+
+
+/**
+ * One agent transcript's aggregate, memoized on the file's own mtime + size.
+ *
+ * A run here holds 72 agent transcripts; without this, every read of a run re-parsed all of them,
+ * and the live view polls. A FINISHED agent's transcript never changes, so it is parsed once and
+ * only the ones still writing are parsed again. Key is mtime AND size because an append can move
+ * either alone. Same rule, and the same reason, as `summaryMemo` in subagents-web.ts.
+ */
+const agentMemo = new Map<string, { mtimeMs: number; size: number; agg: ReturnType<typeof aggregateWorkflowAgent> }>()
+
+/** Tests reach in here; nothing else should. */
+export function forgetWorkflowAgentSummaries(): void {
+  agentMemo.clear()
+}
+
+
+/** A run's own end-of-run record, or null when it never wrote one (still running, or lost). */
+async function readRunRecord(path: string): Promise<{ status?: unknown; durationMs?: number } | null> {
+  const raw = await readFile(path, 'utf-8').catch(() => '')
+  if (!raw) return null
+  try {
+    const d = JSON.parse(raw) as Record<string, unknown>
+    return { status: d.status, durationMs: typeof d.durationMs === 'number' ? d.durationMs : undefined }
+  } catch { return null }
 }
 
 /** Scan the main session JSONL for workflow launches and their task-notifications. */
@@ -83,12 +111,38 @@ function extractText(e: Record<string, unknown>): string {
 }
 
 /** Assemble WorkflowRun[] for a session given its main JSONL lines and the workflows dir. */
+export interface WorkflowRunsOptions {
+  /** Whether the session that owns these runs is alive. `'unknown'` when the caller cannot see
+   *  processes — the dashboard's data build cannot, and must not therefore call a live run dead. */
+  sessionLive?: boolean | 'unknown'
+  now?: number
+}
+
 export async function extractWorkflowRuns(
   sessionLines: string[],
   sessionId: string,
   workflowsDir: string,
+  opts: WorkflowRunsOptions = {},
 ): Promise<WorkflowRun[]> {
-  const launches = discoverWorkflowLaunches(sessionLines)
+  return assembleWorkflowRuns(discoverWorkflowLaunches(sessionLines), sessionId, workflowsDir, opts)
+}
+
+/**
+ * The assembly half, given launches already discovered.
+ *
+ * Split out because DISCOVERY costs a full read of the parent transcript (39 MB on a real one
+ * here) and only changes when that file changes, while ASSEMBLY must run on every poll — a run's
+ * state lives in its agents' files, which move while the transcript sits still. The live reader
+ * memoizes the launches on the transcript's stamp and calls this each time.
+ */
+export async function assembleWorkflowRuns(
+  launches: DiscoveredRun[],
+  sessionId: string,
+  workflowsDir: string,
+  opts: WorkflowRunsOptions = {},
+): Promise<WorkflowRun[]> {
+  const sessionLive = opts.sessionLive ?? 'unknown'
+  const now = opts.now ?? Date.now()
   const runs: WorkflowRun[] = []
 
   for (const launch of launches) {
@@ -108,9 +162,22 @@ export async function extractWorkflowRuns(
     // Per-agent transcripts: agent-*.jsonl in the run dir.
     const agentFiles = sortAgentFiles(files.filter(f => /^agent-.*\.jsonl$/.test(f)))
     const aggregated = []
+    // The newest write under the run dir is the floor under "still going" — a run reports nothing
+    // while it works, so movement is the only live signal it emits.
+    let lastTouchedMs = 0
     for (const file of agentFiles) {
-      const content = await readFile(join(runDir, file), 'utf-8').catch(() => '')
-      aggregated.push({ file, ...aggregateWorkflowAgent(content.split('\n')) })
+      const full = join(runDir, file)
+      const st = await safeStat(full)
+      if (st) lastTouchedMs = Math.max(lastTouchedMs, st.mtimeMs)
+      const hit = st ? agentMemo.get(full) : undefined
+      if (hit && st && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+        aggregated.push({ file, ...hit.agg })
+        continue
+      }
+      const content = await readFile(full, 'utf-8').catch(() => '')
+      const agg = aggregateWorkflowAgent(content.split('\n'))
+      if (st) agentMemo.set(full, { mtimeMs: st.mtimeMs, size: st.size, agg })
+      aggregated.push({ file, ...agg })
     }
     // Pair each transcript with the `agent()` call that produced it BY PROMPT. The files are named
     // agent-<hash>.jsonl: the hash carries no order, so pairing by position (the old behaviour)
@@ -142,9 +209,14 @@ export async function extractWorkflowRuns(
 
     const usage = parseWorkflowUsage(launch.notificationText)
     const phases = parsed.phases.map(title => ({ title, agentCount: agents.filter(a => a.phase === title).length }))
-    const status: WorkflowRun['status'] = usage
-      ? (usage.agentsError > 0 ? (usage.agentsDone > 0 ? 'partial' : 'failed') : 'completed')
-      : 'completed'
+    const launchedMs = launch.startedAt ? Date.parse(launch.startedAt) || 0 : 0
+    // The run's own record, written when it ended: `<session>/workflows/<runId>.json`, a sibling
+    // of the `subagents/workflows` dir holding the transcripts. It is the only source that can say
+    // a run was KILLED — from the files alone that is indistinguishable from one that stopped.
+    const record = await readRunRecord(join(dirname(dirname(workflowsDir)), 'workflows', `${launch.runId}.json`))
+    const status: WorkflowRun['status'] = workflowRunState({
+      recorded: recordedRunState(record?.status), usage, sessionLive, lastTouchedMs, launchedMs, now,
+    })
 
     runs.push({
       runId: launch.runId,
@@ -152,7 +224,11 @@ export async function extractWorkflowRuns(
       sessionId,
       status,
       startedAt: launch.startedAt,
-      durationMs: usage?.durationMs ?? 0,
+      // A run in flight has no final duration, but the time it has been going IS measurable and is
+      // the thing a viewer is watching. Everything else keeps the reported duration (0 = unknown).
+      durationMs: status === 'running' && launchedMs
+        ? Math.max(0, now - launchedMs)
+        : (usage?.durationMs ?? record?.durationMs ?? 0),
       phases,
       agents,
       totals: {
@@ -172,5 +248,8 @@ export async function extractWorkflowRuns(
   // Drop empty runs: a workflow whose per-agent transcripts are missing (never captured, or
   // cleaned) yields only the declared phase skeleton with zero agents — no tokens, no cost,
   // "nothing ran" everywhere. These carry no information, so don't surface them.
-  return runs.filter(r => r.agents.length > 0)
+  // A RUNNING run is the exception: one that launched seconds ago has no agent transcripts yet,
+  // and "it has started" is precisely the information the live view exists to show. Hiding it
+  // would make a workflow appear only once it was already well under way.
+  return runs.filter(r => r.agents.length > 0 || r.status === 'running')
 }
