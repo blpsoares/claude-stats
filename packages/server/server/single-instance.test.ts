@@ -4,7 +4,7 @@
 import { test, expect } from 'bun:test'
 import { mkdtemp, writeFile, readFile, utimes } from 'fs/promises'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { claimInstanceLock } from './single-instance'
 
 async function lockPath(): Promise<string> {
@@ -98,4 +98,19 @@ test('release does not free a lock another process has already taken over', asyn
 
   // Still held by 2222 — the late release must not have opened the door to a third.
   expect((await readFile(file, 'utf-8')).trim()).toBe('2222')
+})
+
+// THE CLAIM IS ON THE DATA DIRECTORY, NOT THE PORT — see `serverLockFile`'s header.
+//
+// It used to be `server-${port}.lock`, and measured on a real machine WITH that guard installed:
+// `agentop server` on 47291 and a second one on 48801, both with no `AGENTISTICS_DIR`, both
+// writing `~/.agentistics` and both spawning `git log --numstat` across every worktree. Two lock
+// names, so both passed the guard that exists to stop exactly that. The port already has a claim
+// — the bind. What two servers contend over is the directory.
+test('the lock names the data directory and carries no port', async () => {
+  const { serverLockFile, AGENTISTICS_DATA_DIR } = await import('./config')
+  const file = serverLockFile()
+  expect(file).toBe(join(AGENTISTICS_DATA_DIR, 'server.lock'))
+  // A port in the name is what let two servers past it.
+  expect(/\d{4,5}/.test(basename(file))).toBe(false)
 })
