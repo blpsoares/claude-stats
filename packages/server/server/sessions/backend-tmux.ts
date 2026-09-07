@@ -6,6 +6,7 @@
 import {
   attachArgs, capturePaneArgs, capturePaneAnsiArgs, idFromTmuxName, isSessionGoneError,
   killSessionArgs, listSessionsArgs, paneInfoArgs, parsePaneInfo, parsePrefix, parseTmuxList,
+  tmuxListIsEmptyState,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs, sendKeysNamedArgs, sendKeysLiteralArgs,
   showPrefixArgs, trimCapture,
   type TerminalProfile,
@@ -14,6 +15,7 @@ import { dependencyCommandLine } from './dependency-plan'
 import { probeDependency } from './dependency-probe'
 import { planPromptDelivery } from './initial-prompt'
 import { frameChanged } from './submit-check'
+import { writeToPane } from './pane-writer'
 import type {
   BackendInitialPrompt, BackendSession, BackendSpawn, SessionBackend, TerminalCapture,
 } from './types'
@@ -95,7 +97,13 @@ async function tmux(args: string[]): Promise<{ code: number; out: string; err: s
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 /**
- * Type text and submit it, as two separate `send-keys` calls.
+ * Type text and submit it, as two separate `send-keys` calls — UNDER THE PANE'S WRITE LOCK.
+ *
+ * The lock is what stops two overlapping sends interleaving inside one input box: everything below
+ * happens between two `send-keys` calls, and a second prompt arriving in that window used to land
+ * in the first one's unsubmitted line, so the Enter submitted BOTH AS ONE MESSAGE with every image
+ * of both at its front. See `pane-writer.ts`.
+ *
  *
  * `-l` (literal) for the text so a prompt containing `;` or `C-c` is typed rather than interpreted,
  * then the named `Enter` — which is why they cannot be one call.
@@ -109,6 +117,10 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
  * spreads it.
  */
 async function sendTextTo(id: string, text: string): Promise<boolean> {
+  return writeToPane(id, () => typeAndSubmit(id, text))
+}
+
+async function typeAndSubmit(id: string, text: string): Promise<boolean> {
   const typed = await tmux(sendKeysLiteralArgs(id, text))
   if (typed.code !== 0) return false
 
@@ -228,26 +240,84 @@ export const tmuxBackend: SessionBackend = {
     if (req.initialPrompt) {
       // Deliver the prompt only once the harness is READY — polled, not a fixed sleep — so a slow
       // start does not lose it and a startup dialog is never submitted into. See `deliverInitialPrompt`.
-      await deliverInitialPrompt(req.id, req.initialPrompt)
+      //
+      // NOT AWAITED. The session EXISTS the moment tmux has it, which is what `spawn` promises and
+      // what the caller acts on; the prompt is a follow-up to a session that is already there.
+      // Awaiting it held every caller for as long as the harness took to draw its input box — up to
+      // `DELIVER_DEADLINE_MS`, which is fifteen seconds — so "create session" in the browser spun
+      // for the whole of claude's startup with a session that had been running since millisecond
+      // seven. Reported as creating a session taking VERY long. Nothing downstream needs the
+      // delivery to have happened: the pane is watched live, a `batch` starts its sessions in
+      // parallel instead of one startup after another, and delivery was already best-effort with
+      // its own fallback and deadline.
+      //
+      // The promise is returned so a caller that genuinely must wait can, and is caught here so a
+      // caller that does not never sees an unhandled rejection.
+      const delivery = deliverInitialPrompt(req.id, req.initialPrompt)
+        .catch(e => { console.error(`[session] ${req.id} initial prompt not delivered:`, e) })
+      return { delivery }
     }
+    return {}
   },
 
   sendText: sendTextTo,
 
+  /**
+   * Pick a numbered option, then WRITE INTO THE FIELD it opens, then submit.
+   *
+   * The three keystrokes a person would make by hand, with the wait between them that a person
+   * takes without noticing — and that wait is the whole reason this is one backend call rather than
+   * three from the caller.
+   *
+   * MEASURED. Driven by hand with a pause, the digit moved the cursor onto `Type something.`, the
+   * literal text turned the row into `3. capivara`, and Enter submitted it. Sent as one burst from
+   * the caller, the very same three steps produced the answer **`3jabuticaba`**: the dialog was
+   * still switching from list mode to field mode when the text arrived, so the digit landed in the
+   * field with it. The failure is invisible at the API — it answered `ok` — and only shows up in
+   * what the session recorded.
+   *
+   * So the text waits for the pane to MOVE, which is the same signal `sendTextTo` already uses to
+   * know a submit showed. A frame that never moves still gets the text: the budget is spent, not
+   * the answer, exactly as it is there.
+   */
+  async sendChoiceText(id: string, key: string, text: string): Promise<boolean> {
+    return writeToPane(id, async () => {
+      const before = await captureFrame(id)
+      if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return false
+      // The option turning into a field IS a frame change; waiting for it is waiting for the mode
+      // to switch. Bounded, because a pane that will not move must not hold the request open.
+      await paneMoved(id, before)
+      await sleep(SUBMIT_SETTLE_MS)
+      if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return false
+      await sleep(SUBMIT_SETTLE_MS)
+      return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+    })
+  },
+
   async sendTextRaw(id: string, text: string) {
     // Literal only, NO Enter — the first half of `sendTextTo`. This is what the browser's key-by-key
-    // channel needs: a character appears without submitting a turn.
-    return (await tmux(sendKeysLiteralArgs(id, text))).code === 0
+    // channel needs: a character appears without submitting a turn. Locked like every other write:
+    // a keystroke arriving mid-prompt is the same collision as a second prompt.
+    return writeToPane(id, async () => (await tmux(sendKeysLiteralArgs(id, text))).code === 0)
   },
 
   async sendKey(id: string, key: string) {
-    return (await tmux(sendKeysNamedArgs(id, key))).code === 0
+    return writeToPane(id, async () => (await tmux(sendKeysNamedArgs(id, key))).code === 0)
   },
 
   async list(): Promise<BackendSession[]> {
     // "no server running on …" is the ordinary empty state, not an error: exit code 1 with no
-    // sessions is what tmux reports before anything has been started.
-    const { out } = await tmux(listSessionsArgs())
+    // sessions is what tmux reports before anything has been started. EVERY OTHER non-zero exit is
+    // a failure and THROWS — see `tmuxListIsEmptyState`. Swallowing them made a tmux that could not
+    // be reached report every session as gone, which is the one answer a fleet monitor must never
+    // give by accident.
+    const { code, out, err } = await tmux(listSessionsArgs())
+    // BOTH streams: with no server tmux says nothing on stdout and puts its reason on stderr, so a
+    // stdout-only test would call the ordinary first-run state a failure. See `tmuxListIsEmptyState`.
+    if (!tmuxListIsEmptyState(code, out, err)) {
+      const said = (err.trim() || out.trim()).split('\n')[0]
+      throw new Error(said || `tmux list-sessions failed (code ${code})`)
+    }
     return parseTmuxList(out)
   },
 

@@ -72,3 +72,35 @@ test('a SHORT prose still needs an exact match', () => {
   expect(pendingEchoes([echo], ['[Image #1]tudo okay por aqui'])).toEqual([echo])
   expect(pendingEchoes([echo], ['[Image #1]ok'])).toEqual([])
 })
+
+test('a short echo the comparisons cannot recognise is retired by a LATER one that landed', () => {
+  // The reported shape: `btw` is under SAFE_CONTAINS_LEN, so only equality is allowed, and the
+  // harness stored it joined to the next message. Delivery is FIFO, so the second landing proves
+  // the first was read.
+  expect(pendingEchoes(
+    ['btw', 'faz o merge e sobe o binário'],
+    ['btw\r\nfaz o merge e sobe o binário'],
+  )).toEqual([])
+})
+
+test('the ordering rule never reaches past the last landing', () => {
+  // The third was delivered AFTER the one that landed and is genuinely still waiting.
+  expect(pendingEchoes(
+    ['ok', 'uma frase longa o bastante para casar', 'sim'],
+    ['uma frase longa o bastante para casar'],
+  )).toEqual(['sim'])
+})
+
+test('with nothing landed, a short echo still waits', () => {
+  expect(pendingEchoes(['btw'], ['outra coisa qualquer'])).toEqual(['btw'])
+})
+
+test('a SHORT coincidental match never retires the messages before it', () => {
+  // "ok" equals an "ok" the person typed an hour ago. That is the coincidence SAFE_CONTAINS_LEN
+  // guards against; it may drop its own echo and nothing else, or one stale word silently clears
+  // a queue of real messages.
+  expect(pendingEchoes(
+    ['uma mensagem de verdade que ainda espera', 'ok'],
+    ['ok'],
+  )).toEqual(['uma mensagem de verdade que ainda espera'])
+})

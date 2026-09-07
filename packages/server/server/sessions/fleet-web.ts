@@ -16,8 +16,11 @@
  * host per request would fire one per poll.
  */
 
+import type { HarnessId } from '@agentistics/core'
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
+import { recordPrompt } from './pending-prompts'
+import { conversationOfRow } from './row-conversation'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions' 
@@ -109,6 +112,9 @@ export async function hostForFleet(lang: CliLang): Promise<StartHost> {
   return hostFor(lang)
 }
 
+/** How long one fleet snapshot serves every route that only needs to find a row in it. */
+const SNAPSHOT_TTL_MS = 1_000
+
 async function hostFor(lang: CliLang): Promise<StartHost> {
   const cached = HOSTS.get(lang)
   if (cached) return cached
@@ -122,6 +128,35 @@ async function hostFor(lang: CliLang): Promise<StartHost> {
   const constructStart = performance.now()
   const host = createControlHost(lang, NO_TERMINAL)
   markFleetPhase('hostFor: createControlHost', constructStart)
+  // ONE FLEET READ SERVES THE BURST THAT OPENS A SESSION.
+  //
+  // Clicking a row in the list fires several routes at once — the chat, the artifacts, the
+  // subagents, the files — and every one of them needs the same thing from the fleet: WHICH ROW,
+  // for its cwd, harness and conversation id. Each was paying a full `host.sessions()` for it, and
+  // that walks every session and captures its pane: ~200 ms measured here, four times over, before
+  // anything the person asked for is read. Reported as "quando eu clico em outra sessão... tem um
+  // delay pra abrir, tá tudo local, deveria ser instantâneo" — and it is local; it was just being
+  // read four times.
+  //
+  // So the snapshot is memoized for a moment. The window is deliberately far below the UI's own 5s
+  // poll, so nothing anyone looks at gets slower to update: this only collapses calls that were
+  // always going to be the same answer, made within the same gesture.
+  const cachedSessions = host.sessions
+  if (cachedSessions) {
+    let at = 0
+    let inflight: ReturnType<typeof cachedSessions> | null = null
+    host.sessions = () => {
+      const now = Date.now()
+      // The IN-FLIGHT promise is shared too, not just the settled result: the burst arrives inside
+      // one read, so a TTL alone would still start four of them.
+      if (inflight && now - at < SNAPSHOT_TTL_MS) return inflight
+      at = now
+      inflight = cachedSessions.call(host)
+      // A failed read must not be remembered as the answer for the next second.
+      void inflight.catch(() => { inflight = null; at = 0 })
+      return inflight
+    }
+  }
   HOSTS.set(lang, host)
   return host
 }
@@ -196,10 +231,40 @@ export async function runFleetAction(
   switch (req.action) {
     case 'approve':
       if (!host.answerSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.answerSession(req.id, req.choice)
-    case 'prompt':
+      // `text` rides along for the FREE-TEXT option, where picking is only the first of three
+      // steps — see `answerSession`. Every other option ignores it.
+      return await host.answerSession(req.id, req.choice, text)
+    case 'prompt': {
       if (!host.promptSession) return { ok: false, message: s.sessionsNoHost }
-      return await host.promptSession(req.id, text)
+      const out = await host.promptSession(req.id, text)
+      // RECORDED ONLY ON A CONFIRMED DELIVERY, and recorded HERE rather than in the browser: a
+      // queue held by the tab that sent it is a queue no other device can see, which is the whole
+      // of the report. `conversationOfRow` because a message belongs to the CONVERSATION, not to
+      // the session that happened to host it — reopening one must not lose what is still waiting.
+      //
+      // AND IT DOES NOT HOLD THE REPLY. `host.sessions()` is a FLEET READ — it walks every session
+      // and captures panes — and awaiting it here put that whole cost between pressing enter and
+      // the browser hearing back, on the one action where the person is watching. Reported as
+      // "está demorando pra ser enviada… não tem motivo pra demorar", and there was none: the
+      // message had already been delivered by the line above.
+      //
+      // The queue is for DISPLAY, so it can be written a moment later. What it must not do is make
+      // the send look slow. A failure to record leaves the message un-queued and delivered, which
+      // is the harmless direction: the transcript is the record either way.
+      if (out.ok) {
+        void (async () => {
+          try {
+            const row = (await host.sessions?.())?.sessions.find(r => r.id === req.id || r.conversationId === req.id)
+            const conv = row ? conversationOfRow(row) : ''
+            if (conv) recordPrompt(conv, text)
+          } catch { /* the message went; the queue is a view of it, not the record */ }
+        })()
+      }
+      return out
+    }
+    case 'cycleMode':
+      if (!host.cycleSessionMode) return { ok: false, message: s.sessionsNoHost }
+      return await host.cycleSessionMode(req.id)
     case 'rename':
       if (!host.renameSession) return { ok: false, message: s.sessionsNoHost }
       return await host.renameSession(req.id, text)
@@ -253,7 +318,20 @@ export async function runFleetAction(
       // start an assistant anywhere on this machine.
       const fleet = await host.sessions()
       const row = fleet.sessions.find(r => r.id === req.id)
-      if (!row?.resume) return { ok: false, message: s.sessionsReopenNone }
+      // TWO DIFFERENT FACTS, and collapsing them sent people to the wrong place.
+      //
+      // `sessionsReopenNone` says "nothing on this machine resolves this row" — a statement about
+      // the CONVERSATION, and the honest answer when the row is here and has no reopen target. It
+      // was also being given when the row was simply GONE from the list, which happens routinely:
+      // `claimResume` hands each conversation to at most one row, so reopening one closed row can
+      // drop a sibling that was showing the same conversation, and any list a person is looking at
+      // is up to one poll old. Measured on a real fleet of 326: a row whose `resume` was ENABLED in
+      // the list refused on the click, with a sentence that reads as "this conversation is lost".
+      //
+      // A stale row is RECOVERABLE — refresh and the list is right — so it gets its own sentence
+      // saying so. Reported as "reabro as sessões pela UI e elas não reabrem".
+      if (!row) return { ok: false, message: s.sessionsRowGone }
+      if (!row.resume) return { ok: false, message: s.sessionsReopenNone }
       const out = await host.resumeSession({
         sessionId: row.resume.sessionId,
         harness: row.harness,
@@ -418,6 +496,88 @@ export async function readFleetSkillBody(
   }
 }
 
+/**
+ * The pull requests of the repository a session is working in.
+ *
+ * Resolved against the SESSION's directory, never the server's: a machine running agentop for
+ * something else would otherwise be asked about agentop.
+ */
+/**
+ * Facts about the CONVERSATION behind a row that only its transcript can answer.
+ *
+ * Today: how many times it has been compacted. Asked for on the session's stats card, beside the
+ * context gauge, because they answer the same question from two sides — the gauge says how full
+ * this window is, the count says how many windows came before it.
+ *
+ * `compactions` is ABSENT rather than zero whenever it could not be established: a row with no
+ * linked conversation, a transcript not on this machine, a file that would not read. The card says
+ * which; a confident `0` would read as a conversation that has never been compacted.
+ */
+export async function readConversationFacts(
+  lang: CliLang, id: string,
+): Promise<{ compactions?: number; unavailable?: string }> {
+  const pt = lang === 'pt'
+  const host = await hostFor(lang)
+  if (!host.sessions) return { unavailable: controlStrings(lang).sessionsNoHost }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row?.conversationId) {
+    return {
+      unavailable: row?.conversationBlind ?? (pt
+        ? 'Esta sessão ainda não tem uma conversa vinculada.'
+        : 'This session has no linked conversation yet.'),
+    }
+  }
+  const { countCompactions, resolveChatTranscriptPath } = await import('./chat-tail')
+  const path = await resolveChatTranscriptPath(row.cwd, row.conversationId).catch(() => null)
+  if (!path) {
+    return {
+      unavailable: pt
+        ? 'A transcrição desta conversa não foi encontrada nesta máquina.'
+        : 'This conversation’s transcript was not found on this machine.',
+    }
+  }
+  const n = await countCompactions(path)
+  if (n === null) {
+    return {
+      unavailable: pt ? 'Não foi possível ler a transcrição.' : 'The transcript could not be read.',
+    }
+  }
+  return { compactions: n }
+}
+
+export async function readFleetPullRequests(
+  lang: CliLang, id: string,
+): Promise<{ pulls: unknown[]; limit?: number; unavailable?: string; detail?: string }> {
+  const pt = lang === 'pt'
+  const host = await hostFor(lang)
+  if (!host.sessions) return { pulls: [], unavailable: 'no-repo' }
+  const fleet = await host.sessions()
+  const row = fleet.sessions.find(r => r.id === id || r.conversationId === id)
+  if (!row?.cwd) {
+    return {
+      pulls: [],
+      unavailable: 'no-repo',
+      detail: pt
+        ? 'Esta sessão não tem uma pasta registrada.'
+        : 'This session has no recorded folder.',
+    }
+  }
+  const { readPullRequests } = await import('./github-prs')
+  const out = await readPullRequests(row.cwd)
+  return {
+    pulls: out.pulls,
+    // The cap the read actually used. This reply is built FIELD BY FIELD rather than spread, which
+    // is right — it is the boundary between a module's shape and the wire — but it means a new
+    // field is on the wire only once it is named HERE. `limit` was added to `PrList` and to the
+    // browser's type and forgotten in this object, so the caption could never claim the window and
+    // said the same sentence for four pull requests and for thirty.
+    ...(out.limit !== undefined ? { limit: out.limit } : {}),
+    ...(out.unavailable ? { unavailable: out.unavailable } : {}),
+    ...(out.detail ? { detail: out.detail } : {}),
+  }
+}
+
 /** The questions a start EARNS, and the places it could happen — the wizard, as data. */
 export interface FleetNewOptions {
   /**
@@ -473,22 +633,39 @@ export async function readNewOptions(lang: CliLang, query: string): Promise<Flee
     if (!host.startableHarnesses || !host.spawnSession) {
       return { harnesses: [], projects: [], tasks: [], unavailable: s.sessionsNoHost }
     }
+    const { readHarnessDefaults } = await import('./harness-defaults')
+    type Defaults = Awaited<ReturnType<typeof readHarnessDefaults>>
     const [harnesses, projects, tasks] = await Promise.all([
       host.startableHarnesses(),
       host.searchProjects ? host.searchProjects(query).catch(() => []) : Promise.resolve([]),
       host.sessionTasks ? host.sessionTasks().catch(() => []) : Promise.resolve([]),
     ])
+    // What each CLI will actually do here with no flags, read from THIS MACHINE's own settings
+    // files. `spawn-spec.ts` publishes none — no CLI prints its default in `--help` — but the
+    // picker offering "Default" without naming it is naming a thing without naming it, which is
+    // what was reported. Never a guess: an unreadable file or a missing key yields nothing and the
+    // picker keeps its plain "Default". See `harness-defaults.ts`.
+    const configured = new Map(await Promise.all(harnesses.map(async h =>
+      [h.id, await readHarnessDefaults(h.id as HarnessId).catch(() => ({} as Defaults))] as const,
+    )))
     return {
-      harnesses: harnesses.map(h => ({
-        id: h.id,
-        label: h.label,
-        modelSuggestions: [...h.modelSuggestions],
-        models: modelsFor(h.id),
-        ...(h.defaultModel ? { defaultModel: h.defaultModel } : {}),
-        supportsModel: h.supportsModel,
-        efforts: [...h.efforts],
-        ...(h.defaultEffort ? { defaultEffort: h.defaultEffort } : {}),
-      })),
+      harnesses: harnesses.map(h => {
+        const here = configured.get(h.id) ?? {}
+        // The tool's own published default outranks the machine's, on the rare day one publishes
+        // one: it is a fact about every machine, where this is a fact about ours.
+        const defaultModel = h.defaultModel ?? here.model
+        const defaultEffort = h.defaultEffort ?? here.effort
+        return {
+          id: h.id,
+          label: h.label,
+          modelSuggestions: [...h.modelSuggestions],
+          models: modelsFor(h.id),
+          ...(defaultModel ? { defaultModel } : {}),
+          supportsModel: h.supportsModel,
+          efforts: [...h.efforts],
+          ...(defaultEffort ? { defaultEffort } : {}),
+        }
+      }),
       projects: projects.map(p => ({
         path: p.path,
         label: p.label,
@@ -725,7 +902,7 @@ export async function readFleetArtifactMedia(
  */
 export async function listSessionArtifacts(
   host: StartHost, lang: CliLang, id: string,
-): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string; outside?: string }> {
   if (!host.sessions) return { files: [] }
   const fleet = await host.sessions()
   const row = fleet.sessions.find(r => r.id === id)
@@ -733,14 +910,28 @@ export async function listSessionArtifacts(
   const { readSessionChat } = await import('./chat-web')
   const chat = await readSessionChat(host, lang, row.id)
   if (chat.unavailable) return { files: [], unavailable: chat.unavailable }
-  const { listExistingArtifacts } = await import('./artifact-list')
-  return { files: await listExistingArtifacts(artifactPathsFromTurns(chat.turns), row.cwd) }
+  const { listArtifactsWithOutside } = await import('./artifact-list')
+  const { files, outside } = await listArtifactsWithOutside(artifactPathsFromTurns(chat.turns), row.cwd)
+  // Already localized, and a COUNT rather than the paths — see `listArtifactsWithOutside`. It is
+  // present only when there is something to say: an absent field draws no line, which is the
+  // ordinary case and must cost nothing.
+  const pt = lang === 'pt'
+  return {
+    files,
+    ...(outside > 0
+      ? {
+          outside: pt
+            ? `${outside} arquivo(s) que esta sessão escreveu estão fora da pasta dela e não podem ser abertos aqui.`
+            : `${outside} file(s) this session wrote are outside its own folder and cannot be opened here.`,
+        }
+      : {}),
+  }
 }
 
 /** The route's entry point: resolve the host, then list. Mirrors `readFleetArtifact`. */
 export async function listFleetArtifacts(
   lang: CliLang, id: string,
-): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string }> {
+): Promise<{ files: { raw: string; path: string; bytes: number }[]; unavailable?: string; outside?: string }> {
   const host = await hostFor(lang)
   return await listSessionArtifacts(host, lang, id)
 }

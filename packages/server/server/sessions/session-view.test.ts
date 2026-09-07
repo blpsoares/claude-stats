@@ -6,7 +6,7 @@ import type { ManagedSession, SessionActivity } from './types'
 import type { ReconciledSession } from './session-ref'
 import {
   attentionCount, bellTransitions, buildSessionViews, collapseSupersededSessions,
-  needsAttention, type SessionView,
+  needsAttention, type SessionView, dedupeExternalProcesses, externalId
 } from './session-view'
 
 const managed = (id: string, over: Partial<ManagedSession> = {}): ManagedSession => ({
@@ -627,5 +627,66 @@ describe('title survives the process (persisted harness name)', () => {
     })
     expect(v!.harnessName).toBe('fresh name')
     expect(v!.harnessNameSince).toBe(99)
+  })
+})
+
+describe('dedupeExternalProcesses — one row per SESSION, not per process', () => {
+  const proc = (pid: number, extra: Record<string, unknown> = {}) => ({
+    harness: 'copilot' as const, cwd: '/tmp', pid, startedMs: 1000, ...extra,
+  })
+
+  it('a shim chain carrying ONE session id becomes ONE row', () => {
+    // Measured on a real machine: volta installs `copilot` as a chain — the shim, `node
+    // …/bin/copilot`, and the native binary — and all three carry `--session-id dbd94500-…`. The
+    // fleet drew three identical `copilot em tmp` rows for one session.
+    const out = dedupeExternalProcesses([
+      proc(42330, { sessionId: 'dbd94500', startedMs: 1000 }),
+      proc(42334, { sessionId: 'dbd94500', startedMs: 1000 }),
+      proc(42353, { sessionId: 'dbd94500', startedMs: 1120 }),
+    ])
+    expect(out).toHaveLength(1)
+    // The OLDEST, tie-broken by the lowest pid — the same answer on every poll.
+    expect(out[0]!.pid).toBe(42330)
+  })
+
+  it('the answer does not depend on the order /proc happened to report', () => {
+    const a = proc(42353, { sessionId: 'x', startedMs: 1120 })
+    const b = proc(42330, { sessionId: 'x', startedMs: 1000 })
+    expect(dedupeExternalProcesses([a, b])[0]!.pid).toBe(42330)
+    expect(dedupeExternalProcesses([b, a])[0]!.pid).toBe(42330)
+  })
+
+  it('two REAL sessions in one directory stay two rows', () => {
+    // The merge key is the stated id, never the directory. Collapsing by harness+cwd is exactly the
+    // bug `externalId`'s start time was added to avoid.
+    const out = dedupeExternalProcesses([
+      proc(1, { sessionId: 'a' }),
+      proc(2, { sessionId: 'b' }),
+    ])
+    expect(out).toHaveLength(2)
+  })
+
+  it('a process that states NO id is never merged away', () => {
+    // It cannot be proven a duplicate. A spurious row is visible and dismissible; a real session
+    // missing from the fleet is not.
+    const out = dedupeExternalProcesses([proc(1), proc(2), proc(3, { sessionId: 'z' })])
+    expect(out).toHaveLength(3)
+  })
+
+  it('different harnesses never merge, whatever their ids say', () => {
+    const out = dedupeExternalProcesses([
+      proc(1, { sessionId: 'same' }),
+      { harness: 'claude' as const, cwd: '/tmp', pid: 2, startedMs: 1000, sessionId: 'same' },
+    ])
+    expect(out).toHaveLength(2)
+  })
+
+  it('externalId keys on the session id when there is one', () => {
+    // Stable in a way the start time is not: a chain's parent can exit while a child keeps running,
+    // and a clock-keyed id would rename the row underneath the user at that moment.
+    expect(externalId(proc(1, { sessionId: 'abc' }) as never))
+      .toBe(externalId(proc(2, { sessionId: 'abc', startedMs: 9999 }) as never))
+    // And falls back to the old key exactly when there is none.
+    expect(externalId(proc(1) as never)).not.toBe(externalId(proc(1, { startedMs: 2000 }) as never))
   })
 })

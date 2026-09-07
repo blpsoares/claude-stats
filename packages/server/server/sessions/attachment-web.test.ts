@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { join } from 'node:path'
 import {
-  ATTACHMENT_DIR, attachmentImageType, attachmentPathByName, resolveAttachmentRead,
+  ATTACHMENT_DIR, attachmentImageType, attachmentMediaType, attachmentPathByName, resolveAttachmentRead,
 } from './attachment-web'
 
 describe('resolveAttachmentRead', () => {
@@ -75,10 +75,37 @@ describe('attachmentImageType', () => {
     expect(attachmentImageType('a.svg')).toBe('image/svg+xml')
   })
 
-  it('refuses anything that is not one, so this cannot become a file server', () => {
+  it('is the IMAGE half only — a video and a PDF are shown by other elements', () => {
     expect(attachmentImageType('notes.txt')).toBeNull()
     expect(attachmentImageType('id_rsa')).toBeNull()
     expect(attachmentImageType('a.pdf')).toBeNull()
+    expect(attachmentImageType('a.mp4')).toBeNull()
     expect(attachmentImageType('.png')).toBeNull()
+  })
+})
+
+describe('attachmentMediaType', () => {
+  it('THE REPORTED CASE: an attached PDF and video are served, each as what it is', () => {
+    // The route served images only, so a person who attached a PDF or a recording got a card
+    // saying "no preview" beside a file agentop had itself stored, and no way to open it.
+    expect(attachmentMediaType('notes.pdf')).toEqual({ mime: 'application/pdf', kind: 'pdf' })
+    expect(attachmentMediaType('demo.MP4')).toEqual({ mime: 'video/mp4', kind: 'video' })
+    expect(attachmentMediaType('clip.mov')).toEqual({ mime: 'video/quicktime', kind: 'video' })
+    expect(attachmentMediaType('screen.webm')).toEqual({ mime: 'video/webm', kind: 'video' })
+  })
+
+  it('still refuses everything the table does not name, so this cannot become a file server', () => {
+    // The point of a closed table: adding a kind is a deliberate act, never a fallthrough.
+    for (const n of ['notes.txt', 'id_rsa', 'a.zip', 'a.exe', 'a.mkv', '.png', 'noext']) {
+      expect(attachmentMediaType(n)).toBeNull()
+    }
+  })
+
+  it('the image rows are the same ones, and `attachmentImageType` is derived from them', () => {
+    for (const n of ['a.png', 'a.JPG', 'a.gif', 'a.webp', 'a.avif', 'a.bmp', 'a.svg']) {
+      const t = attachmentMediaType(n)
+      expect(t?.kind).toBe('image')
+      expect(attachmentImageType(n)).toBe(t!.mime)
+    }
   })
 })

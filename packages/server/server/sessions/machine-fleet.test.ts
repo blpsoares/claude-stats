@@ -131,9 +131,11 @@ describe('buildMachineFleetReply', () => {
     expect(r.rows[0]!.verbs!.map(v => v.action)).toEqual(['rename', 'kill'])
   })
 
-  it('the screen consent does NOT unlock approve or prompt — they are not implemented', async () => {
+  it('the SCREEN consent unlocks approve and prompt, and carries the screen with them', async () => {
+    // The two halves are one decision: a verb that answers a dialog is only offered where the
+    // dialog can be READ, so the row that carries the verb carries the dialog too.
     const r = (await buildMachineFleetReply({ allowRemoteSessions: true, allowRemoteScreens: true }, 'en', deps_(WITH_VERBS)))!
-    expect(r.rows[0]!.verbs!.map(v => v.action)).toEqual(['rename', 'kill'])
+    expect(r.rows[0]!.verbs!.map(v => v.action)).toEqual(['rename', 'kill', 'approve', 'prompt'])
   })
 
   it("carries the machine's own sentence about an incomplete list", async () => {
@@ -194,11 +196,11 @@ describe('performMachineAction', () => {
     expect(ran.length).toBe(before)
   })
 
-  it('refuses approve and prompt by NAMING the screen, even with both switches on', async () => {
+  it('refuses approve and prompt by NAMING the screen when only the FLEET switch is on', async () => {
     // "Not allowed" would read the same for a verb that needs the screen and one that does not
     // exist. They are different problems and get different sentences.
     for (const action of ['approve', 'prompt']) {
-      const r = await performMachineAction({ allowRemoteSessions: true, allowRemoteScreens: true }, 'en', { action, id: 's1' }, deps)
+      const r = await performMachineAction({ allowRemoteSessions: true }, 'en', { action, id: 's1' }, deps)
       expect(r.ok).toBe(false)
       expect(r.message).toMatch(/screen does not leave this machine/)
     }
@@ -319,5 +321,71 @@ describe('performMachineAction', () => {
     const en = await performMachineAction({}, 'en', { action: 'kill', id: 's1' }, deps)
     const pt = await performMachineAction({}, 'pt', { action: 'kill', id: 's1' }, deps)
     expect(en.message).not.toBe(pt.message)
+  })
+})
+
+describe('the screen, end to end', () => {
+  const WITH_SCREEN = [{
+    id: 's1', title: 'x', harness: 'claude', state: 'waiting-approval', stateLabel: 'needs you',
+    project: 'p', cwd: '/repo',
+    lastLines: ['$ rm -rf /tmp/x', 'Do you want to proceed?'],
+    approvalLines: ['1. Yes', '2. Yes, always', '3. No'],
+    dialogOptions: [{ number: 1, label: 'Yes', selected: true }, { number: 3, label: 'No', selected: false }],
+    chatTurns: [{ role: 'user', text: 'the API key is sk-live-abc123' }],
+    verbs: [{ action: 'approve', label: 'Approve', enabled: true }],
+  }]
+
+  it('the FLEET consent alone relays no screen at all', async () => {
+    const r = (await buildMachineFleetReply({ allowRemoteSessions: true }, 'en', deps_(WITH_SCREEN)))!
+    expect(r.rows[0]!.lastLines).toBeUndefined()
+    expect(r.rows[0]!.approvalLines).toBeUndefined()
+    expect(r.rows[0]!.dialogOptions).toBeUndefined()
+  })
+
+  it('the SCREEN consent relays the terminal and the options, never the transcript', async () => {
+    const r = (await buildMachineFleetReply({ allowRemoteSessions: true, allowRemoteScreens: true }, 'en', deps_(WITH_SCREEN)))!
+    const row = r.rows[0]! as unknown as Record<string, unknown>
+    expect(row.lastLines).toEqual(['$ rm -rf /tmp/x', 'Do you want to proceed?'])
+    expect(row.dialogOptions).toHaveLength(2)
+    // The one field NEITHER switch grants. Its route answers 410 and a screen consent must not
+    // quietly reopen it.
+    expect(Object.keys(row)).not.toContain('chatTurns')
+  })
+
+  it('the CHOICE reaches the machine — an approve is never a blind confirm', async () => {
+    // Most dialogs are not yes/no. A key that "approves" takes whichever row is HIGHLIGHTED, so
+    // the number the person picked has to travel or the central is choosing for them.
+    const seen: Record<string, unknown>[] = []
+    const d = {
+      ...deps_(WITH_SCREEN),
+      runAction: async (_l: unknown, req: Record<string, unknown>) => {
+        seen.push(req)
+        return { ok: true, message: 'sent' }
+      },
+    }
+    await performMachineAction(
+      { allowRemoteSessions: true, allowRemoteScreens: true }, 'en',
+      { action: 'approve', id: 's1', choice: 3 }, d as never,
+    )
+    expect(seen[0]!.choice).toBe(3)
+  })
+
+  it('NO choice stays absent rather than becoming zero', async () => {
+    // `runFleetAction` reads an absent choice as "use the dialog's confirm key", which is right
+    // where there is nothing to choose between. `undefined` and "option zero" are different asks.
+    const seen: Record<string, unknown>[] = []
+    const d = {
+      ...deps_(WITH_SCREEN),
+      runAction: async (_l: unknown, req: Record<string, unknown>) => {
+        seen.push(req)
+        return { ok: true, message: 'sent' }
+      },
+    }
+    await performMachineAction(
+      { allowRemoteSessions: true, allowRemoteScreens: true }, 'en',
+      { action: 'prompt', id: 's1', text: 'go on' }, d as never,
+    )
+    expect(Object.keys(seen[0]!)).not.toContain('choice')
+    expect(seen[0]!.text).toBe('go on')
   })
 })

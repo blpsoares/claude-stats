@@ -94,8 +94,23 @@ export function sessionStats(
   const used = num((meta as { context_tokens?: number }).context_tokens)
   const fraction = caps?.contextWindow ? contextFraction(used, window) : null
 
-  const invocations = meta.agentMetrics?.invocations ?? []
-  const subagents = caps?.agents
+  /**
+   * ABSENT `agentMetrics` IS NOT AN EMPTY LIST, and reading it as one is rule 2 of this file broken
+   * in the one place it was written down.
+   *
+   * `?? []` made a record with no `agentMetrics` at all report `None ran` — a confident zero about
+   * something the reader could not see. Measured on a live 39 MB transcript that dispatched several
+   * subagents: NO `Agent` tool_use is written into the parent at all (tool names present: Bash,
+   * Read, Write, Edit, AskUserQuestion, Skill, ToolSearch, one MCP call), and no
+   * `toolUseResult.agentType` either — a background agent leaves the parent transcript no record,
+   * so `extractAgentMetrics` has nothing to find and the field is never written. "None ran" was
+   * therefore false on exactly the conversations that ran the most of them.
+   *
+   * An EMPTY array is still a real zero: the parser looked and found none. The distinction is the
+   * whole point — one is an answer, the other is the absence of one.
+   */
+  const invocations = meta.agentMetrics?.invocations
+  const subagents = caps?.agents && invocations !== undefined
     ? {
       count: invocations.length,
       tokens: invocations.reduce((n, i) => n + num(i.totalTokens), 0),

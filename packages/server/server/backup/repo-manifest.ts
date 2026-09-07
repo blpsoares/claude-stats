@@ -1,0 +1,378 @@
+/**
+ * repo-manifest.ts — PURE. From what git said about a directory to a repository that can be rebuilt.
+ *
+ * ## Grouped by the git COMMON DIR, and only by that
+ *
+ * The hard part is not listing repositories, it is knowing that 218 directories are really 89.
+ * Three candidate keys, and two of them are wrong:
+ *
+ *  - by REMOTE — merges two independent clones of the same repository into one entry, and then the
+ *    restore rebuilds one of them and silently drops the other;
+ *  - by PATH PREFIX — breaks the moment a worktree lives outside its checkout, which `git worktree
+ *    add /tmp/x` does routinely;
+ *  - by COMMON DIR — exact. A worktree's `--git-common-dir` IS its main checkout's `.git`. That is
+ *    the one thing they provably share, which is the same reasoning `repo-facts.ts` records when it
+ *    refuses `--show-toplevel` as a key.
+ *
+ * ## Four notes, each of which means "there is nothing to clone"
+ *
+ * `gone` (the directory no longer exists), `not-a-repo` (it exists and git does not know it),
+ * `no-remote` (a real repository with nowhere to clone from — its history can only travel as a full
+ * bundle), `outside-home` (recorded so the report is complete; `/tmp` is not a place to put a
+ * repository back). A directory that is GONE is not a directory outside a repository, and the
+ * discriminator is whether it EXISTS, never whether git answered — the same distinction
+ * `repo-facts.ts` exists to make.
+ *
+ * `restoreCommands` is the reverse direction and lives here so the plan a person reads and the
+ * commands that run are the same function. A note means it emits nothing at all.
+ */
+
+export type RepoNote =
+  | 'no-remote' | 'gone' | 'not-a-repo' | 'outside-home' | 'no-main-checkout' | 'too-large' | null
+
+export interface RepoWorktree {
+  /** `~`-prefixed when under $HOME, absolute otherwise. */
+  path: string
+  branch: string
+  head: string
+}
+
+export interface RepoDirty {
+  path: string
+  /** Path INSIDE the archive (`repos/<key>__<dir>.patch`), or null when there is no patch. */
+  patch: string | null
+  /**
+   * Set when the tree IS dirty and its diff could not be captured — too large for the buffer, too
+   * slow for the timeout, or git refused. Carries the reason, and the restore prints it.
+   *
+   * This field exists because the alternative is the worst failure this module can have: a `patch`
+   * of `null` used to mean both "clean" and "we could not look", so a working tree full of
+   * uncommitted work was silently backed up as though it had none.
+   */
+  patchUnavailable?: string
+  /**
+   * Untracked file names — a LIST, never the contents.
+   *
+   * An untracked `.env`, `credentials.json` or service-account key sitting in a working tree is
+   * exactly the class of file Task 1's exclusion table exists to keep out of the archive, and it
+   * is invisible to that table because it lives under a repository path rather than a known
+   * dotfile. Carrying the contents would smuggle back in through the repos layer precisely what
+   * the secrets decision keeps out of the raw layer. The restore prints these by name so nothing
+   * goes missing in silence.
+   */
+  untracked: string[]
+}
+
+export interface RepoEntry {
+  /** The normalized remote, or the common dir when there is none. Stable across machines. */
+  key: string
+  /** The url as configured — what git actually needs, not the normalized form. */
+  cloneUrl: string
+  mainPath: string
+  mainBranch: string
+  worktrees: RepoWorktree[]
+  /** Path inside the archive, or null. */
+  bundle: string | null
+  /**
+   * Set when a bundle could NOT be produced — a permission error, a full disk, a timeout. Carries
+   * the reason, and the restore prints it.
+   *
+   * A `bundle` of `null` used to mean both "every local commit is already on the remote" and "we
+   * could not look", so a repository whose unpushed work was never captured restored silently
+   * without it.
+   */
+  bundleUnavailable?: string
+  dirty: RepoDirty[]
+  note: RepoNote
+}
+
+/** What one probe of one directory produced. All paths absolute. */
+export interface DirFacts {
+  path: string
+  exists: boolean
+  /** Absolute path of `git rev-parse --git-common-dir`, or null when git said nothing. */
+  commonDir: string | null
+  topLevel: string | null
+  cloneUrl: string
+  /** Normalized via normalizeGitRemote by the caller. '' when there is none. */
+  remote: string
+  branch: string
+  head: string
+}
+
+export function homeRelative(path: string, homeDir: string): string {
+  if (path === homeDir) return '~'
+  return path.startsWith(homeDir + '/') ? '~' + path.slice(homeDir.length) : path
+}
+
+export function expandHome(path: string, homeDir: string): string {
+  if (path === '~') return homeDir
+  return path.startsWith('~/') ? homeDir + path.slice(1) : path
+}
+
+function isUnder(path: string, homeDir: string): boolean {
+  return path === homeDir || path.startsWith(homeDir + '/')
+}
+
+/**
+ * Turn a flat list of probed directories into repository entries.
+ *
+ * A directory whose `topLevel` equals `dirname(commonDir)` is the MAIN checkout; every other
+ * directory sharing that common dir is one of its worktrees. A group with no main checkout among
+ * the probed directories (the checkout itself was never a session cwd) promotes the common dir's
+ * parent to `mainPath`, because that is where git will put it back.
+ */
+/**
+ * The working tree a git common dir belongs to, or null when the layout does not name one.
+ *
+ * `<tree>/.git` is the ordinary case. It is NOT the only one: a BARE repository with worktrees
+ * hanging off it (`~/proj.git` + `git worktree add ~/proj/main`) and a `--separate-git-dir`
+ * checkout both report a common dir that is not `<tree>/.git`, and for a bare repository there is
+ * genuinely no working tree to be found. Returning null for those is the whole point — the
+ * alternative, which this module shipped for one review cycle, was to leave `mainDir` as the raw
+ * common dir, match no member, and promote whichever directory happened to be FIRST in the array
+ * to "main". That makes the restore clone into a worktree's path and rebuild the real checkout as
+ * a worktree of itself.
+ */
+function mainTreeOf(commonDir: string): string | null {
+  const suffix = '/.git'
+  return commonDir.endsWith(suffix) ? commonDir.slice(0, -suffix.length) : null
+}
+
+export function groupRepos(facts: DirFacts[], homeDir: string): RepoEntry[] {
+  const noted: RepoEntry[] = []
+  const groups = new Map<string, DirFacts[]>()
+
+  for (const f of facts) {
+    if (!f.exists) {
+      noted.push(bare(f, homeDir, 'gone'))
+      continue
+    }
+    if (!f.commonDir || !f.topLevel) {
+      noted.push(bare(f, homeDir, 'not-a-repo'))
+      continue
+    }
+    const list = groups.get(f.commonDir) ?? []
+    list.push(f)
+    groups.set(f.commonDir, list)
+  }
+
+  const entries: RepoEntry[] = []
+  for (const [commonDir, members] of groups) {
+    const remote = members.find(m => m.remote)?.remote ?? ''
+    const cloneUrl = members.find(m => m.cloneUrl)?.cloneUrl ?? ''
+    const mainDir = mainTreeOf(commonDir)
+
+    // No working tree can be named from this layout. Say so rather than electing one: every note
+    // except `too-large` makes the restore skip the entry with a reason the user reads, and a
+    // skipped repository costs a manual clone while a wrongly elected one corrupts a real checkout.
+    if (!mainDir) {
+      entries.push({
+        key: remote || commonDir,
+        cloneUrl,
+        mainPath: homeRelative(commonDir, homeDir),
+        mainBranch: '',
+        worktrees: members.map(w => ({
+          path: homeRelative(w.topLevel ?? w.path, homeDir),
+          branch: w.branch,
+          head: w.head,
+        })),
+        bundle: null,
+        dirty: [],
+        note: 'no-main-checkout',
+      })
+      continue
+    }
+
+    // The main checkout may simply never have been a session cwd, so it is absent from `members`.
+    // That is fine — git puts it back at `mainDir` regardless — but its BRANCH is then unknown, and
+    // it must stay unknown. Borrowing a worktree's branch would have the restore check that branch
+    // out in the main checkout and then fail the `worktree add` for it: git refuses to have one
+    // branch checked out in two trees. An empty `mainBranch` makes `restoreArgv` omit the checkout
+    // step, and each worktree still adds its own branch.
+    const main = members.find(m => m.topLevel === mainDir) ?? null
+    // By TREE, not by object identity. Several sessions can run inside one checkout (`~/proj` and
+    // `~/proj/packages/web`), and each is its own `DirFacts` resolving to the SAME `topLevel` — so
+    // `m !== main` removed exactly one of them and left the rest standing as worktrees of the very
+    // tree they are. The restore then tries `git worktree add` on the main checkout and applies its
+    // patch a second time, both of which fail, over data that was captured correctly.
+    // Worktrees are deduped by tree for the same reason.
+    const seen = new Set<string>(main ? [mainDir] : [])
+    const worktrees = members.filter(m => {
+      const tree = m.topLevel ?? m.path
+      if (seen.has(tree)) return false
+      seen.add(tree)
+      return true
+    })
+
+    // `outside-home` is decided BEFORE `no-remote`: it is the stronger statement — this repository
+    // will not be put back here whatever else is true of it — and deciding it first is what stops
+    // the backup spending a full-history bundle on a remote-less repository in /tmp that no restore
+    // will ever place.
+    let note: RepoNote = null
+    if (!isUnder(mainDir, homeDir)) note = 'outside-home'
+    else if (!remote) note = 'no-remote'
+
+    entries.push({
+      key: remote || commonDir,
+      cloneUrl,
+      mainPath: homeRelative(mainDir, homeDir),
+      mainBranch: main?.branch ?? '',
+      worktrees: worktrees.map(w => ({
+        path: homeRelative(w.topLevel ?? w.path, homeDir),
+        branch: w.branch,
+        head: w.head,
+      })),
+      bundle: null,
+      dirty: [],
+      note,
+    })
+  }
+  return [...entries, ...noted]
+}
+
+function bare(f: DirFacts, homeDir: string, note: RepoNote): RepoEntry {
+  return {
+    key: f.path,
+    cloneUrl: '',
+    mainPath: homeRelative(f.path, homeDir),
+    mainBranch: '',
+    worktrees: [],
+    bundle: null,
+    dirty: [],
+    note,
+  }
+}
+
+/**
+ * With a bundle, the clone must not leave any branch checked out under the name the bundle needs
+ * to write. Git's refusal is keyed on what HEAD symbolically points at — verified against real
+ * git: `--no-checkout` alone changes nothing, because `clone` still attaches HEAD to a local
+ * branch even when it skips populating the working tree, and a freshly `git init`-ed repo with no
+ * commits at all is refused the same way, on its still-unborn default branch. The only thing that
+ * actually clears the refusal is moving HEAD off the name the fetch needs. `branch -m
+ * <placeholder>` with a single argument renames whatever is CURRENTLY checked out — so the
+ * original name never has to be known in advance — without touching the commit it points at, and
+ * HEAD follows the rename. That vacates the original name for the forced refspec to rewrite, and
+ * keeps the pre-fetch content reachable under the placeholder for the no-branch-known case below.
+ *
+ * Exported so the rename step and the delete step at the end of `restoreArgv` cannot drift apart.
+ */
+export const PLACEHOLDER_BRANCH = 'agentistics-restore-placeholder'
+
+export interface RestoreStep {
+  argv: string[]
+  /**
+   * True when this step's failure must not abort the rest of the repository. `--set-upstream-to`
+   * legitimately fails on a branch with no matching remote branch, and a repository's worktrees and
+   * uncommitted patches are worth far more than one tracking link — `runSteps` logs an optional
+   * failure and carries on instead of abandoning everything after it.
+   */
+  optional?: boolean
+}
+
+/**
+ * The exact commands that rebuild this entry under `homeDir`.
+ *
+ * Empty for every note except `too-large`, which is a real, cloneable repository whose local-only
+ * history did not fit — it clones, and the report says what did not come with it. Returning the
+ * commands rather than running them is what lets `agentop restore` print the plan before touching
+ * anything.
+ */
+export function restoreArgv(entry: RepoEntry, homeDir: string, assetDir = ''): RestoreStep[] {
+  if (entry.note && entry.note !== 'too-large') return []
+  if (!entry.cloneUrl) return []
+
+  const main = expandHome(entry.mainPath, homeDir)
+  // `bundle` and `patch` are paths INSIDE the archive. At restore time they live under wherever
+  // the archive was extracted, so the caller passes that directory; the plan printed BEFORE
+  // extraction passes nothing and shows the archive-relative path, which is what a reader wants.
+  const asset = (rel: string): string => (assetDir ? `${assetDir}/${rel}` : rel)
+  const step = (argv: string[], optional = false): RestoreStep => ({ argv, optional })
+
+  const out: RestoreStep[] = entry.bundle
+    ? [
+        step(['git', 'clone', '--no-checkout', entry.cloneUrl, main]),
+        step(['git', '-C', main, 'branch', '-m', PLACEHOLDER_BRANCH]),
+        step(['git', '-C', main, 'fetch', asset(entry.bundle), '+refs/heads/*:refs/heads/*']),
+      ]
+    : [step(['git', 'clone', entry.cloneUrl, main])]
+
+  if (entry.mainBranch) {
+    out.push(step(['git', '-C', main, 'checkout', entry.mainBranch]))
+    if (entry.bundle) {
+      // `branch -m` above carried the tracking config to the placeholder, and the bundle fetch then
+      // created `refs/heads/<mainBranch>` with none — so a restored repo with unpushed commits (the
+      // only kind that gets a bundle) answered `git pull`/`git push` with "no tracking information" /
+      // "no upstream branch". Re-establish it here; it legitimately fails on a branch with no
+      // matching remote branch, so it must not cost the worktrees and patches that follow.
+      out.push(step(
+        ['git', '-C', main, 'branch', '--set-upstream-to', `origin/${entry.mainBranch}`, entry.mainBranch],
+        true,
+      ))
+    }
+  } else if (entry.bundle) {
+    // The main checkout was never probed, so its branch is unknown — but `--no-checkout` left the
+    // working tree empty and something has to materialise it. A plain `reset --hard` here left the
+    // checkout ON the placeholder branch, with the pushed tip in the working tree while the actual
+    // unpushed work sat unreachable in `refs/heads/main` — and the placeholder then survived into
+    // every later backup as spurious "unpushed work". A detached checkout at the clone's own default
+    // is honest about knowing no branch name, and leaves no placeholder checked out.
+    out.push(step(['git', '-C', main, 'checkout', '--detach', 'origin/HEAD']))
+  }
+
+  for (const w of entry.worktrees) {
+    const at = expandHome(w.path, homeDir)
+    // A detached worktree has no branch — `probeDir` records '' for it deliberately. Passing that
+    // through emitted an empty argv element and git refused the whole repository at that point.
+    if (w.branch) out.push(step(['git', '-C', main, 'worktree', 'add', at, w.branch]))
+    else if (w.head) out.push(step(['git', '-C', main, 'worktree', 'add', '--detach', at, w.head]))
+    // With neither a branch nor a head there is nothing to recreate; the entry stays in the
+    // manifest so the report can name it.
+  }
+  for (const d of entry.dirty) {
+    if (d.patch) out.push(step(['git', '-C', expandHome(d.path, homeDir), 'apply', asset(d.patch)]))
+  }
+
+  // Last, once nothing else needs it: the placeholder held the pre-fetch content reachable during
+  // the steps above and would otherwise sit in the repository forever, bundled again as "unpushed
+  // work" by the very next backup. Optional for the same reason the rename step above is — a repo
+  // whose worktrees or patches failed to apply should not additionally lose this cleanup as a hard
+  // failure.
+  if (entry.bundle) out.push(step(['git', '-C', main, 'branch', '-D', PLACEHOLDER_BRANCH], true))
+
+  return out
+}
+
+/**
+ * The same plan, joined for a person to read.
+ *
+ * `restoreArgv` is what RUNS and `restoreCommands` is what PRINTS, from one source — because a
+ * path containing a space cannot be recovered from a joined string, and joining then re-splitting
+ * is how a wrong argv (or a shell) gets in. The printed form is for the human reading
+ * `agentop restore`'s plan; nothing executes it.
+ */
+export function restoreCommands(entry: RepoEntry, homeDir: string, assetDir = ''): string[] {
+  return restoreArgv(entry, homeDir, assetDir).map(s => s.argv.join(' '))
+}
+
+/**
+ * Where one repository's asset (a bundle, a patch) lives INSIDE the archive.
+ *
+ * Keyed on the checkout as well as the remote, and that pairing is the whole point. One remote can
+ * be cloned to several directories, which `groupRepos` correctly reports as several entries — so a
+ * name derived from the remote alone is the SAME name for all of them. Measured on a real machine:
+ * `~/agentistics` (20 branches of unpushed work, 508 KB) and `~/aipe-blpsoares/agentistics`
+ * (everything already pushed, 4 KB) collided, the second `git bundle create` overwrote the first,
+ * and the backup carried 4 KB in place of every unpushed branch while reporting success. Worse is
+ * available: `createBundle` DELETES a bundle that comes out empty or oversized, so the second
+ * checkout can remove the first's file outright, leaving a manifest entry pointing at nothing.
+ *
+ * Both components are folded to `[A-Za-z0-9._-]` so the result is one path segment under `repos/`
+ * — a separator surviving into the name would put the asset in a directory the archive never
+ * creates.
+ */
+export function assetRel(key: string, path: string, extension: string): string {
+  const safe = (s: string): string => s.replace(/[^A-Za-z0-9._-]/g, '_')
+  return `repos/${safe(key)}__${safe(path)}${extension}`
+}

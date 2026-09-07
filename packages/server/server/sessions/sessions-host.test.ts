@@ -76,7 +76,7 @@ describe('createSessionsPoller', () => {
     // work. It reproduces at the poller: a session working (its probed footer moving), then ONE poll
     // where the frame is momentarily quiet — a repaint settling, a sub-turn finishing — reads `waiting`
     // raw. Before this fix the counter jumped to 1 on that single frame and a person was summoned.
-    const frames: Record<string, string[]> = { a: ['working hard · esc to interrupt'] }
+    const frames: Record<string, string[]> = { a: ['· Working… (12s · ↓ 1.7k tokens)'] }
     const p = poller({
       backend: fakeBackend({ sessions: [backendSession('a')], frames }),
       registry: [managed('a')],
@@ -107,11 +107,11 @@ describe('createSessionsPoller', () => {
     expect((await p.poll()).attention).toBe(0) // fell on the very next sample
   })
 
-  it('reports a session working from its probed footer', async () => {
+  it('reports a session working from its probed MAIN-agent marker', async () => {
     const p = poller({
       backend: fakeBackend({
         sessions: [backendSession('a')],
-        frames: { a: ['  ⏸ manual mode on · esc to interrupt · ← 6 agents'] },
+        frames: { a: ['  ⏸ manual mode on · Jitterbugging… (37s · ↓ 1.7k tokens) · ← 6 agents'] },
       }),
       registry: [managed('a')],
     })
@@ -119,7 +119,32 @@ describe('createSessionsPoller', () => {
     expect((await p.poll()).attention).toBe(0)
   })
 
-  it('sees a frame that changed between two polls as working, and confirms waiting before it flips', async () => {
+  it('a session whose ONLY marker is the interruptible one needs a person, and says a subagent runs', async () => {
+    // claude prints `esc to interrupt` whenever ANYTHING is interruptible — a background subagent
+    // included — so a session that has finished its own turn and is waiting for the person to type
+    // still carried it. Reported exactly that way: the fleet said `working` about sessions that were
+    // waiting. The main agent's own spinner is what says it is producing; the bare interruptible
+    // marker says only that something else is.
+    const p = poller({
+      backend: fakeBackend({
+        sessions: [backendSession('a')],
+        frames: { a: ['  ⏸ manual mode on · esc to interrupt · ← 6 agents'] },
+      }),
+      registry: [managed('a')],
+    })
+    await p.poll()
+    const snap = await p.poll()
+    expect(snap.sessions[0]!.activity).toBe('waiting')
+    expect(snap.sessions[0]!.background).toBe(true)
+    expect(snap.attention).toBe(1)
+  })
+
+  it('a SINGLE frame change never reaches the row — that is what a repaint looks like', async () => {
+    // On claude, which prints `esc to interrupt` whenever it is working, movement WITHOUT that
+    // marker is most likely a repaint: a tmux advisory line, a plugin notice, a status clock. Each
+    // one used to flip the row to `working` for a poll and back, so the row alternated between
+    // `working` and `needs you` continuously with a notification each time — reported exactly that
+    // way. `confirmActivities`' `corroborated` set is where this lives.
     const frames: Record<string, string[]> = { a: ['one'] }
     const p = poller({
       backend: fakeBackend({ sessions: [backendSession('a')], frames }),
@@ -127,15 +152,52 @@ describe('createSessionsPoller', () => {
     })
     expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
     frames.a = ['two']
-    // A changed frame is movement, and movement is believed at once.
-    expect((await p.poll()).sessions[0]!.activity).toBe('working')
-    // Now the frame goes quiet. The RAW reading is `waiting`, but a single quiet poll after work is
-    // not yet a fact — the fleet holds `working` rather than assert a person is needed on one frame.
-    // This one-interval confirmation is the whole point: it is what stopped the counter reporting a
-    // session that had just gone quiet (a repaint, a finished sub-turn) as "waiting on you".
-    expect((await p.poll()).sessions[0]!.activity).toBe('working')
-    // Seen quiet on two consecutive polls now — confirmed waiting.
     expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+    // The frame has stopped changing — the repaint is over and the row never moved.
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+  })
+
+  it('a SUSTAINED change is real work, and reaches the row', async () => {
+    // Two polls in a row that both moved. That is not a repaint, and it is what an assistant
+    // drawing output actually looks like on a harness whose marker is off screen.
+    const frames: Record<string, string[]> = { a: ['one'] }
+    const p = poller({
+      backend: fakeBackend({ sessions: [backendSession('a')], frames }),
+      registry: [managed('a')],
+    })
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+    frames.a = ['two']
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+    frames.a = ['three']
+    expect((await p.poll()).sessions[0]!.activity).toBe('working')
+    // …and going quiet still takes two polls to be believed, unchanged.
+    expect((await p.poll()).sessions[0]!.activity).toBe('working')
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+  })
+
+  it('a harness with NO working marker still believes movement at once', async () => {
+    // Codex draws an identical screen streaming and idle, so movement is the only signal it has.
+    // Requiring corroboration there would mean it never reads as working at all.
+    const frames: Record<string, string[]> = { a: ['one'] }
+    const p = poller({
+      backend: fakeBackend({ sessions: [backendSession('a')], frames }),
+      registry: [managed('a', { harness: 'codex' })],
+    })
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+    frames.a = ['two']
+    expect((await p.poll()).sessions[0]!.activity).toBe('working')
+  })
+
+  it('the harness saying so is believed at once', async () => {
+    // `esc to interrupt` is claude's own statement that it is working — evidence, not a repaint.
+    const frames: Record<string, string[]> = { a: ['idle'] }
+    const p = poller({
+      backend: fakeBackend({ sessions: [backendSession('a')], frames }),
+      registry: [managed('a')],
+    })
+    expect((await p.poll()).sessions[0]!.activity).toBe('waiting')
+    frames.a = ['esc to interrupt']
+    expect((await p.poll()).sessions[0]!.activity).toBe('working')
   })
 
   it('never captures a dead pane', async () => {
@@ -152,7 +214,7 @@ describe('createSessionsPoller', () => {
   })
 
   it('rings once on the transition into waiting, not on every poll', async () => {
-    const frames: Record<string, string[]> = { a: ['esc to interrupt'] }
+    const frames: Record<string, string[]> = { a: ['· Working… (3s · ↓ 12 tokens)'] }
     const p = poller({
       backend: fakeBackend({ sessions: [backendSession('a')], frames }),
       registry: [managed('a')],

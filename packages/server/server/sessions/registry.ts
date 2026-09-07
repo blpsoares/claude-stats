@@ -22,12 +22,15 @@
  *  - a mutation that changes nothing (`remove` of an id that was never there) does not write at all.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { MANAGED_SESSIONS_FILE } from '../config'
 import type { ManagedSession } from './types'
 import { withFileLock } from './file-lock'
+
+/** Distinguishes two writes from the SAME process; the pid distinguishes the processes. */
+let writeSeq = 0
 
 /**
  * A short, lowercase id that is safe as a tmux session name.
@@ -217,9 +220,30 @@ export function createSessionRegistry(file: string): SessionRegistry {
     await mkdir(dirname(file), { recursive: true })
     // tmp-then-rename: a crash or a concurrent reader mid-write sees either the old file or the
     // complete new one, never a truncated one `read()` would parse-fail on.
-    const tmp = `${file}.tmp`
-    await writeFile(tmp, `${JSON.stringify(list, null, 2)}\n`, 'utf-8')
-    await rename(tmp, file)
+    //
+    // THE TEMP PATH IS UNIQUE PER WRITE, and that is the whole point of it. It used to be the
+    // constant `${file}.tmp`, shared by every writer — and `file-lock.ts` deliberately does not
+    // exclude them all: a blocked acquirer proceeds after `WAIT_MS` and a lock older than
+    // `STALE_MS` is stolen, both so that a lock can never wedge the product. Two writers therefore
+    // reach here at once by design, and with one temp path they interleave INSIDE it: the rename
+    // then publishes a document that is half one list and half the other, `read()` cannot parse
+    // it, and the whole registry is quarantined — every managed session losing its record at once,
+    // which is what "the sessions stopped by themselves" looks like from outside.
+    //
+    // Measured on one machine: 19 `managed-sessions.json.corrupt-*` files between 29 Aug and
+    // 6 Sep. With a unique path each writer publishes a COMPLETE list by an atomic rename, so the
+    // worst case degrades from a destroyed registry to one lost update — which the lock already
+    // makes rare, and which the next poll repairs.
+    const tmp = `${file}.tmp.${process.pid}.${(writeSeq += 1)}`
+    try {
+      await writeFile(tmp, `${JSON.stringify(list, null, 2)}\n`, 'utf-8')
+      await rename(tmp, file)
+    } catch (err) {
+      // Never leave the scratch file behind: it is named after this process and nothing would ever
+      // come back for it.
+      await rm(tmp, { force: true }).catch(() => {})
+      throw err
+    }
   }
 
   // Chains `fn` behind whatever is already queued, so its read and write run as one atomic step

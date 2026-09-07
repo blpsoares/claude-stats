@@ -34,6 +34,7 @@ import { resolveBackend } from './index'
 import { scanProcesses } from '../live-sessions'
 import { loadHarnessSessions } from './harness-sessions'
 import { createSessionsPoller, type SessionSnapshot } from './sessions-host'
+import { isServerProcess, readServerSnapshot } from './shared-snapshot'
 import { needsAttention, type SessionView } from './session-view'
 import { planTaskReopen, taskReopenSucceeded } from './task-reopen'
 import { TASKS_FILE } from '../config'
@@ -592,6 +593,22 @@ function fleetJson(snap: SessionSnapshot): unknown {
 const CONFIRM_POLL_GAP_MS = 700
 
 async function pollFleet(backend: SessionBackend): Promise<SessionSnapshot> {
+  /*
+   * THE RUNNING SERVER'S POLLER FIRST — it is the one with MEMORY.
+   *
+   * The two-poll seeding below is the best a one-shot command can do ALONE, and it is not enough:
+   * `working` is movement, and two frames 700 ms apart can be identical while the assistant is
+   * between tokens. Measured against a live machine, `agentop session ls` reported ZERO sessions
+   * running while the server's own fleet reported four — which is exactly "aqui aparecem 4 e no
+   * agentop só 3", in its worst form.
+   *
+   * `null` means no server is running, and then the seeding below is still the right answer.
+   */
+  const shared = isServerProcess()
+    ? null
+    : await readServerSnapshot<SessionSnapshot>(await resolveLang())
+  if (shared) return shared
+
   const poller = createSessionsPoller({
     backend, readRegistry, scanProcesses, loadConversations, loadHarnessSessions,
   })

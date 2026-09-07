@@ -87,6 +87,10 @@ export const ATTENTION_RULES: Record<HarnessId, AttentionRules | null> = {
     ],
     // The footer while a turn runs. `? for shortcuts` takes its place when the turn ends.
     working: [/esc to interrupt/],
+    // The MAIN agent producing — see `AttentionRules.mainWorking`. Captured from a live session on
+    // 2026-09-05 (claude 2.1.261): `· Jitterbugging… (37s · ↓ 1.7k tokens · thought for 17s)`. The
+    // verb is whimsical and changes every frame; the elapsed time and the token counter do not.
+    mainWorking: [/\(\d+[hms][^)]*·\s*↓/],
   },
   codex: {
     probed: 'codex 0.113.0, 2026-08-13',

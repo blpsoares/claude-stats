@@ -6,6 +6,8 @@ import {
   saveNotificationSettings,
   requestNotificationPermission,
   getBrowserNotificationPermission,
+  notificationSupport,
+  type NotificationSupport,
   playNotificationSound,
   triggerSessionNotification,
   DEFAULT_NOTIFICATION_SETTINGS,
@@ -22,9 +24,15 @@ export default function NotificationsSettings() {
 
   const [settings, setSettings] = useState<NotificationSettings>(getNotificationSettings)
   const [permission, setPermission] = useState<NotificationPermission>('default')
+  // WHETHER THIS BROWSER CAN NOTIFY AT ALL, which is a different question from whether it has been
+  // asked. On iPhone the API exists only in a web app installed on the Home Screen — in a tab it is
+  // simply absent, so the button below could never do anything and the screen had no way to say
+  // why. Read once, in an effect, so a server render never touches `navigator`.
+  const [support, setSupport] = useState<NotificationSupport>('ok')
 
   useEffect(() => {
     setPermission(getBrowserNotificationPermission())
+    setSupport(notificationSupport())
   }, [])
 
   function update(partial: Partial<NotificationSettings>) {
@@ -164,7 +172,28 @@ export default function NotificationsSettings() {
               {pt ? 'Permissão do Navegador' : 'Browser Permission'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              {permission === 'granted' ? (
+              {support !== 'ok' ? (
+                <>
+                  <ShieldAlert size={12} style={{ color: 'var(--anthropic-orange)' }} />
+                  <span>
+                    {support === 'insecure'
+                      ? (pt
+                          ? 'Esta página está em http://, e notificações (assim como o service worker e a instalação) só existem em uma origem segura. Se você acessa por Tailscale, use `tailscale serve` para servir em https:// pelo nome da máquina — é o que destrava tudo isto.'
+                          : 'This page is on http://, and notifications — like the service worker and installability — exist only on a secure origin. If you reach it over Tailscale, use `tailscale serve` to serve it over https:// on the machine name; that is what unlocks all of this.')
+                      : support === 'needs-safari'
+                        ? (pt
+                            ? 'Este app foi adicionado à tela de início pelo Chrome, e no iPhone só um app adicionado pelo Safari roda de verdade em modo standalone — que é o único que recebe notificações. Remova este ícone e adicione de novo pelo Safari.'
+                            : 'This app was added to the Home Screen from Chrome, and on iPhone only an app added from Safari actually runs standalone — the only mode given notifications. Remove this icon and add it again from Safari.')
+                        : support === 'needs-install'
+                          ? (pt
+                              ? 'O iPhone só permite notificações depois que o app é instalado na tela de início pelo Safari — abra o menu de compartilhar e escolha “Adicionar à Tela de Início”.'
+                              : 'iPhone only allows notifications once the app is installed on the Home Screen from Safari — open the share menu and choose “Add to Home Screen”.')
+                          : (pt
+                              ? 'Este navegador não oferece notificações. Os alertas sonoros continuam funcionando.'
+                              : 'This browser offers no notifications. The sound alerts still work.')}
+                  </span>
+                </>
+              ) : permission === 'granted' ? (
                 <>
                   <CheckCircle2 size={12} style={{ color: '#22c55e' }} />
                   <span>{pt ? 'Permissão concedida no navegador' : 'Permission granted in browser'}</span>
@@ -172,7 +201,16 @@ export default function NotificationsSettings() {
               ) : permission === 'denied' ? (
                 <>
                   <AlertCircle size={12} style={{ color: '#ef4444' }} />
-                  <span>{pt ? 'Bloqueada nas configurações do navegador' : 'Blocked in browser settings'}</span>
+                  {/* A DENIED PERMISSION CANNOT BE ASKED FOR AGAIN. The browser resolves
+                      `requestPermission()` straight to `denied` without showing anything, so a
+                      button here is one that does nothing when pressed — which is exactly what
+                      "não tá pedindo permissão" looked like from the other side. The way back is
+                      the system's own settings, and the sentence says where. */}
+                  <span>
+                    {pt
+                      ? 'Bloqueada. O navegador não pergunta de novo — libere em Ajustes › Notificações › agentistics (ou remova o app da tela de início e adicione outra vez).'
+                      : 'Blocked. The browser will not ask again — allow it in Settings › Notifications › agentistics (or remove the app from the Home Screen and add it again).'}
+                  </span>
                 </>
               ) : (
                 <>
@@ -184,7 +222,12 @@ export default function NotificationsSettings() {
           </div>
         </div>
 
-        {permission !== 'granted' && (
+        {/* Absent rather than disabled where it cannot work: a button that does nothing when
+            pressed is indistinguishable from a broken one, and the sentence above already says
+            what to do instead. */}
+        {/* Only where pressing it can actually do something: `default` is the one state the
+            browser will still show a prompt for. */}
+        {support === 'ok' && permission === 'default' && (
           <button
             onClick={handleRequestPermission}
             style={{

@@ -28,9 +28,10 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, Square, X } from 'lucide-react'
+import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
+import { modeStyle } from '../../lib/modeStyle'
 import { ApprovalCard } from './ApprovalCard'
 import { ChatBubble, type ChatTurn } from './ChatBubble'
 import { WorkingNote } from './WorkingNote'
@@ -39,19 +40,19 @@ import { isImagePath } from '../../lib/attachmentPreview'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
-import { sessionScratch, type CachedChat } from '../../lib/sessionScratch'
+import { scratchKey, sessionScratch, type CachedChat } from '../../lib/sessionScratch'
 import { composerMaxHeight } from '../../lib/composerHeight'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
 import { MAX_ATTACHMENTS, attachmentRoom, planPaste } from '../../lib/pastePlan'
-import { appendDictation, dictatedText, dictationError, dictationLocale, dictationSupport, insecureAlternative } from '../../lib/dictation'
+import { appendDictation, dictationError, dictationLocale, dictationSupport, insecureAlternative, splitDictation } from '../../lib/dictation'
 import { modelSwitchLine, modelSwitchReason } from '../../lib/modelSwitch'
 import {
   applySkill, emptyPickerReason, filterSkills, flattenGroups, groupSkills, slashMisplaced,
   slashQuery, stepSkill,
 } from '../../lib/skillMenu'
 import { markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
-import { pendingEchoes } from '../../lib/echoMatch'
+import { pendingEchoes } from '@agentistics/core'
 import {
   applyDraftRequest, consumeDraftRequest, getDraftRequest, useDraftRequest,
 } from '../../lib/composerStore'
@@ -67,6 +68,10 @@ interface ChatPayload {
   turns: ChatTurn[]
   unavailable?: string
   live: boolean
+  /** Already-localized: these turns are the END of a longer conversation. See `chat-web.ts`. */
+  older?: string
+  /** Messages the SERVER is holding for this conversation — see `pending-prompts.ts`. */
+  pending?: { text: string; at: number }[]
 }
 
 export interface SessionChatProps {
@@ -87,6 +92,14 @@ export interface SessionChatProps {
     artifacts: Artifact[]
     loading: boolean
     unavailable?: string
+    /**
+     * Already-localized: the conversation is a WINDOW onto a longer one.
+     *
+     * Handed over for the same reason the turns are: every list the panel builds is built from
+     * these turns and inherits their cap, so the panel has to be able to say so instead of showing
+     * an empty gallery that reads as "there was never anything here".
+     */
+    older?: string
     /** Writes this reader cannot name — see `hasUnlistedWrites`. */
     unlisted: boolean
     /** The turns themselves, for the panel's LIVE tab. Handed over rather than re-fetched. */
@@ -128,8 +141,18 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * The draft starts from the person's own words. Losing typed text to a click is the one thing
    * here that cannot be recovered from anywhere — a conversation re-fetches, a paragraph does not.
    */
-  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(session.id) as ChatPayload | null)
-  const [draft, setDraft] = useState(() => sessionScratch.readDraft(session.id))
+  /**
+   * WHAT THE SCRATCH BELONGS TO — the conversation, never this row.
+   *
+   * One conversation is reachable through several rows: an `exited` managed row deliberately does
+   * not cover its conversation, so the same conversation is also listed as a `closed:<id>` row you
+   * can reopen, and every reopen mints a new managedId for it. Keyed on the row, closing a session
+   * threw away its cached turns and the paragraph somebody had typed into it. See `scratchKey`.
+   */
+  const scratchId = scratchKey(session)
+
+  const [payload, setPayload] = useState<ChatPayload | null>(() => sessionScratch.readChat(scratchId) as ChatPayload | null)
+  const [draft, setDraft] = useState(() => sessionScratch.readDraft(scratchId))
 
   /**
    * Every change to the draft, PERSISTED against the session it belongs to.
@@ -142,23 +165,62 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editDraft = useCallback((next: string | ((prev: string) => string)) => {
     setDraft(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeDraft(session.id, v)
+      sessionScratch.writeDraft(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
 
-  const shownId = useRef(session.id)
+  /**
+   * A KEY CHANGE IS NOT ALWAYS A SESSION CHANGE, and treating it as one is what took the focus.
+   *
+   * `scratchKey` answers `row:<id>` while a row has no `conversationId` and `conv:<id>` once it
+   * learns one — and a live session learns it MID-USE, the moment the poller can prove the link.
+   * The reload then ran while somebody was typing: every read moved to a slot holding nothing, so
+   * `payload` came back `null`, the composer's whole subtree was replaced by the "loading"
+   * paragraph, and the focused textarea left the DOM — taking the half-written draft with it.
+   * Reported as "eu to digitando e do nada o foco sai do campo de input".
+   *
+   * The ROW is what says whether this is the same session. When it is, the scratch is CARRIED to
+   * the new key and nothing else moves, so the change becomes invisible — which is what it always
+   * should have been.
+   *
+   * ONE effect decides this, not two: a second effect on the same key cannot ask "is this a switch"
+   * after the first has already recorded the answer.
+   */
+  const shownId = useRef(scratchId)
+  const shownRow = useRef(session.id)
   useEffect(() => {
-    if (shownId.current === session.id) return
-    shownId.current = session.id
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setReplyTo(sessionScratch.readReply(session.id))
-  }, [session.id])
+    if (shownId.current === scratchId) return
+    const sameSession = shownRow.current === session.id
+    if (sameSession) sessionScratch.migrate(shownId.current, scratchId)
+    shownId.current = scratchId
+    shownRow.current = session.id
+    if (sameSession) return
+    // A GENUINE switch. Everything per-conversation is read back from the other session's own slot;
+    // the scroll position is the one thing not restored, because opening mid-history is
+    // disorienting.
+    landedRef.current = false
+    setAtTail(true)
+    setPayload(sessionScratch.readChat(scratchId) as ChatPayload | null)
+    setDraft(sessionScratch.readDraft(scratchId))
+    setReplyTo(sessionScratch.readReply(scratchId))
+    setEcho(sessionScratch.readEchoes(scratchId))
+    setAttached(sessionScratch.readAttachments(scratchId))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scratchId])
   const [sending, setSending] = useState(false)
   /** Dictation. `recognitionRef` holds the live recogniser so a second click stops it. */
   const [listening, setListening] = useState(false)
+  /**
+   * What the recogniser is hearing RIGHT NOW, before it has settled on it.
+   *
+   * Shown beside the field and never written into the draft: an interim result is a guess the
+   * recogniser replaces as it hears more. It is the whole of "see the capture happening" — with
+   * `interimResults` off, a person speaking saw an unchanged field and concluded the microphone was
+   * broken, which is exactly what was reported.
+   */
+  const [heard, setHeard] = useState('')
   const recognitionRef = useRef<{ stop: () => void } | null>(null)
   const dictation = useMemo(
     () => dictationSupport(typeof window === 'undefined' ? undefined : (window as never), pt ? 'pt' : 'en'),
@@ -191,20 +253,27 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       }
       rec.lang = dictationLocale(pt ? 'pt' : 'en')
       rec.continuous = true
-      rec.interimResults = false
+      // ON. See `heard`: without it nothing reaches the screen until a phrase is over.
+      rec.interimResults = true
       // Both decisions are PURE and tested (`dictation.ts`): which results this event contributed,
       // and where they land in what is already typed. This loop used to read `e.results` from index
       // 0 on every event while `continuous` is true — and that list is CUMULATIVE, so every event
       // re-emitted the whole session and the draft grew "one", "one one two", "one one two one two
       // three". `resultIndex` is the index of the first result the event changed, which is exactly
       // what this event contributed.
-      rec.onresult = e => { editDraft(d => appendDictation(d, dictatedText(e))) }
+      rec.onresult = e => {
+        const { final, interim } = splitDictation(e)
+        // Only the settled half is kept. The rest is shown and thrown away on the next event.
+        if (final !== '') editDraft(d => appendDictation(d, final))
+        setHeard(interim)
+      }
       // Both end the same way. A recogniser that stopped on its own (a timeout, a denied
       // permission) must not leave the button lit — a control that says it is listening when it
       // is not is worse than one that never started.
-      rec.onend = () => { setListening(false); recognitionRef.current = null }
+      rec.onend = () => { setListening(false); setHeard(''); recognitionRef.current = null }
       rec.onerror = e => {
         setListening(false)
+        setHeard('')
         recognitionRef.current = null
         // The REASON reaches the screen. This handler used to discard its event, so a refused
         // permission, an unreachable recognition service, a missing microphone and a moment of
@@ -387,7 +456,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     return () => document.removeEventListener('keydown', onKey)
   }, [recall])
   /** Messages sent from here and not yet seen in the transcript. See the header. */
-  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(session.id))
+  const [echo, setEcho] = useState<string[]>(() => sessionScratch.readEchoes(scratchId))
 
   /**
    * Every change to the echo list, persisted against the session it belongs to.
@@ -399,10 +468,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editEcho = useCallback((next: string[] | ((prev: string[]) => string[])) => {
     setEcho(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeEchoes(session.id, v)
+      sessionScratch.writeEchoes(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
 
   /**
    * The message being replied to.
@@ -413,7 +482,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * mail has always done. Saying it plainly beats a UI that implies threading the session cannot do.
    */
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(
-    () => sessionScratch.readReply(session.id),
+    () => sessionScratch.readReply(scratchId),
   )
 
   /**
@@ -428,9 +497,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * write one conversation's reply into another's slot.
    */
   const editReply = useCallback((next: ReplyTarget | null) => {
-    sessionScratch.writeReply(session.id, next)
+    sessionScratch.writeReply(scratchId, next)
     setReplyTo(next)
-  }, [session.id])
+  }, [scratchId])
   /**
    * Files written to THIS MACHINE, whose paths go into the message.
    *
@@ -438,7 +507,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * no channel a byte array could travel down — but every one of these CLIs reads a file it is
    * pointed at. The chip says the name; the message carries the path.
    */
-  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(session.id))
+  const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(scratchId))
 
   /**
    * Every change to the attachment list, persisted against the session it belongs to — the same
@@ -448,10 +517,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   const editAttached = useCallback((next: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
     setAttached(prev => {
       const v = typeof next === 'function' ? next(prev) : next
-      sessionScratch.writeAttachments(session.id, v)
+      sessionScratch.writeAttachments(scratchId, v)
       return v
     })
-  }, [session.id])
+  }, [scratchId])
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -495,15 +564,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * back. What must never happen is one session's quote appearing under another's name, and a
    * per-id read is what rules that out.
    */
-  useEffect(() => {
-    landedRef.current = false
-    setAtTail(true)
-    setReplyTo(sessionScratch.readReply(session.id))
-    setEcho(sessionScratch.readEchoes(session.id))
-    setPayload(sessionScratch.readChat(session.id) as ChatPayload | null)
-    setDraft(sessionScratch.readDraft(session.id))
-    setAttached(sessionScratch.readAttachments(session.id))
-  }, [session.id])
+
 
   /** The ceiling, re-measured when the window changes size. */
   const [maxComposerH, setMaxComposerH] = useState(() => composerMaxHeight(
@@ -532,6 +593,17 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     el.style.height = `${Math.min(el.scrollHeight, maxComposerH)}px`
   }, [draft, maxComposerH])
 
+  /**
+   * Ask for the transcript NOW, outside the interval.
+   *
+   * The interval is tuned for watching (`CHAT_POLL_MS`), and the two moments a reader is actually
+   * waiting are not on it: the instant a message is sent, and the instant a turn ends. On both, the
+   * answer changed and the next scheduled read is up to three seconds away — which is the whole of
+   * "as mensagens chegam de forma travada". A ref rather than state, so nudging never re-renders
+   * and never restarts the interval it lives beside.
+   */
+  const nudgeChat = useRef<() => void>(() => {})
+
   useEffect(() => {
     let alive = true
     const poll = async () => {
@@ -541,16 +613,60 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
         const next = await res.json() as ChatPayload
         setPayload(next)
         // Write through, so the NEXT visit starts where this one ended.
-        sessionScratch.writeChat(session.id, next as unknown as CachedChat)
+        sessionScratch.writeChat(scratchId, next as unknown as CachedChat)
       } catch { /* transient — keep the last conversation rather than blanking it */ }
     }
+    nudgeChat.current = () => { void poll() }
     void poll()
     const t = setInterval(poll, CHAT_POLL_MS)
-    return () => { alive = false; clearInterval(t) }
+    /*
+     * A BACKGROUND TAB DOES NOT POLL, and nothing here noticed it coming back.
+     *
+     * Chrome throttles `setInterval` in a hidden tab to roughly once a minute, so leaving the
+     * session to do something else and returning meant the conversation on screen was as old as the
+     * last tick — the cached turns ending at your own last message — until the throttled interval
+     * happened to fire. Reported as "fica um tempo na minha última mensagem e depois de uns 5
+     * segundos aparece as mensagens". Measured against the server, which is not the slow part: the
+     * chat read answers in 100-220ms on every session on this machine.
+     *
+     * Coming back into view is the exact moment somebody wants what they missed, so it asks then.
+     */
+    const onVisible = () => { if (document.visibilityState === 'visible') void poll() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      alive = false
+      nudgeChat.current = () => {}
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [session.id, lang])
 
+  /**
+   * IS THE LIVE SCREEN WORTH WATCHING RIGHT NOW?
+   *
+   * `session.state` alone was the answer, and it is up to a FLEET poll late — five seconds, plus
+   * the confirmation `attention-confirm.ts` requires. So every turn began with a dead window: the
+   * message was already in the pane and the assistant already producing, while the chat had not
+   * opened the stream that shows it. Measured why it matters: Claude writes its JSONL once a
+   * message is FINISHED (the file grows in one ~5 KB jump and then sits still for eight seconds),
+   * so the transcript can never stream — the screen is the only place the text exists as it is
+   * typed, and being late to it is being late to all of it.
+   *
+   * A PENDING ECHO is the signal the fleet does not have yet: we typed into that pane ourselves a
+   * moment ago. It clears exactly when the transcript catches up, so this needs no timer and cannot
+   * leak a capture loop — and the case where it holds longest, a message sitting in the harness's
+   * queue, is precisely the one somebody is watching the screen to understand.
+   */
   const working = session.state === 'working'
-  const { state: term } = useTerminalStream(working ? session.id : null)
+  const { state: term } = useTerminalStream(working || echo.length > 0 ? session.id : null)
+
+  // A turn just ENDED. The live bubble is gone the moment `working` drops, and the real one is up
+  // to `CHAT_POLL_MS` away — a gap where neither source is showing the answer that just finished.
+  const wasWorking = useRef(working)
+  useEffect(() => {
+    if (wasWorking.current && !working) nudgeChat.current()
+    wasWorking.current = working
+  }, [working])
 
   const turns = useMemo(() => payload?.turns ?? [], [payload])
 
@@ -563,6 +679,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * whose only outcome is a modal saying "nothing" is a control that exists to refuse.
    */
   const lastSent = useMemo(() => lastSentMessage(turns, echo), [turns, echo])
+
+
 
   /**
    * When each echo was first seen, so its bubble can say how long it has been waiting.
@@ -577,6 +695,46 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     for (const t of echo) if (!m.has(t)) m.set(t, Date.now())
     for (const t of [...m.keys()]) if (!echo.includes(t)) m.delete(t)
   }, [echo])
+
+  // DECLARED AFTER `echoSeen`, and that is not cosmetic. `useMemo` runs its factory DURING the
+  // render, at the point it is called — so a memo that reads `echoSeen.current` written above the
+  // `useRef` reads a binding still in its temporal dead zone. It threw
+  // `ReferenceError: Cannot access 'W' before initialization` the moment `echo` had anything in
+  // it, which is to say the moment a message was sent, and the error boundary caught it AFTER the
+  // message had already gone — "dá esse erro (mas envia)". Hooks read like declarations and are
+  // executed like statements; order is part of the meaning.
+  /**
+   * WHAT IS STILL WAITING, from BOTH sides, and the server's copy wins on age.
+   *
+   * The local echo is what makes a sent message appear instantly — it exists before any poll — and
+   * the server's list is what makes it appear on every OTHER device, and survive this one being
+   * closed and reopened. Neither replaces the other: without the local half the sender waits a poll
+   * to see their own message, without the server half nobody else ever sees it.
+   *
+   * The union is by TEXT, which is the same key both sides already retire on. Where both have it,
+   * the server's `at` is used: it is when the message was actually handed over, while the local
+   * timestamp is when THIS tab first drew it — and after a reload the local one is the reload, which
+   * is exactly how a queued message became a bubble with no age and no way to tell it from a lost
+   * one. `at` may still be undefined for a purely local entry that has not been through a poll yet,
+   * and the bubble then shows no age rather than inventing one.
+   */
+  const queued = useMemo(() => {
+    const out: { text: string; at?: number }[] = []
+    const server = new Map((payload?.pending ?? []).map(p => [p.text, p.at]))
+    const seen = new Set<string>()
+    for (const text of echo) {
+      if (seen.has(text)) continue
+      seen.add(text)
+      const at = server.get(text) ?? echoSeen.current.get(text)
+      out.push(at === undefined ? { text } : { text, at })
+    }
+    for (const p of payload?.pending ?? []) {
+      if (seen.has(p.text)) continue
+      seen.add(p.text)
+      out.push({ text: p.text, at: p.at })
+    }
+    return out
+  }, [echo, payload?.pending])
 
   /** A clock, so an ageing echo ages on screen instead of freezing at its first render. */
   const [now, setNow] = useState(() => Date.now())
@@ -685,6 +843,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   /** ONE stable reference for every bubble's reply button — see `ChatBubble`'s memo. */
   const onReplyToTurn = useCallback((t: ChatTurn) => {
     editReply({ role: t.role, text: t.text }); setAtTail(true); toTail()
+    // Choosing a message to answer IS starting to write one. Asked for, and it is the same call the
+    // skill picker already makes after inserting: the next thing the person does is type.
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -701,6 +862,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     const text = markExcerpt(t.text, selected)
     if (text === '') return
     editReply({ role: t.role, text, excerpt: true }); setAtTail(true); toTail()
+    textareaRef.current?.focus()
   }, [toTail, editReply])
 
   /**
@@ -740,8 +902,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       unlisted: hasUnlistedWrites(turns),
       turns,
       ...(payload?.unavailable ? { unavailable: payload.unavailable } : {}),
+      ...(payload?.older ? { older: payload.older } : {}),
     })
-  }, [artifacts, loading, turns, payload?.unavailable, onArtifacts])
+  }, [artifacts, loading, turns, payload?.unavailable, payload?.older, onArtifacts])
 
   const canPrompt = !loading && session.actionable && !blocked && payload.live !== false
   /**
@@ -764,6 +927,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * take it, since a stop control on an idle session would send Escape into its prompt.
    */
   const stopVerb = row?.verbs.find(v => v.action === 'interrupt')
+  /**
+   * Is the one button showing STOP right now?
+   *
+   * `working` and a stop the row actually offers are the preconditions — a stop on an idle session
+   * sends Escape into its prompt, which is why the row gates `interrupt` at all. The DRAFT is what
+   * decides between the two faces: nothing written means there is nothing to send, so the only
+   * thing left to do to a working session is stop it; a single character means the opposite.
+   * Attachments count as something written — a message that is only files is still a message.
+   */
+  const stopShown = working && !!stopVerb?.enabled && draft.trim() === '' && attached.length === 0
   const [stopping, setStopping] = useState(false)
   async function stopNow() {
     if (!stopVerb?.enabled || stopping) return
@@ -871,33 +1044,78 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     pick(e.dataTransfer.files)
   }
 
+  /**
+   * IS THE PERSON TYPING RIGHT NOW.
+   *
+   * It exists for one rule, asked for in these words: "enquanto eu estiver digitando no input NADA
+   * tira o foco dele". A `disabled` attribute is not a style — the browser BLURS an element the
+   * moment it becomes disabled — and this field was disabled from `canPrompt`, which is recomputed
+   * on every 5s fleet poll. So a poll that briefly reported the session blocked, or not live, or
+   * mid-send took the caret out from under someone mid-sentence, and they had to tap back in. "Do
+   * nada o foco sai do input."
+   */
+  const [typing, setTyping] = useState(false)
+
   async function send() {
     const text = draft.trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
-    if ((text === '' && attached.length === 0) || sending) return
+    // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
+    // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
+    // about what may be DELIVERED, not about what may be typed.
+    if ((text === '' && attached.length === 0) || sending || !canPrompt) return
     // Paths first, on their own lines, then what was typed — the assistant reads the files it is
     // pointed at, and burying the paths inside a sentence makes them easy to miss.
     // Quote first, then the paths, then what was typed. The quote is trimmed to a few lines: a
     // reply that repeats forty lines back at the session costs it context for no benefit.
     const quote = replyTo ? quoteFor(replyTo) : ''
     const full = [quote, ...attached.map(a => a.path), text].filter(x => x !== '').join('\n')
+    /**
+     * THE COMPOSER EMPTIES ON THE KEYSTROKE, NOT ON THE ANSWER.
+     *
+     * It used to `await act(...)` and only then clear the draft and draw the echo, so the whole
+     * round trip was visible as the field sitting there full with nothing happening. Reported as
+     * "a partir do momento que eu dou enter numa mensagem ela está demorando pra ser enviada", and
+     * the delivery was never the slow part — the WAIT FOR THE ANSWER was, and the browser has
+     * nothing to learn from it that changes what it should draw.
+     *
+     * The echo already carries the honesty this needs: it renders as an UNREAD message with the
+     * wait said in words, and it is retired the instant the transcript carries it. So drawing it
+     * before the answer is not a claim that it landed — it is the same claim it was already making
+     * one round trip later.
+     *
+     * A FAILURE PUTS IT BACK, exactly as it was: the text, the attachments and the reply target.
+     * The one thing a person must never lose is what they wrote, and an optimistic clear that
+     * cannot undo itself is how that happens.
+     */
+    const restore = { draft, attached, replyTo }
     setSending(true)
+    editEcho(list => [...list, full])
+    setDraft('')
+    sessionScratch.clearDraft(scratchId)
+    setAttached([])
+    sessionScratch.writeAttachments(scratchId, [])
+    editReply(null)
+    setAtTail(true)
+    toTail()
+    setNotice(null)
+
     const out = await act({ id: session.id, action: 'prompt', text: full })
     setSending(false)
     if (out.ok) {
-      // Echoed straight away. It is already in the session; the transcript catches up in a poll or
-      // two, and this is what makes pressing enter visibly do something.
-      editEcho(list => [...list, full])
-      setDraft('')
-      sessionScratch.clearDraft(session.id)
-      setAttached([])
-      sessionScratch.writeAttachments(session.id, [])
-      editReply(null)
-      setAtTail(true)
-      toTail()
-      setNotice(null)
+      // Ask for the transcript at once. The harness writes the user turn as soon as it takes the
+      // message, and the next scheduled read is up to `CHAT_POLL_MS` away — three seconds in which
+      // the echo sits there labelled as undelivered when it has in fact already landed.
+      nudgeChat.current()
       return
     }
+    // It did not go. Take the echo back out — leaving it would show a message that is waiting for
+    // a session that never received it — and give the person their words back untouched.
+    editEcho(list => list.filter(t => t !== full))
+    setDraft(restore.draft)
+    sessionScratch.writeDraft(scratchId, restore.draft)
+    setAttached(restore.attached)
+    sessionScratch.writeAttachments(scratchId, restore.attached)
+    editReply(restore.replyTo)
     setNotice(out.message)
   }
 
@@ -925,7 +1143,15 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px' }}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '20px 20px 8px',
+          // A flick that reaches the top of the conversation stops HERE. Without it the
+          // gesture chains to the document, which has nothing to scroll and rubber-bands the
+          // whole page instead — reported as "ele roda a página inteira e não deixa scrollar",
+          // with the header dragged out from under the status bar. The document lock in
+          // App.tsx is the other half; this is the half that keeps the gesture where it began.
+          overscrollBehavior: 'contain',
+        }}
       >
         <div style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
           {loading ? (
@@ -933,6 +1159,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
           ) : turns.length === 0 && live === null && echo.length === 0 ? (
             <Muted text={pt ? 'Esta conversa ainda não tem mensagens.' : 'This conversation has no messages yet.'} />
           ) : null}
+
+          {/* Where the window BEGINS, said at the top of the scroll — the one place a reader looks
+              when they wonder where the rest went. Everything derived from these turns (the
+              gallery, Files, Live) inherits the same cap and says so in its own panel. */}
+          {!loading && payload?.older && (
+            <p style={{
+              margin: 0, textAlign: 'center', fontSize: 11, lineHeight: 1.5,
+              color: 'var(--text-tertiary)',
+            }}>{payload.older}</p>
+          )}
 
           {turns.map((t, i) => (
             <ChatBubble
@@ -954,18 +1190,16 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               carries the same text — so it is drawn as one: faded, with the wait said in words
               under it. It used to be indistinguishable from a delivered message, and on a session
               mid-turn the wait is minutes. */}
-          {echo.map((text, i) => (
+          {queued.map((q, i) => (
             <ChatBubble
               key={`echo-${i}`}
-              turn={{ role: 'user', text }}
+              turn={{ role: 'user', text: q.text }}
               lang={lang}
               harness={session.harness}
               anchorId={turnAnchorId('echo', i)}
               awaiting
               awaitingWorking={working}
-              {...(echoSeen.current.get(text) !== undefined
-                ? { awaitingSinceMs: now - echoSeen.current.get(text)! }
-                : {})}
+              {...(q.at !== undefined ? { awaitingSinceMs: Math.max(0, now - q.at) } : {})}
             />
           ))}
 
@@ -1158,6 +1392,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   decisions — the name and how much of the message is shown — are in
                   `replyQuote.ts`, which is also what composes the `> ` block that actually
                   travels. */}
+              {/* WHAT THE MICROPHONE IS HEARING, live. Interim results are a guess the recogniser
+                  keeps revising, so they are shown here and never written into the field — the
+                  settled words land in the draft on their own. `role="status"` so it is announced,
+                  and it disappears the moment listening stops. */}
+              {listening && (
+                <p role="status" style={{
+                  margin: '0 0 8px', padding: '6px 10px', borderRadius: 9,
+                  background: 'var(--bg-elevated)', borderLeft: '3px solid var(--accent-red)',
+                  fontSize: 12, lineHeight: 1.45, color: 'var(--text-secondary)',
+                  fontStyle: heard === '' ? 'italic' : 'normal',
+                }}>
+                  {heard === ''
+                    ? (pt ? 'ouvindo…' : 'listening…')
+                    : heard}
+                </p>
+              )}
+
               {replyTo && (
                 <div style={{
                   display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 8,
@@ -1372,7 +1623,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   // written prompt changes whether the caret is inside a `/command`, and a picker
                   // that only listened to typing would answer for wherever the caret used to be.
                   onSelect={e => setCaret(e.currentTarget.selectionStart ?? 0)}
+                  onFocus={() => setTyping(true)}
                   onBlur={e => {
+                    setTyping(false)
                     // Leaving the field closes the picker — unless the focus went INTO it, which
                     // is what a keyboard user tabbing onto an entry does.
                     if (!skillPickerRef.current?.contains(e.relatedTarget as Node | null)) setSlashDismissed(true)
@@ -1385,7 +1638,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (skillPickerOpen && slashFlat.length > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey) {
+                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
                         e.preventDefault()
                         const picked = slashFlat[Math.min(slashIndex, slashFlat.length - 1)]
                         if (picked) insertSkill(picked.name)
@@ -1395,12 +1648,24 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // Escape closes the picker BEFORE it reaches the stop verb: a person dismissing
                     // a list they opened by accident must not interrupt the session's turn.
                     if (e.key === 'Escape' && skillPickerOpen) { e.preventDefault(); setSlashDismissed(true); return }
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+                    // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
+                    // convention every messaging app on a touch keyboard follows: the return key is
+                    // the only way to write a second line there, because `shift+enter` needs a
+                    // shift key the software keyboard does not have. Sending is the ✈ button, which
+                    // is a 44px target sitting right beside the field. On a hardware keyboard the
+                    // rule is the opposite one and unchanged — enter sends, shift+enter breaks —
+                    // and the picker above follows the same split for the same reason.
+                    if (e.key === 'Enter' && !e.shiftKey && !isMobile) { e.preventDefault(); void send() }
                     // The composer's own "esc": stops the CURRENT turn without touching the draft
                     // or the field's own ability to keep taking text — see `stopNow`.
                     if (e.key === 'Escape' && stopVerb?.enabled) { e.preventDefault(); void stopNow() }
                   }}
-                  disabled={!canPrompt || sending}
+                  // NEVER WHILE IT HAS THE CARET. `disabled` blurs, so making it depend on a
+                  // 5s poll makes the poll able to interrupt a sentence. What the state actually
+                  // has to stop is SENDING, and `send()` refuses on its own — a field that accepts
+                  // text it cannot deliver yet costs nothing, while a field that empties your focus
+                  // mid-word costs the sentence.
+                  disabled={!typing && (!canPrompt || sending)}
                   rows={1}
                   placeholder={canPrompt
                     ? (pt ? 'Escreva para esta sessão…' : 'Write to this session…')
@@ -1485,7 +1750,23 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       cursor: canPrompt ? 'pointer' : 'default',
                     }}
                   >
-                    <Mic size={15} />
+                    {/* PULSING WHILE IT LISTENS. A microphone button that only changes tint looks
+                        the same as one that did nothing, which is how "o mic não funciona" starts:
+                        the recogniser was running and nothing on screen said so. The ring is the
+                        state, the words below are the evidence. */}
+                    <span style={{ position: 'relative', display: 'flex' }}>
+                      {listening && (
+                        <span
+                          aria-hidden
+                          className="ag-mic-pulse"
+                          style={{
+                            position: 'absolute', inset: -5, borderRadius: 12,
+                            border: '1.5px solid var(--accent-red)', pointerEvents: 'none',
+                          }}
+                        />
+                      )}
+                      <Mic size={15} />
+                    </span>
                   </button>
                 )}
 
@@ -1494,6 +1775,49 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     whether or not the stop is there — a margin on send alone would push the more
                     button off to the right on its own the moment a turn ended. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                {/* THE HARNESS MODE, and the one control that changes it.
+                    Asked for: "nao consigo alternar entre os modos que os harnesses possuem (auto
+                    mode, plan mode etc)", to sit left of the recent-message button.
+
+                    IT CYCLES, and the label says which mode it is IN — not which one it would move
+                    to. The harness offers one keystroke and no way to jump to a named mode, so a
+                    menu of four would reach three of them by luck; `mode-spec.ts` records the key
+                    and the order, driven against a live session.
+
+                    ABSENT when the row carries no mode: a harness nobody has probed, or a frame
+                    whose footer has not been read. A chip naming the wrong mode is worse than no
+                    chip — it is read at a glance and believed. */}
+                {row?.mode && (
+                  <button
+                    onClick={() => void act({ id: session.id, action: 'cycleMode' })
+                      .then(out => setNotice(out.message))}
+                    disabled={!canPrompt}
+                    aria-label={pt ? `Modo: ${row.mode.label}. Trocar para o próximo.` : `Mode: ${row.mode.label}. Switch to the next.`}
+                    title={pt
+                      ? `${row.mode.label} — clique para ir ao próximo modo`
+                      : `${row.mode.label} — click to move to the next mode`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5, height: 30, padding: '0 9px',
+                      borderRadius: 9, flexShrink: 0, maxWidth: 150,
+                      // The colour IS the mode — see `modeStyle.ts`. Ordered by how much the
+                      // session proceeds without asking, and never the fault colour: `auto` is how
+                      // this product is normally used, and a red ordinary state is the cry-wolf
+                      // this codebase avoids everywhere else.
+                      border: `1px solid ${modeStyle(row.mode.id).border}`,
+                      background: modeStyle(row.mode.id).bg,
+                      color: modeStyle(row.mode.id).fg,
+                      fontFamily: 'inherit', fontSize: 11.5,
+                      cursor: canPrompt ? 'pointer' : 'default',
+                      opacity: canPrompt ? 1 : 0.55,
+                    }}
+                  >
+                    <SlidersHorizontal size={13} style={{ flexShrink: 0 }} />
+                    <span style={{
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{row.mode.label}</span>
+                  </button>
+                )}
+
                 {/* THE LAST MESSAGE YOU SENT. ABSENT until there is one — `lastSent` is null on a
                     conversation nobody has written into yet, and a control whose only outcome is a
                     modal saying "nothing" is one that exists to refuse. It sits with the acting
@@ -1512,40 +1836,51 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     <History size={15} />
                   </button>
                 )}
-                {/* Working's own stop, right beside the field it does not block. Absent the moment
-                    the turn ends — a stop control on an idle session would send Escape into its
-                    prompt, which is exactly the row's own gate on `interrupt`. */}
-                {working && stopVerb?.enabled && (
+                {/* ONE BUTTON, TWO JOBS, AND THE DRAFT DECIDES WHICH.
+                    Asked for in those terms: the send control BECOMES the stop while the session
+                    is working, rather than a second button appearing beside it — two controls one
+                    finger-width apart, one of which interrupts a turn, is a row where the wrong
+                    press is cheap to make and expensive to undo.
+                    The draft is the discriminator and it is the honest one: with something written
+                    the only thing you can mean is send, and with nothing written the only thing
+                    left to do to a working session is stop it. Typing therefore turns it back into
+                    a send WITHOUT stopping anything — the switch is about what the button will do
+                    next, never about what the session is doing now — and emptying the field turns
+                    it back into a stop. */}
+                {stopShown ? (
                   <button
                     onClick={() => void stopNow()}
                     disabled={stopping}
-                    title={stopVerb.label}
-                    aria-label={stopVerb.label}
+                    title={stopVerb!.label}
+                    aria-label={stopVerb!.label}
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, cursor: stopping ? 'default' : 'pointer',
-                      border: '1px solid color-mix(in srgb, var(--accent-red) 45%, transparent)',
-                      background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)',
-                      color: 'var(--accent-red)',
+                      width: 34, height: 34, borderRadius: 9, flexShrink: 0, border: 'none',
+                      cursor: stopping ? 'default' : 'pointer',
+                      // Filled, not outlined: this is the one control in the row that ENDS
+                      // something, and an outline reads as the same weight as the others.
+                      background: 'var(--accent-red)',
+                      color: '#fff',
                     }}
                   >
                     {stopping ? <Loader size={14} className="ag-working-spin" /> : <Square size={13} fill="currentColor" />}
                   </button>
+                ) : (
+                  <button
+                    onClick={() => void send()}
+                    disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
+                    aria-label={pt ? 'Enviar' : 'Send'}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
+                      background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
+                      color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
+                      cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
+                    }}
+                  >
+                    {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
+                  </button>
                 )}
-                <button
-                  onClick={() => void send()}
-                  disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
-                  aria-label={pt ? 'Enviar' : 'Send'}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
-                    background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
-                    color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
-                    cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
-                  }}
-                >
-                  {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
-                </button>
 
                 {/* Mic and model live behind ONE button. Four controls plus the field on a
                     390px screen is a row where the buttons win, and these two are the pair a person
@@ -1623,19 +1958,39 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                           `localhost` would be a guess about which machine they are sitting at, so
                           where there is no answer this row is simply absent. */}
                       {dictation.state === 'insecure' && (() => {
-                        const alt = typeof window === 'undefined' ? null : insecureAlternative(window.location.href)
-                        return alt === null ? null : (
-                          <a
-                            href={alt}
-                            style={{
-                              display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
-                              lineHeight: 1.4, color: 'var(--anthropic-orange)',
-                              overflowWrap: 'anywhere', textDecoration: 'none',
-                            }}
-                          >
-                            {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
-                          </a>
-                        )
+                        // `!isMobile` is the "am I sitting at the machine serving this page" the
+                        // rewrite needs. A phone reaches the dashboard by its LAN address and
+                        // nothing else, so `localhost` there is the PHONE — a link to a page that
+                        // cannot load, offered on the one device where this refusal always fires.
+                        const alt = typeof window === 'undefined'
+                          ? null
+                          : insecureAlternative(window.location.href, !isMobile)
+                        return alt === null
+                          ? (
+                            // Said rather than left blank: "the microphone needs HTTPS" with no
+                            // follow-up reads as a bug in this product, and it is a rule of the
+                            // browser that nothing here can lift.
+                            <p style={{
+                              margin: 0, padding: '4px 8px 8px 30px', fontSize: 10.5,
+                              lineHeight: 1.45, color: 'var(--text-tertiary)',
+                            }}>
+                              {pt
+                                ? 'Num celular não há alternativa: o navegador só libera o microfone em HTTPS, e este painel está em HTTP na rede local. Dite no computador ou sirva o painel por HTTPS.'
+                                : 'On a phone there is no alternative: the browser only allows the microphone over HTTPS, and this dashboard is on plain HTTP over the local network. Dictate on the computer, or serve it over HTTPS.'}
+                            </p>
+                          )
+                          : (
+                            <a
+                              href={alt}
+                              style={{
+                                display: 'block', padding: '4px 8px 8px 30px', fontSize: 11,
+                                lineHeight: 1.4, color: 'var(--anthropic-orange)',
+                                overflowWrap: 'anywhere', textDecoration: 'none',
+                              }}
+                            >
+                              {pt ? `Abrir em ${alt}` : `Open at ${alt}`}
+                            </a>
+                          )
                       })()}
 
                       {/* MODEL. Same treatment: where it cannot work, the menu says why instead of
@@ -1676,96 +2031,11 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         </>
                       )}
 
-                      {/* SKILLS. The picker INSERTS `/<name> ` into the draft and focuses the
-                          field — it does not send. Two reasons: most skills take an argument, and
-                          the composer's whole contract is that what reaches the session is what the
-                          person chose to send.
-
-                          It inherits the `prompt` action's refusals and STATES them: the session
-                          must be running, and it is refused while a DIALOG is open, because a slash
-                          command typed into a permission prompt goes into that dialog's own filter
-                          and the submit takes the highlighted option. Same rule `promptSession` and
-                          `rename` already enforce, said here rather than discovered by doing it. */}
-                      {(skills === null || skills.length > 0 || skillsNote) && (
-                        <>
-                          <div style={{ height: 1, background: 'var(--border)', margin: '4px 2px' }} />
-                          <p style={{
-                            margin: '2px 8px 4px', fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                            letterSpacing: '0.06em', color: 'var(--text-tertiary)',
-                          }}>
-                            Skills
-                          </p>
-                          {/* The PERMANENT fact first. A harness that can never do this is told so,
-                              rather than being told it is not running — which is true, irrelevant,
-                              and would change to a different refusal if it started. */}
-                          {skillsNote ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {skillsNote}
-                            </p>
-                          ) : !canPrompt || blocked ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
-                              {blocked
-                                ? (pt
-                                    ? 'Esta sessão está numa pergunta. Responda primeiro — uma barra digitada aí entra no filtro do diálogo.'
-                                    : 'This session is on a question. Answer it first — a slash typed there goes into the dialog’s own filter.')
-                                : (pt
-                                    ? 'Esta sessão não está rodando, então não dá para escrever nela.'
-                                    : 'This session is not running, so there is nothing to write to.')}
-                            </p>
-                          ) : skills === null ? (
-                            <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                              {pt ? 'Lendo…' : 'Reading…'}
-                            </p>
-                          ) : (
-                            <>
-                              {skills.length > 6 && (
-                                <input
-                                  value={skillQuery}
-                                  onChange={e => setSkillQuery(e.target.value)}
-                                  placeholder={pt ? `Filtrar ${skills.length} skills…` : `Filter ${skills.length} skills…`}
-                                  style={{
-                                    width: '100%', boxSizing: 'border-box', margin: '2px 0 4px',
-                                    padding: '5px 8px', borderRadius: 6, fontSize: 11.5,
-                                    border: '1px solid var(--border-subtle)', background: 'var(--bg-card)',
-                                    color: 'var(--text-primary)', fontFamily: 'inherit', outline: 'none',
-                                  }}
-                                />
-                              )}
-                              <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-                                {shownSkills.length === 0 && (
-                                  <p style={{ margin: 0, padding: '6px 8px', fontSize: 10.5, color: 'var(--text-tertiary)' }}>
-                                    {pt ? 'Nenhuma skill com esse nome.' : 'No skill by that name.'}
-                                  </p>
-                                )}
-                                {shownSkills.map(sk => (
-                                  <button
-                                    key={sk.name}
-                                    title={sk.description}
-                                    onClick={() => {
-                                      setMoreOpen(false)
-                                      setSkillQuery('')
-                                      editDraft(d => (d.trim() === '' ? `/${sk.name} ` : `${d.replace(/\s+$/, '')} /${sk.name} `))
-                                      textareaRef.current?.focus()
-                                    }}
-                                    style={{
-                                      display: 'block', width: '100%', textAlign: 'left',
-                                      minHeight: 36, padding: '6px 8px', borderRadius: 7, border: 'none',
-                                      background: 'transparent', color: 'var(--text-primary)',
-                                      fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
-                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    /{sk.name}
-                                  </button>
-                                ))}
-                              </div>
-                              <p style={{ margin: '2px 8px 4px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
-                                {pt ? 'Escreve no campo; não envia.' : 'Types into the field; does not send.'}
-                              </p>
-                            </>
-                          )}
-                        </>
-                      )}
+                      {/* THE SKILLS LIST LIVED HERE AND IS GONE. It was the only place to see
+                          them; there is a dedicated view now, and two lists of one thing are two
+                          places for them to disagree about what is installed. What stays is the
+                          `/` picker IN THE FIELD, which is a different gesture — completing what
+                          you are already typing, not browsing. */}
                     </div>
                   )}
                 </div>

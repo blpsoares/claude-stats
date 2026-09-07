@@ -141,10 +141,17 @@ interface Props {
 }
 
 const DATE_RANGES: { key: DateRange; labelPt: string; labelEn: string }[] = [
+  // The windows run from narrow to wide, and TODAY sits after ALL rather than before 7d. It is not
+  // a step in that progression — the others ask "the last N days", it asks "only today" — and the
+  // custom range cannot express it either: the calendar's "Today" fills an END and leaves the start
+  // where it was, which is "up to today", a different question. Sitting at the end keeps the
+  // sequence one thing you read left to right, and leaves the odd one out where it is found rather
+  // than crossed over.
   { key: '7d',  labelPt: '7d',       labelEn: '7d'      },
   { key: '30d', labelPt: '30d',      labelEn: '30d'     },
   { key: '90d', labelPt: '90d',      labelEn: '90d'     },
   { key: 'all', labelPt: 'Tudo',     labelEn: 'All'     },
+  { key: 'today', labelPt: 'Hoje',   labelEn: 'Today'   },
 ]
 
 /**

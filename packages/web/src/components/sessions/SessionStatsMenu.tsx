@@ -15,6 +15,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { sessionTime } from '../../lib/sessionTime'
+import { asideCache, asideKey } from '../../lib/asideCache'
 import { BarChart3, X } from 'lucide-react'
 import { fmt, fmtCost, type HarnessId, type SessionMeta } from '@agentistics/core'
 import { HARNESS_LABELS } from '../../lib/harness'
@@ -28,13 +30,56 @@ export interface SessionStatsMenuProps {
   lang: 'pt' | 'en'
   currency: 'USD' | 'BRL'
   brlRate: number
+  /**
+   * The model and effort this session was STARTED with, off the fleet row.
+   *
+   * Deliberately separate from `SessionStats.model`, which is what the STORE observed the
+   * conversation using. They usually agree and are not the same claim: one is what agentop asked
+   * for, the other what the transcript recorded. Absent means no flag was passed and the harness's
+   * own default is in force, which the card says in words.
+   */
+  startedModel?: string
+  startedEffort?: string
+  /**
+   * Size the trigger for a finger, and open the card where a narrow screen can hold it.
+   *
+   * The desktop's 30px button and its 300px panel anchored to the button's right edge are correct
+   * in a 1400px strip and wrong in a 390px bar — the target is under the 44px rule this repo holds
+   * everything else to, and a fixed-width panel hanging off a control near the right edge is a
+   * panel with a piece off the screen.
+   */
+  touch?: boolean
 }
 
 export function SessionStatsMenu({
-  harness, sessionId, meta, lang, currency, brlRate,
+  harness, sessionId, meta, lang, currency, brlRate, startedModel, startedEffort, touch = false,
 }: SessionStatsMenuProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
+
+  /**
+   * How many times this conversation has been COMPACTED — read only when the card is opened, and
+   * cached, because it is a scan of the whole transcript (70 ms on a real 39 MB one).
+   *
+   * It belongs beside the context gauge: the gauge says how full THIS window is, the count says how
+   * many windows came before it. Absent, never zero, whenever it could not be established.
+   */
+  type Facts = { compactions?: number; unavailable?: string }
+  const factsKey = asideKey(sessionId, 'conversation')
+  const [facts, setFacts] = useState<Facts | null>(
+    () => asideCache.read<Facts>(factsKey).value ?? null,
+  )
+  useEffect(() => {
+    if (!open) return
+    const hit = asideCache.read<Facts>(factsKey)
+    if (hit.value && !hit.stale) { setFacts(hit.value); return }
+    let alive = true
+    fetch(`/api/fleet/conversation?id=${encodeURIComponent(sessionId)}&lang=${pt ? 'pt' : 'en'}`)
+      .then(r => r.json())
+      .then((d: Facts) => { asideCache.write(factsKey, d); if (alive) setFacts(d) })
+      .catch(() => { if (alive) setFacts(f => f ?? { unavailable: pt ? 'Não foi possível ler.' : 'Could not read it.' }) })
+    return () => { alive = false }
+  }, [open, factsKey, sessionId, pt])
   const boxRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -70,15 +115,16 @@ export function SessionStatsMenu({
         aria-label={pt ? 'Métricas desta sessão' : 'This session’s metrics'}
         title={pt ? 'Métricas desta sessão' : 'This session’s metrics'}
         style={{
-          display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 10px',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+          height: touch ? 44 : 30, minWidth: touch ? 44 : 0, padding: touch ? '0 8px' : '0 10px',
           borderRadius: 9, cursor: 'pointer', flexShrink: 0,
-          border: '1px solid ' + (open ? 'var(--anthropic-orange)' : 'var(--border-subtle)'),
-          background: open ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',
+          border: touch && !open ? 'none' : '1px solid ' + (open ? 'var(--anthropic-orange)' : 'var(--border-subtle)'),
+          background: open ? 'var(--anthropic-orange-dim)' : (touch ? 'transparent' : 'var(--bg-elevated)'),
           color: open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
           fontFamily: 'inherit', fontSize: 12,
         }}
       >
-        <BarChart3 size={14} />
+        <BarChart3 size={touch ? 18 : 14} />
         {/* The context percentage rides the BUTTON, because it is the one figure that changes what
             you do next — a conversation near its window is one to finish rather than extend. It is
             absent, not zero, when it cannot be known. */}
@@ -87,8 +133,12 @@ export function SessionStatsMenu({
 
       {open && (
         <div style={{
-          position: 'absolute', top: 36, right: 0, zIndex: 60,
-          width: 300, padding: 12, borderRadius: 12,
+          position: 'absolute', top: touch ? 48 : 36, right: 0, zIndex: 60,
+          // On a phone it is measured from the VIEWPORT, not given a fixed width: this control sits
+          // near the right edge of a 390px bar, so a 300px panel anchored to it would hang a piece
+          // of itself off the screen.
+          ...(touch ? { width: 'min(300px, calc(100vw - 24px))' } : { width: 300 }),
+          padding: 12, borderRadius: 12,
           background: 'var(--bg-elevated)', border: '1px solid var(--border)',
           boxShadow: '0 12px 32px rgba(0,0,0,0.4)',
         }}>
@@ -107,6 +157,31 @@ export function SessionStatsMenu({
               }}
             ><X size={13} /></button>
           </div>
+
+          {/* HOW THIS SESSION IS RUNNING — before the numbers, because it is what the numbers are
+              OF. `model` has two sources and they are not the same claim: what agentop was asked to
+              start (the row) and what the transcript recorded (the store). The row wins when it has
+              one, and an absent flag is said in words — a blank cell would read as "none". */}
+          <Block title={pt ? 'Como está rodando' : 'How it is running'}>
+            <Line
+              k={pt ? 'Modelo' : 'Model'}
+              v={startedModel ?? s.model ?? (pt ? 'padrão do harness' : 'the harness default')}
+            />
+            <Line
+              k={pt ? 'Esforço' : 'Effort'}
+              v={startedEffort ?? (pt ? 'padrão do harness' : 'the harness default')}
+            />
+            {/* A count of what has already been thrown away, beside the gauge of what is left. */}
+            <Line
+              k={pt ? 'Compactações' : 'Compactions'}
+              v={facts?.compactions !== undefined
+                ? fmt(facts.compactions)
+                : facts === null ? '…' : '—'}
+            />
+            {facts?.compactions === undefined && facts?.unavailable && (
+              <Absent text={facts.unavailable} />
+            )}
+          </Block>
 
           {/* CONTEXT — a bar, and the bar SATURATES while the label keeps counting. A session can
               genuinely exceed the documented window, and a clamped label would hide exactly that. */}
@@ -148,6 +223,26 @@ export function SessionStatsMenu({
             {s.costUSD === null
               ? <Absent text={na('cost')} />
               : <Line k={pt ? 'Estimado (API)' : 'Estimated (API)'} v={money(s.costUSD)} />}
+          </Block>
+
+          {/* ASKED FOR: how long this session has been going. Two figures, not one, and the pair is
+              the point — `sessionTime` is the same helper the dashboard's longest-session card uses,
+              so the two surfaces cannot disagree about what "active" means.
+              ACTIVE is the time the conversation was actually working; ELAPSED is wall clock from
+              its first turn to its last. On a session left open overnight they differ by hours, and
+              reporting only the second would say a session cost twelve hours when it cost forty
+              minutes. Absent rather than zero when the record has no timing at all — a conversation
+              the store has not seen yet is not one that took no time. */}
+          <Block title={pt ? 'Tempo' : 'Time'}>
+            {meta && (meta.duration_minutes ?? 0) > 0 ? (() => {
+              const t = sessionTime(meta, lang)
+              return (
+                <>
+                  {t.active !== null && <Line k={pt ? 'Ativo' : 'Active'} v={t.active} />}
+                  <Line k={pt ? 'Decorrido' : 'Elapsed'} v={t.elapsed} />
+                </>
+              )
+            })() : <Absent text={pt ? 'ainda não registrado' : 'not recorded yet'} />}
           </Block>
 
           <Block title={pt ? 'Mensagens' : 'Messages'}>

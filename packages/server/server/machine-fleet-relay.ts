@@ -102,7 +102,8 @@ export function requestMachineFleet(
  */
 export function requestMachineAction(
   machineId: string,
-  action: { action: string; id: string; text?: string },
+  /** `choice` is the option the person picked off the relayed dialog — see `machineFleet.ts`. */
+  action: { action: string; id: string; text?: string; choice?: number },
   send: (payload: Record<string, unknown>) => void,
   timeoutMs: number = FLEET_REPLY_TIMEOUT_MS,
 ): Promise<MachineActionReply | null> {

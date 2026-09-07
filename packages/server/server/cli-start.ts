@@ -30,18 +30,23 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeSync } from 'node:fs'
+import { existsSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, platform } from 'node:os'
 import {
-  DEFAULT_TEAM, repoShortName,
+  DEFAULT_TEAM, HARNESS_ORDER, repoShortName,
   type HarnessId, type TeamConnection,
 } from '@agentistics/core'
 import type {
   ActionResult,
   ActionTarget,
   AttachTicket,
+  BackupLayer,
+  BackupScheduleId,
   BootState,
+  ControlBackupConfig,
+  ControlBackupHarness,
+  ControlBackupStatus,
   ControlHost,
   ControlService,
   ControlSessions,
@@ -68,11 +73,21 @@ import type {
   RestoreCandidate,
 } from '@agentistics/tui/control'
 import { DEFAULT_SESSION_VIEW } from '@agentistics/tui/control'
-import { PORT, WEB_PORT } from './config'
+import { AGENTISTICS_DATA_DIR, PORT, WEB_PORT } from './config'
 import {
   readPreferences, writePreferences, resolveArchiveMode, type ArchiveMode,
   clampSessionPollMs, sessionPollMsOrDefault, SESSION_POLL_DEFAULT_MS,
 } from './preferences'
+import {
+  performBackup, readBackupPrefs, layerSizesNow,
+  writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
+} from './cli-backup'
+import { readGithubSection } from './backup-routes'
+import { omittedSecrets } from './backup/backup-plan'
+import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
+import { lastBackup, lastPerHarness, loadBackupHistory } from './backup/backup-store'
+import { scheduleStatus } from './backup/schedule'
+import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
 import { flagFor, type CentralRuntimeId, type CentralRuntimeOption } from './central-runtime'
 import { onOutputLine, publishLines, streamCommand } from './cli-stream'
@@ -111,7 +126,7 @@ import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey } from './sessions/approval-spec'
+import { approvalFor, choiceKey, isFreeTextOption} from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
@@ -132,7 +147,9 @@ import type { ManagedSession, SpawnPlanError } from './sessions/types'
 import {
   addSession, newSessionId, patchSession, readRegistry, removeSession, retireFallenSessions, touchSessions,
 } from './sessions/registry'
-import { createSessionsPoller, type SessionsPoller } from './sessions/sessions-host'
+import { createSessionsPoller, type SessionsPoller, type SessionSnapshot } from './sessions/sessions-host'
+import { modeSpecFor } from './sessions/mode-spec'
+import { isServerProcess, readServerSnapshot } from './sessions/shared-snapshot'
 import { conversationForProcess, forgetConversations, loadConversations } from './sessions/conversations'
 
 export type StartResult = number | 'foreground'
@@ -2495,6 +2512,164 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
     },
 
     /**
+     * The `backup` tab's own snapshot — see `ControlHost.backupStatus`.
+     *
+     * A SEPARATE read from `refresh()`, never folded into it: `refresh()` runs on every action and
+     * on every `r` press, and this walks the metrics layer (a few MB) plus the whole consolidate
+     * store to count sessions per harness, which every OTHER tab needs `refresh()` to stay cheap
+     * for. The RAW layer (gigabytes) is never walked here — the harness list's `size` column is the
+     * metrics-only weight, the same figure `agentop backup --plan` would report for that layer.
+     */
+    async backupStatus(): Promise<ControlBackupStatus> {
+      const p = await readPreferences()
+      const prefs = readBackupPrefs(p)
+      const [measured, consolidated, entries, github] = await Promise.all([
+        Promise.resolve(layerSizesNow()),
+        loadConsolidated().catch(() => new Map()),
+        loadBackupHistory().catch(() => []),
+        // Undefined on a read failure, never `{configured:false}`: "we could not look" and "it is
+        // off" are different facts, and `githubRows` says the same honest sentence for both without
+        // this one having to pretend it knows which.
+        readGithubSection().catch(() => undefined),
+      ])
+
+      const sessionCounts: Partial<Record<HarnessId, number>> = {}
+      for (const sess of consolidated.values()) {
+        const h = (sess.harness ?? 'claude') as HarnessId
+        sessionCounts[h] = (sessionCounts[h] ?? 0) + 1
+      }
+      const byHarness = measured?.sizes.metrics.byHarness ?? {}
+      const emptyLayerLabels: ControlBackupConfig['layerSizes'] =
+        { metrics: null, repos: null, archive: null, raw: null }
+      const layerSizes = measured?.labels ?? emptyLayerLabels
+      // The same measurement, in raw bytes — see `ControlBackupConfig.layerBytes`. `repos` stays
+      // null for the same reason its label does: unmeasurable ahead of a run.
+      const layerBytes: ControlBackupConfig['layerBytes'] = measured
+        ? {
+            metrics: layerTotal(measured.sizes, 'metrics'),
+            repos: null,
+            archive: layerTotal(measured.sizes, 'archive'),
+            raw: layerTotal(measured.sizes, 'raw'),
+          }
+        : { metrics: null, repos: null, archive: null, raw: null }
+      const perHarnessLast = lastPerHarness(entries)
+
+      const harnesses: ControlBackupHarness[] = HARNESS_ORDER.map(id => {
+        const at = perHarnessLast[id]
+        // A recorded backup once covered this harness, and its file is gone — see
+        // `backup-store.ts`'s `markPresence`. Checked only when there is no PRESENT one, so a
+        // harness with several records never has to look past the newest that still exists.
+        const gone = !at && entries.some(e => e.harnesses.includes(id))
+        return {
+          id,
+          enabled: prefs.harnesses.includes(id),
+          sessions: sessionCounts[id] ?? 0,
+          sizeLabel: formatBytes(byHarness[id] ?? 0),
+          ...(at ? { lastBackupAt: at } : {}),
+          ...(gone ? { lastBackupGone: true } : {}),
+        }
+      })
+
+      const last = lastBackup(entries)
+      const st = scheduleStatus({
+        schedule: prefs.schedule, customHours: prefs.customHours,
+        atHour: prefs.atHour, tzOffsetMinutes: new Date().getTimezoneOffset(),
+        lastAt: last?.at ?? null, nowMs: Date.now(),
+        serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
+      })
+
+      return {
+        harnesses,
+        config: {
+          layers: prefs.layers,
+          scheduleLayers: prefs.scheduleLayers,
+          destDir: prefs.destDir,
+          schedule: prefs.schedule,
+          scheduleActive: st.kind === 'next',
+          keep: prefs.keep,
+          retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
+          secretsCount: omittedSecrets().length,
+          layerSizes,
+          layerBytes,
+          ...(resolveArchiveMode(p) ? { archiveMode: resolveArchiveMode(p) } : {}),
+          ...(last
+            ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
+            : {}),
+        },
+        // Newest first already — see `loadBackupHistory`.
+        history: entries.map(e => ({
+          at: e.at,
+          layers: e.layers,
+          harnesses: e.harnesses,
+          bytesLabel: formatBytes(e.archiveBytes),
+          skipped: e.skipped,
+          presence: e.presence,
+        })),
+        github,
+      }
+    },
+
+    // Best-effort, exactly like `setMouse`: a machine that cannot write its preferences still gets
+    // the toggle for this run.
+    async setBackupHarness(harness: HarnessId, on: boolean): Promise<void> {
+      try {
+        const p = await readPreferences()
+        const prefs = readBackupPrefs(p)
+        const set = new Set(prefs.harnesses)
+        if (on) set.add(harness); else set.delete(harness)
+        await writePreferences({
+          ...p,
+          // HARNESS_ORDER, never the Set's own iteration order — the same discipline `readBackupPrefs`
+          // itself follows, so a preference written here reads back in the order every other surface
+          // already expects.
+          backup: { ...(p.backup ?? {}), harnesses: HARNESS_ORDER.filter(h => set.has(h)) },
+        })
+      } catch { /* best-effort — see above */ }
+    },
+
+    // Delegates to the same writer `agentop backup schedule` calls (`cli-backup.ts`'s
+    // `writeBackupSchedule`) — one implementation of the read-modify-write, not three.
+    async setBackupSchedule(schedule: BackupScheduleId): Promise<ActionResult> {
+      await writeBackupSchedule(schedule)
+      return { ok: true, message: S().backupScheduleSet(schedule) }
+    },
+
+    /**
+     * The layers editor's `enter` — set the layers a MANUAL run writes. Delegates to
+     * `writeBackupLayers`, the same writer `agentop backup config --layers` and the web's format
+     * picker call, which is what enforces `metrics` staying in the set even if this were ever
+     * called with a draft that dropped it.
+     */
+    async setBackupLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupLayers(layers)
+      return { ok: true, message: S().backupLayersSet(written.join(', ')) }
+    },
+
+    /** Same, for the layers a SCHEDULED run writes. */
+    async setBackupScheduleLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupScheduleLayers(layers)
+      return { ok: true, message: S().backupScheduleLayersSet(written.join(', ')) }
+    },
+
+    /**
+     * Run a backup now, streaming into `onOutput` — the same channel a rebuild uses.
+     *
+     * Calls `performBackup`, the ONE implementation `agentop backup` itself calls (`cli-backup.ts`):
+     * the cockpit decides nothing about what a backup carries, it only presses the button.
+     */
+    async runBackup(): Promise<ActionResult> {
+      const prefs = readBackupPrefs(await readPreferences())
+      const result = await performBackup(
+        prefs,
+        { layers: prefs.layers, harnesses: prefs.harnesses, destDir: prefs.destDir },
+        line => publishLines([line]),
+      )
+      return result.ok
+        ? { ok: true, message: S().backupRunOk(formatBytes(result.record.archiveBytes)) }
+        : { ok: false, message: result.reason }
+    },
+
+    /**
      * The output channel, straight from `cli-stream.ts`.
      *
      * A pass-through rather than a second registry: the streaming helpers are module-level (one
@@ -2552,8 +2727,31 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       // `loadConversations`/`loadHarnessSessions`/`backend.list` (individually measured and ruled
       // out — they run inside `poller.poll()`'s own `Promise.all`). Every phase below is a candidate
       // that has not yet been measured; run with `AGENTISTICS_PROFILE_FLEET=1` on the slow machine.
-      const poller = await timeFleetPhase('sessions: ensureSessionsPoller', ensureSessionsPoller)
-      const snap = await timeFleetPhase('sessions: poller.poll', () => poller.poll())
+      /*
+       * ASK THE SERVER'S POLLER BEFORE BUILDING A SECOND ONE.
+       *
+       * `working` is MOVEMENT — the frame changed since the LAST poll of that poller — and a state
+       * must additionally be seen twice before it is believed. Both live in the poller's own
+       * memory, so a poller that has just started reads a producing session as `waiting`, and a
+       * `running only` filter then hides it. Measured at one instant: the long-lived server said
+       * all four sessions were `working` while a freshly built host said all four were `waiting`.
+       * That is "aqui aparecem 4 e no agentop só 3".
+       *
+       * `null` means there is no server to ask — an ordinary answer, since the cockpit's whole
+       * purpose includes a machine whose server is stopped — and the local poller answers as it
+       * always did. The server never asks itself. See `shared-snapshot.ts`.
+       */
+      const shared = isServerProcess()
+        ? null
+        : await timeFleetPhase(
+          'sessions: readServerSnapshot',
+          () => readServerSnapshot<SessionSnapshot>(lang),
+        )
+      const poller = shared
+        ? null
+        : await timeFleetPhase('sessions: ensureSessionsPoller', ensureSessionsPoller)
+      const snap = shared
+        ?? await timeFleetPhase('sessions: poller.poll', () => poller!.poll())
       // Carried on every snapshot so the cockpit can state it permanently: a user who cannot get
       // out of a session is stranded in a buffer that hides their shell, and a line printed once
       // before the handover scrolls away the moment anything else happens.
@@ -2631,6 +2829,38 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * picker, a dialog, its own transcript view), which is not what "stop" means and is not undone
      * by pressing it again.
      */
+    /**
+     * Advance a session's harness to its next mode — see `mode-spec.ts`.
+     *
+     * The liveness is re-read from the BACKEND rather than from a poll snapshot, exactly as
+     * `interruptSession` and `answerSession` do: this sends a keystroke into a real terminal, and a
+     * five-second-old view of what is running is what would send it into a session that has ended.
+     *
+     * A harness with no probed spec is refused BY NAME. There is no safe fallback key: shift+tab
+     * means something else in most terminals, and sending it blind into an assistant is a keypress
+     * nobody asked for — the same refusal `choiceKey` makes for a numbered dialog.
+     */
+    async cycleSessionMode(id: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      const managed = (await readRegistry()).find(m => m.id === id)
+      if (!managed) return { ok: false, message: s.sessNoRegistryEntry }
+      const spec = modeSpecFor(managed.harness)
+      if (!spec) return { ok: false, message: s.sessModeUnknown(managed.harness) }
+
+      const live = (await backend.list().catch(() => [])).find(b => b.id === id)
+      if (!live?.alive) return { ok: false, message: s.sessNotRunning }
+
+      // The mode AFTER the key is whatever the harness moved to, and only the next poll can say —
+      // so the answer names the act rather than claiming an outcome it has not read.
+      return (await backend.sendKey(id, spec.cycleKey))
+        ? { ok: true, message: s.sessModeCycled }
+        : { ok: false, message: s.sessSendFailed(id) }
+    },
+
     async interruptSession(id: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
@@ -2999,7 +3229,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * a verified way to select the one they picked. A snapshot is up to five seconds old, and an
      * answer sent to a question that has changed underneath it is both wrong and silent.
      */
-    async answerSession(id: string, choice?: number): Promise<ActionResult> {
+    async answerSession(id: string, choice?: number, text?: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
       const blocked = await backend.unavailable()
@@ -3035,6 +3265,30 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         if (!picked) return { ok: false, message: s.sessChoiceGone }
         const key = choiceKey(spec, choice)
         if (!key) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+
+        /*
+         * THE FREE-TEXT OPTION IS NOT ANSWERED BY PICKING IT.
+         *
+         * Measured on a live dialog: the digit moves the cursor onto `Type something.` and turns
+         * the row into a FIELD — it does not submit. Every further digit is then typed INTO that
+         * field, which is how a card that kept being pressed produced `33333333333333333`.
+         *
+         * So the three steps the person would take by hand are taken here: the digit, the words,
+         * the return. Reproduced exactly before it was written — `3`, then the literal `capivara`,
+         * then Enter, and the session answered "você respondeu capivara".
+         *
+         * WITH NO TEXT it is refused rather than confirmed. Pressing Enter on an empty field reads
+         * as declining the question outright — measured, the session logged "User declined to
+         * answer questions" — which is a different answer from the one anybody meant to give.
+         */
+        if (isFreeTextOption(managed.harness, picked.label)) {
+          const answer = (text ?? '').trim()
+          if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
+          if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+          return (await backend.sendChoiceText(id, key, answer))
+            ? { ok: true, message: s.sessAnswered(answer) }
+            : { ok: false, message: s.sessSendFailed(id) }
+        }
         return (await backend.sendKey(id, key))
           ? { ok: true, message: s.sessAnswered(picked.label) }
           : { ok: false, message: s.sessSendFailed(id) }
@@ -3121,6 +3375,22 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
  * Without an interactive stdin nothing is drawn at all: the caller runs the server, exactly as a
  * systemd unit or a pipe has always done.
  */
+/**
+ * The poller's RAW snapshot, for `/api/fleet/snapshot`.
+ *
+ * `createControlHost().sessions()` answers `ControlSessions` — already mapped, already localized,
+ * shaped for drawing a row. The other agentop processes need what came BEFORE that mapping, because
+ * each of them maps it its own way (`toControlSession` for the cockpit, `fleetJson` for
+ * `session ls`, a hand-built summary for the hook). Serving the mapped shape and typing it as the
+ * raw one is a silent field mismatch: it was written that way first, and `session ls --json` came
+ * back with `activity: null` on every row.
+ *
+ * It is the SAME poller `sessions()` uses, so the server still holds exactly one.
+ */
+export async function readRawFleetSnapshot(): Promise<SessionSnapshot> {
+  return (await ensureSessionsPoller()).poll()
+}
+
 export async function runStart(): Promise<StartResult> {
   if (!process.stdin.isTTY) return 'foreground'
 

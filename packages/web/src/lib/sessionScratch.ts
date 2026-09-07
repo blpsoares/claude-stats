@@ -58,6 +58,34 @@ export interface ScratchStore {
  */
 export const MAX_CACHED_CHATS = 10
 
+/**
+ * WHAT A PIECE OF SCRATCH BELONGS TO — the conversation, never the row.
+ *
+ * The reported symptom was "mal fechei uma conversa e ao voltar pra ela literalmente ela volta a
+ * carregar", with an empty column and "Carregando a conversa…". The cache was working; it was
+ * filed under the wrong name.
+ *
+ * ONE CONVERSATION IS REACHABLE THROUGH SEVERAL ROWS, by design. `session-view.ts` deliberately
+ * lets an `exited` managed row NOT cover its conversation, so the conversation appears a second
+ * time as a `closed:<conversationId>` row you can reopen — measured on this machine: 9 of the 12
+ * exited rows had exactly that twin. And every attach / reopen / restart mints a NEW managedId for
+ * the SAME conversation. So the row id is not an identity that survives a session's life, and
+ * keying scratch on it means closing a session throws away its cached turns AND the paragraph
+ * somebody had typed into it — which is the one thing here that exists nowhere else.
+ *
+ * The key is therefore the conversation where there is one (`closed:` rows carry it in their id and
+ * nowhere else), and the row id only where there is not — a harness that cannot report a
+ * conversation has nothing better, and `conversationBlind` is the row's own sentence for that.
+ * The two are PREFIXED apart so a conversation key and a row id can never collide.
+ */
+export function scratchKey(row: { id: string; conversationId?: string }): string {
+  if (row.conversationId) return `conv:${row.conversationId}`
+  // A closed row's id IS `closed:<conversationId>` (session-view.ts) and it carries no
+  // `conversationId` field of its own, so this is the same conversation said the other way.
+  if (row.id.startsWith('closed:')) return `conv:${row.id.slice('closed:'.length)}`
+  return `row:${row.id}`
+}
+
 /** `sessionStorage` key for one session's draft. Namespaced so nothing else can collide with it. */
 export function draftKey(id: string): string {
   return `agentistics:draft:${id}`
@@ -181,6 +209,23 @@ export interface SessionScratch {
   writeReply(id: string, target: ReplyTarget | null): void
   readChat(id: string): CachedChat | null
   writeChat(id: string, chat: CachedChat): void
+  /**
+   * Carry one session's scratch to a NEW key, because the key changed under it.
+   *
+   * `scratchKey` answers `row:<id>` while a row has no `conversationId` and `conv:<id>` once it
+   * learns one — and a live session learns it MID-USE, the moment the poller can prove the link.
+   * The key then flips while somebody is typing: every read moves to a slot that holds nothing, so
+   * the draft comes back empty and the cached conversation comes back `null`, which puts the
+   * "loading" paragraph where the composer was and takes the focused field out of the DOM with it.
+   * Reported as "eu to digitando e do nada o foco sai do campo de input".
+   *
+   * Migrating rather than re-reading is what makes the change invisible, which is what it should
+   * always have been: the same person, the same session, the same half-typed message.
+   *
+   * It never OVERWRITES: a destination that already has something is the case where the two keys
+   * are genuinely different conversations, and the newer slot is the truthful one.
+   */
+  migrate(from: string, to: string): void
 }
 
 /** Build a scratch over any storage. `null` storage yields drafts that work only in memory. */
@@ -295,6 +340,25 @@ export function createSessionScratch(store: ScratchStore | null): SessionScratch
     },
     writeChat(id, chat) {
       chats = capChats(chats, id, chat)
+    },
+    migrate(from, to) {
+      if (from === to) return
+      // Every piece moves through this object's OWN accessors, so the migration inherits whatever
+      // each of them already handles — the storage that may throw, the cap on cached chats, the
+      // JSON that may not parse. A hand-rolled key copy would be a second implementation of all of
+      // that, and the first one to drift would lose a draft silently.
+      const draft = this.readDraft(from)
+      if (draft !== '' && this.readDraft(to) === '') this.writeDraft(to, draft)
+      const reply = this.readReply(from)
+      if (reply && this.readReply(to) === null) this.writeReply(to, reply)
+      const echoes = this.readEchoes(from)
+      if (echoes.length > 0 && this.readEchoes(to).length === 0) this.writeEchoes(to, echoes)
+      const files = this.readAttachments(from)
+      if (files.length > 0 && this.readAttachments(to).length === 0) this.writeAttachments(to, files)
+      const chat = this.readChat(from)
+      if (chat && this.readChat(to) === null) this.writeChat(to, chat)
+      // The old slot is left as it was. It is keyed by a row id that nothing will ask for again,
+      // and clearing it is one more thing that can go wrong for no benefit.
     },
   }
 }

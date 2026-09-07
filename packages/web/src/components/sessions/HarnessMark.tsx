@@ -78,16 +78,16 @@ export function HarnessMark({ harness, size = 26 }: HarnessMarkProps) {
   const mono = MONO_MARK[harness]
 
   if (mono) {
-    // Same plate as the coloured marks, so the row stays visually consistent — only the glyph
-    // itself differs, and its colour is `currentColor` off `--text-primary`, which is exactly
-    // "white on dark, black on light" without inventing a value neither vendor publishes.
+    // NO PLATE. A vendor's mark is designed to sit on the page, and a tinted square behind it is
+    // something we added — it read as a button, and on a row of six it read as six buttons. The
+    // glyph's colour stays `currentColor` off `--text-primary`, which is exactly "white on dark,
+    // black on light" without inventing a value neither vendor publishes.
     return (
       <span
         title={name}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          width: size, height: size, borderRadius: 7,
-          background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+          width: size, height: size, color: 'var(--text-primary)',
         }}
       >
         <svg
@@ -103,19 +103,26 @@ export function HarnessMark({ harness, size = 26 }: HarnessMarkProps) {
   }
 
   if (file) {
+    // NO PLATE, and no rounded corner either: a radius on a transparent image clips the artwork's
+    // own corners for nothing. What a file carries INSIDE it is the vendor's, not ours — measured
+    // on the two PNGs here, `antigravity.png` is transparent to its corners while `kimi.png` is an
+    // opaque dark tile with the glyph on it, which is Kimi's icon as published. Stripping that
+    // would be redrawing someone's mark; a mark without it has to arrive as a new file with its
+    // own row in `SOURCES.md`.
     return (
       <img
         src={file}
         alt={name}
         title={name}
-        style={{
-          width: size, height: size, flexShrink: 0, borderRadius: 7,
-          objectFit: 'contain', background: 'var(--bg-elevated)',
-        }}
+        style={{ width: size, height: size, flexShrink: 0, objectFit: 'contain' }}
       />
     )
   }
 
+  // The MONOGRAM keeps its plate, and that is not an oversight. It is not a logo — it is a letter
+  // standing in for one, and a bare letter beside real marks reads as stray text rather than as
+  // the placeholder it is. Every harness shipping today has a real mark, so this renders for none
+  // of them; it exists for the next one added before its mark is found.
   return (
     <span
       aria-label={name}

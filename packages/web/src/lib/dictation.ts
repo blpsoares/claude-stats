@@ -117,7 +117,17 @@ export function dictationError(code: string, lang: 'en' | 'pt'): string {
  * Only a literal IPv4 host is rewritten. A hostname could be anything, and sending someone from
  * `dash.example.com` to `localhost` would be a guess about which machine they are sitting at.
  */
-export function insecureAlternative(href: string): string | null {
+export function insecureAlternative(href: string, onThisMachine = true): string | null {
+  // ON A PHONE THERE IS NO ALTERNATIVE, and offering one is worse than offering none: `localhost`
+  // there is the PHONE, which runs no agentop, so the row sent somebody to a page that cannot load
+  // — from the one device where this refusal fires most, since a phone reaches the dashboard by
+  // its LAN address and nothing else. Reported as "na versão mobile o mic n funciona tbm": true,
+  // and the browser will not give a microphone over plain http whatever this row says.
+  //
+  // The caller states whether the browser is on the machine serving the page. It cannot be
+  // inferred: `172.23.255.165` looks identical from the machine itself and from the phone beside
+  // it, and guessing wrong is what produced the dead link.
+  if (!onThisMachine) return null
   let url: URL
   try { url = new URL(href) } catch { return null }
   if (url.protocol !== 'http:') return null
@@ -144,12 +154,41 @@ export function dictatedText(e: {
   resultIndex?: number
   results: ArrayLike<ArrayLike<{ transcript: string }> | undefined>
 }): string {
+  return splitDictation(e).final
+}
+
+/**
+ * PURE: what this event contributed, split into what is SETTLED and what is still being heard.
+ *
+ * `interimResults` was off, which is why dictation felt dead: nothing at all reaches the screen
+ * until the recogniser decides a phrase is over, so a person speaking sees an unchanged field and
+ * concludes the microphone is broken. Reported that way, together with the wish to see the capture
+ * happening.
+ *
+ * ONLY THE FINAL HALF MAY TOUCH THE DRAFT. An interim result is a GUESS that the recogniser
+ * replaces as it hears more, so appending one would write words nobody said and then leave them
+ * there. The interim half is for showing, never for keeping.
+ *
+ * An implementation that reports no `isFinal` is treated as final — that is what this function did
+ * before interim results existed at all, and the draft is the safer place for its text than a
+ * preview that is dropped.
+ */
+export function splitDictation(e: {
+  resultIndex?: number
+  results: ArrayLike<(ArrayLike<{ transcript: string }> & { isFinal?: boolean }) | undefined>
+}): { final: string; interim: string } {
   // An absent `resultIndex` reads as 0 — an implementation that does not provide it has no growing
   // list to skip either, so reading from the start is the correct behaviour there.
   const from = typeof e.resultIndex === 'number' ? e.resultIndex : 0
-  let text = ''
-  for (let i = from; i < e.results.length; i++) text += e.results[i]?.[0]?.transcript ?? ''
-  return text
+  let final = ''
+  let interim = ''
+  for (let i = from; i < e.results.length; i++) {
+    const r = e.results[i]
+    const text = r?.[0]?.transcript ?? ''
+    if (r?.isFinal === false) interim += text
+    else final += text
+  }
+  return { final, interim }
 }
 
 /**

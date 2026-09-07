@@ -35,6 +35,8 @@ export const ADD_FILTER_ICON_W = 48
 export const ACTIVE_W = 175
 /** The same button reduced to a funnel, its badge and its chevron. */
 export const ACTIVE_ICON_W = 52
+/** The `API | Plan` cost-basis toggle, when the page offers one. Two segments at the `CTL` metrics. */
+export const COST_BASIS_W = 94
 /** One inter-group gap. */
 export const GAP_W = 8
 
@@ -84,13 +86,44 @@ export interface HeaderFit {
  * layout the widest screens get. Guessing `compact` from a measurement that has not happened yet
  * would collapse the control on every mount and expand it a frame later, which reads as a fault.
  */
-export function headerFit(available: number): HeaderFit {
+export function headerFit(available: number, extra = 0): HeaderFit {
   const widest: HeaderFit = { date: 'full', activeFilters: 'label', addFilter: 'label' }
   if (!Number.isFinite(available) || available <= 0) return widest
-  if (available >= FULL_BAR_W) return widest
-  if (available >= COMPACT_DATE_BAR_W) return { date: 'compact', activeFilters: 'label', addFilter: 'label' }
-  if (available >= ICON_ACTIVE_BAR_W) return { date: 'compact', activeFilters: 'icon', addFilter: 'label' }
+  // `extra` is what the bar draws that these tiers do not name — the cost-basis toggle, which is
+  // absent on a central and on a machine with no billing set up. Budgeted by the CALLER rather than
+  // assumed here: a tier that reserves room for a control that is not on screen compacts a bar that
+  // would have fitted.
+  const room = available - extra
+  if (room >= FULL_BAR_W) return widest
+  if (room >= COMPACT_DATE_BAR_W) return { date: 'compact', activeFilters: 'label', addFilter: 'label' }
+  if (room >= ICON_ACTIVE_BAR_W) return { date: 'compact', activeFilters: 'icon', addFilter: 'label' }
   // The floor. Below this the strip is narrower than a desktop ever is, and there is nothing left
   // to give that would not remove a control outright — which this module does not do.
   return { date: 'compact', activeFilters: 'icon', addFilter: 'icon' }
+}
+
+/**
+ * How much of the centring padding the strip can actually AFFORD.
+ *
+ * The filters sit in a `flex: 1` slot between the logo and the action cluster, and the slot is
+ * padded on the left by the cluster's own width so the bar lands on the STRIP's centre line rather
+ * than the centre of what is left beside it. That padding is real: it comes out of the width the
+ * bar has to draw in.
+ *
+ * Which means the cluster was charged TWICE — once for being a sibling that takes room, and once
+ * again as padding. On a 1273px window with a 258px cluster that is 516px gone, and the bar
+ * compacted with most of the header empty beside it. Reported with a screenshot of exactly that.
+ *
+ * CENTRING IS WHAT GIVES WAY, NOT THE CONTROLS. The padding is a nicety — a bar a few pixels off
+ * the centre line is something nobody notices, while a date control collapsed into a popover is a
+ * control somebody has to go looking for. So the padding is taken only out of the SLACK: whatever
+ * is left after the bar has room for its widest layout, and never more than the cluster's own
+ * width. Below that the bar is simply not centred, and it still compacts in the order this module
+ * already sets — just later, and only when the width is genuinely gone.
+ */
+export function stripPadding(slotW: number, actionsW: number, needed: number = FULL_BAR_W): number {
+  if (!Number.isFinite(slotW) || !Number.isFinite(actionsW)) return 0
+  const slack = slotW - needed
+  if (!(slack > 0)) return 0
+  return Math.max(0, Math.min(actionsW, slack))
 }

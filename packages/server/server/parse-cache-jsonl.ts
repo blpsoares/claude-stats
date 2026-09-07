@@ -2,6 +2,8 @@ import { readFile } from 'fs/promises'
 import type { SessionMeta, SessionAgentMetrics } from '@agentistics/core'
 import { parseSessionJsonl, activeMinutesFromClaudeJsonl, contextTokensFromClaudeJsonl } from './jsonl'
 import { extractAgentMetrics } from './agent-metrics'
+import { enrichFromSubagentTranscripts } from './subagent-metrics'
+import { basename } from 'path'
 import { safeStat } from './utils'
 import type { ParseCache } from './parse-cache'
 import type { FileStamp } from './parse-cache-key'
@@ -45,13 +47,27 @@ export async function cachedParseSession(
     return parseSessionJsonl(filePath, sessionId, fallbackPath, source)
   }
 
-  const hit = cache.get<SessionMeta>('session', stamp, source)
+  // The SHAPE is part of the variant, for the reason `ENRICH_SHAPE` is — and this kind was missing
+  // it. A stored row is only readable by the code that WROTE it, so a change to what
+  // `parseSessionJsonl` produces goes on serving the old shape for every file that has not been
+  // appended to since. It is not hypothetical: the async-agent fix (#373) changed what an
+  // invocation carries, and every transcript already in this cache kept answering in the shape from
+  // before it. Bump this whenever `SessionMeta` gains, loses or re-means a field this parser fills.
+  const variant = `${SESSION_SHAPE}:${source}`
+  const hit = cache.get<SessionMeta>('session', stamp, variant)
   if (hit) return hit
 
   const parsed = await parseSessionJsonl(filePath, sessionId, fallbackPath, source)
-  cache.set('session', stamp, parsed, source)
+  cache.set('session', stamp, parsed, variant)
   return parsed
 }
+
+/** The shape of a stored `session` row. See the note in `cachedParseSession`. */
+// v4: `SessionMeta.daily` — the per-day split of the four counters. Exactly the case the comment
+// above describes: without a bump, every transcript already in this cache went on answering in the
+// shape from before the field existed, so only the three sessions being appended to right now
+// gained it. Measured before the bump: 3 of 658.
+const SESSION_SHAPE = 'v4'
 
 /** Everything `scanProjectDir` needs from a transcript whose session already exists in
  *  Claude's own session-meta — which carries none of it. */
@@ -81,7 +97,7 @@ export interface EnrichResult {
  * changed in `EnrichResult`.** Costs one slow build; the alternative is a metric that
  * is silently blank and looks like missing data rather than a stale cache.
  */
-const ENRICH_SHAPE = 'v2'
+const ENRICH_SHAPE = 'v3'
 
 /** The first `claude-*` model in the transcript's opening 200 lines — the same scan
  *  `scanProjectDir` did inline, kept identical on purpose. */
@@ -127,7 +143,7 @@ export async function cachedEnrich(
 
   const variant = `${ENRICH_SHAPE}:${metaModel}`
   const hit = cache.get<EnrichResult>('enrich', stamp, variant)
-  if (hit) return hit
+  if (hit) return withSubagentNumbers(hit, filePath)
 
   const content = await readFile(filePath, 'utf-8').catch(() => '')
   if (!content) return null
@@ -142,5 +158,26 @@ export async function cachedEnrich(
     agentMetrics: metrics.totalInvocations > 0 ? metrics : null,
   }
   cache.set('enrich', stamp, result, variant)
-  return result
+  return withSubagentNumbers(result, filePath)
+}
+
+/**
+ * The subagents' numbers, read OUTSIDE the memo — and it has to be outside.
+ *
+ * This path serves the meta-sourced sessions, which is MOST Claude sessions, and it was added
+ * before #373 moved an async agent's numbers into the agent's own transcript. It never gained the
+ * enrichment, so every invocation it published stayed `unmeasured` — the row rendered N/A forever
+ * on the very path that carries the bulk of them.
+ *
+ * Caching the enriched result would have been the smaller diff and the wrong one: this memo is
+ * keyed on the PARENT transcript's stamp, and a subagent's file goes on changing while the
+ * conversation sits idle. The enriched numbers would freeze at whatever the agent had written the
+ * first time the parent was read. `subagent-metrics.ts` keeps its own memo, keyed on each
+ * subagent file's own mtime and size, which is the only stamp that answers this question.
+ */
+async function withSubagentNumbers(result: EnrichResult, filePath: string): Promise<EnrichResult> {
+  if (!result.agentMetrics) return result
+  const sessionId = basename(filePath).replace(/\.jsonl$/, '')
+  const agentMetrics = await enrichFromSubagentTranscripts(result.agentMetrics, filePath, sessionId)
+  return agentMetrics === result.agentMetrics ? result : { ...result, agentMetrics }
 }

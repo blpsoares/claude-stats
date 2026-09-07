@@ -25,6 +25,7 @@ const AccessibilitySettings = lazy(() => import('./pages/settings/AccessibilityS
 const NotificationsSettings = lazy(() => import('./pages/settings/NotificationsSettings'))
 const SessionsSettings = lazy(() => import('./pages/settings/SessionsSettings'))
 const DataSourcesSettings = lazy(() => import('./pages/settings/DataSourcesSettings'))
+const BackupSettings = lazy(() => import('./pages/settings/BackupSettings'))
 const HarnessesSettings = lazy(() => import('./pages/settings/HarnessesSettings'))
 const InstallSettings = lazy(() => import('./pages/settings/InstallSettings'))
 const ConnectionSettings = lazy(() => import('./pages/settings/ConnectionSettings'))
@@ -89,6 +90,7 @@ export default function AppRouter() {
             <Route path="notifications" element={<Suspense fallback={<PageFallback />}><NotificationsSettings /></Suspense>} />
             <Route path="sessions" element={<Suspense fallback={<PageFallback />}><SessionsSettings /></Suspense>} />
             <Route path="data-sources" element={<Suspense fallback={<PageFallback />}><DataSourcesSettings /></Suspense>} />
+            <Route path="backup" element={<Suspense fallback={<PageFallback />}><BackupSettings /></Suspense>} />
             <Route path="harnesses" element={<Suspense fallback={<PageFallback />}><HarnessesSettings /></Suspense>} />
             <Route path="pricing" element={<Suspense fallback={<PageFallback />}><PricingSettings /></Suspense>} />
             <Route path="billing" element={<Suspense fallback={<PageFallback />}><BillingSettings /></Suspense>} />
