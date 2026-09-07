@@ -1655,6 +1655,30 @@ export default function AppLayout() {
         if (Math.abs(el.scrollTop - target) > 1) el.scrollTop = target
       }
     }
+    /**
+     * STANDALONE AND A TAB LIFT THE COMPOSER BY DIFFERENT MEANS, AND ONLY ONE OF THEM MAY RUN.
+     *
+     * This is the discriminator every previous attempt was missing: "só acontece na versão PWA,
+     * acessando direto pelo navegador funciona normalmente."
+     *
+     *  - In a TAB, iOS does not change the layout viewport for the keyboard. It SCROLLS the
+     *    document to reveal the caret, and that scroll is the only thing lifting the composer.
+     *    Cancelling it is how the composer ends up behind the keyboard — which is what happened the
+     *    one time this was pinned unconditionally.
+     *  - INSTALLED, iOS resizes the WINDOW. `100dvh` follows it down, the column gets shorter and
+     *    the composer rises on its own, correctly. Then the caret scroll happens ANYWAY and lifts
+     *    it a second time, by roughly the keyboard again — "o input continua subindo".
+     *
+     * So the scroll is cancelled in standalone and left alone in a tab. Read once: `display-mode`
+     * cannot change without the page being reloaded, and `navigator.standalone` is iOS's own flag
+     * for a Safari-added web app, which is the case the media query misses on older versions.
+     */
+    const nav = navigator as Navigator & { standalone?: boolean }
+    const standalone = nav.standalone === true
+      || (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
+    const pin = () => { if (standalone && window.scrollY !== 0) window.scrollTo(0, 0) }
+    if (standalone) window.addEventListener('scroll', pin, { passive: true })
+
     /** How much the band must lose before it counts as covered by something. */
     const COVERED_BY = 120
     const vv = window.visualViewport
@@ -1689,6 +1713,7 @@ export default function AppLayout() {
     return () => {
       window.removeEventListener('focusin', onIn)
       window.removeEventListener('focusout', onOut)
+      window.removeEventListener('scroll', pin)
       vv?.removeEventListener('resize', onViewport)
       window.removeEventListener('resize', onViewport)
     }
