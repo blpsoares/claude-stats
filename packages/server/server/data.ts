@@ -9,7 +9,7 @@ import { planProjectFacts, applyProjectFacts, type ResolvedFacts } from './proje
 import { mergeLocalAndIngestedSessions, sessionKey } from './session-merge'
 import { writeWorkflowRuns, loadWorkflowRuns } from './workflow-store'
 import { createLimiter, safeReadDir, safeReadJson, safeStat } from './utils'
-import { UUID_RE, decodeProjectDir, getProjectGitStats, getGitRemote } from './git'
+import { UUID_RE, decodeProjectDir, getProjectGitStats, getGitRemote, gcGitStatsCache } from './git'
 // `activeMinutesFromClaudeJsonl` / `contextTokensFromClaudeJsonl` are no longer called
 // here — the meta-session enrichment they served now runs inside `cachedEnrich`, which
 // reads the transcript once per file VERSION instead of once per build.
@@ -722,6 +722,11 @@ async function _buildApiResponseCore(onProgress: ProgressFn): Promise<ApiRespons
     parseCache.flush()
     parseCache.gc(Date.now() - 30 * 24 * 60 * 60 * 1000)
     parseCache.close()
+    // Repository statistics age out on the same clock, for the same reason: a row for a commit in
+    // a repository nobody opens any more is dead weight. Rows are read-touched, so a repo that is
+    // served from cache on every build keeps itself alive. Fire-and-forget — a gc that fails costs
+    // disk, never a build.
+    void gcGitStatsCache(Date.now() - 30 * 24 * 60 * 60 * 1000).catch(() => {})
     onProgress('projects', 1, String(projects.length))
     // Every path the Claude walk has already asked git about — including the ones that turned out
     // not to be repositories. `resolveProjectFacts` below skips these rather than re-reading them.

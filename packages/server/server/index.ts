@@ -138,6 +138,38 @@ async function readCwdFromJsonl(filePath: string): Promise<string | null> {
 import type { ProcStatSample } from './hardware-pure'
 const serverProcStatsMap = new Map<number, ProcStatSample>()
 
+// ---------------------------------------------------------------------------
+// One server per port — decided BEFORE any work is spent
+// ---------------------------------------------------------------------------
+// Four server processes were once found running side by side on one laptop, each independently
+// walking every git repository on disk: the same work, four times, for one dashboard. The port
+// bind cannot prevent that, because it happens at the BOTTOM of this file — by then the watcher
+// and the first full build (right below) have already spent minutes of CPU and hundreds of
+// megabytes. And two processes started in the same second both pass a "is the port free?" check,
+// which is precisely how two of those four arrived.
+{
+  const { claimInstanceLock } = await import('./single-instance')
+  const { serverLockFile } = await import('./config')
+  const { AGENTISTICS_DATA_DIR: LOCK_DIR } = await import('./config')
+  const lock = await claimInstanceLock(serverLockFile())
+  if (!lock.ok) {
+    console.error(
+      `[startup] another agentop server is already using ${LOCK_DIR}` +
+      (lock.holder ? ` (pid ${lock.holder})` : '') +
+      ' — exiting instead of scanning every repository a second time.\n' +
+      '          To run a second one anyway, give it its own data directory: ' +
+      'AGENTISTICS_DIR=/path/to/dir agentop server'
+    )
+    process.exit(1)
+  }
+  // Best-effort release. A lock left behind by a hard kill is reclaimed as stale by the next
+  // start, so an unreleased lock costs nothing.
+  const release = () => { void lock.release() }
+  process.on('exit', release)
+  process.on('SIGINT', () => { release(); process.exit(130) })
+  process.on('SIGTERM', () => { release(); process.exit(143) })
+}
+
 // Preserve history before Claude's next cleanup (transcripts > cleanupPeriodDays,
 // default 30 days). 'full' mirrors raw files; both modes warm a build that persists
 // the consolidated per-session metrics store.
@@ -1795,7 +1827,7 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           : await readSessionSubagents(host, lang, id, {
             ...(num(url.searchParams.get('limit')) !== undefined ? { limit: num(url.searchParams.get('limit'))! } : {}),
             ...(num(url.searchParams.get('offset')) !== undefined ? { offset: num(url.searchParams.get('offset'))! } : {}),
-          })
+          }, url.searchParams.get('kind') === 'fork' ? 'fork' : 'agent')
         return new Response(JSON.stringify(payload), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
@@ -1819,10 +1851,19 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         })
       }
       try {
-        const { readSessionWorkflows } = await import('./sessions/workflows-web')
+        const { readSessionWorkflows, readWorkflowAgent } = await import('./sessions/workflows-web')
         const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
         const lang = fleetLang(url.searchParams.get('lang'))
-        const payload = await readSessionWorkflows(await hostForFleet(lang), lang, id)
+        const host = await hostForFleet(lang)
+        // ONE route, two questions: without `run`+`agent` it is the list of runs, with them it is
+        // that one agent opened up — what it was asked and every command it ran. Splitting them
+        // would be two paths resolving the same row through the same three steps, and the detail
+        // is a file the list deliberately does not read.
+        const run = url.searchParams.get('run')
+        const agent = url.searchParams.get('agent')
+        const payload = run && agent
+          ? await readWorkflowAgent(host, lang, id, run, agent)
+          : await readSessionWorkflows(host, lang, id)
         return new Response(JSON.stringify(payload), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })

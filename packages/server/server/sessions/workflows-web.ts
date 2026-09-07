@@ -16,11 +16,28 @@ import type { CliLang } from '../cli-lang'
 import { safeStat } from '../utils'
 import { resolveSessionTranscript } from './session-resolve'
 import { discoverWorkflowLaunches, assembleWorkflowRuns, type DiscoveredRun } from '../workflow-metrics'
+import { aggregateWorkflowAgent } from '../workflow-agent'
+import { parseWorkflowProgress } from '../workflow-progress'
+import { safeReadDir } from '../utils'
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+/** The shape an id from a client must have before it is allowed to name a file. */
+const AGENT_ID = /^[A-Za-z0-9_-]{1,128}$/
+const RUN_ID = /^[A-Za-z0-9_-]{1,128}$/
 
 export interface WorkflowAgentRow {
+  /** The id its transcript is named after — what the detail request asks for. */
+  agentId?: string
   label: string
+  /** Where the label and phase came from. `record` is exact; `matched` is a prompt-pairing guess;
+   *  `none` means the label IS the file name. On screen they look identical, so the view says. */
+  labelSource?: 'record' | 'matched' | 'none'
   phase: string
+  /** How many tool calls it made. `null` when nothing could count them. */
+  toolCalls: number | null
+  /** Its transcript ends on an unanswered tool call. Only meaningful while the RUN is live. */
+  pending?: boolean
   model: string
   /** The four counters. `null` when the agent has produced none — never a zeroed breakdown. */
   tokens: TokenBreakdown | null
@@ -125,7 +142,12 @@ export async function readSessionWorkflows(
       agents: run.agents.map(a => {
         const at = tokensOf(a)
         return {
-          label: a.label, phase: a.phase, model: a.model,
+          ...(a.agentId ? { agentId: a.agentId } : {}),
+          label: a.label,
+          ...(a.labelSource ? { labelSource: a.labelSource } : {}),
+          phase: a.phase, model: a.model,
+          toolCalls: typeof a.toolCalls === 'number' ? a.toolCalls : null,
+          ...(a.pending ? { pending: true } : {}),
           tokens: at,
           totalTokens: at ? workflowTokens(a) : null,
           costUSD: a.costUSD > 0 ? a.costUSD : null,
@@ -137,4 +159,84 @@ export async function readSessionWorkflows(
   // one they launched.
   rows.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''))
   return { ok: true, supported: true, rows, anyLive: rows.some(x => x.live) }
+}
+
+
+export type WorkflowAgentDetail =
+  | {
+      ok: true
+      agentId: string
+      label: string
+      phase: string
+      model: string
+      /** The agent's own opening prompt — what it was asked to do. */
+      prompt: string
+      /** Exact, even when the list below is clipped. */
+      toolCalls: number
+      tools: Record<string, number>
+      commands: string[]
+      /** The list was cut at the cap — said, so it never implies the agent stopped there. */
+      commandsClipped: boolean
+      /** Index, among ALL calls, of the one asked and not yet answered — the live edge. Null when
+       *  every call came back. A fact about the file; the view decides whether to call it running. */
+      pendingIndex: number | null
+    }
+  | { ok: false; message: string }
+
+/**
+ * ONE agent of one run, opened up: what it was asked, and every command it ran.
+ *
+ * A separate request on purpose. The LIST reads every agent of every run on every poll, and the
+ * commands of a 72-agent run are megabytes of shell — the same reason `subagents-web.ts` splits
+ * its list from its activity. The transcript is re-read here with `withCommands`, which costs one
+ * file rather than all of them.
+ */
+export async function readWorkflowAgent(
+  host: StartHost, lang: CliLang, id: string, runId: string, agentId: string,
+): Promise<WorkflowAgentDetail> {
+  const pt = lang === 'pt'
+  // An id from a client is never allowed to name a path until it looks like one of ours.
+  if (!RUN_ID.test(runId) || !AGENT_ID.test(agentId)) {
+    return { ok: false, message: pt ? 'Identificador inválido.' : 'Invalid identifier.' }
+  }
+  const r = await resolveSessionTranscript(host, lang, id)
+  if ('error' in r) return { ok: false, message: r.error }
+
+  const harness = r.row.harness as HarnessId | undefined
+  if (!harness || !HARNESS_CAPABILITIES[harness]?.dynamicWorkflows) {
+    return { ok: false, message: unsupported(harness, lang) }
+  }
+
+  const runDir = join(workflowsDirFor(r.transcript), runId)
+  const file = `agent-${agentId}.jsonl`
+  const files = await safeReadDir(runDir)
+  if (!files.includes(file)) {
+    return {
+      ok: false,
+      message: pt
+        ? 'A transcrição deste agente não está mais no disco.'
+        : 'This agent’s transcript is no longer on disk.',
+    }
+  }
+  const content = await readFile(join(runDir, file), 'utf-8').catch(() => '')
+  const agg = aggregateWorkflowAgent(content.split('\n'), { withCommands: true })
+  // The run's own record names it; without one the label is the file's id and the view says so.
+  const sessionDir = r.transcript.replace(/\.jsonl$/, '')
+  const record = await readFile(join(sessionDir, 'workflows', `${runId}.json`), 'utf-8')
+    .then(t => JSON.parse(t) as unknown)
+    .catch(() => null)
+  const placed = parseWorkflowProgress(record).byAgent.get(agentId)
+  return {
+    ok: true,
+    agentId,
+    label: placed?.label ?? agentId,
+    phase: placed?.phase ?? '',
+    model: agg.model,
+    prompt: agg.prompt,
+    toolCalls: agg.toolCalls,
+    tools: agg.tools,
+    commands: agg.commands,
+    commandsClipped: agg.commandsClipped,
+    pendingIndex: agg.pendingToolIndex,
+  }
 }

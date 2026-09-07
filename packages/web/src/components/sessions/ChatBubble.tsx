@@ -25,10 +25,10 @@ import remarkGfm from 'remark-gfm'
 // message written across several lines renders as one run-on paragraph — which is what "the
 // messages are not formatted" turned out to mean. `HarnessChat` has always used it.
 import remarkBreaks from 'remark-breaks'
-import { Check, Clock, Copy, CornerUpLeft, Loader, User } from 'lucide-react'
+import { Check, Clock, Copy, CornerUpLeft, Image as ImageIcon, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { splitSlashLine } from '../../lib/slashLine'
-import { splitImageAttachments } from '../../lib/attachmentPreview'
+import { splitImageAttachments, splitImageMarkers } from '../../lib/attachmentPreview'
 import { copyText } from '../../lib/clipboard'
 import { echoStatus } from '../../lib/echoStatus'
 import { messageTime } from '../../lib/messageTime'
@@ -279,11 +279,16 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
   // An attachment is a PATH the composer typed into the pane (see `attachmentPreview.ts`'s header),
   // so it arrives in `turn.text` like any other line — pulled out here rather than at the source, so
   // the SAME rule reads an echoed message and its later transcript copy identically.
-  const { images, text } = splitImageAttachments(turn.text)
+  const { images, text: prose } = splitImageAttachments(turn.text)
+
+  // And `[Image #4]` — the same question asked of what the HARNESS substituted rather than what the
+  // composer typed. It carries no file, so it becomes a chip naming which image it was and never a
+  // thumbnail; without this it ran into the first word of the prose (see `splitImageMarkers`).
+  const { markers, text } = splitImageMarkers(prose)
 
   // A turn that said nothing AND attached nothing is not a message. Tool calls and reasoning are
   // the work between messages, and the row's state already reports that the session is working.
-  if (text.trim() === '' && images.length === 0) return null
+  if (text.trim() === '' && images.length === 0 && markers.length === 0) return null
 
   // NOT a message, and not drawn as one: no avatar, no bubble, no side. A dim centred note naming
   // what the harness put in the transcript, so the reply below it still has something above it
@@ -550,6 +555,28 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {images.map((path, i) => (
               <AttachmentThumb key={path} path={path} onOpen={() => setLightboxIndex(i)} />
+            ))}
+          </div>
+        )}
+
+        {/* The harness's own markers, as chips. There is no file behind an ordinal, so the chip says
+            exactly what is known — which image of the turn this was — and offers nothing to click. */}
+        {markers.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {markers.map(n => (
+              <span
+                key={n}
+                title={pt ? 'imagem anexada no assistente' : 'attached in the assistant'}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '2px 7px', borderRadius: 6,
+                  border: '1px solid var(--border-subtle)', background: 'var(--bg-tertiary)',
+                  fontSize: 10.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+                }}
+              >
+                <ImageIcon size={11} style={{ flexShrink: 0 }} />
+                {pt ? 'Imagem' : 'Image'} #{n}
+              </span>
             ))}
           </div>
         )}

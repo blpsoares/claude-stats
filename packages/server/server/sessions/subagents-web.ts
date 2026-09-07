@@ -24,7 +24,7 @@ import { readChatWindow, resolveChatTranscriptPath, type ChatTurn } from './chat
 import { conversationOfRow } from './row-conversation'
 import {
   DEFAULT_AGENT_PAGE, agentIdFromFile, pageOfAgents, parseSubagentMeta, parseTaskOutcomes,
-  subagentCost, subagentStatus, summarizeSubagent,
+  subagentCost, subagentKind, subagentStatus, summarizeSubagent,
   type AgentFile, type SubagentMeta, type SubagentStatus, type SubagentUsage,
 } from './subagents'
 
@@ -65,6 +65,14 @@ export type SubagentsPayload =
       total: number
       /** There are older ones behind this page. */
       hasMore: boolean
+      /**
+       * How many of EACH kind the directory holds — dispatched agents, and conversation forks.
+       *
+       * Both travel on every read so the two tabs are drawn from one call, and so a tab can show
+       * its badge without having been opened. `total` above stays the count of the kind that was
+       * ASKED for: it is what the paging line under the list is about.
+       */
+      counts?: { agents: number; forks: number }
     }
   /** This harness cannot report subagents at all — already localized, and NOT an empty list. */
   | { ok: true; supported: false; message: string }
@@ -145,6 +153,12 @@ function unsupported(harness: string | undefined, lang: CliLang): string {
 export async function readSessionSubagents(
   host: StartHost, lang: CliLang, id: string,
   page: { limit?: number; offset?: number } = {},
+  /**
+   * Which of the two things in that directory to list. A FORK is not a subagent — nothing
+   * dispatched it — and counting the two together made the panel contradict the session's own
+   * metrics card, which correctly said no agents had run.
+   */
+  kind: 'agent' | 'fork' = 'agent',
 ): Promise<SubagentsPayload> {
   if (!host.sessions) return { ok: false, message: 'no session host' }
   const r = await resolveSessionTranscript(host, lang, id)
@@ -158,7 +172,9 @@ export async function readSessionSubagents(
   let names: string[]
   // A conversation that ran no subagents has no directory at all — a real empty list, and a
   // different fact from the harness not recording them.
-  try { names = await readdir(dir) } catch { return { ok: true, supported: true, rows: [], total: 0, hasMore: false } }
+  try { names = await readdir(dir) } catch {
+    return { ok: true, supported: true, rows: [], total: 0, hasMore: false, counts: { agents: 0, forks: 0 } }
+  }
 
   /**
    * ONE `stat` PER AGENT, and nothing opened yet.
@@ -168,9 +184,23 @@ export async function readSessionSubagents(
    * long enough to look broken.
    */
   const files: AgentFile[] = []
+  // The KIND is read for every file, before paging. It has to be: paging inside one kind cannot be
+  // done from a mixed list, and the count each tab shows is a count of ITS kind. The cost is one
+  // tiny JSON per agent — the meta is a single line — against the `stat` this loop already does;
+  // what paging exists to avoid is SUMMARISING, which opens the transcript itself.
+  const kinds = new Map<string, 'agent' | 'fork'>()
+  await Promise.all(names.map(async name => {
+    const agentId = agentIdFromFile(name)
+    if (!agentId || !name.endsWith('.jsonl')) return
+    const meta = await readFile(`${dir}/agent-${agentId}.meta.json`, 'utf-8')
+      .then(raw => parseSubagentMeta(agentId, raw))
+      .catch((): SubagentMeta => ({ agentId }))
+    kinds.set(agentId, subagentKind(meta))
+  }))
   await Promise.all(names.map(async name => {
     const agentId = agentIdFromFile(name)
     if (!agentId) return
+    if ((kinds.get(agentId) ?? 'agent') !== kind) return
     const st = await stat(`${dir}/${name}`).catch(() => null)
     // A file we cannot stat still EXISTS and is still an agent; it simply sorts oldest.
     files.push({ agentId, mtimeMs: st?.mtimeMs ?? 0 })
@@ -207,7 +237,11 @@ export async function readSessionSubagents(
 
   // The ORDER was already decided by `pageOfAgents`, from the files' own last-write times — not
   // re-sorted here on `startedAt`, or page 2 would interleave with page 1.
-  return { ok: true, supported: true, rows, total: chosen.total, hasMore: chosen.hasMore }
+  // BOTH counts travel, so the two tabs are drawn from one read rather than each firing its own —
+  // and so a tab can show its badge without having been opened.
+  const counts = { agents: 0, forks: 0 }
+  for (const k of kinds.values()) k === 'fork' ? counts.forks++ : counts.agents++
+  return { ok: true, supported: true, rows, total: chosen.total, hasMore: chosen.hasMore, counts }
 }
 
 export type SubagentActivityPayload =

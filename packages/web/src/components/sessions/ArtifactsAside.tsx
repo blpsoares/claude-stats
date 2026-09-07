@@ -31,11 +31,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
-import {
-  FileEdit, FilePlus2, PanelRightClose, Loader, FileText, Activity, Files,
-  BookOpen, Terminal, Brain, Send, Eye, Image, Sparkles, ChevronLeft, ChevronDown, ChevronRight,
-  ExternalLink, Bot, Plug, Plus, Trash2, Pencil, GitPullRequest, LayoutGrid, X, Workflow,
-} from 'lucide-react'
+import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
   countSkills, groupSkills, shortName, skillInvocation, type SkillEntry,
@@ -56,8 +52,12 @@ import {
   type SubagentRow, type SubagentsPayload, type SubagentsState,
 } from '../../lib/subagents'
 import {
+  agentDetailStateOf, agentDetailUrl, agentIsRunning, agentOpenable, agentOpensByDefault,
+  declaredPhases, groupAgentsByPhase, labelCaveat, placementKnown, runOpensByDefault,
+  runningCommandIndex,
   liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
-  workflowCount, workflowsPollMs, workflowsStateOf,
+  unplacedPhaseText, workflowCount, workflowsPollMs, workflowsStateOf,
+  type AgentDetailState, type WorkflowAgentDetail, type WorkflowAgentRow,
   type WorkflowRunRow, type WorkflowsPayload, type WorkflowsState,
 } from '../../lib/workflows'
 import { ConfirmModal } from '../../pages/settings/primitives'
@@ -74,15 +74,43 @@ import {
 import { prCaption } from '../../lib/prCaption'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
+import { createSharedPref } from '../../lib/sharedPref'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'workflows' | 'mcps' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
-const GALLERY_VIEW_KEY = 'agentistics:gallery-view'
-const GALLERY_SCOPE_KEY = 'agentistics:gallery-scope'
-const SKILL_FORMAT_KEY = 'agentistics:skill-format'
+// SHARED. How a person reads the gallery and a skill is about the work, not about the screen —
+// picking "list" on the desktop and finding "grid" on the tablet is the same application answering
+// twice. See `sharedPref.ts` for the first-paint and arming rules.
+const galleryViewStore = createSharedPref<'grid' | 'list'>({
+  key: 'agentistics:gallery-view',
+  prefKey: 'galleryView',
+  fallback: 'grid',
+  parse: raw => (raw === 'grid' || raw === 'list' ? raw : null),
+})
+const galleryScopeStore = createSharedPref<GalleryScope>({
+  key: 'agentistics:gallery-scope',
+  prefKey: 'galleryScope',
+  fallback: 'all',
+  parse: raw => (typeof raw === 'string' ? parseGalleryScope(raw) : null),
+})
+const skillFormatStore = createSharedPref<'md' | 'text'>({
+  key: 'agentistics:skill-format',
+  prefKey: 'skillFormat',
+  fallback: 'md',
+  parse: raw => (raw === 'md' || raw === 'text' ? raw : null),
+})
 
 export interface ArtifactsAsideProps {
+  /**
+   * Already-localized: files this session wrote outside its own folder, which cannot be listed.
+   *
+   * A COUNT in a sentence, never the paths — see `listArtifactsWithOutside` on the server. It
+   * exists because the drop was silent, and a silent drop reads as the panel having missed
+   * something it wrote.
+   */
+  outsideNote?: string
+
   /**
    * The session's own directory.
    *
@@ -284,13 +312,22 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 }
 
 export function ArtifactsAside({
-  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, turns, facts, onClose,
+  sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, outsideNote, turns, facts, onClose,
   tabRequest,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
   const [open, setOpen] = useState<Artifact | null>(null)
   const [tab, setTab] = useState<TabId>('files')
+  /**
+   * Which of the two things in `subagents/` the list is showing, and how many there are of each.
+   *
+   * ONE effect and ONE state serve both tabs — a second copy of the poll, the merge and the paging
+   * would be a second set of rules about the same directory. The kind is a parameter of the read;
+   * the counts come back on every read, so a tab shows its badge without having been opened.
+   */
+  const agentKind: 'agent' | 'fork' = tab === 'forks' ? 'fork' : 'agent'
+  const [agentKinds, setAgentKinds] = useState<{ agents: number; forks: number } | null>(null)
   /** The SUBAGENTS tab's own state — declared here because the tab BAR reads its count. */
   /**
    * Seeded from `asideCache` for the same reason the Skills and PRs tabs are: closing the panel and
@@ -302,6 +339,9 @@ export function ArtifactsAside({
     () => asideCache.read<WorkflowsState>(asideKey(sessionId, 'workflows')).value ?? null,
   )
   const [openRun, setOpenRun] = useState<string | null>(null)
+  /** Runs already opened for the user once. Closing one must STAY closed — the poll runs every
+   *  five seconds, and re-opening it on each would take the panel away from them repeatedly. */
+  const autoOpened = useRef<Set<string>>(new Set())
   const [agentsState, setAgentsState] = useState<SubagentsState | null>(
     () => asideCache.read<SubagentsState>(asideKey(sessionId, 'subagents')).value ?? null,
   )
@@ -326,7 +366,7 @@ export function ArtifactsAside({
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
-      || t === 'agents' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
+      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -357,19 +397,19 @@ export function ArtifactsAside({
   const galleryFiles = useMemo(() => galleryFileCount(gallery), [gallery])
   /** LIST or GRID, remembered. A private window that refuses storage simply keeps the default. */
   const [galleryView, setGalleryView] = useState<GalleryView>(() => {
-    try { return parseGalleryView(localStorage.getItem(GALLERY_VIEW_KEY)) } catch { return 'grid' }
+    return galleryViewStore.get()
   })
   /** WHOSE files — remembered like the view is. A private window that refuses storage keeps `all`. */
   const [galleryScope, setGalleryScope] = useState<GalleryScope>(() => {
-    try { return parseGalleryScope(localStorage.getItem(GALLERY_SCOPE_KEY)) } catch { return 'all' }
+    return galleryScopeStore.get()
   })
   const chooseGalleryScope = (v: GalleryScope) => {
     setGalleryScope(v)
-    try { localStorage.setItem(GALLERY_SCOPE_KEY, v) } catch { /* private mode */ }
+    galleryScopeStore.set(v)
   }
   const chooseGalleryView = (v: GalleryView) => {
     setGalleryView(v)
-    try { localStorage.setItem(GALLERY_VIEW_KEY, v) } catch { /* private mode */ }
+    galleryViewStore.set(v)
   }
   /**
    * The skills this session can invoke, read ONCE and only when the tab is opened.
@@ -395,11 +435,11 @@ export function ArtifactsAside({
   const [openSkill, setOpenSkill] = useState<string | null>(null)
   /** How the skill's file is shown. Remembered, because it is a preference and not a per-skill one. */
   const [skillFormat, setSkillFormat] = useState<'md' | 'text'>(() => {
-    try { return localStorage.getItem(SKILL_FORMAT_KEY) === 'text' ? 'text' : 'md' } catch { return 'md' }
+    return skillFormatStore.get()
   })
   const chooseSkillFormat = (v: 'md' | 'text') => {
     setSkillFormat(v)
-    try { localStorage.setItem(SKILL_FORMAT_KEY, v) } catch { /* private mode */ }
+    skillFormatStore.set(v)
   }
   const [skillBody, setSkillBody] = useState<
     { ok: true; text: string; truncated: boolean } | { ok: false; message: string } | null
@@ -576,8 +616,23 @@ export function ArtifactsAside({
       id: 'agents',
       label: pt ? 'Subagentes' : 'Subagents',
       icon: <Bot size={12} />,
-      count: subagentCount(agentsState),
+      count: agentKinds?.agents ?? subagentCount(agentsState),
     },
+    // FORKS GET THEIR OWN TAB, and that is the point of the split rather than a cosmetic one. A
+    // fork is a conversation branched off this one — nothing dispatched it, it is claimed by no
+    // `tool_use`, and the session's own metrics card correctly reports it as no subagent at all.
+    // Counting the two together made those two surfaces contradict each other on one screen. They
+    // share a directory because that is where the harness writes both; they are not the same thing.
+    // The tab is ABSENT when there are none: an empty tab is a promise that something might be
+    // behind it.
+    ...((agentKinds?.forks ?? 0) > 0
+      ? [{
+          id: 'forks' as const,
+          label: pt ? 'Forks' : 'Forks',
+          icon: <GitBranch size={12} />,
+          count: agentKinds?.forks ?? null,
+        }]
+      : []),
     {
       id: 'workflows',
       label: pt ? 'Workflows' : 'Workflows',
@@ -761,7 +816,8 @@ export function ArtifactsAside({
    */
   useEffect(() => {
     // The tab is what asks. Nothing is fetched for a panel nobody opened onto it.
-    const key = asideKey(sessionId, 'subagents')
+    // The cache is per KIND: the two tabs are two lists of the same directory.
+    const key = asideKey(sessionId, agentKind === 'fork' ? 'forks' : 'subagents')
     const hit = asideCache.read<SubagentsState>(key)
     // The POLL re-reads the first page only: it is the newest by last activity, so it is where a
     // running agent's numbers move. Pages already asked for are merged, never replaced.
@@ -777,13 +833,17 @@ export function ArtifactsAside({
     const read = async () => {
       if (first) setAgentsState({ phase: 'loading' })
       try {
-        const res = await fetch(`/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&limit=${Math.max(SUBAGENT_PAGE, loaded)}&lang=${pt ? 'pt' : 'en'}`)
+        const res = await fetch(`/api/fleet/subagents?id=${encodeURIComponent(sessionId)}&kind=${agentKind}&limit=${Math.max(SUBAGENT_PAGE, loaded)}&lang=${pt ? 'pt' : 'en'}`)
         if (!alive) return
         if (!res.ok) {
           setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
           return
         }
-        const fresh = subagentsStateOf(await res.json() as SubagentsPayload)
+        const body = await res.json() as SubagentsPayload & { counts?: { agents: number; forks: number } }
+        // Both counts ride every answer, so the OTHER tab's badge is right without it having been
+        // opened — and the Forks tab only exists at all once this says there is one.
+        if (body.counts) setAgentKinds(body.counts)
+        const fresh = subagentsStateOf(body)
         // Merge onto what is already on screen, so a poll never drops the pages somebody loaded.
         const next: SubagentsState = fresh.phase === 'ready'
           ? { ...fresh, rows: appendPage(hit.value?.phase === 'ready' ? hit.value.rows : [], fresh.rows) }
@@ -794,7 +854,7 @@ export function ArtifactsAside({
         // POLLED ONLY WHILE THE TAB IS ON SCREEN. The list costs a full read of the parent
         // transcript, and re-reading it every five seconds for a count in a corner of a bar is the
         // disk-burner `chat-tail.ts` documents, moved one panel over.
-        const wait = tab === 'agents' ? subagentsPollMs(next) : null
+        const wait = tab === 'agents' || tab === 'forks' ? subagentsPollMs(next) : null
         if (wait !== null) timer = setTimeout(read, wait)
       } catch {
         if (alive) setAgentsState(prev => prev ?? { phase: 'failed', message: pt ? 'Não foi possível ler os subagentes.' : 'The subagents could not be read.' })
@@ -802,7 +862,7 @@ export function ArtifactsAside({
     }
     void read()
     return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [tab, sessionId, pt])
+  }, [tab, agentKind, sessionId, pt])
 
   /**
    * The session's DYNAMIC WORKFLOW runs.
@@ -880,6 +940,15 @@ export function ArtifactsAside({
   }
 
 
+  /** A run somebody is WATCHING opens by itself — that is what the tab polls for. Once. */
+  useEffect(() => {
+    if (wfState?.phase !== 'ready') return
+    const live = wfState.rows.find(r => runOpensByDefault(r) && !autoOpened.current.has(r.runId))
+    if (!live) return
+    autoOpened.current.add(live.runId)
+    setOpenRun(prev => prev ?? live.runId)
+  }, [wfState])
+
   const workflowsBody = (): React.ReactNode => {
     const st = wfState
     if (st === null || st.phase === 'loading') {
@@ -900,7 +969,7 @@ export function ArtifactsAside({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 6px 10px' }}>
         {st.rows.map(r => (
           <WorkflowCard
-            key={r.runId} row={r} pt={pt} now={now}
+            key={r.runId} sessionId={sessionId} row={r} pt={pt} now={now}
             open={openRun === r.runId}
             onToggle={() => setOpenRun(openRun === r.runId ? null : r.runId)}
           />
@@ -1092,6 +1161,15 @@ export function ArtifactsAside({
             {pt
               ? 'A sessão também escreveu por comandos cujos caminhos não dá para ler; esses arquivos não estão nesta lista.'
               : 'The session also wrote through commands whose paths cannot be read; those files are not in this list.'}
+          </p>
+        )}
+        {/* The other reason a written file is not here, and the one that was silent: it is outside
+            this session's own folder, so the read route would refuse it and the list does not offer
+            a row whose only outcome is a refusal. The sentence is the server's — it holds the count
+            and never the paths. */}
+        {outsideNote && (
+          <p style={{ margin: '6px 8px 0', fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {outsideNote}
           </p>
         )}
       </div>
@@ -1474,7 +1552,7 @@ export function ArtifactsAside({
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()
-            : tab === 'agents' ? agentsBody()
+            : tab === 'agents' || tab === 'forks' ? agentsBody()
             : tab === 'workflows' ? workflowsBody()
             : tab === 'mcps' ? mcpBody()
             : tab === 'prs' ? prsBody()
@@ -1814,8 +1892,193 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
  * ran, grouped by the phase the script declared, because "14 agents" is a number and "the extract
  * phase ran 8 of them" is the thing somebody is actually watching.
  */
-function WorkflowCard({ row, pt, now, open, onToggle }: {
-  row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
+
+/**
+ * One agent inside a phase, and what it ran.
+ *
+ * The commands are a SEPARATE request, made only when this row is opened: the list reads every
+ * agent of every run on each poll, and one 72-agent run is megabytes of shell. Same split, and the
+ * same reason, as the subagents tab's list versus its activity.
+ */
+
+/** Keeps the executing line in view. Its own component so the effect runs AFTER the line it
+ *  watches has been drawn, without the parent having to re-render to schedule it. */
+function FollowLine({ target }: { target: React.RefObject<HTMLDivElement | null> }) {
+  useEffect(() => {
+    target.current?.scrollIntoView({ block: 'nearest' })
+  })
+  return null
+}
+
+function WorkflowAgentLine({ sessionId, runId, agent, pt, runLive }: {
+  sessionId: string; runId: string; agent: WorkflowAgentRow; pt: boolean; runLive: boolean
+}) {
+  const isMobile = useIsMobile()
+  const working = agentIsRunning(agent, runLive)
+  // The agent actually doing something opens by itself — following it is the point.
+  const [open, setOpen] = useState(() => agentOpensByDefault(agent, runLive))
+  // It may only START working after the row was drawn. Opening then is the same gesture, one poll
+  // later; it never CLOSES anything, so a row the user shut stays shut.
+  const wasWorking = useRef(working)
+  useEffect(() => {
+    if (working && !wasWorking.current && agentOpensByDefault(agent, runLive)) setOpen(true)
+    wasWorking.current = working
+  }, [working, agent, runLive])
+  /** The line being executed, so following it means the box scrolls to it rather than the user
+   *  hunting for the pulse. `nearest` and never `smooth`: this fires on every poll while a run
+   *  works, and a smooth scroll every five seconds is a box that will not sit still. */
+  const followRef = useRef<HTMLDivElement | null>(null)
+  const [detail, setDetail] = useState<AgentDetailState | null>(null)
+  const openable = agentOpenable(agent)
+  const caveat = labelCaveat(agent, pt)
+
+  useEffect(() => {
+    if (!open || !openable || detail !== null) return
+    let alive = true
+    setDetail({ phase: 'loading' })
+    void (async () => {
+      try {
+        const res = await fetch(agentDetailUrl(sessionId, runId, agent.agentId!, pt))
+        if (!alive) return
+        if (!res.ok) {
+          setDetail({ phase: 'failed', message: pt ? 'Não foi possível ler este agente.' : 'This agent could not be read.' })
+          return
+        }
+        setDetail(agentDetailStateOf(await res.json() as WorkflowAgentDetail))
+      } catch {
+        if (alive) setDetail({ phase: 'failed', message: pt ? 'Não foi possível ler este agente.' : 'This agent could not be read.' })
+      }
+    })()
+    return () => { alive = false }
+  }, [open, openable, detail, sessionId, runId, agent.agentId, pt])
+
+  const line = (
+    <div style={{
+      display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, width: '100%',
+      fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
+    }}>
+      {openable && (
+        <span aria-hidden style={{ flexShrink: 0, opacity: 0.7, display: 'inline-flex' }}>
+          {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        </span>
+      )}
+      {/* Working is said by a dot AND by the label's colour — never by colour alone. */}
+      {working && (
+        <span aria-hidden style={{
+          flexShrink: 0, width: 5, height: 5, borderRadius: '50%',
+          background: 'var(--anthropic-orange)', animation: 'ag-agent-pulse 1.6s ease-in-out infinite',
+        }} />
+      )}
+      <span style={{
+        minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        color: working ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
+        // A label nothing recorded IS the file name; saying it in the same weight as a real one
+        // would present a hash as a name somebody chose.
+        fontStyle: agent.labelSource === 'none' ? 'italic' : undefined,
+      }}>{agent.label}</span>
+      <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+        {agent.toolCalls !== null && agent.toolCalls > 0
+          ? `${fmt(agent.toolCalls)} ${pt ? 'chamadas' : 'calls'} · ` : ''}
+        {agent.totalTokens !== null ? `${fmt(agent.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
+        {agent.costUSD !== null ? ` · ${fmtCost(agent.costUSD)}` : ''}
+      </span>
+    </div>
+  )
+
+  return (
+    <div style={{ padding: '1px 0' }}>
+      {openable ? (
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'transparent',
+            padding: isMobile ? '6px 2px' : '2px', cursor: 'pointer', fontFamily: 'inherit',
+            minHeight: isMobile ? 44 : undefined, borderRadius: 5, minWidth: 0,
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+        >
+          {line}
+        </button>
+      ) : <div style={{ padding: 2 }}>{line}</div>}
+
+      {/* A guessed name and a recorded one look identical on screen; only one is worth trusting. */}
+      {caveat !== null && (
+        <p style={{ margin: '0 0 0 18px', fontSize: 9.5, color: 'var(--text-tertiary)', fontStyle: 'italic', opacity: 0.85 }}>
+          {caveat}
+        </p>
+      )}
+
+      {open && (
+        <div style={{ margin: '3px 0 5px 18px', minWidth: 0 }}>
+          {detail === null || detail.phase === 'loading' ? (
+            <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Spinner size={11} />{pt ? 'Lendo a transcrição deste agente…' : 'Reading this agent’s transcript…'}
+            </p>
+          ) : detail.phase === 'failed' ? (
+            <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{detail.message}</p>
+          ) : (
+            <>
+              <FollowLine target={followRef} />
+              {detail.detail.prompt !== '' && (
+                <p style={{
+                  margin: '0 0 4px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)',
+                  display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }} title={detail.detail.prompt}>
+                  {detail.detail.prompt}
+                </p>
+              )}
+              {detail.detail.commands.length === 0 ? (
+                <p style={{ margin: 0, fontSize: 10, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                  {pt ? 'Este agente não chamou nenhuma ferramenta.' : 'This agent called no tools.'}
+                </p>
+              ) : (
+                <>
+                  {/* Wide content scrolls inside its own box; the panel body never scrolls sideways. */}
+                  <div style={{
+                    maxHeight: 210, overflowY: 'auto', overflowX: 'auto',
+                    border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '4px 6px',
+                    background: 'var(--bg-elevated)',
+                  }}>
+                    {detail.detail.commands.map((c, i) => {
+                      const now = runningCommandIndex(detail.detail.pendingIndex, detail.detail.commands.length, runLive) === i
+                      return (
+                        <div
+                          key={i}
+                          ref={now ? followRef : undefined}
+                          style={{
+                            fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10, lineHeight: 1.6,
+                            color: now ? 'var(--text-primary)' : 'var(--text-secondary)',
+                            whiteSpace: 'pre', minWidth: 0,
+                            ...(now ? {
+                              animation: 'ag-line-pulse 1.8s ease-in-out infinite',
+                              borderRadius: 4, margin: '0 -3px', padding: '0 3px', fontWeight: 600,
+                            } : {}),
+                          }}
+                        >{c}</div>
+                      )
+                    })}
+                  </div>
+                  {/* The COUNT stays exact even when the list is cut, so the two never disagree. */}
+                  {detail.detail.commandsClipped && (
+                    <p style={{ margin: '3px 0 0', fontSize: 9.5, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                      {pt
+                        ? `Mostrando as primeiras ${fmt(detail.detail.commands.length)} de ${fmt(detail.detail.toolCalls)} chamadas.`
+                        : `Showing the first ${fmt(detail.detail.commands.length)} of ${fmt(detail.detail.toolCalls)} calls.`}
+                    </p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WorkflowCard({ sessionId, row, pt, now, open, onToggle }: {
+  sessionId: string; row: WorkflowRunRow; pt: boolean; now: number; open: boolean; onToggle: () => void
 }) {
   const isMobile = useIsMobile()
   const st = runStatusText(row.status, pt)
@@ -1897,24 +2160,56 @@ function WorkflowCard({ row, pt, now, open, onToggle }: {
                 ? (pt ? 'Nenhum agente escreveu ainda.' : 'No agent has written yet.')
                 : (pt ? 'Nenhuma transcrição de agente ficou no disco.' : 'No agent transcript was left on disk.')}
             </p>
-          ) : row.agents.map((a, i) => (
-            <div key={`${a.label}-${i}`} style={{
-              display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, padding: '2px 0',
-              fontSize: 10.5, color: 'var(--text-tertiary)', lineHeight: 1.5,
-            }}>
-              <span style={{
-                minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                color: 'var(--text-secondary)',
-              }}>{a.label}</span>
-              {/* The phase is the script's own word for what this agent was doing. A transcript the
-                  matcher could not pair carries none, and says nothing rather than guessing one. */}
-              {a.phase !== '' && (
-                <span style={{ flexShrink: 0, opacity: 0.75 }}>{a.phase}</span>
+          ) : !placementKnown(row) ? (
+            /* Nothing could be placed yet — the exact mapping is written when the run ENDS. Drawing
+               phase headings here would render every declared phase as "nothing ran" beside agents
+               that are plainly running: three false impressions from two true facts. So the plan is
+               STATED and the agents listed under it. */
+            <>
+              {declaredPhases(row).length > 0 && (
+                <p style={{ margin: '0 0 5px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+                  {pt ? 'Fases previstas: ' : 'Planned phases: '}
+                  <span style={{ color: 'var(--text-secondary)' }}>{declaredPhases(row).join(' → ')}</span>
+                  {row.live
+                    ? (pt ? ' — em qual delas cada agente está só fica registrado quando a run termina.'
+                          : ' — which one each agent is in is only recorded once the run ends.')
+                    : (pt ? ' — esta run não registrou em qual delas cada agente rodou.'
+                          : ' — this run did not record which one each agent ran in.')}
+                </p>
               )}
-              <span style={{ marginLeft: 'auto', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                {a.totalTokens !== null ? `${fmt(a.totalTokens)} tok` : (pt ? 'sem medida' : 'unmeasured')}
-                {a.costUSD !== null ? ` · ${fmtCost(a.costUSD)}` : ''}
-              </span>
+              {row.agents.map((a, i) => (
+                <WorkflowAgentLine
+                  key={a.agentId ?? `${a.label}-${i}`}
+                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt} runLive={row.live}
+                />
+              ))}
+            </>
+          ) : groupAgentsByPhase(row).map((g, gi) => (
+            <div key={`${g.title}-${gi}`} style={{ marginBottom: 5 }}>
+              {/* THE PHASE IS THE PLAN. A flat list of agents is the run's shape flattened away —
+                  which agent ran in which phase is what somebody opens a run to see. */}
+              <div style={{
+                display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0,
+                borderBottom: '1px solid var(--border-subtle)', paddingBottom: 2, marginBottom: 3,
+              }}>
+                <span style={{
+                  fontSize: 9.5, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase',
+                  color: g.title === '' ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+                  fontStyle: g.title === '' ? 'italic' : undefined,
+                  minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{g.title === '' ? unplacedPhaseText(pt) : g.title}</span>
+                <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)' }}>
+                  {g.agents.length === 0
+                    ? (pt ? 'nada rodou' : 'nothing ran')
+                    : `${fmt(g.agents.length)} ${pt ? (g.agents.length === 1 ? 'agente' : 'agentes') : (g.agents.length === 1 ? 'agent' : 'agents')}`}
+                </span>
+              </div>
+              {g.agents.map((a, i) => (
+                <WorkflowAgentLine
+                  key={a.agentId ?? `${a.label}-${i}`}
+                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt} runLive={row.live}
+                />
+              ))}
             </div>
           ))}
         </div>
@@ -2017,7 +2312,14 @@ function SubagentCard({ row, pt, now, onOpen }: {
           <span>{pt ? `nível ${row.spawnDepth}` : `depth ${row.spawnDepth}`}</span>
         )}
       </div>
-      <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }`}</style>
+      <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+        /* The line being executed. A BACKGROUND pulse, not an opacity one: the text must stay
+           readable through the whole cycle — a command you cannot read while it runs is the one
+           moment you most want to read it. Soft on purpose; it sits under a monospace block. */
+        @keyframes ag-line-pulse {
+          0%,100% { background: color-mix(in srgb, var(--anthropic-orange) 10%, transparent) }
+          50%     { background: color-mix(in srgb, var(--anthropic-orange) 26%, transparent) }
+        }`}</style>
     </button>
   )
 }
