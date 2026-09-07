@@ -284,3 +284,26 @@ export function runOpensByDefault(row: WorkflowRunRow): boolean {
 export function agentOpensByDefault(agent: WorkflowAgentRow, runLive: boolean): boolean {
   return agentIsRunning(agent, runLive) && agentOpenable(agent)
 }
+
+
+/**
+ * Could ANY agent be placed in a phase?
+ *
+ * False is the live case. A run's exact placement is written when it ENDS, and while it is going
+ * the only fallback is `workflow-match.ts` pairing transcripts to `agent()` calls by prompt, which
+ * is deliberately conservative and often matches nothing.
+ *
+ * It matters for the drawing. Grouping under phase headings when nothing is placed renders every
+ * declared phase as "nothing ran" beside a pile of agents that plainly ARE running — three false
+ * impressions from two true facts. When this is false the view should state the declared phases as
+ * the PLAN and list the agents under it, which says both facts and implies neither.
+ */
+export function placementKnown(run: WorkflowRunRow): boolean {
+  return run.agents.some(a => a.phase !== '')
+}
+
+/** The declared phases, as one line — what the run set out to do, when where each agent landed is
+ *  not yet knowable. Empty when the script declared none. */
+export function declaredPhases(run: WorkflowRunRow): string[] {
+  return run.phases.map(p => p.title).filter(t => t !== '')
+}

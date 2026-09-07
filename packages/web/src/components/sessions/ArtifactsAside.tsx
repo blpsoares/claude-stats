@@ -57,7 +57,8 @@ import {
 } from '../../lib/subagents'
 import {
   agentDetailStateOf, agentDetailUrl, agentIsRunning, agentOpenable, agentOpensByDefault,
-  groupAgentsByPhase, labelCaveat, runOpensByDefault, runningCommandIndex,
+  declaredPhases, groupAgentsByPhase, labelCaveat, placementKnown, runOpensByDefault,
+  runningCommandIndex,
   liveRunCount, runDurationText, runStatusNote, runStatusText, unmeasuredRunText,
   unplacedPhaseText, workflowCount, workflowsPollMs, workflowsStateOf,
   type AgentDetailState, type WorkflowAgentDetail, type WorkflowAgentRow,
@@ -2097,6 +2098,30 @@ function WorkflowCard({ sessionId, row, pt, now, open, onToggle }: {
                 ? (pt ? 'Nenhum agente escreveu ainda.' : 'No agent has written yet.')
                 : (pt ? 'Nenhuma transcrição de agente ficou no disco.' : 'No agent transcript was left on disk.')}
             </p>
+          ) : !placementKnown(row) ? (
+            /* Nothing could be placed yet — the exact mapping is written when the run ENDS. Drawing
+               phase headings here would render every declared phase as "nothing ran" beside agents
+               that are plainly running: three false impressions from two true facts. So the plan is
+               STATED and the agents listed under it. */
+            <>
+              {declaredPhases(row).length > 0 && (
+                <p style={{ margin: '0 0 5px', fontSize: 10, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+                  {pt ? 'Fases previstas: ' : 'Planned phases: '}
+                  <span style={{ color: 'var(--text-secondary)' }}>{declaredPhases(row).join(' → ')}</span>
+                  {row.live
+                    ? (pt ? ' — em qual delas cada agente está só fica registrado quando a run termina.'
+                          : ' — which one each agent is in is only recorded once the run ends.')
+                    : (pt ? ' — esta run não registrou em qual delas cada agente rodou.'
+                          : ' — this run did not record which one each agent ran in.')}
+                </p>
+              )}
+              {row.agents.map((a, i) => (
+                <WorkflowAgentLine
+                  key={a.agentId ?? `${a.label}-${i}`}
+                  sessionId={sessionId} runId={row.runId} agent={a} pt={pt} runLive={row.live}
+                />
+              ))}
+            </>
           ) : groupAgentsByPhase(row).map((g, gi) => (
             <div key={`${g.title}-${gi}`} style={{ marginBottom: 5 }}>
               {/* THE PHASE IS THE PLAN. A flat list of agents is the run's shape flattened away —

@@ -4,6 +4,7 @@ import {
   runStatusNote, runDurationText, unmeasuredRunText, WORKFLOW_POLL_MS,
   groupAgentsByPhase, labelCaveat, agentOpenable, agentDetailUrl, agentDetailStateOf,
   agentIsRunning, runningCommandIndex, runOpensByDefault, agentOpensByDefault,
+  placementKnown, declaredPhases,
   type WorkflowRunRow, type WorkflowsPayload, type WorkflowAgentRow,
 } from './workflows'
 
@@ -184,4 +185,19 @@ test('inside a live run, the working agent is the one that opens', () => {
   expect(agentOpensByDefault(ag({ pending: false }), true)).toBe(false)
   // Nothing to open when there is no transcript to ask for.
   expect(agentOpensByDefault(ag({ pending: true, agentId: undefined }), true)).toBe(false)
+})
+
+test('placement is unknown while a run is going, and the plan is still nameable', () => {
+  const live = run({
+    live: true, status: 'running',
+    phases: [{ title: 'Recon', agentCount: 0 }, { title: 'Build', agentCount: 0 }],
+    agents: [ag({ phase: '', labelSource: 'none' }), ag({ agentId: 'a2', phase: '', labelSource: 'none' })],
+  })
+  expect(placementKnown(live)).toBe(false)
+  expect(declaredPhases(live)).toEqual(['Recon', 'Build'])
+})
+
+test('placement is known as soon as one agent carries a phase', () => {
+  expect(placementKnown(run({ agents: [ag({ phase: 'A' }), ag({ agentId: 'a2', phase: '' })] }))).toBe(true)
+  expect(placementKnown(run({ agents: [] }))).toBe(false)
 })
