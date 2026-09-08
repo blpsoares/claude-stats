@@ -61,7 +61,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
-import { HARNESS_SESSION_SOURCES } from './harness-session-file'
+import { HARNESS_PROCESS_LOGS, HARNESS_SESSION_SOURCES } from './harness-session-file'
 import type { InitialPrompt, SpawnRequest, SpawnPlanResult, SpawnSpec } from './types'
 
 export const SPAWN_SPECS: Record<HarnessId, SpawnSpec | null> = {
@@ -226,21 +226,36 @@ export const SPAWN_SPECS: Record<HarnessId, SpawnSpec | null> = {
 /**
  * Can agentop ever know EXACTLY which conversation a fresh session of this harness is writing?
  *
- * Two ways exist and this is both of them: we told the CLI which id to use (`assignId`), or the
- * harness keeps a record of its own live sessions that can be matched back to our row
- * (`HARNESS_SESSION_SOURCES` — Claude's `~/.claude/sessions/<pid>.json`, which carries the tmux
- * session name we started it under).
+ * THREE ways exist and this is all of them:
  *
- * `false` is the answer for codex, kimi, gemini and antigravity, and it must be SAID rather than
- * papered over: everything downstream then falls back to `conversationForProcess`, which matches by
- * harness and directory and therefore gives every session of one repository the same conversation.
- * That guess is good enough to OFFER a reopen a person confirms by title, and not good enough to be
+ *  1. we told the CLI which id to use (`assignId` — claude, copilot);
+ *  2. the harness keeps a record of its own live sessions that can be matched back to our row
+ *     (`HARNESS_SESSION_SOURCES` — Claude's `~/.claude/sessions/<pid>.json`, which carries the tmux
+ *     session name we started it under);
+ *  3. the harness holds a per-process LOG open that names the conversation it created
+ *     (`HARNESS_PROCESS_LOGS` — antigravity, reached through the tmux pane pid's own file
+ *     descriptors; see `agy-conversation.ts`).
+ *
+ * The third was added because agy has neither of the first two and the fallback everything else
+ * leans on is closed for it in particular: its store record carries no `project_path` for a session
+ * agentop started, so even the harness-and-directory guess had nothing to match on. Its chat view
+ * was therefore permanently empty while its terminal worked, which is the defect this answers.
+ *
+ * `false` is still the answer for codex, kimi and gemini, and it must be SAID rather than papered
+ * over: everything downstream then falls back to `conversationForProcess`, which matches by harness
+ * and directory and therefore gives every session of one repository the same conversation. That
+ * guess is good enough to OFFER a reopen a person confirms by title, and not good enough to be
  * presented as the conversation this row is in. The same rule `HARNESS_CAPABILITIES` applies to a
  * metric, applied to a link.
+ *
+ * STATED LIMIT: route 3 is a `/proc` read, so it answers nothing off Linux. That degrades to no
+ * link, which `chat-web.ts` reports as "this session has no linked conversation yet" — true, and
+ * the one thing this may never do is claim a conversation it cannot name.
  */
 export function conversationLinkable(harness: HarnessId): boolean {
   return SPAWN_SPECS[harness]?.assignId !== undefined
     || HARNESS_SESSION_SOURCES[harness] !== null
+    || HARNESS_PROCESS_LOGS[harness] !== null
 }
 
 /** Decide the exact argv (and any text to type in) for a requested session. */

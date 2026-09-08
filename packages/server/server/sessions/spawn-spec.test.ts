@@ -220,13 +220,18 @@ describe('conversationLinkable', () => {
     // session we started it under); copilot on the flag alone.
     expect(conversationLinkable('claude')).toBe(true)
     expect(conversationLinkable('copilot')).toBe(true)
+    // antigravity on a third: it has NO assign flag (`--conversation` resumes and refuses an
+    // unknown id — measured against agy 1.1.27) and writes no session record, but it holds its own
+    // per-process log open, and that log names the conversation it created. See
+    // `agy-conversation.ts`; the chain pid -> fd -> log -> conversation is exact at every step.
+    expect(conversationLinkable('antigravity')).toBe(true)
   })
 
   it('is false where every answer would be a harness-and-directory guess', () => {
     // The guess gives every session of one repository the same conversation — the bug that reopened
     // three rows onto one conversation. It is fine to OFFER, and this flag is what stops it being
     // presented as the conversation the row is in.
-    for (const harness of ['codex', 'kimi', 'gemini', 'antigravity'] as const) {
+    for (const harness of ['codex', 'kimi', 'gemini'] as const) {
       expect(conversationLinkable(harness)).toBe(false)
     }
   })

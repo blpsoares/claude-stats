@@ -208,6 +208,16 @@ async function start(
   if (!planned.ok) { console.error(explainPlanError(planned.error)); return 1 }
 
   const id = newSessionId()
+  // Stamped BEFORE the process is launched, not after it has been checked for a crash.
+  //
+  // `planFirstSightingClaims` asks whether a conversation began AFTER we spawned, and this is the
+  // only timestamp it has. `spawnFailure` deliberately WAITS to see whether the child dies, so a
+  // record stamped after it is seconds late — measured 2026-09-08: a kimi session whose own store
+  // record began at 13:58:50.831 was recorded as spawned at 13:58:52.914, so its conversation
+  // failed the `startedMs > spawnedMs` test and that row stayed unlinked, with an empty chat view,
+  // for good. The moment we launched is the moment the claim means; the moment we finished
+  // checking is not.
+  const spawnedAt = new Date().toISOString()
   try {
     await backend.spawn({ id, cwd, argv: planned.plan.argv, ...spawnPromptArg(planned.plan, cmd.harness) })
   } catch (e) {
@@ -229,7 +239,7 @@ async function start(
     id,
     harness: cmd.harness,
     cwd,
-    createdAt: new Date().toISOString(),
+    createdAt: spawnedAt,
     ...(cmd.model ? { model: cmd.model } : {}),
     ...(cmd.effort ? { effort: cmd.effort } : {}),
     ...(cmd.label ? { label: cmd.label } : {}),
@@ -377,6 +387,16 @@ async function batch(
     if (!planned.ok) { failed.push({ harness: spec.harness, reason: explainPlanError(planned.error) }); continue }
 
     const id = newSessionId()
+    // Stamped BEFORE the process is launched, not after it has been checked for a crash.
+    //
+    // `planFirstSightingClaims` asks whether a conversation began AFTER we spawned, and this is the
+    // only timestamp it has. `spawnFailure` deliberately WAITS to see whether the child dies, so a
+    // record stamped after it is seconds late — measured 2026-09-08: a kimi session whose own store
+    // record began at 13:58:50.831 was recorded as spawned at 13:58:52.914, so its conversation
+    // failed the `startedMs > spawnedMs` test and that row stayed unlinked, with an empty chat view,
+    // for good. The moment we launched is the moment the claim means; the moment we finished
+    // checking is not.
+    const spawnedAt = new Date().toISOString()
     try {
       await backend.spawn({
         id, cwd, argv: planned.plan.argv,
@@ -399,7 +419,7 @@ async function batch(
       id,
       harness: spec.harness,
       cwd,
-      createdAt: new Date().toISOString(),
+      createdAt: spawnedAt,
       task: cmd.task,
       // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
       ...(resolved?.taskId ? { taskId: resolved.taskId } : {}),

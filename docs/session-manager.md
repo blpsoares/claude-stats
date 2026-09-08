@@ -232,7 +232,26 @@ never inferred**: agentop hands the id to the CLI when it starts the session (`c
 `copilot --session-id`) or when it reopens one, so there is nothing left to guess. Claude also writes
 its own record while the process lives, which is read as well.
 
-For codex, kimi, gemini and antigravity no such link can exist — those CLIs invent an id and never
+**antigravity is linked a third way.** It has no assign flag — measured against agy 1.1.27 on
+2026-09-08, `agy --conversation <fresh-uuid>` answers `warning: conversation "…" not found` and then
+creates one under an id of its own — and it writes no session record. What it does do is open one
+log per process, `~/.gemini/antigravity-cli/log/cli-<YYYYMMDD_HHMMSS>.log`, **hold it open** for the
+life of that process, and write `Created conversation <uuid>` into it. So the chain *managed row →
+tmux pane pid → open file descriptor → log → conversation* is exact at every step, and agentop reads
+it (`agy-conversation.ts` for the rules, `process-conversation.ts` for the two reads).
+
+That route mattered more for agy than it would for anyone else, because for a session **agentop
+started** even the harness-and-directory fallback below is closed: the adapter takes a
+conversation's `project_path` from the global `history.jsonl`, and agy writes that file only for a
+prompt typed in its own UI — a session agentop starts is handed its first prompt as
+`--prompt-interactive`, so its record carries an empty `project_path` and is not a candidate for
+anything. Measured the same day: 15 of 38 agy conversations here had a directory recorded, and the
+23 without were exactly the ones agentop had opened. Its chat view was therefore permanently empty
+while its terminal worked perfectly. The limit worth stating: this is a `/proc` read, so off Linux
+there is no link and the chat view says "this session has no linked conversation yet", which is
+true.
+
+For codex, kimi and gemini no such link can exist — those CLIs invent an id and never
 report it — so the row says so rather than showing a guess. The fallback everything else uses matches
 by harness and directory, which gives *every* session of one repository the same conversation: good
 enough to offer a reopen you confirm by its title, not good enough to be presented as the conversation
@@ -401,9 +420,10 @@ A reader for its file format would be code nothing can reach. Its format is none
 `harness-transcript.ts` so the measurement is not spent twice: it is a patch log rather than one
 message per line.
 
-The same applies, per row, to any harness whose session was **started fresh** without an id —
-antigravity, codex and kimi only gain the link on a reopen, so a freshly spawned row of those three
-is blind until it is reopened, and says so.
+The same applies, per row, to any harness whose session was **started fresh** without an id.
+codex and kimi only gain the link on a reopen (or once the first-sighting claim can settle it), so a
+freshly spawned row of those two is blind until then, and says so. **antigravity is no longer one of
+them** — its per-process log names the conversation it created; see above.
 
 #### Three rules every reader follows
 

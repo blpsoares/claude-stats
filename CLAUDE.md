@@ -281,8 +281,38 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          accepts a UUID and is deliberately EXCLUDED: its id in this product is
   │                          synthetic (`${dir}/${file}`), so a recorded UUID would resolve to
   │                          nothing while LOOKING like an exact link. Where no link can ever exist
-  │                          (codex, kimi, gemini, agy) `conversationLinkable` is false and the row
-  │                          SAYS so. And a row that knows its conversation never falls back to the
+  │                          (codex, kimi, gemini) `conversationLinkable` is false and the row
+  │                          SAYS so. **AGY IS NO LONGER ONE OF THEM.** It has no assign flag —
+  │                          measured against agy 1.1.27 on 2026-09-08, `agy --conversation
+  │                          <fresh-uuid>` answers `warning: conversation "…" not found` and creates
+  │                          one under an id of its OWN — and no session record; and the
+  │                          harness-and-directory fallback is closed for it IN PARTICULAR, because
+  │                          the adapter takes `project_path` from the GLOBAL `history.jsonl` and agy
+  │                          writes that file only for a prompt TYPED IN ITS UI. A session agentop
+  │                          starts is handed its first prompt as `--prompt-interactive`, so its store
+  │                          record carries `project_path: ""`, `loadConversations` drops it, and even
+  │                          `planFirstSightingClaims` never sees it as a candidate. Measured the same
+  │                          day: 15 of 38 agy conversations had a cwd, and the 23 without were
+  │                          exactly the ones agentop had opened — so EVERY agy session agentop
+  │                          started was unlinkable BY CONSTRUCTION, and its chat view was
+  │                          permanently empty while its terminal worked perfectly. The THIRD route
+  │                          is `HARNESS_PROCESS_LOGS` (pure `agy-conversation.ts` + IO
+  │                          `process-conversation.ts`): agy opens
+  │                          `~/.gemini/antigravity-cli/log/cli-<YYYYMMDD_HHMMSS>.log` per process and
+  │                          HOLDS IT OPEN (verified in `/proc/<pid>/fd` of a live agy under tmux),
+  │                          writing `Created conversation <uuid>` into it — so the chain `managed row
+  │                          -> tmux pane pid -> open fd -> log -> conversation` is exact at every
+  │                          step. It is its OWN table beside `HARNESS_SESSION_SOURCES` rather than a
+  │                          widening of it: "a JSON file per session keyed by pid" and "the process's
+  │                          own open log, read by regex" share no rule but the question they answer.
+  │                          LAST wins on several `Created` lines (one process can open a second
+  │                          conversation, and the one it is writing is the newest); a
+  │                          `getConversationDetail: found conversation` line is a LOOKUP and never a
+  │                          creation; two DISTINCT logs on one process REFUSE. Recorded as
+  │                          `assigned`, not `observed` — it is the harness's own statement, not the
+  │                          time-and-directory claim. STATED LIMIT: it is a `/proc` read, so off
+  │                          Linux there is no link and `chat-web.ts` says "this session has no linked
+  │                          conversation yet", which is true.
   │                          guess even when the store has not caught up: "not yet" and "some other
   │                          conversation in this directory" are different answers.
   │                          **A MANAGED row now carries the conversation's metrics too** — tokens,
