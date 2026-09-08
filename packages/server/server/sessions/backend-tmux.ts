@@ -280,17 +280,39 @@ export const tmuxBackend: SessionBackend = {
    * know a submit showed. A frame that never moves still gets the text: the budget is spent, not
    * the answer, exactly as it is there.
    */
-  async sendChoiceText(id: string, key: string, text: string): Promise<boolean> {
+  /**
+   * Type the digit, LOOK at what it did, and only then type the words.
+   *
+   * The lock is the whole reason this lives in the backend rather than as three calls from the
+   * caller: `writeToPane` serialises writes per pane, and three separate locked calls leave two
+   * gaps a keystroke from another surface can land in — which is the collision `pane-writer.ts`
+   * exists to prevent, and which its own note names this method as the harder version of.
+   *
+   * The CHECK is the caller's, passed in as `opened`, because deciding whether a field appeared
+   * needs the harness's approval rules and its dialog parser — neither of which belongs down here.
+   * It runs INSIDE the lock, on a frame captured after the digit, so nothing can have written
+   * between the look and the words.
+   *
+   * WHY IT IS CHECKED AT ALL. `paneMoved` says the pane changed, not that a FIELD opened, and the
+   * digit does not open one on every dialog — on some it only moves the highlight. Typing then puts
+   * the words wherever the session is listening and the return submits whatever is under the
+   * cursor. So a frame that does not look like a field yields `no-field` and NOTHING further is
+   * sent.
+   */
+  async sendChoiceText(
+    id: string, key: string, text: string, opened: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'no-field' | 'failed'> {
     return writeToPane(id, async () => {
       const before = await captureFrame(id)
-      if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return false
+      if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return 'failed'
       // The option turning into a field IS a frame change; waiting for it is waiting for the mode
       // to switch. Bounded, because a pane that will not move must not hold the request open.
       await paneMoved(id, before)
       await sleep(SUBMIT_SETTLE_MS)
-      if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return false
+      if (!opened(await captureFrame(id))) return 'no-field'
+      if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return 'failed'
       await sleep(SUBMIT_SETTLE_MS)
-      return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0
+      return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0 ? 'sent' : 'failed'
     })
   },
 

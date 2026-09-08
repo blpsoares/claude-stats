@@ -55,8 +55,24 @@ describe('readArtifact', () => {
     const out = await readArtifact('en', cwd, [p], p)
     expect(out.ok).toBe(false)
     if (out.ok) throw new Error('a symlink out of the project was READ')
-    expect(out.message).toContain('outside')
+    // The sentence names what happened: it resolves somewhere other than where it was written.
+    expect(out.message).toContain('resolves somewhere else')
     expect(JSON.stringify(out)).not.toContain('SECRET-CONTENT')
+  })
+
+  /**
+   * OUTSIDE THE FOLDER IS NOT OUT OF REACH. Writing a memory in this product IS writing to
+   * `~/.claude/projects/<project>/memory/MEMORY.md`; the panel listed it and this route refused it.
+   * Nothing redirects it — the transcript's name and the real file are the same place — and gate 1
+   * still stands, so it is reachable only because the session wrote it.
+   */
+  it('READS a file outside the cwd when nothing redirected it', async () => {
+    const p = join(outside, 'memory.md')
+    await writeFile(p, '# memory\n')
+    const out = await readArtifact('en', cwd, [p], p)
+    expect(out.ok).toBe(true)
+    if (!out.ok) throw new Error('expected ok')
+    expect(out.text).toContain('# memory')
   })
 
   it('refuses a path the session never touched', async () => {
