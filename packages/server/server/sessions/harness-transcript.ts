@@ -25,11 +25,12 @@
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { HarnessId } from '@agentistics/core'
-import { ANTIGRAVITY_BRAIN_DIR, CODEX_SESSIONS_DIR, COPILOT_DIR, KIMI_DIR } from '../config'
+import { ANTIGRAVITY_BRAIN_DIR, CODEX_SESSIONS_DIR, COPILOT_DIR, GEMINI_DIR, KIMI_DIR } from '../config'
 import { UUID_RE } from '../git'
 import { parseAntigravityChat } from './antigravity-chat'
 import { parseCodexChat } from './codex-chat'
 import { parseCopilotChat } from './copilot-chat'
+import { parseGeminiChatTurns } from './gemini-chat'
 import { parseKimiChat } from './kimi-chat'
 import type { ChatTurn } from './chat-turn'
 import { readChatWindow, readRecentChatTurns, resolveChatTranscriptPath } from './chat-tail'
@@ -218,6 +219,35 @@ export async function resolveCopilotTranscript(
   return (await exists(p)) ? p : null
 }
 
+/**
+ * Gemini files a chat at `~/.gemini/tmp/<project>/chats/<file>.jsonl`, and the conversation id this
+ * product uses IS `<project>/<file>` — so the path needs no directory listing and no memo, unlike
+ * codex's and kimi's. It is also the reason the id has to be checked rather than interpolated: it
+ * is the only conversation id in this table that is a path fragment.
+ */
+async function resolveGeminiTranscript(ref: TranscriptRef): Promise<string | null> {
+  const parts = ref.conversationId.split('/')
+  // Exactly `<project>/<file>`, and neither half may leave the chats directory. A `.` or `..`, an
+  // empty segment or a nested path is refused outright — an id that cannot be trusted is an id
+  // that names no file, which is the same answer as a conversation nobody has written yet.
+  if (parts.length !== 2) return null
+  if (parts.some(p => p === '' || p === '.' || p === '..' || p.includes('\\'))) return null
+  const path = join(GEMINI_DIR, 'tmp', parts[0]!, 'chats', `${parts[1]!}.jsonl`)
+  return (await exists(path)) ? path : null
+}
+
+const GEMINI: HarnessTranscript = {
+  resolve: ref => resolveGeminiTranscript(ref),
+  async read(path, max) {
+    let content: string
+    try { content = await readFile(path, 'utf-8') } catch { return { turns: [], older: false } }
+    return windowed(parseGeminiChatTurns(content.split('\n'), max + 1), max)
+  },
+  async readRecent(path, max) {
+    return readTailWindow(path, max, lines => parseGeminiChatTurns(lines, max))
+  },
+}
+
 const COPILOT: HarnessTranscript = {
   resolve: ref => resolveCopilotTranscript(ref),
   async read(path, max) {
@@ -298,24 +328,25 @@ const CLAUDE: HarnessTranscript = {
 /**
  * The reader for each harness, and the one `null` that is not a gap.
  *
- * GEMINI CAN NEVER BE READ HERE, and that is a fact about the LINK rather than about the format.
- * A reader is only ever offered a `conversationId`, and `ManagedSession.conversationId` exists only
- * where agentop handed the id to the CLI. Measured against `spawn-spec.ts`: claude and copilot have
- * `assignId`, and codex, kimi and antigravity have `resume` — so every one of those five can carry
- * an exact id. **Gemini has neither** (`-r, --resume` takes "latest" or an index, not an id, and
- * `--session-id` is deliberately excluded because gemini's id in this product is synthetic —
- * `${dir}/${file}` — so a recorded UUID would resolve to nothing while LOOKING exact). A gemini row
- * therefore never has a conversation id at all, `conversationBlind` already says so in words, and
- * `SessionsPage` hides the chat tab on such a row.
+ * GEMINI IS READ THROUGH THE ID THIS PRODUCT ALREADY KEYS IT BY, and it took a link to get here.
+ * This entry was `null` for a long time, with a reason that was a LINK fact and not a format one: a
+ * reader is only ever offered a `conversationId`, gemini has no `assignId` and its `-r, --resume`
+ * takes "latest" or an index rather than an id, so an entry would have been code nothing could
+ * reach. What changed is that `planFirstSightingClaims` deliberately includes gemini, and the id it
+ * claims is the SYNTHETIC one the store is keyed on — `${dirName}/${fileBase}` — which is not a
+ * UUID resolving to nothing but the chat file's own path in the only form this product knew it by.
  *
- * So a gemini entry here would be code nothing can reach, plus a claim the product cannot honour.
- * Its chat file WAS read and understood — it is a patch log, not one message per line: a header,
- * then `{"$set":{messages:[…]}}` seeding the list once (measured: 1 seed, always at line 1, in 4 of
- * 12 files) and bare message objects appended after it, with types `user` / `gemini` / `info` /
- * `error` and a `<session_context>` bootstrap block the harness writes under the user role. That
- * note is here so the next reader of this file does not spend the measurement again, and so the
- * absence reads as a finding rather than as a to-do. It becomes writable the day gemini accepts an
- * id agentop can hand it — not before.
+ * That id is a PATH, so `resolve` treats it as untrusted: exactly two segments, neither of them a
+ * traversal, or it answers `null`. An id reaching a `readFile` is the one place this table touches
+ * something shaped like user input.
+ *
+ * The format was measured twice, and the second reading is the one in `gemini-chat.ts`. The note
+ * that used to live here called it "a patch log, not one message per line", which was half right
+ * and cost the product months of gemini sessions: the SEED is a patch (`{"$set":{messages:[…]}}`,
+ * once, empty for a fresh session) and every turn AFTER it is appended as its own line. Reading
+ * only the seed is why `gemini-parse.ts` dropped 27 of the 34 chat files on this machine and why
+ * the adapter's newest session was from 2026-04-10. Both sources are read, through one `id`-keyed
+ * gate, because a resumed session carries the same turn in each.
  */
 export const HARNESS_TRANSCRIPTS: Record<HarnessId, HarnessTranscript | null> = {
   claude: CLAUDE,
@@ -323,7 +354,7 @@ export const HARNESS_TRANSCRIPTS: Record<HarnessId, HarnessTranscript | null> = 
   codex: CODEX,
   copilot: COPILOT,
   kimi: KIMI,
-  gemini: null,
+  gemini: GEMINI,
 }
 
 /**

@@ -943,9 +943,42 @@ pricing table — the adapter strips the provider prefix so the table can key on
 `kimi-*` ids are not in `MODEL_PRICING` yet and would take the shared fallback rate like any unknown
 id; add them when verified rates are published.
 
-### Gemini caveat — bootstrap stubs vs. real sessions
+### Gemini caveat — bootstrap stubs, and the journal shape that hid three months of sessions
 
-Gemini CLI writes `~/.gemini/tmp/<project>/chats/*.jsonl` files but many are bootstrap-only stubs with no real conversation content. The Gemini parser (`adapters/gemini-parse.ts`) filters these out — only chats containing a genuine user message or model response are counted. Gemini's local files do not carry token/cost data; real Gemini token metrics would require OTel integration (Phase 3).
+Gemini CLI writes `~/.gemini/tmp/<project>/chats/*.jsonl` files but many are bootstrap-only stubs with no real conversation content. The Gemini parser (`adapters/gemini-parse.ts`) filters these out — only chats containing a genuine user message or model response are counted.
+
+**A TURN IS APPENDED AS ITS OWN LINE, and reading only the snapshot dropped almost every session.**
+The journal is: a HEADER (`{sessionId, projectHash, startTime, lastUpdated, kind}`), then a SEED —
+`{"$set":{"messages":[…]}}`, written once near the top and **empty for a fresh session** — then each
+turn as its own top-level record `{id, timestamp, type, content, model?}`, with
+`{"$set":{"lastUpdated":…}}` patches after every one. `parseJsonl` collected messages **only** from
+`$set.messages`, so a fresh session yielded zero, `hasGenuineContent` stayed false, and the whole
+session was discarded as a bootstrap stub. Measured 2026-09-08: of 34 chat files, 7 carried
+`$set.messages` and **27 did not**; the adapter's newest session was from **2026-04-10**, so months
+of gemini work were missing from every surface in the product — the dashboard, Compare, the costs,
+the session list — not only from the chat view. Both sources are now read through one `id`-keyed
+gate, because a resumed session's seed repeats turns that then arrive again as their own lines and
+counting them twice would inflate every message count. `buildJsonlSessionMeta` also filled
+`first_prompt`, which it had hardcoded to `''`: `sessionLabel()` falls back to it and gemini writes
+no title, so every gemini session was listed with a blank name.
+
+**Gemini HAS a chat reader** (`sessions/gemini-chat.ts`, pure). It was `null` in
+`HARNESS_TRANSCRIPTS` for a long time and the reason was a LINK fact, not a format one — a reader is
+only ever offered a `conversationId`, and gemini has no `assignId` and no id-taking `resume`. What
+made it reachable is that `planFirstSightingClaims` deliberately includes gemini and claims the
+**synthetic** id the store is already keyed on (`${dirName}/${fileBase}`), which is not a UUID
+resolving to nothing but the chat file's own path. That id is therefore treated as untrusted input
+by `resolve`: exactly two segments, no traversal, or it answers `null`. `info` and `error` records
+are the harness talking about itself and are dropped rather than given a speaker, and the
+`<session_context>` block gemini writes under the USER role is injected context, not something the
+person said.
+
+**Tokens are NOT yet read for gemini, and that is now a decision rather than an absence.** The
+appended `gemini` records carry `tokens{input,output,cached,…}` and `model` — visible in the same
+files this parser now reads — so `HARNESS_CAPABILITIES.tokens`/`cost` COULD be flipped. They have
+not been, because turning them on changes money on every cost surface in the product and needs its
+own verification against a bill, exactly as `antigravity-protobuf.ts`'s header records for agy. Do
+it deliberately, with the reconciliation written down; do not flip it as a side effect. Gemini's local files do not carry token/cost data; real Gemini token metrics would require OTel integration (Phase 3).
 
 ### Compare page — `computeHarnessSummaries`
 
