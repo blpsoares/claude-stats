@@ -504,6 +504,25 @@ html.ag-viewport-locked > body {
 .ag-chat-md li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; }
 .ag-chat-md input[type="checkbox"] { margin-right: 7px; accent-color: var(--anthropic-orange); }
 
+/*
+ * THE APP'S ACCENT, ON EVERY NATIVE CONTROL THAT HAS ONE.
+ *
+ * A range, a checkbox and a radio each paint themselves with the user agent's own accent unless
+ * told otherwise, and on a dark theme that is a violet which belongs to no part of this product.
+ * Reported on the accessibility lens, whose five sliders sat purple beside its own orange buttons.
+ *
+ * Measured before writing this: 10 range inputs in the app and ONE of them set the colour, inline.
+ * Nine were the browser's. A rule per control is a rule nine people have to remember, which is why
+ * this is one selector instead — a new slider is correct by existing.
+ *
+ * `accent-color` and nothing else: it is the one property that recolours a native control without
+ * replacing it, so the thumb, the track and the focus ring stay the platform's — which is what an
+ * ACCESSIBILITY surface most needs to keep.
+ */
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] { accent-color: var(--anthropic-orange); }
+
 .ag-chat-md a { color: var(--anthropic-orange); text-decoration: none; }
 .ag-chat-md a:hover { text-decoration: underline; }
 
