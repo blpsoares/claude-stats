@@ -16,14 +16,53 @@
  * arbitrary write.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { AGENTISTICS_DATA_DIR } from '../config'
 import { storedAttachmentName } from './attachment-name'
+import type { AttachmentSend } from '@agentistics/core'
 
 /** Where uploads land. Inside agentop's own directory, never beside the user's project. */
 export const ATTACHMENT_DIR = join(AGENTISTICS_DATA_DIR, 'attachments')
+
+/**
+ * What was sent, and into which session — the record that lets a `[Image #4]` marker find its file.
+ *
+ * A harness that is mid-turn queues an arriving message and substitutes markers for its images, so
+ * the PATH that normally survives into the transcript is gone and the chat can only draw a chip.
+ * The file is still here; the link was what was missing. The RULE that reads it back lives beside the marker
+ * parsing it serves, in the web's `attachmentPreview.ts` — one file owns markers end to end.
+ *
+ * APPEND-ONLY JSONL, one line per file. A line that cannot be parsed is skipped rather than
+ * discarding the log: this is a convenience for drawing a thumbnail, and no part of the product may
+ * fail because of it.
+ */
+export const ATTACHMENT_LOG = join(AGENTISTICS_DATA_DIR, 'attachment-sends.jsonl')
+
+/** Records one sent file. Never throws: a thumbnail is not worth failing an upload over. */
+export async function recordAttachmentSend(sessionId: string, path: string): Promise<void> {
+  if (sessionId === '') return
+  const line = JSON.stringify({ sessionId, atMs: Date.now(), path } satisfies AttachmentSend)
+  await mkdir(AGENTISTICS_DATA_DIR, { recursive: true }).catch(() => {})
+  await appendFile(ATTACHMENT_LOG, `${line}\n`, { mode: 0o600 }).catch(() => {})
+}
+
+/** Every send recorded for one session. Unreadable lines are skipped, never fatal. */
+export async function readAttachmentSends(sessionId: string): Promise<AttachmentSend[]> {
+  const raw = await readFile(ATTACHMENT_LOG, 'utf-8').catch(() => '')
+  const out: AttachmentSend[] = []
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue
+    try {
+      const d = JSON.parse(line) as Partial<AttachmentSend>
+      if (d.sessionId === sessionId && typeof d.atMs === 'number' && typeof d.path === 'string') {
+        out.push({ sessionId: d.sessionId, atMs: d.atMs, path: d.path })
+      }
+    } catch { /* one bad line is not a reason to lose the rest */ }
+  }
+  return out
+}
 
 /**
  * Is `requested` actually inside `ATTACHMENT_DIR` — PURE, and the only thing standing between
@@ -160,6 +199,8 @@ export interface AttachmentResult {
 export async function storeAttachment(
   lang: 'pt' | 'en',
   file: { name: string; bytes: Uint8Array },
+  /** The session this is being attached to, when the caller knows it — see `ATTACHMENT_LOG`. */
+  sessionId = '',
 ): Promise<AttachmentResult> {
   const pt = lang === 'pt'
 
@@ -192,6 +233,10 @@ export async function storeAttachment(
         : 'The attachment could not be written on this machine.',
     }
   }
+
+  // Recorded AFTER the write succeeded, so the log never claims a file that is not there. It is a
+  // convenience for drawing a thumbnail later; a failure to record is not a failure to attach.
+  await recordAttachmentSend(sessionId, path)
 
   return { ok: true, path, name }
 }
