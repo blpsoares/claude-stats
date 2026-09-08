@@ -32,7 +32,7 @@ This is **plan 1 of 2** for `docs/superpowers/specs/2026-09-08-session-suggestio
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `CompactStats { count: number; ms: number; droppedTokens?: number }`, `compactsFromClaudeJsonl(lines: readonly string[]): CompactStats`, `skillUsesFromClaudeJsonl(lines: readonly string[]): Record<string, number>`, and the `SessionMeta` fields `compact_count?: number`, `compact_ms?: number`, `compact_dropped_tokens?: number`, `skill_uses?: Record<string, number>`.
+- Produces: `CompactStats { count: number; ms: number; droppedTokens?: number }`, `compactsFromClaudeJsonl(lines: Iterable<string>): CompactStats`, `skillUsesFromClaudeJsonl(lines: Iterable<string>): Record<string, number>`, and the `SessionMeta` fields `compact_count?: number`, `compact_ms?: number`, `compact_dropped_tokens?: number`, `skill_uses?: Record<string, number>`.
 
 **Why `droppedTokens` is a MAX and not a sum.** `compactMetadata.cumulativeDroppedTokens` is cumulative and monotonic. Measured on one real 5-compact session: `954.238 → 1.910.306 → 2.876.708 → 3.829.252 → 4.785.215`. Summing it reports 14,4M where the truth is 4,8M — a 3x inflation, on a field whose own name says so. Across this machine, summing gave 30M against a correct 19,4M.
 
@@ -144,8 +144,13 @@ export interface CompactStats {
  * session that dropped 4,8M. The field is also frequently absent (27 of 46 real records), and an
  * absent measurement stays `undefined` — a `0` there would claim a session that compacted five
  * times dropped nothing.
+ *
+ * Takes an `Iterable<string>` rather than an array so the caller can pass `iterLines(content)`
+ * directly. `parseSessionJsonl` deliberately never materialises its lines — the header on
+ * `iterLines` records why, with the measurement — and an array parameter here would have forced it
+ * to.
  */
-export function compactsFromClaudeJsonl(lines: readonly string[]): CompactStats {
+export function compactsFromClaudeJsonl(lines: Iterable<string>): CompactStats {
   let count = 0
   let ms = 0
   let dropped: number | undefined
@@ -172,7 +177,7 @@ export function compactsFromClaudeJsonl(lines: readonly string[]): CompactStats 
  * skipped rather than filed under a placeholder: an invented bucket would show up in the profile as
  * a skill somebody uses.
  */
-export function skillUsesFromClaudeJsonl(lines: readonly string[]): Record<string, number> {
+export function skillUsesFromClaudeJsonl(lines: Iterable<string>): Record<string, number> {
   const out: Record<string, number> = {}
   for (const line of lines) {
     if (!line.includes('"Skill"')) continue
@@ -249,14 +254,19 @@ In `packages/server/server/jsonl.ts`, in the object literal returned by `parseSe
     ...(Object.keys(skillUses).length > 0 ? { skill_uses: skillUses } : {}),
 ```
 
-and compute both from the same `lines` array the function already read, before that return:
+and compute both before that return, walking the content the function already holds:
 
 ```ts
-  const compaction = compactsFromClaudeJsonl(lines)
-  const skillUses = skillUsesFromClaudeJsonl(lines)
+  const compaction = compactsFromClaudeJsonl(iterLines(content))
+  const skillUses = skillUsesFromClaudeJsonl(iterLines(content))
 ```
 
-If the local variable holding the file's lines is not named `lines`, use whatever it is named — do not re-read the file.
+**`iterLines` is called twice on purpose, and there is no `lines` array to reuse.**
+`parseSessionJsonl` never materialises its lines: `iterLines`'s own header records the measurement
+behind that (862 MB of transcripts across 2.694 files, a 1.095 MB RSS peak on the warm build, with
+`scanProjects` running 30 of these concurrently). A generator is consumed once, so each reader gets
+its own walk — two extra `indexOf` passes over a string already in memory, allocating nothing.
+Do NOT introduce `content.split('\n')` here.
 
 - [ ] **Step 8: Verify against real data**
 
