@@ -59,6 +59,17 @@ export type ChannelAction =
   // reducer only accounts for what the transport says it sent.
   | { type: 'send'; id: number }
   | { type: 'ack'; id: number; ok: boolean; reason?: string }
+  /**
+   * A chunk this CLIENT refused — it never reached the wire, so it has no seq and no ack coming.
+   *
+   * It is its own action because the obvious shortcut is broken: reporting it as a `send` + `ack`
+   * pair under a made-up id appends that id to the TAIL of `pending`, and `ack` only ever answers
+   * `pending[0]`. With any real key still in flight — the common case, since an ack is a round trip
+   * and typing is not — the made-up ack mismatches, `pending` is left intact by design, and the id
+   * sticks at the head FOREVER: every later server ack mismatches too, `pending` grows without
+   * bound and the status line latches on "out of order" while every keystroke is landing.
+   */
+  | { type: 'refused'; reason?: string }
 
 /** A key may be transmitted only while consent stands and the channel is open. */
 export function canSend(state: ChannelState): boolean {
@@ -106,6 +117,11 @@ export function channelReducer(state: ChannelState, action: ChannelAction): Chan
     case 'send':
       if (!canSend(state)) return state
       return { ...state, pending: [...state.pending, action.id] }
+
+    // Says WHAT happened without touching the in-flight accounting, which this never entered.
+    case 'refused':
+      if (!canSend(state)) return state
+      return { ...state, undelivered: true, error: action.reason ?? 'not sent' }
 
     case 'ack': {
       // Only meaningful while a key is actually in flight — a late/duplicate ack (pending drained by

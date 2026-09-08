@@ -37,7 +37,7 @@ export type NamedKey =
   | 'C-a' | 'C-e' | 'C-u' | 'C-w' | 'C-k' // line editing — "edits the line" passes
 
 /** Why an input chunk was refused. `empty` is a no-op; `unsupported-sequence` is "not in the allowlist". */
-export type BlockReason = 'empty' | 'unsupported-sequence'
+export type BlockReason = 'empty' | 'unsupported-sequence' | 'too-long'
 
 /**
  * The classification of one `onData` chunk.
@@ -52,6 +52,11 @@ export type KeyIntent =
 
 /** Exact single-chunk → named-key matches (control bytes and short escape sequences). */
 const NAMED: Readonly<Record<string, NamedKey>> = {
+  // CRLF FIRST and as its own entry: `splitInput` matches longest-first, so a pasted Windows line
+  // ending resolves to ONE Enter. Left to `\r` + `\n` it decomposed into two, which on a prompt
+  // that submits on the first is a DOUBLE SUBMIT — the exact failure `initial-prompt.ts` refuses to
+  // risk for codex, arriving here through the back door.
+  '\r\n': 'Enter',
   '\r': 'Enter',
   '\n': 'Enter',
   '\x7f': 'BSpace', // DEL — what most terminals send for Backspace
@@ -87,22 +92,82 @@ function isAllPrintable(data: string): boolean {
 }
 
 /**
- * Classify one raw `onData` chunk into a send intent.
+ * The server refuses a `text` message longer than this (`MAX_INPUT_TEXT` in input-protocol.ts).
+ * Mirrored here for the same reason the allowlist is: so the client does not ASK for what will be
+ * refused. It is a CAP, not a splitter — see `splitInput`.
+ */
+export const MAX_TEXT_PER_MESSAGE = 8192
+
+/** A trailing line ending, and nothing after it. */
+const TRAILING_NEWLINE = /^([\s\S]*?)(?:\r\n|\r|\n)$/
+
+/**
+ * Split one raw `onData` chunk into the ORDERED intents it contains — PURE.
  *
- * A chunk is EITHER one recognized named key, OR wholly printable text, OR blocked. A chunk mixing
- * printable text with a control byte (a paste that carries a newline, say) is refused rather than
- * split — a raw keystroke is one thing, and pasting long text is the line composer's job, which the
- * assignment keeps deliberately.
+ * A chunk is not always one keystroke. xterm coalesces, a PASTE arrives whole, and a mobile
+ * keyboard delivers a composed word and its return together — so `"abc\r"` in a single chunk is
+ * ordinary, not exotic. This used to be refused outright, and the refusal was the defect: the
+ * caller dropped the chunk with an early `return`, so the TEXT and the ENTER both vanished with no
+ * pending key, no failed ack and nothing on screen. A terminal that shows a line and never sends it
+ * is the one failure this channel exists to make impossible ("a key you can see was typed is a key
+ * that landed").
+ *
+ * So a mixed chunk is decomposed instead: printable runs become `text`, recognized sequences become
+ * `key`, in the order they appeared. Ordering survives because the caller sends them down one
+ * socket, in this order, each with its own seq.
+ *
+ * The ALLOWLIST is untouched — every piece is still matched against `NAMED` or must be printable.
+ * An unrecognized control byte refuses the WHOLE chunk rather than the piece: sending the readable
+ * half of a line the user did not mean to split is worse than sending none of it, and the caller
+ * surfaces the refusal.
+ */
+export function splitInput(data: string): KeyIntent[] {
+  if (data.length === 0) return [{ kind: 'blocked', reason: 'empty' }]
+
+  // One recognized thing, or wholly printable text — the two ordinary single-piece chunks.
+  const named = NAMED[data]
+  if (named) return [{ kind: 'key', key: named }]
+  if (isAllPrintable(data)) {
+    return data.length > MAX_TEXT_PER_MESSAGE
+      ? [{ kind: 'blocked', reason: 'too-long' }]
+      : [{ kind: 'text', text: data }]
+  }
+
+  // THE ONE MIXED SHAPE THAT IS ORDINARY: a line and the return that ends it. Everything else that
+  // mixes stays refused, and the first version of this fix was wrong to decompose generally:
+  //
+  //  - A MULTI-LINE paste became one `text` + one `Enter` PER LINE. xterm normalizes pasted
+  //    newlines to `\r`, so pasting a 30-line snippet into an assistant's prompt fired thirty
+  //    separate turns, each carrying a fragment. That is worse than the refusal it replaced.
+  //  - A stray CONTROL BYTE in copied terminal output was executed instead of refused: `"foo\x04"`
+  //    typed the text and then sent EOF, and `\x03` interrupted the running turn. A person pressing
+  //    Ctrl-C never produces a mixed chunk, so a mixed one is never their intent.
+  //
+  // So the interior must be wholly printable, and only ONE trailing newline is admitted.
+  const m = TRAILING_NEWLINE.exec(data)
+  const head = m?.[1]
+  if (head && isAllPrintable(head)) {
+    // The Enter would otherwise ride along behind a `text` the SERVER rejects for length, submitting
+    // the prompt with whatever it already held and none of what was pasted. Refuse both together —
+    // the module's own rule, applied to the piece that can fail remotely.
+    return head.length > MAX_TEXT_PER_MESSAGE
+      ? [{ kind: 'blocked', reason: 'too-long' }]
+      : [{ kind: 'text', text: head }, { kind: 'key', key: 'Enter' }]
+  }
+
+  return [{ kind: 'blocked', reason: 'unsupported-sequence' }]
+}
+
+/**
+ * Classify one raw `onData` chunk as a SINGLE intent — PURE.
+ *
+ * Derived from `splitInput` so there is one rule set, not two: a chunk that decomposes into exactly
+ * one piece IS that piece, and anything else is refused here. Callers that can send several pieces
+ * in order should use `splitInput`; this stays for the places that genuinely take one thing.
  */
 export function classifyInput(data: string): KeyIntent {
-  if (data.length === 0) return { kind: 'blocked', reason: 'empty' }
-
-  const named = NAMED[data]
-  if (named) return { kind: 'key', key: named }
-
-  if (isAllPrintable(data)) return { kind: 'text', text: data }
-
-  return { kind: 'blocked', reason: 'unsupported-sequence' }
+  const parts = splitInput(data)
+  return parts.length === 1 ? parts[0]! : { kind: 'blocked', reason: 'unsupported-sequence' }
 }
 
 /**
@@ -116,6 +181,14 @@ const REASON_TEXT: Record<string, { en: string; pt: string }> = {
   empty_text: { en: 'nothing to send', pt: 'nada para enviar' },
   text_too_long: { en: 'that input was too long to send at once', pt: 'essa entrada é longa demais para enviar de uma vez' },
   bad_key: { en: 'that key is not allowed', pt: 'essa tecla não é permitida' },
+  mixed_chunk: {
+    en: 'that input mixes text with a control key — send it from the line composer',
+    pt: 'essa entrada mistura texto com uma tecla de controle — use o compositor de linha',
+  },
+  too_long: {
+    en: 'that input was too long to send at once — send it from the line composer',
+    pt: 'essa entrada é longa demais para enviar de uma vez — use o compositor de linha',
+  },
   send_failed: { en: 'not delivered — the key did not reach the session', pt: 'não entregue — a tecla não chegou à sessão' },
   error: { en: 'the write channel hit an error', pt: 'o canal de escrita encontrou um erro' },
   // Client-side close reasons (a socket close carries no server code): before-open vs after-open.
