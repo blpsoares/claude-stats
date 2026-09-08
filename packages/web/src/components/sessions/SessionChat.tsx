@@ -29,6 +29,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
+import { hasSomethingToSend, stopShown as isStopShown } from '../../lib/composerAction'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
 import { modeStyle } from '../../lib/modeStyle'
@@ -1063,7 +1064,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * thing left to do to a working session is stop it; a single character means the opposite.
    * Attachments count as something written — a message that is only files is still a message.
    */
-  const stopShown = working && !!stopVerb?.enabled && draft.trim() === '' && attached.length === 0
+  const stopShown = isStopShown({
+    working,
+    stopEnabled: !!stopVerb?.enabled,
+    draft,
+    attachments: attached.length,
+  })
+  /** What the send button could send. The same predicate decides its label, its colour and `stopShown`. */
+  const somethingToSend = hasSomethingToSend({ draft, attachments: attached.length })
   const [stopping, setStopping] = useState(false)
   async function stopNow() {
     if (!stopVerb?.enabled || stopping) return
@@ -2147,8 +2155,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     every time a turn ended send jumped left under a thumb already moving toward it;
                     moving stop to the head of the group only shortened the jump. Sharing one slot
                     removes it: the control under your thumb is always the one you want, and
-                    nothing else shifts at all. */}
-                {working && stopVerb?.enabled ? (
+                    nothing else shifts at all.
+
+                    `stopShown` DECIDES IT, and this reads that one expression rather than
+                    re-deriving it. It was re-derived here as `working && stopVerb?.enabled`, which
+                    is the same rule minus the draft — so the stop button stayed up while somebody
+                    typed, and the send button they were typing toward never appeared. `stopShown`
+                    was sitting one screen up, correct and unused. */}
+                {stopShown ? (
                   <button
                     onClick={() => void stopNow()}
                     disabled={stopping}
@@ -2169,14 +2183,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                 ) : (
                   <button
                     onClick={() => void send()}
-                    disabled={!canPrompt || sending || (draft.trim() === '' && attached.length === 0)}
+                    disabled={!canPrompt || sending || !somethingToSend}
                     aria-label={pt ? 'Enviar' : 'Send'}
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       width: 34, height: 34, borderRadius: 9, border: 'none', flexShrink: 0,
-                      background: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
-                      color: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'var(--text-tertiary)' : '#fff',
-                      cursor: (draft.trim() === '' && attached.length === 0) || !canPrompt ? 'default' : 'pointer',
+                      background: !somethingToSend || !canPrompt ? 'transparent' : 'var(--anthropic-orange)',
+                      color: !somethingToSend || !canPrompt ? 'var(--text-tertiary)' : '#fff',
+                      cursor: !somethingToSend || !canPrompt ? 'default' : 'pointer',
                     }}
                   >
                     {sending ? <Loader size={15} className="ag-working-spin" /> : <Send size={15} />}
