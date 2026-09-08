@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef } from 'react'
-import { classifyInput, inputReasonText } from '../lib/terminalKeys'
+import { inputReasonText, splitInput } from '../lib/terminalKeys'
 import {
   INITIAL_CHANNEL,
   channelReducer,
@@ -53,6 +53,10 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
   const [state, dispatch] = useReducer(channelReducer, INITIAL_CHANNEL)
   const wsRef = useRef<WebSocket | null>(null)
   const seqRef = useRef(1)
+  // Ids for refusals decided HERE, so they can be reported through the same pending/ack machinery
+  // without consuming a wire seq the server would then never ack (a gap the channel orders on).
+  // Negative by construction: server seqs start at 1 and only rise, so the two can never collide.
+  const localSeqRef = useRef(-1)
   // Synchronous mirror of "socket open", so `send` (called from xterm's onData, outside React's
   // render) can gate itself without waiting for the reducer state to commit.
   const openRef = useRef(false)
@@ -67,6 +71,7 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
     dispatch({ type: 'arm' })
     dispatch({ type: 'connecting' })
     seqRef.current = 1
+    localSeqRef.current = -1
     openRef.current = false
 
     let ws: WebSocket
@@ -119,23 +124,45 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
     // honest by construction — and the consumer's status line explains why (connecting / unavailable).
     if (!ws || !openRef.current) return
 
-    const intent = classifyInput(data)
-    if (intent.kind === 'blocked') return // allowlist refusal; never forwarded, never echoed
+    // ONE onData chunk is not one keystroke: xterm coalesces, a paste arrives whole, and a mobile
+    // keyboard sends a composed word together with its return. `splitInput` decomposes it into the
+    // ordered pieces; they go down this one socket in this order, each with its own seq, so
+    // ordering is preserved by construction.
+    const parts = splitInput(data)
 
-    const seq = seqRef.current++
-    const msg = intent.kind === 'text'
-      ? { seq, kind: 'text', data: intent.text }
-      : { seq, kind: 'key', name: intent.key }
-    // Account for the send FIRST (so a synchronous throw still leaves the key pending → reported),
-    // then transmit. Order on the wire is onData order over the single connection.
-    dispatch({ type: 'send', id: seq })
-    try {
-      ws.send(JSON.stringify(msg))
-    } catch {
-      // The socket died between the open check and the send — treat as a drop so the pending key is
-      // surfaced as not-delivered rather than silently lost.
-      openRef.current = false
-      dispatch({ type: 'closed', reason: 'connection_lost' })
+    const refused = parts.find(p => p.kind === 'blocked')
+    if (refused) {
+      // `empty` is a genuine no-op. Anything else is REPORTED: this used to be a bare `return`, so a
+      // chunk carrying text plus a return — "abc\r", the ordinary shape of typing a line and
+      // pressing Enter on a phone — was dropped whole, with no pending key, no failed ack and
+      // nothing on screen. A line you can see and cannot send is the one failure this channel
+      // exists to prevent.
+      if (refused.kind === 'blocked' && refused.reason !== 'empty') {
+        const local = localSeqRef.current--
+        dispatch({ type: 'send', id: local })
+        dispatch({ type: 'ack', id: local, ok: false, reason: 'bad_key' })
+      }
+      return
+    }
+
+    for (const part of parts) {
+      const seq = seqRef.current++
+      const msg = part.kind === 'text'
+        ? { seq, kind: 'text', data: part.text }
+        : { seq, kind: 'key', name: (part as { key: string }).key }
+      // Account for the send FIRST (so a synchronous throw still leaves the key pending → reported),
+      // then transmit. Order on the wire is onData order over the single connection.
+      dispatch({ type: 'send', id: seq })
+      try {
+        ws.send(JSON.stringify(msg))
+      } catch {
+        // The socket died between the open check and the send — treat as a drop so the pending key
+        // is surfaced as not-delivered rather than silently lost. Stop: the rest of this chunk
+        // would arrive after a reconnect, out of the order the user typed it in.
+        openRef.current = false
+        dispatch({ type: 'closed', reason: 'connection_lost' })
+        return
+      }
     }
   }, [])
 

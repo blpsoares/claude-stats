@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { classifyInput, inputReasonText, type KeyIntent } from './terminalKeys'
+import { classifyInput, splitInput, inputReasonText, type KeyIntent } from './terminalKeys'
 
 /** Small helper: assert a chunk classifies to an exact intent. */
 function intent(data: string): KeyIntent {
@@ -112,5 +112,84 @@ describe('inputReasonText — the server\'s stable reason codes made human (both
   })
   it('an unknown code is shown verbatim rather than swallowed', () => {
     expect(inputReasonText('some_new_code', 'en')).toBe('some_new_code')
+  })
+})
+
+/**
+ * A chunk is not always one keystroke — the defect these pin.
+ *
+ * Reported as messages typed into the live terminal that never sent. The whole server chain was
+ * verified working (tmux `send-keys -l` then `send-keys Enter` submits; the WS channel acked 21/21
+ * and submitted), so the loss was above it: `onData` hands over ONE chunk that carries the text AND
+ * the return — which xterm does on a paste, under coalescing, and on a mobile keyboard delivering a
+ * composed word with its return — and that chunk was refused whole and dropped by a bare `return`.
+ * No pending key, no failed ack, nothing on screen: a line you can see and cannot send.
+ */
+describe('splitInput — a chunk carrying text and a key', () => {
+  it('decomposes text + Enter in order, instead of refusing the whole chunk', () => {
+    expect(splitInput('abc\r')).toEqual([
+      { kind: 'text', text: 'abc' },
+      { kind: 'key', key: 'Enter' },
+    ])
+    expect(splitInput('abc\n')).toEqual([
+      { kind: 'text', text: 'abc' },
+      { kind: 'key', key: 'Enter' },
+    ])
+  })
+
+  it('collapses CRLF into ONE Enter — two would be a double submit', () => {
+    expect(splitInput('ok\r\n')).toEqual([
+      { kind: 'text', text: 'ok' },
+      { kind: 'key', key: 'Enter' },
+    ])
+    // And a multi-line paste is one Enter per line, never two.
+    expect(splitInput('a\r\nb\r\n').filter(p => p.kind === 'key')).toHaveLength(2)
+  })
+
+  it('keeps a lone key and lone text as single pieces', () => {
+    expect(splitInput('\r')).toEqual([{ kind: 'key', key: 'Enter' }])
+    expect(splitInput('abc')).toEqual([{ kind: 'text', text: 'abc' }])
+  })
+
+  it('matches the LONGEST named sequence first, so an escape is not eaten as text', () => {
+    expect(splitInput('\x1b[Aabc')).toEqual([
+      { kind: 'key', key: 'Up' },
+      { kind: 'text', text: 'abc' },
+    ])
+  })
+
+  it('keeps non-ASCII text whole', () => {
+    expect(splitInput('café\r')).toEqual([
+      { kind: 'text', text: 'café' },
+      { kind: 'key', key: 'Enter' },
+    ])
+  })
+
+  it('refuses the WHOLE chunk when it carries something unrecognized', () => {
+    // Sending the readable half of a line the user did not mean to split is worse than sending none.
+    expect(splitInput('a\x1fb')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+  })
+
+  it('reports an empty chunk as the no-op it is', () => {
+    expect(splitInput('')).toEqual([{ kind: 'blocked', reason: 'empty' }])
+  })
+
+  it('the allowlist is unchanged — every piece is still matched or printable', () => {
+    // C-c is explicitly allowed, so it survives a split; an unlisted control byte does not.
+    expect(splitInput('a\x03b')).toEqual([
+      { kind: 'text', text: 'a' },
+      { kind: 'key', key: 'C-c' },
+      { kind: 'text', text: 'b' },
+    ])
+    expect(splitInput('a\x1cb')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+  })
+})
+
+describe('classifyInput stays derived from splitInput', () => {
+  it('is the piece when a chunk decomposes into exactly one, and refuses otherwise', () => {
+    expect(classifyInput('\r')).toEqual({ kind: 'key', key: 'Enter' })
+    expect(classifyInput('abc')).toEqual({ kind: 'text', text: 'abc' })
+    // Its own contract is unchanged: a mixed chunk is not ONE intent.
+    expect(classifyInput('abc\r')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' })
   })
 })

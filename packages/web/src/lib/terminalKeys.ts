@@ -52,6 +52,11 @@ export type KeyIntent =
 
 /** Exact single-chunk → named-key matches (control bytes and short escape sequences). */
 const NAMED: Readonly<Record<string, NamedKey>> = {
+  // CRLF FIRST and as its own entry: `splitInput` matches longest-first, so a pasted Windows line
+  // ending resolves to ONE Enter. Left to `\r` + `\n` it decomposed into two, which on a prompt
+  // that submits on the first is a DOUBLE SUBMIT — the exact failure `initial-prompt.ts` refuses to
+  // risk for codex, arriving here through the back door.
+  '\r\n': 'Enter',
   '\r': 'Enter',
   '\n': 'Enter',
   '\x7f': 'BSpace', // DEL — what most terminals send for Backspace
@@ -86,23 +91,72 @@ function isAllPrintable(data: string): boolean {
   return true
 }
 
+/** The longest named sequence, so a chunk is matched longest-first (`\x1b[A` before `\x1b`). */
+const NAMED_MAX = Object.keys(NAMED).reduce((m, k) => Math.max(m, k.length), 1)
+
 /**
- * Classify one raw `onData` chunk into a send intent.
+ * Split one raw `onData` chunk into the ORDERED intents it contains — PURE.
  *
- * A chunk is EITHER one recognized named key, OR wholly printable text, OR blocked. A chunk mixing
- * printable text with a control byte (a paste that carries a newline, say) is refused rather than
- * split — a raw keystroke is one thing, and pasting long text is the line composer's job, which the
- * assignment keeps deliberately.
+ * A chunk is not always one keystroke. xterm coalesces, a PASTE arrives whole, and a mobile
+ * keyboard delivers a composed word and its return together — so `"abc\r"` in a single chunk is
+ * ordinary, not exotic. This used to be refused outright, and the refusal was the defect: the
+ * caller dropped the chunk with an early `return`, so the TEXT and the ENTER both vanished with no
+ * pending key, no failed ack and nothing on screen. A terminal that shows a line and never sends it
+ * is the one failure this channel exists to make impossible ("a key you can see was typed is a key
+ * that landed").
+ *
+ * So a mixed chunk is decomposed instead: printable runs become `text`, recognized sequences become
+ * `key`, in the order they appeared. Ordering survives because the caller sends them down one
+ * socket, in this order, each with its own seq.
+ *
+ * The ALLOWLIST is untouched — every piece is still matched against `NAMED` or must be printable.
+ * An unrecognized control byte refuses the WHOLE chunk rather than the piece: sending the readable
+ * half of a line the user did not mean to split is worse than sending none of it, and the caller
+ * surfaces the refusal.
+ */
+export function splitInput(data: string): KeyIntent[] {
+  if (data.length === 0) return [{ kind: 'blocked', reason: 'empty' }]
+  const out: KeyIntent[] = []
+  let run = ''
+  const flush = () => { if (run) { out.push({ kind: 'text', text: run }); run = '' } }
+
+  let i = 0
+  while (i < data.length) {
+    let matched = false
+    for (let len = Math.min(NAMED_MAX, data.length - i); len >= 1; len--) {
+      const named = NAMED[data.slice(i, i + len)]
+      if (named) {
+        flush()
+        out.push({ kind: 'key', key: named })
+        i += len
+        matched = true
+        break
+      }
+    }
+    if (matched) continue
+
+    const cp = data.codePointAt(i) ?? 0
+    // Not a named sequence and not printable: the chunk carries something this channel does not
+    // recognize, so none of it goes.
+    if (cp < 0x20 || cp === 0x7f) return [{ kind: 'blocked', reason: 'unsupported-sequence' }]
+    const ch = String.fromCodePoint(cp)
+    run += ch
+    i += ch.length
+  }
+  flush()
+  return out
+}
+
+/**
+ * Classify one raw `onData` chunk as a SINGLE intent — PURE.
+ *
+ * Derived from `splitInput` so there is one rule set, not two: a chunk that decomposes into exactly
+ * one piece IS that piece, and anything else is refused here. Callers that can send several pieces
+ * in order should use `splitInput`; this stays for the places that genuinely take one thing.
  */
 export function classifyInput(data: string): KeyIntent {
-  if (data.length === 0) return { kind: 'blocked', reason: 'empty' }
-
-  const named = NAMED[data]
-  if (named) return { kind: 'key', key: named }
-
-  if (isAllPrintable(data)) return { kind: 'text', text: data }
-
-  return { kind: 'blocked', reason: 'unsupported-sequence' }
+  const parts = splitInput(data)
+  return parts.length === 1 ? parts[0]! : { kind: 'blocked', reason: 'unsupported-sequence' }
 }
 
 /**
