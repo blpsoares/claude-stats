@@ -59,6 +59,21 @@ export interface TaskListRow {
   counts: { comments: number; subtasks: number; subtasksDone: number; files: number }
   /** Distinct harnesses of this task's sessions, in first-seen order. */
   harnesses: string[]
+  /**
+   * Distinct repositories of this task's sessions, in first-seen order — the key the Repositories
+   * page uses (`normalizeGitRemote`, already stamped onto `SessionMeta.git_remote`), and `''` for
+   * the "no linked repository" bucket, which is a real value here exactly as it is in
+   * `sessionInScope`.
+   *
+   * Read off the SESSIONS and never off `Task.repo`: a task belongs to a repository through the
+   * work that happened in it, so one spanning two repositories names both, and a field somebody
+   * typed (or inherited once, at creation) would be a second answer to the same question.
+   *
+   * Derived from the metas the caller passed, which are the SCOPED ones on every surface that
+   * filters — so a task with no session inside the current window names no repository at all,
+   * rather than one it has not touched since.
+   */
+  repos: string[]
 }
 
 export interface TaskDetail {
@@ -142,6 +157,28 @@ export function attemptViews(
   return views
 }
 
+/**
+ * The repositories a task's rows touched, in first-seen order.
+ *
+ * Only a row whose conversation resolves in the store can name one: a row with no link reported no
+ * repository, and inventing one from its `cwd` would be a second key for a dimension whose only key
+ * is the normalized remote. A task all of whose rows are unlinked therefore names nothing, which is
+ * the honest answer and not an empty repository.
+ */
+export function reposOfRows(
+  rows: readonly ManagedSession[],
+  metas: ReadonlyMap<string, SessionMeta>,
+): string[] {
+  const out: string[] = []
+  for (const r of rows) {
+    const meta = r.conversationId ? metas.get(r.conversationId) : undefined
+    if (!meta) continue
+    const remote = meta.git_remote ?? ''
+    if (!out.includes(remote)) out.push(remote)
+  }
+  return out
+}
+
 export function buildTaskList(o: {
   tasks: readonly Task[]
   attempts: readonly Attempt[]
@@ -166,6 +203,7 @@ export function buildTaskList(o: {
         files: (o.files ?? []).filter(f => f.taskId === task.id).length,
       },
       harnesses: [...new Set(mine.map(r => r.harness))],
+      repos: reposOfRows(mine, o.metas),
     }
   })
 }

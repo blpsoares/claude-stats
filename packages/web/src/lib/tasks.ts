@@ -112,6 +112,12 @@ export interface TaskListRow {
   rollup: AttemptRollup
   counts: { comments: number; subtasks: number; subtasksDone: number; files: number }
   harnesses: string[]
+  /**
+   * The repositories this task's sessions touched — normalized remotes, `''` for the "no linked
+   * repository" bucket. Decided on the server from the sessions themselves (see `reposOfRows`), so
+   * the Repositories page and the board can never disagree about which deliveries belong where.
+   */
+  repos: string[]
 }
 
 export interface Bucket { key: string; sessions: number; tokens: number | null }
