@@ -435,11 +435,18 @@ export function SessionsAside({
         <NewSessionModal
           lang={lang}
           onClose={() => setCreating(false)}
-          onStarted={id => {
+          onStarted={(id, started) => {
             setCreating(false)
             // Straight into it. The row will arrive on the next poll; navigating now means the
             // panel is already open on it when it does.
-            if (id) navigate(sessionPath(id))
+            //
+            // The `creating` state travels WITH the navigation, and that is what stops the metrics
+            // screen flashing in between: this browser's fleet does not hold the row yet, so
+            // `SessionsPage` would fall through to its "nothing selected" branch — the overview —
+            // for exactly as long as it takes a poll to land. The state says "this id is on its
+            // way", so the page shows the creation loader instead of answering a question nobody
+            // asked. Router state and not a prop: the modal that knows this is unmounting.
+            if (id) navigate(sessionPath(id), { state: { creating: started ?? {} } })
           }}
         />
       )}

@@ -18,12 +18,23 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useOutletContext, useParams, useSearchParams } from 'react-router-dom'
 import { ChevronLeft, FileText, MessagesSquare, Plus, TerminalSquare } from 'lucide-react'
 import type { AppContext } from '../lib/app-context'
 import { useFleet, useFleetIndex, type FleetActionId } from '../lib/fleet'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { FleetOverview } from '../components/sessions/FleetOverview'
+import { SessionCreating } from '../components/sessions/SessionCreating'
+
+/**
+ * How long a navigation may keep claiming its session is still coming.
+ *
+ * `NewSessionModal.waitForRow` already gave the SERVER 6s to hold the row; this covers the poll
+ * that brings it to THIS browser afterwards. Past it the page stops asserting and says the id
+ * names nothing here, which is the honest answer and the one that can be acted on — a loader with
+ * no end cannot be told from a session that never started.
+ */
+const CREATE_WAIT_MS = 20_000
 import { SessionStatsMenu } from '../components/sessions/SessionStatsMenu'
 import { MagnifierButton } from '../components/a11y/MagnifierButton'
 import { HideLensesButton } from '../components/a11y/HideLensesButton'
@@ -101,6 +112,42 @@ export default function SessionsPage() {
   const selected = sessionId === undefined
     ? undefined
     : fleet.rows.find(r => r.id === sessionId || r.conversationId === sessionId)
+
+  /**
+   * A SESSION THAT IS ON ITS WAY IS NOT A SESSION THAT IS MISSING.
+   *
+   * `NewSessionModal` navigates here the moment the spawn returns, and this browser's fleet does
+   * not hold the row until its next poll — so `selected` is undefined and this page fell through
+   * to its "nothing selected" branch, which is the fleet OVERVIEW. Creating a session therefore
+   * flashed the metrics screen and jumped to the session a poll later. The overview was not wrong
+   * about anything; it was answering a question nobody had asked.
+   *
+   * The router state is what tells the two apart, and it is BOUNDED: past the budget this stops
+   * claiming the session is coming and the page says what it has always said — that the id names
+   * nothing here. A loader with no end is the worse failure, because it cannot be told from a
+   * session that simply never started.
+   */
+  const creatingState = (useLocation().state as { creating?: { harness?: string; label?: string } } | null)?.creating
+  const [creatingSince] = useState(() => Date.now())
+  const arriving = creatingState !== undefined
+    && sessionId !== undefined
+    && Date.now() - creatingSince < CREATE_WAIT_MS
+  const creating = arriving && selected === undefined
+  /**
+   * ONE FRAME, and only so the finish is real.
+   *
+   * The bar can only reach 100 and turn orange on `ready`, and `ready` is the row arriving — which
+   * is the same instant this page would swap in the session. Handing over on the next animation
+   * frame lets that state be painted instead of existing only in the types. It is a frame, not a
+   * beat: nothing here is watched to the end, and showing the session fast is the whole point.
+   */
+  const [handedOver, setHandedOver] = useState(false)
+  const finishing = arriving && selected !== undefined && !handedOver
+  useEffect(() => {
+    if (!finishing) return
+    const raf = requestAnimationFrame(() => setHandedOver(true))
+    return () => cancelAnimationFrame(raf)
+  }, [finishing])
 
   // The Chat/Terminal choice, in the URL — the SAME `?view=` the shared header in `App.tsx` reads
   // and writes on desktop. Independent `useSearchParams()` calls on the one search string, not a
@@ -555,7 +602,23 @@ export default function SessionsPage() {
   // Mobile: one column at a time.
   // ---------------------------------------------------------------------------
   if (isMobile) {
-    if (panel && selected) {
+    // A session that is on its way owns the whole surface — before the panel branch, because
+  // `finishing` is the one moment BOTH are true, and before the overview branch, which is the
+  // metrics screen this replaced. One rule, both layouts: the loader is the same on a phone.
+  if (creating || finishing) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        <SessionCreating
+          lang={pt ? 'pt' : 'en'}
+          ready={finishing}
+          {...(creatingState?.harness ? { harness: creatingState.harness } : {})}
+          {...(creatingState?.label ? { label: creatingState.label } : {})}
+        />
+      </div>
+    )
+  }
+
+  if (panel && selected) {
       return (
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
           {/* ONE bar. It used to be two: this back row, and SessionPanel's own header directly
