@@ -53,10 +53,6 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
   const [state, dispatch] = useReducer(channelReducer, INITIAL_CHANNEL)
   const wsRef = useRef<WebSocket | null>(null)
   const seqRef = useRef(1)
-  // Ids for refusals decided HERE, so they can be reported through the same pending/ack machinery
-  // without consuming a wire seq the server would then never ack (a gap the channel orders on).
-  // Negative by construction: server seqs start at 1 and only rise, so the two can never collide.
-  const localSeqRef = useRef(-1)
   // Synchronous mirror of "socket open", so `send` (called from xterm's onData, outside React's
   // render) can gate itself without waiting for the reducer state to commit.
   const openRef = useRef(false)
@@ -71,7 +67,6 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
     dispatch({ type: 'arm' })
     dispatch({ type: 'connecting' })
     seqRef.current = 1
-    localSeqRef.current = -1
     openRef.current = false
 
     let ws: WebSocket
@@ -138,9 +133,9 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
       // nothing on screen. A line you can see and cannot send is the one failure this channel
       // exists to prevent.
       if (refused.kind === 'blocked' && refused.reason !== 'empty') {
-        const local = localSeqRef.current--
-        dispatch({ type: 'send', id: local })
-        dispatch({ type: 'ack', id: local, ok: false, reason: 'bad_key' })
+        // Its OWN action, never a send/ack pair under a synthetic id: that pair poisons the FIFO
+        // whenever a real key is in flight (see `ChannelAction.refused`).
+        dispatch({ type: 'refused', reason: refused.reason === 'too-long' ? 'too_long' : 'mixed_chunk' })
       }
       return
     }

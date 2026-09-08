@@ -108,3 +108,43 @@ describe('honest delivery (A6) — a key is never accounted delivered until its 
     expect(s.phase).toBe('closed')
   })
 })
+
+/**
+ * A chunk THIS CLIENT refused never reached the wire, so it has no seq and no ack coming.
+ *
+ * Reporting it as a `send` + `ack` pair under a synthetic id was the first attempt and it poisons
+ * the FIFO: `send` appends to the TAIL while `ack` only ever answers `pending[0]`, so with any real
+ * key in flight — the common case, an ack being a round trip and typing not — the synthetic ack
+ * mismatches, `pending` is deliberately left intact, and that id sticks at the head forever. Every
+ * later server ack then mismatches too, `pending` grows without bound, and the status line latches
+ * on "out of order" while every keystroke is in fact landing.
+ */
+describe('a client-side refusal never enters the in-flight accounting', () => {
+  it('says what happened without touching pending, mid-flight', () => {
+    const s = run(open,
+      { type: 'send', id: 1 },                    // a real key, still unacked
+      { type: 'refused', reason: 'mixed_chunk' }, // the user pastes something refused here
+    )
+    expect(pendingCount(s)).toBe(1)
+    expect(s.pending).toEqual([1])
+    expect(s.undelivered).toBe(true)
+    expect(s.error).toBe('mixed_chunk')
+  })
+
+  it('leaves the FIFO able to drain — the defect was that it could not', () => {
+    const s = run(open,
+      { type: 'send', id: 1 },
+      { type: 'refused', reason: 'too_long' },
+      { type: 'ack', id: 1, ok: true },           // the real key's ack still matches pending[0]
+      { type: 'send', id: 2 },
+      { type: 'ack', id: 2, ok: true },
+    )
+    expect(s.pending).toEqual([])
+    expect(pendingCount(s)).toBe(0)
+  })
+
+  it('is ignored when the channel cannot send at all', () => {
+    const s = channelReducer(INITIAL_CHANNEL, { type: 'refused', reason: 'mixed_chunk' })
+    expect(s).toEqual(INITIAL_CHANNEL)
+  })
+})

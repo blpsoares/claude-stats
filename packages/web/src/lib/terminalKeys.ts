@@ -37,7 +37,7 @@ export type NamedKey =
   | 'C-a' | 'C-e' | 'C-u' | 'C-w' | 'C-k' // line editing — "edits the line" passes
 
 /** Why an input chunk was refused. `empty` is a no-op; `unsupported-sequence` is "not in the allowlist". */
-export type BlockReason = 'empty' | 'unsupported-sequence'
+export type BlockReason = 'empty' | 'unsupported-sequence' | 'too-long'
 
 /**
  * The classification of one `onData` chunk.
@@ -91,8 +91,15 @@ function isAllPrintable(data: string): boolean {
   return true
 }
 
-/** The longest named sequence, so a chunk is matched longest-first (`\x1b[A` before `\x1b`). */
-const NAMED_MAX = Object.keys(NAMED).reduce((m, k) => Math.max(m, k.length), 1)
+/**
+ * The server refuses a `text` message longer than this (`MAX_INPUT_TEXT` in input-protocol.ts).
+ * Mirrored here for the same reason the allowlist is: so the client does not ASK for what will be
+ * refused. It is a CAP, not a splitter — see `splitInput`.
+ */
+export const MAX_TEXT_PER_MESSAGE = 8192
+
+/** A trailing line ending, and nothing after it. */
+const TRAILING_NEWLINE = /^([\s\S]*?)(?:\r\n|\r|\n)$/
 
 /**
  * Split one raw `onData` chunk into the ORDERED intents it contains — PURE.
@@ -116,35 +123,39 @@ const NAMED_MAX = Object.keys(NAMED).reduce((m, k) => Math.max(m, k.length), 1)
  */
 export function splitInput(data: string): KeyIntent[] {
   if (data.length === 0) return [{ kind: 'blocked', reason: 'empty' }]
-  const out: KeyIntent[] = []
-  let run = ''
-  const flush = () => { if (run) { out.push({ kind: 'text', text: run }); run = '' } }
 
-  let i = 0
-  while (i < data.length) {
-    let matched = false
-    for (let len = Math.min(NAMED_MAX, data.length - i); len >= 1; len--) {
-      const named = NAMED[data.slice(i, i + len)]
-      if (named) {
-        flush()
-        out.push({ kind: 'key', key: named })
-        i += len
-        matched = true
-        break
-      }
-    }
-    if (matched) continue
-
-    const cp = data.codePointAt(i) ?? 0
-    // Not a named sequence and not printable: the chunk carries something this channel does not
-    // recognize, so none of it goes.
-    if (cp < 0x20 || cp === 0x7f) return [{ kind: 'blocked', reason: 'unsupported-sequence' }]
-    const ch = String.fromCodePoint(cp)
-    run += ch
-    i += ch.length
+  // One recognized thing, or wholly printable text — the two ordinary single-piece chunks.
+  const named = NAMED[data]
+  if (named) return [{ kind: 'key', key: named }]
+  if (isAllPrintable(data)) {
+    return data.length > MAX_TEXT_PER_MESSAGE
+      ? [{ kind: 'blocked', reason: 'too-long' }]
+      : [{ kind: 'text', text: data }]
   }
-  flush()
-  return out
+
+  // THE ONE MIXED SHAPE THAT IS ORDINARY: a line and the return that ends it. Everything else that
+  // mixes stays refused, and the first version of this fix was wrong to decompose generally:
+  //
+  //  - A MULTI-LINE paste became one `text` + one `Enter` PER LINE. xterm normalizes pasted
+  //    newlines to `\r`, so pasting a 30-line snippet into an assistant's prompt fired thirty
+  //    separate turns, each carrying a fragment. That is worse than the refusal it replaced.
+  //  - A stray CONTROL BYTE in copied terminal output was executed instead of refused: `"foo\x04"`
+  //    typed the text and then sent EOF, and `\x03` interrupted the running turn. A person pressing
+  //    Ctrl-C never produces a mixed chunk, so a mixed one is never their intent.
+  //
+  // So the interior must be wholly printable, and only ONE trailing newline is admitted.
+  const m = TRAILING_NEWLINE.exec(data)
+  const head = m?.[1]
+  if (head && isAllPrintable(head)) {
+    // The Enter would otherwise ride along behind a `text` the SERVER rejects for length, submitting
+    // the prompt with whatever it already held and none of what was pasted. Refuse both together —
+    // the module's own rule, applied to the piece that can fail remotely.
+    return head.length > MAX_TEXT_PER_MESSAGE
+      ? [{ kind: 'blocked', reason: 'too-long' }]
+      : [{ kind: 'text', text: head }, { kind: 'key', key: 'Enter' }]
+  }
+
+  return [{ kind: 'blocked', reason: 'unsupported-sequence' }]
 }
 
 /**
@@ -170,6 +181,14 @@ const REASON_TEXT: Record<string, { en: string; pt: string }> = {
   empty_text: { en: 'nothing to send', pt: 'nada para enviar' },
   text_too_long: { en: 'that input was too long to send at once', pt: 'essa entrada é longa demais para enviar de uma vez' },
   bad_key: { en: 'that key is not allowed', pt: 'essa tecla não é permitida' },
+  mixed_chunk: {
+    en: 'that input mixes text with a control key — send it from the line composer',
+    pt: 'essa entrada mistura texto com uma tecla de controle — use o compositor de linha',
+  },
+  too_long: {
+    en: 'that input was too long to send at once — send it from the line composer',
+    pt: 'essa entrada é longa demais para enviar de uma vez — use o compositor de linha',
+  },
   send_failed: { en: 'not delivered — the key did not reach the session', pt: 'não entregue — a tecla não chegou à sessão' },
   error: { en: 'the write channel hit an error', pt: 'o canal de escrita encontrou um erro' },
   // Client-side close reasons (a socket close carries no server code): before-open vs after-open.

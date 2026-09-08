@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { classifyInput, splitInput, inputReasonText, type KeyIntent } from './terminalKeys'
+import { MAX_TEXT_PER_MESSAGE, classifyInput, splitInput, inputReasonText, type KeyIntent } from './terminalKeys'
 
 /** Small helper: assert a chunk classifies to an exact intent. */
 function intent(data: string): KeyIntent {
@@ -116,17 +116,21 @@ describe('inputReasonText — the server\'s stable reason codes made human (both
 })
 
 /**
- * A chunk is not always one keystroke — the defect these pin.
+ * A chunk is not always one keystroke — and it is not always safe to take apart.
  *
  * Reported as messages typed into the live terminal that never sent. The whole server chain was
  * verified working (tmux `send-keys -l` then `send-keys Enter` submits; the WS channel acked 21/21
- * and submitted), so the loss was above it: `onData` hands over ONE chunk that carries the text AND
- * the return — which xterm does on a paste, under coalescing, and on a mobile keyboard delivering a
+ * and submitted), so the loss was above it: `onData` hands over ONE chunk carrying the text AND the
+ * return — which xterm does on a paste, under coalescing, and on a mobile keyboard delivering a
  * composed word with its return — and that chunk was refused whole and dropped by a bare `return`.
- * No pending key, no failed ack, nothing on screen: a line you can see and cannot send.
+ *
+ * The first fix decomposed a mixed chunk GENERALLY, and code review caught what that let through:
+ * a multi-line paste became one submit per line, and a stray control byte in copied terminal output
+ * was executed rather than refused. So exactly ONE mixed shape is admitted — printable text and the
+ * single newline that ends it — and every other mixture stays refused, as it was.
  */
-describe('splitInput — a chunk carrying text and a key', () => {
-  it('decomposes text + Enter in order, instead of refusing the whole chunk', () => {
+describe('splitInput — text and the return that ends it', () => {
+  it('decomposes a line and its Enter, instead of refusing the whole chunk', () => {
     expect(splitInput('abc\r')).toEqual([
       { kind: 'text', text: 'abc' },
       { kind: 'key', key: 'Enter' },
@@ -137,51 +141,52 @@ describe('splitInput — a chunk carrying text and a key', () => {
     ])
   })
 
-  it('collapses CRLF into ONE Enter — two would be a double submit', () => {
+  it('collapses a trailing CRLF into ONE Enter — two would be a double submit', () => {
     expect(splitInput('ok\r\n')).toEqual([
       { kind: 'text', text: 'ok' },
       { kind: 'key', key: 'Enter' },
     ])
-    // And a multi-line paste is one Enter per line, never two.
-    expect(splitInput('a\r\nb\r\n').filter(p => p.kind === 'key')).toHaveLength(2)
   })
 
-  it('keeps a lone key and lone text as single pieces', () => {
-    expect(splitInput('\r')).toEqual([{ kind: 'key', key: 'Enter' }])
-    expect(splitInput('abc')).toEqual([{ kind: 'text', text: 'abc' }])
+  it('REFUSES a multi-line paste — one submit per line is worse than the old refusal', () => {
+    // xterm normalizes pasted newlines to `\r`, so this is what a 2-line paste looks like. Split,
+    // it would fire a turn per line, each carrying a fragment.
+    expect(splitInput('a\r\nb\r\n')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+    expect(splitInput('a\rb\r')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
   })
 
-  it('matches the LONGEST named sequence first, so an escape is not eaten as text', () => {
-    expect(splitInput('\x1b[Aabc')).toEqual([
-      { kind: 'key', key: 'Up' },
-      { kind: 'text', text: 'abc' },
+  it('REFUSES text carrying a process-control byte — a person never types one mixed', () => {
+    // Copied terminal output with a stray EOF would otherwise type the text and then end the
+    // session; a stray 0x03 would interrupt the running turn.
+    expect(splitInput('foo\x04')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+    expect(splitInput('a\x03b')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+    expect(splitInput('\x1b[Aabc')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
+  })
+
+  it('refuses text the SERVER would reject for length, rather than letting the Enter ride along', () => {
+    // The Enter is accepted even when the text before it is not, which submits the prompt with
+    // whatever it already held and none of what was pasted.
+    const long = 'x'.repeat(MAX_TEXT_PER_MESSAGE + 1)
+    expect(splitInput(long)).toEqual([{ kind: 'blocked', reason: 'too-long' }])
+    expect(splitInput(`${long}\r`)).toEqual([{ kind: 'blocked', reason: 'too-long' }])
+    // Exactly at the cap still goes.
+    expect(splitInput('x'.repeat(MAX_TEXT_PER_MESSAGE))).toEqual([
+      { kind: 'text', text: 'x'.repeat(MAX_TEXT_PER_MESSAGE) },
     ])
   })
 
-  it('keeps non-ASCII text whole', () => {
+  it('keeps a lone key, lone text and non-ASCII whole', () => {
+    expect(splitInput('\r')).toEqual([{ kind: 'key', key: 'Enter' }])
+    expect(splitInput('\r\n')).toEqual([{ kind: 'key', key: 'Enter' }])
+    expect(splitInput('abc')).toEqual([{ kind: 'text', text: 'abc' }])
     expect(splitInput('café\r')).toEqual([
       { kind: 'text', text: 'café' },
       { kind: 'key', key: 'Enter' },
     ])
   })
 
-  it('refuses the WHOLE chunk when it carries something unrecognized', () => {
-    // Sending the readable half of a line the user did not mean to split is worse than sending none.
-    expect(splitInput('a\x1fb')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
-  })
-
   it('reports an empty chunk as the no-op it is', () => {
     expect(splitInput('')).toEqual([{ kind: 'blocked', reason: 'empty' }])
-  })
-
-  it('the allowlist is unchanged — every piece is still matched or printable', () => {
-    // C-c is explicitly allowed, so it survives a split; an unlisted control byte does not.
-    expect(splitInput('a\x03b')).toEqual([
-      { kind: 'text', text: 'a' },
-      { kind: 'key', key: 'C-c' },
-      { kind: 'text', text: 'b' },
-    ])
-    expect(splitInput('a\x1cb')).toEqual([{ kind: 'blocked', reason: 'unsupported-sequence' }])
   })
 })
 
