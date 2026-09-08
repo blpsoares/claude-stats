@@ -25,8 +25,13 @@ export const ASIDE_MAX = 520
  *
  * One figure for both. Each having its own meant the aside resized every time the workspace switch
  * was pressed, which reads as the sidebar breaking rather than as the content changing.
+ *
+ * It went 268 -> 288 when the search field took the top row and the two verbs became icons beside
+ * it: the row now spends ~80px on those, and the 20 buys the search back the width it lost. Only a
+ * machine that has never dragged the handle sees it — a stored width is the user's answer and is
+ * left exactly as it was.
  */
-export const ASIDE_DEFAULT = 268
+export const ASIDE_DEFAULT = 288
 
 /** The stored width, clamped, with anything unreadable falling back to the default. */
 export function resolveAsideWidth(stored: string | null, viewport?: number): number {

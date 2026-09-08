@@ -347,28 +347,96 @@ export function SessionsAside({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, gap: 10, paddingTop: 4 }}>
-      {!hideNew && (
-      <button
-        onClick={() => setCreating(true)}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-          margin: '0 2px', padding: '9px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
-          border: '1px dashed var(--border)', background: 'transparent',
-          color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600,
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
-          e.currentTarget.style.color = 'var(--anthropic-orange)'
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.borderColor = 'var(--border)'
-          e.currentTarget.style.color = 'var(--text-secondary)'
-        }}
-      >
-        <Plus size={14} />
-        {pt ? 'Nova sessão' : 'New session'}
-      </button>
-      )}
+      {/*
+        * ONE ROW: the search, and the two standing verbs as icons beside it.
+        *
+        * Search is what the column is used for on every visit; starting a session and writing to
+        * several are things somebody does occasionally. Two full-width dashed buttons stacked above
+        * the field spent three rows of a 268px column on that ranking inverted — and those rows come
+        * straight out of the list, which is the thing being searched.
+        *
+        * An icon may not carry the meaning alone, so both keep `title` AND `aria-label` with the
+        * words they used to print. `+` is the one solid accent control in the aside because it is
+        * the only one that CREATES something; "send to several" stays quiet beside it. "Reopen what
+        * fell" is deliberately NOT here and keeps its full-width button below: it names a COUNT, and
+        * a count is not something an icon can say.
+        */}
+      <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '0 2px', minHeight: tap }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          <Search
+            size={13}
+            style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }}
+          />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={pt ? 'Buscar sessão…' : 'Search sessions…'}
+            style={{
+              flex: 1, minWidth: 0, boxSizing: 'border-box',
+              padding: '9px 26px 9px 30px', borderRadius: 9,
+              border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)', fontFamily: 'inherit',
+              // 16px on mobile or iOS Safari zooms the viewport; the global guard in index.css
+              // handles it, so this stays the desktop figure and is not overridden inline.
+              fontSize: 12.5, outline: 'none',
+            }}
+          />
+          {query !== '' && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label={pt ? 'Limpar busca' : 'Clear search'}
+              style={{
+                position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                display: 'flex', border: 'none', background: 'transparent',
+                color: 'var(--text-tertiary)', cursor: 'pointer', padding: 2,
+              }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        {!hideNew && (
+          <button
+            onClick={() => setCreating(true)}
+            aria-label={pt ? 'Nova sessão' : 'New session'}
+            title={pt ? 'Nova sessão' : 'New session'}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              width: tap ?? 34, padding: 0, borderRadius: 9, cursor: 'pointer',
+              border: '1px solid var(--anthropic-orange)', background: 'var(--anthropic-orange)',
+              color: '#141414', fontFamily: 'inherit',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.1)' }}
+            onMouseLeave={e => { e.currentTarget.style.filter = 'none' }}
+          >
+            <Plus size={17} />
+          </button>
+        )}
+        {showSend && (
+          <button
+            onClick={() => setPicking('send')}
+            aria-label={pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
+            title={pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              width: tap ?? 34, padding: 0, borderRadius: 9, cursor: 'pointer',
+              border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+              color: 'var(--text-tertiary)', fontFamily: 'inherit',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
+              e.currentTarget.style.color = 'var(--anthropic-orange)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = 'var(--border-subtle)'
+              e.currentTarget.style.color = 'var(--text-tertiary)'
+            }}
+          >
+            <Send size={14} />
+          </button>
+        )}
+      </div>
 
       {/*
         * THE GROUP VERBS, under "New session" because that is where starting work lives.
@@ -392,29 +460,6 @@ export function SessionsAside({
           {pt
             ? (groupRows.fellRows.length === 1 ? 'Reabrir 1 sessão que caiu' : `Reabrir ${groupRows.fellRows.length} sessões que caíram`)
             : (groupRows.fellRows.length === 1 ? 'Reopen 1 session that fell' : `Reopen ${groupRows.fellRows.length} sessions that fell`)}
-        </button>
-      )}
-
-      {showSend && (
-        <button
-          onClick={() => setPicking('send')}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-            margin: '0 2px', padding: '7px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
-            border: '1px dashed var(--border)', background: 'transparent',
-            color: 'var(--text-tertiary)', fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
-            e.currentTarget.style.color = 'var(--anthropic-orange)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-tertiary)'
-          }}
-        >
-          <Send size={13} />
-          {pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
         </button>
       )}
 
@@ -459,41 +504,6 @@ export function SessionsAside({
           }}
         />
       )}
-
-      <div style={{ position: 'relative', padding: '0 2px' }}>
-        <Search
-          size={13}
-          style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }}
-        />
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder={pt ? 'Buscar sessão…' : 'Search sessions…'}
-          style={{
-            width: '100%', boxSizing: 'border-box',
-            padding: '9px 26px 9px 30px', borderRadius: 9,
-            border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-            color: 'var(--text-primary)', fontFamily: 'inherit',
-            // 16px on mobile or iOS Safari zooms the viewport; the global guard in index.css
-            // handles it, so this stays the desktop figure and is not overridden inline.
-            fontSize: 12.5, outline: 'none',
-          }}
-        />
-        {query !== '' && (
-          <button
-            onClick={() => setQuery('')}
-            aria-label={pt ? 'Limpar busca' : 'Clear search'}
-            style={{
-              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
-              display: 'flex', border: 'none', background: 'transparent',
-              color: 'var(--text-tertiary)', cursor: 'pointer', padding: 2,
-            }}
-          >
-            <X size={12} />
-          </button>
-        )}
-      </div>
 
       {notice && (
         <p role="status" style={{
