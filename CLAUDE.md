@@ -1746,6 +1746,26 @@ packages/tui/scripts/preview.tsx   dev tool: render ONE control-center frame to 
   **`C`** the last conversations flat and by recency, **`h`** the key reference. They were handed
   out in the order they were written — `a` started a session, `n` renamed one, `t` wrote a note — so
   the only way to learn one was to read the list.
+- **PINNING a row and PICKING one to kill are two gestures, and they share no state.** `space` in
+  normal mode PINS — the word on screen is `pinned` / `fixada` everywhere a person reads it (the
+  band, its "not" side, the grouping, the key reference), while the stored field keeps its
+  `marked` name so no pin already on disk is dropped. Pinning persists, lifts the row into its own
+  band, and is a KEEPING gesture. `x` therefore acts on the ROW UNDER THE CURSOR and nothing else:
+  it used to offer to stop "the N marked sessions", so the gesture for keeping four rows armed a
+  mass deletion and the confirmation used the harmless word for it. Killing several is its own
+  mode — `ctrl+x` in and out, `space` selects inside it, `x` stops the selected ones and LEAVES the
+  mode by itself, so nobody is left armed without knowing. Rules that must hold:
+  `stopTargets` (`sessions.ts`, pure) is not given the pinned set at all, so the normal-mode answer
+  cannot become a plural however the caller is wired; the selection is EPHEMERAL and
+  `storedFilters` has no field for it, because a set of sessions armed for killing must not be
+  findable still armed tomorrow morning; a selected row is `COLORS.danger` with a `✕`, and on a row
+  that is BOTH pinned and selected the destructive state wins — the harmless one may never hide it;
+  and the mode is announced in the pane TITLE as well as the banner, because the banner is dropped
+  with the summary row on a short terminal and a mode you can be in without the screen saying so is
+  the defect this replaces. `ctrl+x` is answered BEFORE the menu gets the keyboard: the menu's own
+  `x` deletes a task. Leaving is `ctrl+x` and deliberately NOT `esc` — `esc` here already drops the
+  search, then the project, then the task, so one key would have to pick between un-narrowing the
+  list and disarming a selection at the exact moment that choice matters.
 - **The header's central pill is `● machine · account · Nms`, and only when there IS a central.**
   The dot is the one coloured thing in it and its STATE is the host's decision
   (`ControlStatus.linkState`, from `/api/team/status`'s `errKind` + `lastSuccessAt`): `unauthorized`

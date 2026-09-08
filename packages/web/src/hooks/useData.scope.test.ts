@@ -40,12 +40,18 @@ import type { TagDef } from '../lib/tagMatch'
 mock.module('react', () => ({
   ...React,
   default: (React as { default?: unknown }).default ?? React,
+  // ONLY `useMemo`, and that is the whole list on purpose. `useDerivedStats` — the only thing this
+  // file calls — uses no other hook, and every extra override LEAKS: `mock.module` replaces the
+  // module for the whole process and never unwinds, so whatever runs after this file gets it.
+  //
+  // Three leaks have been found this way, each from an override nothing here needed. A hooks-only
+  // stub broke `lucide-react`'s `createContext`. A `useState` ignoring its lazy initializer gave
+  // `useTerminalSize` a function as its size. And a `useState` whose SETTER does nothing, plus a
+  // no-op `useEffect`, left every Ink screen on its first frame forever — the TUI's session tests
+  // timed out at `sessions() called 0 times` in a full run while passing alone.
+  //
+  // So the rule is not "make the stub faithful", it is "override nothing this file does not call".
   useMemo: <T>(fn: () => T) => fn(),
-  useState: <T>(init: T | (() => T)) =>
-    [typeof init === 'function' ? (init as () => T)() : init, () => {}],
-  useEffect: () => {},
-  useCallback: <T>(fn: T) => fn,
-  useRef: <T>(init: T) => ({ current: init }),
 }))
 
 const { useDerivedStats } = await import('./useData')

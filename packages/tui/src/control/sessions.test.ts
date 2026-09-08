@@ -7,6 +7,7 @@ import {
   projectPickRows, groupProjects, asideSections, asideFold, scrollBar, THUMB, TRACK, sessionNamed,
   sessionHandle, worktreeName, sessionRunning, asideRowKey, resolveAsideCursor,
   sessionAge, sessionKeyHelp, keyHelpColumn, closeCellWidth, canClose,
+  BULK_STOP_OFF, bulkStopToggle, bulkStopPick, stopTargets,
   DEFAULT_ORDER, usageOf, planSubmit,
   cardGrid, cardPages, pageOfCard, CARD_PAGE_MAX, CARD_MIN_WIDTH, CARD_GAP, CARD_LINES,
   cardBadges, cardLines, fitCardLines, cardStateCells, cardLabelWidth, CARD_VALUE_MIN,
@@ -22,6 +23,7 @@ import {
 import type { ControlSession, SessionState } from './types'
 import { PANE_FRAME_Y } from './chrome.ts'
 import { controlStrings } from './i18n'
+import { storedFilters } from './session-dimensions'
 
 /** The layout block every aside fixture carries — it is a required option, like the groupings. */
 const LAYOUT = {
@@ -1611,7 +1613,7 @@ describe('sessionKeyHelp', () => {
   const words = Object.fromEntries(
     ['move', 'open', 'attach', 'menu', 'section', 'newSession', 'search', 'clear', 'kill',
       'rename', 'note', 'task', 'openTask', 'finishTask', 'recent', 'cascade',
-      'mark', 'onlyActive', 'closed', 'exited', 'group', 'layout',
+      'mark', 'bulkStop', 'onlyActive', 'closed', 'exited', 'group', 'layout',
       'detail', 'menuFold', 'reset', 'tabs', 'help', 'quit',
       'approve', 'prompt', 'reopenFell'].map(k => [k, `does ${k}`]),
   ) as Parameters<typeof sessionKeyHelp>[0]
@@ -1635,6 +1637,70 @@ describe('sessionKeyHelp', () => {
     const rows = sessionKeyHelp(words)
     expect(keyHelpColumn(rows)).toBe(Math.max(...rows.map(r => r.keys.length)))
     expect(keyHelpColumn([])).toBe(0)
+  })
+})
+
+describe('the bulk-stop selection', () => {
+  // The defect this journey exists for: `space` PINNED a row — a keeping gesture that persists to
+  // disk and lifts the row into its own band — and `x` then offered to stop everything pinned. So
+  // the gesture for keeping armed a mass deletion. These tests hold the two apart.
+
+  it('never lets `x` outside the mode answer with anything but the row under the cursor', () => {
+    // The pinned set is not even a PARAMETER here: whatever the caller has pinned, and whatever is
+    // sitting in `picks` from a mode that is off, the normal-mode answer is the cursor row alone.
+    const armed = { on: false, picks: new Set(['a', 'b', 'c', 'd']) }
+    expect(stopTargets({ bulk: armed, cursor: 'c', stoppable: ['a', 'b', 'c', 'd'] }))
+      .toEqual({ kind: 'one', ids: ['c'] })
+    // And on a row that cannot be stopped it answers nothing rather than falling back to a set.
+    expect(stopTargets({ bulk: armed, cursor: 'z', stoppable: ['a', 'b', 'c', 'd'] })).toBeNull()
+    expect(stopTargets({ bulk: armed, stoppable: ['a', 'b', 'c', 'd'] })).toBeNull()
+  })
+
+  it('answers with the PICKED rows inside the mode, and never with the cursor row', () => {
+    const bulk = { on: true, picks: new Set(['b', 'd']) }
+    // The cursor is on `a`, which is not picked — and `a` is not in the answer.
+    expect(stopTargets({ bulk, cursor: 'a', stoppable: ['a', 'b', 'c', 'd'] }))
+      .toEqual({ kind: 'many', ids: ['b', 'd'] })
+    // Nothing picked is nothing to stop. The cursor row is NOT a fallback here, or the mode would
+    // kill a row the person never selected.
+    expect(stopTargets({ bulk: { on: true, picks: new Set() }, cursor: 'a', stoppable: ['a'] }))
+      .toBeNull()
+  })
+
+  it('drops a pick whose row can no longer be stopped, rather than calling for it anyway', () => {
+    // The fleet polls every five seconds. A session picked and then closed under the cursor is a
+    // row that is gone, not a kill that fails.
+    const bulk = { on: true, picks: new Set(['a', 'gone']) }
+    expect(stopTargets({ bulk, stoppable: ['a', 'b'] })).toEqual({ kind: 'many', ids: ['a'] })
+  })
+
+  it('leaves the mode EMPTY, so a selection cannot survive going out and back in', () => {
+    const picked = bulkStopPick(bulkStopPick(bulkStopToggle(BULK_STOP_OFF), 'a'), 'b')
+    expect(picked).toEqual({ on: true, picks: new Set(['a', 'b']) })
+    const left = bulkStopToggle(picked)
+    expect(left.on).toBe(false)
+    expect(left.picks.size).toBe(0)
+    // Back in: nothing waiting. This is the whole of "the stop selection is ephemeral" at the level
+    // the reducer can state it — `storedFilters` below states the other half.
+    expect(bulkStopToggle(left)).toEqual({ on: true, picks: new Set() })
+  })
+
+  it('picks nothing while the mode is off, so `space` outside it can only mean pin', () => {
+    expect(bulkStopPick(BULK_STOP_OFF, 'a')).toBe(BULK_STOP_OFF)
+  })
+
+  it('has no field on disk to be written to', () => {
+    // `storedFilters` is the ONE seam between this screen and `preferences.json`. Pinning goes
+    // through it; the stop selection has nowhere to go. A field added here later would show up as
+    // this failing, which is the point.
+    const written = storedFilters({ filters: {}, showNamed: false, marked: ['a'] })
+    expect(Object.keys(written).sort()).toEqual([
+      'filters', 'filtersVersion', 'marked', 'onlyActive', 'showClosed', 'showExited', 'showNamed',
+      'states',
+    ])
+    // Every field it writes is the ARRANGEMENT or the pinned set. There is no third thing, and in
+    // particular nothing a bulk-stop pick could ride out on.
+    expect(written.marked).toEqual(['a'])
   })
 })
 
