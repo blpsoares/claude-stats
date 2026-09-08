@@ -1,5 +1,5 @@
 import type { SessionMeta, TurnEvent } from '@agentistics/core'
-import { activeMinutesOf } from '@agentistics/core'
+import { activeMinutesOf, charCount } from '@agentistics/core'
 import { canonicalTool, countGitCommands } from '../harness-activity'
 
 /** Pure: parse a Codex rollout JSONL string into a normalized SessionMeta.
@@ -31,6 +31,8 @@ export function parseCodexRollout(content: string, fallbackId: string): SessionM
    */
   let contextTokens = 0
   let contextWindow = 0
+  // Summed in the SAME branch that increments the count beside it — see `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMessages = 0
   let assistantMessages = 0
   let usesWebSearch = false
@@ -80,8 +82,9 @@ export function parseCodexRollout(content: string, fallbackId: string): SessionM
       if (typeof win === 'number' && win > 0) contextWindow = win
     } else if (type === 'user_message') {
       userMessages++
-      if (turnEvent) turnEvent.userPrompt = true
       const text = typeof data.message === 'string' ? data.message : ''
+      { const n = charCount(text); if (n > 0) { userChars += n; userCharMsgs++ } }
+      if (turnEvent) turnEvent.userPrompt = true
       if (!firstPrompt && text) {
         firstPrompt = text.slice(0, 200)
       }
@@ -96,6 +99,8 @@ export function parseCodexRollout(content: string, fallbackId: string): SessionM
       if (turnEvent && typeof data.duration_ms === 'number') turnEvent.measuredMs = data.duration_ms
     } else if (type === 'agent_message') {
       assistantMessages++
+      { const n = charCount(typeof data.message === 'string' ? data.message : '')
+        if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
       if (lineTs) {
         messageHours.push(new Date(lineTs).getHours())
       }
@@ -147,7 +152,11 @@ export function parseCodexRollout(content: string, fallbackId: string): SessionM
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMessages,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantMessages,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
     tool_output_tokens: {},
     agent_file_reads: {},

@@ -172,7 +172,22 @@ export interface SessionMeta {
    *  already deleted, or a harness with `activeTime: false`); the UI shows "—", never a guess. */
   active_minutes?: number
   user_message_count: number
+  /**
+   * Characters the PERSON wrote, summed — and the count of messages they came from.
+   *
+   * The SUM and not an average (averaging averages weighs a 1-prompt session like an 80-prompt
+   * one), and its own denominator rather than `user_message_count`: see `promptChars.ts`, where the
+   * measurement that forced that is written down. Both optional, because every record written
+   * before this existed lacks them and an absent value is N/A rather than a session of empty
+   * prompts.
+   */
+  user_chars?: number
+  /** How many messages those characters came from. The denominator, written in the same statement. */
+  user_char_messages?: number
   assistant_message_count: number
+  /** The same, for what the ASSISTANT wrote. */
+  assistant_chars?: number
+  assistant_char_messages?: number
   tool_counts: Record<string, number>
   tool_output_tokens: Record<string, number>
   agent_file_reads: Record<string, number>

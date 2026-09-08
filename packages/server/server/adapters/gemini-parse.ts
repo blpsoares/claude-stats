@@ -1,6 +1,6 @@
 import { canonicalTool, countGitCommands } from '../harness-activity'
 import type { SessionMeta, TurnEvent } from '@agentistics/core'
-import { activeMinutesOf } from '@agentistics/core'
+import { activeMinutesOf, charCount } from '@agentistics/core'
 
 /** Pure: parse a Gemini CLI chat file (rich JSON format or JSONL streaming format) into a
  *  normalized SessionMeta. Returns null when the content has no usable data.
@@ -65,6 +65,8 @@ function parseRichJson(content: string, fallbackId: string, projectPath: string)
   const startTime = (parsed.startTime as string | undefined) ?? ''
   const lastUpdated = (parsed.lastUpdated as string | undefined) ?? ''
 
+  // Summed in the SAME branch that increments the count beside it — see `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMessages = 0
   let assistantMessages = 0
   let inputTokens = 0
@@ -134,6 +136,7 @@ function parseRichJson(content: string, fallbackId: string, projectPath: string)
 
         hasGenuineContent = true
         assistantMessages++
+        { const n = charCount(extractMessageText(msg)); if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
 
         if (timestamp) {
           const h = new Date(timestamp).getHours()
@@ -144,6 +147,7 @@ function parseRichJson(content: string, fallbackId: string, projectPath: string)
         if (isGenuineUserMessage(text)) {
           hasGenuineContent = true
           userMessages++
+          { const n = charCount(text); if (n > 0) { userChars += n; userCharMsgs++ } }
           if (turnEvent) turnEvent.userPrompt = true
 
           if (!firstPrompt && text) {
@@ -177,7 +181,11 @@ function parseRichJson(content: string, fallbackId: string, projectPath: string)
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMessages,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantMessages,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
     tool_output_tokens: {},
     agent_file_reads: {},
@@ -304,6 +312,8 @@ interface JsonlParsedData {
 function buildJsonlSessionMeta(data: JsonlParsedData): SessionMeta | null {
   const { projectPath, startTime, endTime, messages } = data
 
+  // Summed in the SAME branch that increments the count beside it — see `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMessages = 0
   let assistantMessages = 0
   const messageHours: number[] = []
@@ -332,11 +342,13 @@ function buildJsonlSessionMeta(data: JsonlParsedData): SessionMeta | null {
     if (isAssistant) {
       hasGenuineContent = true
       assistantMessages++
+      { const n = charCount(msg.text ?? ''); if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
       counted = true
     } else if (isUser && isGenuineUserMessage(msg.text ?? '')) {
       hasGenuineContent = true
       if (!firstPrompt) firstPrompt = (msg.text ?? '').trim()
       userMessages++
+      { const n = charCount(msg.text ?? ''); if (n > 0) { userChars += n; userCharMsgs++ } }
       if (turnEvent) turnEvent.userPrompt = true
       if (msg.timestamp) userMessageTimestamps.push(msg.timestamp)
       counted = true
@@ -362,7 +374,11 @@ function buildJsonlSessionMeta(data: JsonlParsedData): SessionMeta | null {
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMessages,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantMessages,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: {},
     tool_output_tokens: {},
     agent_file_reads: {},
