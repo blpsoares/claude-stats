@@ -18,7 +18,7 @@ import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { formatUptime, summarizeFleet } from '../../lib/fleetSummary'
 import { ActivityHeatmap } from '../ActivityHeatmap'
-import { linePoints, trendChart, type TrendSeries } from '../../lib/trendLines'
+import { formatDay, linePoints, trendChart, trendTicks, type TrendSeries } from '../../lib/trendLines'
 
 export interface HeatmapDay { date: string; value: number; sessions: number; tools: number }
 
@@ -410,8 +410,9 @@ function ActivityTrend({ chart, lang }: {
 
   const W = 300
   const H = 92
-  const first = chart.days[0]!
-  const last = chart.days[chart.days.length - 1]!
+  const first = formatDay(chart.days[0]!, lang)
+  const last = formatDay(chart.days[chart.days.length - 1]!, lang)
+  const ticks = trendTicks(chart.days)
   return (
     <div>
       <h3 style={{
@@ -427,6 +428,23 @@ function ActivityTrend({ chart, lang }: {
       </p>
       {/* `preserveAspectRatio="none"` so the strip stretches to whatever column it lands in: the
           shape is what is read here, and the day spacing carries no meaning a reader measures. */}
+      {/* THE SCALE, WHERE THERE WAS A CAPTION.
+          This function's own note calls a line with no scale a decoration, and answered that by
+          PRINTING the peak and the span above it — which is a caption, and still not a scale. Asked
+          for: put the dates on an axis.
+          The Y end is the peak and the floor is zero, said in two labels rather than a grid: three
+          gridlines across a 92px strip is more chrome than the shape it would be explaining. */}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'stretch' }}>
+        <div style={{
+          display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+          flexShrink: 0, height: H, fontSize: 9.5, lineHeight: 1,
+          color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
+          textAlign: 'right', minWidth: 12,
+        }}>
+          <span>{chart.peak}</span>
+          <span>0</span>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
       <svg
         viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
         aria-label={pt ? 'Sessões por dia, uma linha por assistente' : 'Sessions per day, one line per assistant'}
@@ -448,6 +466,26 @@ function ActivityTrend({ chart, lang }: {
           />
         ))}
       </svg>
+      {/* THE DAYS, under the points they belong to. Positioned by their own share of the width and
+          translated by HALF their own box, so a tick sits centred on its day instead of starting
+          there — and the two ends are pulled back inside, or the first and last labels hang off the
+          strip. At most three: more than that overlaps on a few hundred pixels, and an overlapping
+          label is worse than an absent one. Without the year, which repeats on every one of them. */}
+      <div style={{ position: 'relative', height: 12, marginTop: 4 }}>
+        {ticks.map(t => (
+          <span
+            key={t.day}
+            style={{
+              position: 'absolute', left: `${t.at * 100}%`, top: 0,
+              transform: t.at === 0 ? 'none' : t.at === 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+              fontSize: 9.5, lineHeight: 1, whiteSpace: 'nowrap',
+              color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums',
+            }}
+          >{formatDay(t.day, lang, false)}</span>
+        ))}
+      </div>
+        </div>
+      </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 8 }}>
         {chart.series.map(s => <TrendKey key={s.harness} series={s} pt={pt} />)}
       </div>
