@@ -16,10 +16,20 @@ import { profileOf, type Baseline, type SessionMeta } from '@agentistics/core'
 export const BASELINE_TTL_MS = 5 * 60_000
 
 let cached: { at: number; value: Baseline } | null = null
+/**
+ * The scan currently running, shared by every caller that arrives while it is in flight.
+ *
+ * Without it, two callers landing on the same expired TTL each run a full consolidate-store
+ * directory scan — and the caller is `/api/fleet`, which the dashboard, the cockpit and the VS Code
+ * extension all poll every five seconds. A TTL bounds how OFTEN the scan runs; only this bounds how
+ * MANY run at once.
+ */
+let inFlight: Promise<Baseline> | null = null
 
 /** Test seam. Never called in production. */
 export function resetBaselineCache(): void {
   cached = null
+  inFlight = null
 }
 
 export async function cachedBaseline(
@@ -27,14 +37,26 @@ export async function cachedBaseline(
   nowMs: number,
 ): Promise<Baseline> {
   if (cached && nowMs - cached.at < BASELINE_TTL_MS) return cached.value
-  try {
-    const value = profileOf(await load(), nowMs)
-    cached = { at: nowMs, value }
-    return value
-  } catch {
-    // A store that cannot be read costs freshness, never the profile on screen. Same rule the
-    // sessions poller applies to a failed poll: keep the previous answer.
-    if (cached) return cached.value
-    throw new Error('baseline unavailable')
-  }
+  if (inFlight) return inFlight
+  const run = (async () => {
+    try {
+      const value = profileOf(await load(), nowMs)
+      cached = { at: nowMs, value }
+      return value
+    } catch {
+      // A store that cannot be read costs freshness, never the profile on screen. Same rule the
+      // sessions poller applies to a failed poll: keep the previous answer.
+      if (cached) return cached.value
+      throw new Error('baseline unavailable')
+    }
+  })()
+  inFlight = run
+  // Released AFTER the assignment above, never in a `finally` inside the body: a `load()` that
+  // throws synchronously settles the promise before `inFlight = run` runs, and an in-body clear
+  // would then be overwritten by a settled promise that is served forever.
+  void run.then(
+    () => { if (inFlight === run) inFlight = null },
+    () => { if (inFlight === run) inFlight = null },
+  )
+  return run
 }
