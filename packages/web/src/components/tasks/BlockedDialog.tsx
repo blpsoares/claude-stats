@@ -20,6 +20,7 @@ import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, Search, X } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useDismissOverlay } from '../../lib/dismissOverlay'
 import { overlayPadding } from '../../lib/mobileOverlay'
 import { STATUS, button, field, microLabel, pill, surface, type BoardStatus } from './board'
 import type { TaskListRow } from '../../lib/tasks'
@@ -37,6 +38,7 @@ export interface BlockedDialogProps {
 
 export function BlockedDialog(p: BlockedDialogProps) {
   const isMobile = useIsMobile()
+  const dismiss = useDismissOverlay(() => p.onCancel())
   const [reason, setReason] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set(p.already ?? []))
   const [q, setQ] = useState('')
@@ -56,7 +58,9 @@ export function BlockedDialog(p: BlockedDialogProps) {
 
   return createPortal(
     <div
-      onClick={p.onCancel}
+      // See `dismissOverlay.ts`: a bare click handler here closes the dialog when a selection
+      // started inside it is released outside — which loses whatever was being typed.
+      {...dismiss}
       style={{
         position: 'fixed', inset: 0, zIndex: 2000, display: 'flex',
         alignItems: 'center', justifyContent: 'center',
