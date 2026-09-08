@@ -786,6 +786,27 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    /**
+     * WHERE THIS DASHBOARD IS ALREADY REACHABLE OVER HTTPS, if anywhere.
+     *
+     * Notifications, service workers and installability all need a secure origin, and a machine's
+     * dashboard is plain http — so on a phone the settings screen could only name `tailscale serve`
+     * as a rule. It could not say WHERE, because the page cannot learn the machine's name on the
+     * tailnet. This can: `secure-origin.ts` reads a configuration that ALREADY EXISTS and reports
+     * the origin only when it provably serves this very port.
+     *
+     * It configures nothing. Publishing a dashboard to a tailnet is the user's decision, exactly as
+     * `autostart.ts` only ever SUGGESTS the line it would add. Guarded as `localShell` in
+     * `capability-guard.ts` because it spawns a process, and authenticated like every other route.
+     */
+    if (url.pathname === '/api/secure-origin' && req.method === 'GET') {
+      const { readSecureOrigin } = await import('./secure-origin')
+      const origin = await readSecureOrigin(WEB_PORT)
+      return new Response(JSON.stringify({ ...(origin ? { origin } : {}) }), {
+        headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      })
+    }
+
     if (url.pathname === '/api/preferences' && req.method === 'GET') {
       try {
         // Secrets never leave the process: the UI adds a connection by POSTing a token and every
