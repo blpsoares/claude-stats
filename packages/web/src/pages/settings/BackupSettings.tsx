@@ -1362,7 +1362,7 @@ function HistoryPager({ page, pages, total, pageSize, pt, onChange }: {
   const to = Math.min(total, from + pageSize - 1)
   const btnStyle = (enabled: boolean): React.CSSProperties => ({
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: 44, height: 44, borderRadius: 7,
+    width: 32, height: 32, borderRadius: 7,
     border: '1px solid var(--border)', background: 'transparent',
     color: enabled ? 'var(--text-secondary)' : 'var(--text-tertiary)',
     cursor: enabled ? 'pointer' : 'not-allowed', opacity: enabled ? 1 : 0.4,
@@ -1379,14 +1379,18 @@ function HistoryPager({ page, pages, total, pageSize, pt, onChange }: {
         <button
           type="button" aria-label={pt ? 'Página anterior' : 'Previous page'}
           disabled={page === 0} onClick={() => onChange(page - 1)}
-          style={{ ...btnStyle(page > 0), minHeight: isMobile ? 44 : 36, minWidth: isMobile ? 44 : 36, width: isMobile ? 44 : 36, height: isMobile ? 44 : 36 }}
+          // Two chevrons under a table: at 44x44 on a phone (and 36 everywhere else) the pager was
+          // taller than the rows it pages through. `.ag-tap-icon` puts the 44px back invisibly.
+          className="ag-tap-icon"
+          style={btnStyle(page > 0)}
         >
           <ChevronLeft size={16} />
         </button>
         <button
           type="button" aria-label={pt ? 'Próxima página' : 'Next page'}
           disabled={page >= pages - 1} onClick={() => onChange(page + 1)}
-          style={{ ...btnStyle(page < pages - 1), minHeight: isMobile ? 44 : 36, minWidth: isMobile ? 44 : 36, width: isMobile ? 44 : 36, height: isMobile ? 44 : 36 }}
+          className="ag-tap-icon"
+          style={btnStyle(page < pages - 1)}
         >
           <ChevronRight size={16} />
         </button>

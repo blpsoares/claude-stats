@@ -359,9 +359,9 @@ export default function PricingSettings() {
             <button
               key={g}
               onClick={() => setGroup(g)}
+              className="ag-tap"
               style={{
-                padding: isMobile ? '0 12px' : '5px 11px',
-                minHeight: isMobile ? 44 : undefined,
+                padding: isMobile ? '6px 12px' : '5px 11px',
                 borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
                 border: `1px solid ${groupBy === g ? 'var(--anthropic-orange)' : 'var(--border)'}`,
                 background: groupBy === g ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',

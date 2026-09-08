@@ -22,6 +22,7 @@ import { Section } from '../components/Section'
 import { ModelBreakdown } from '../components/ModelBreakdown'
 import { ActivityChart } from '../components/ActivityChart'
 import { RecentSessions } from '../components/RecentSessions'
+import { ScopedSessions } from '../components/ScopedSessions'
 import { MetricNote } from '../components/MetricNote'
 
 type Tab = 'overview' | 'members' | 'compare' | 'actions' | 'sessions' | 'workflows'
@@ -250,9 +251,15 @@ export default function RepoDetailPage() {
       )}
 
       {tab === 'sessions' && (
-        <Section title={<><Clock size={14} /> {pt ? 'Sessões recentes' : 'Recent sessions'}</>}>
-          {/* RecentSessions has its own built-in sort (date/tokens/messages/tools/files). */}
-          <RecentSessions sessions={sessions} lang={lang} onSelect={setSelectedSession} />
+        <Section title={<><Clock size={14} /> {pt ? 'Sessões' : 'Sessions'}</>}>
+          {/* `ScopedSessions`, not `RecentSessions`: this tab is already scoped to ONE repository,
+              so the browser's group-by, status filter, six-key sort, search and grid toggle re-ask
+              questions the page has answered — and cost the first screen of a phone before a single
+              session appeared. What is left is what the tab is for: each session's metrics, and the
+              way into it. See the module comment on ScopedSessions for the rest.
+              The Actions tab above keeps `RecentSessions` on purpose: a CI runner's session was
+              never on this machine's fleet, so it has no /sessions row to link to. */}
+          <ScopedSessions sessions={sessions} lang={lang} currency={currency} brlRate={brlRate} />
         </Section>
       )}
 
@@ -378,10 +385,19 @@ function MemberComparePanel({ sessions, lang, currency, brlRate }: {
 function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
   return (
     <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px',
+      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px', minWidth: 0,
       background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
     }}>
-      <span style={{ fontSize: 18, fontWeight: 700, color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)', whiteSpace: 'nowrap' }}>{value}</span>
+      {/* No `nowrap`: the Lines tile is two figures ("+517.3K −61.2K") and at a 120px column it was
+          painted straight through the card's right edge — the tile has no `overflow`, so the text
+          simply left the box. Wrapping at the space costs a second line on the widest tile and
+          keeps every digit. `minWidth: 0` is what lets the tile shrink inside its grid track at
+          all; without it the track floors at the value's intrinsic width and the ROW overflows
+          instead of the cell. */}
+      <span style={{
+        fontSize: 18, fontWeight: 700, lineHeight: 1.15, minWidth: 0,
+        color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)',
+      }}>{value}</span>
       <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
     </div>
   )

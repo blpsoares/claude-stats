@@ -301,6 +301,51 @@ html.ag-viewport-locked > body {
   .ag-settings button.ag-switch {
     min-height: 0;
   }
+  /* A chip on a settings page opts out of the sweep above the same way, and takes its target from
+     `.ag-tap` below instead. */
+  .ag-settings button.ag-tap,
+  .ag-settings button.ag-tap-icon {
+    min-height: 0;
+  }
+}
+
+/* --- .ag-tap / .ag-tap-icon: a 44px touch target that costs the layout no height ---------------
+   A chip is small ON PURPOSE: 11px of label inside a `border-radius: 999` pill. Give it
+   `min-height: 44px` and it stops being a chip — at ~62px wide it comes out an ELLIPSE, and a row
+   of them reads as a row of eggs rather than as a filter. That is the whole of the "the UI is
+   chubby" report: the rule was right (a finger needs 44px) and the way it was paid was wrong — the
+   PAINTED control grew.
+
+   So the paint and the target are separated. The control keeps its natural height and the class
+   projects an invisible 44px box centred on it, which is what the finger actually hits. `::after`
+   is a child of the control, so the press lands on the control's own handler; there is no listener
+   and no wrapper element of our own.
+
+   `.ag-tap` expands VERTICALLY ONLY (`left: 0; right: 0`), so a chip can never steal the tap of the
+   chip beside it in its row. `.ag-tap-icon` is for an icon-only button, which is narrow on both
+   axes and has to grow on both — use it only where the button has real space around it. Both live
+   inside the mobile query: a mouse-driven layout is untouched.
+
+   A row that wraps with a gap under ~14px overlaps by a pixel or two. The later sibling paints on
+   top, so the overlap resolves in favour of the chip LOWER on screen — the one the thumb is
+   travelling towards.
+
+   Use it for CHIPS, PILLS, TOGGLES and ICON-ONLY buttons: controls whose smallness is their
+   meaning. A dialog's "Save", a menu row, a primary action SHOULD be 44px of paint, and keep it.
+   Do not put it on anything containing its own interactive child (an input, a nested link): the
+   overlay sits above the content and would take that child's clicks. */
+@media (max-width: 767px) {
+  .ag-tap, .ag-tap-icon { position: relative; }
+  .ag-tap::after, .ag-tap-icon::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 100%;
+    min-height: 44px;
+  }
+  .ag-tap::after { left: 0; right: 0; }
+  .ag-tap-icon::after { left: 50%; width: 100%; min-width: 44px; transform: translate(-50%, -50%); }
 }
 
 /* ── The focus ring ──────────────────────────────────────────────────────────

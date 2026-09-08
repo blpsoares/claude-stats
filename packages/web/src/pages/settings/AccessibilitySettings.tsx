@@ -38,8 +38,10 @@ function StyleEditor({
     minWidth: 58, textAlign: 'right', color: 'var(--text-primary)',
     fontWeight: 600, fontVariantNumeric: 'tabular-nums',
   }
+  // The 44px target is the invisible `.ag-tap` box on each button, not paint: a two-word chip
+  // stretched to 44px is the "chubby" shape this screen was reported for.
   const chip = (on: boolean): React.CSSProperties => ({
-    padding: isMobile ? '11px 14px' : '6px 12px', minHeight: isMobile ? 44 : undefined,
+    padding: isMobile ? '7px 13px' : '6px 12px',
     borderRadius: 8, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit',
     border: '1px solid ' + (on ? 'var(--anthropic-orange)' : 'var(--border)'),
     background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
@@ -61,7 +63,7 @@ function StyleEditor({
         <span style={label}>{text.shape}</span>
         <span style={{ display: 'flex', gap: 8 }}>
           {(['rect', 'circle'] as const).map(s => (
-            <button key={s} style={chip(style.shape === s)}
+            <button key={s} className="ag-tap" style={chip(style.shape === s)}
               onClick={() => onChange({ ...style, shape: s, height: s === 'circle' ? style.width : style.height })}>
               {s === 'rect' ? text.rect : text.circle}
             </button>
@@ -180,16 +182,23 @@ export default function AccessibilitySettings() {
             aria-checked={a11y.prefs.enabled}
             aria-label={text.enable}
             onClick={() => a11y.setEnabled(!a11y.prefs.enabled)}
+            // Same 34x20 track as `Toggle`/`RowSwitch` in primitives.tsx — this screen had rolled
+            // its own at 52x44 on mobile, which at `borderRadius: 999` is not a switch but an egg.
+            // `.ag-tap` restores the 44px finger target as an invisible box around it, and also
+            // opts the button out of the `.ag-settings button { min-height: 44px }` sweep that
+            // deformed it in the first place (index.css) — the same job `.ag-switch` does there.
+            className="ag-tap"
             style={{
-              width: 52, minWidth: 52, height: isMobile ? 44 : 30, borderRadius: 999,
-              cursor: 'pointer', border: '1px solid var(--border)', position: 'relative', flexShrink: 0,
-              background: a11y.prefs.enabled ? 'var(--anthropic-orange)' : 'var(--bg-elevated)',
+              width: 34, minWidth: 34, height: 20, borderRadius: 10, padding: 0,
+              cursor: 'pointer', border: 'none', position: 'relative', flexShrink: 0,
+              transition: 'background 0.2s',
+              background: a11y.prefs.enabled ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
             }}
           >
             <span style={{
-              position: 'absolute', top: '50%', transform: 'translateY(-50%)',
-              left: a11y.prefs.enabled ? 26 : 4, width: 20, height: 20, borderRadius: '50%',
-              background: '#fff', transition: 'left 0.15s',
+              position: 'absolute', top: 3,
+              left: a11y.prefs.enabled ? 17 : 3, width: 14, height: 14, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
             }} />
           </button>
         </div>

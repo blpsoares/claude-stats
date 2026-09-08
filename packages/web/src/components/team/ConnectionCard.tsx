@@ -311,10 +311,11 @@ export function ConnectionCard({
           type="button"
           onClick={() => setNoticesOpen(true)}
           title={COPY.noticesBtn[lang]}
+          className="ag-tap"
           style={{
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
             flexShrink: 0, marginRight: 12,
-            minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 12px' : '0 10px',
+            minHeight: 30, padding: isMobile ? '0 12px' : '0 10px',
             borderRadius: 999, fontFamily: 'inherit', fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
             border: `1px solid ${notices.tone === 'alarm' ? 'var(--accent-red)' : 'var(--anthropic-orange)'}`,
             background: 'transparent',
