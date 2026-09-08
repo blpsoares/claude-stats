@@ -50,7 +50,14 @@ Everything the profile can report today, and what it costs to add.
 
 `compactMetadata` carries `trigger` (`auto`/`manual`), `preTokens`, `postTokens`,
 `cumulativeDroppedTokens` and `durationMs`. Across those 700 sessions: **46 compacts in 23 sessions,
-83 minutes spent compacting, 30M tokens dropped.**
+83 minutes spent compacting, 19,4M tokens dropped.**
+
+`cumulativeDroppedTokens` is cumulative and monotonic — measured across one real five-compact
+session: `954.238 → 1.910.306 → 2.876.708 → 3.829.252 → 4.785.215`. So a session's figure is its
+LAST reading and the fleet total is the sum of those, never the sum of every record: that error
+reported 30M against a true 19,4M, and 14,4M against a true 4,8M on the session above. The field is
+also absent from 27 of the 46 records, so a session whose records all lack it reports nothing rather
+than zero. `compactsFromClaudeJsonl` encodes both rules and its tests pin the sequence.
 
 ### Two measured facts that decide the design
 
