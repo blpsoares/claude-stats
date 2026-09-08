@@ -29,6 +29,7 @@ import {
   pm2DeleteArgs,
   pm2StartArgs,
   systemdUnit,
+  migrateUnitKillMode,
   type ServiceManagerFacts,
   type ServiceManagerId,
   type ServiceSpec,
@@ -651,8 +652,9 @@ export async function restartAutostart(mode: AutostartMode): Promise<AutostartRe
 
   // A restart only makes sense when the mode is installed as a service.
   let unitExists = true
+  let unitText = ''
   try {
-    await readFile(unitPath(mode), 'utf8')
+    unitText = await readFile(unitPath(mode), 'utf8')
   } catch {
     unitExists = false
   }
@@ -666,14 +668,35 @@ export async function restartAutostart(mode: AutostartMode): Promise<AutostartRe
     }
   }
 
+  // MIGRATE BEFORE BOUNCING, and reload before either. A unit written before `KillMode=process`
+  // kills its whole cgroup on stop, which is the fleet — so a restart on the old unit is the very
+  // event that loses the sessions, and migrating afterwards would fix the machine one crash too
+  // late. `daemon-reload` first means the stop that follows already runs under the new rule, so
+  // even THIS restart spares them.
+  const notes: string[] = []
+  const migrated = migrateUnitKillMode(unitText)
+  if (migrated) {
+    try {
+      await writeFile(unitPath(mode), migrated, 'utf8')
+      const reload = await run(['systemctl', '--user', 'daemon-reload'])
+      if (reload.code === 0) notes.push('Updated the unit so a restart no longer stops your sessions.')
+      else notes.push(`Updated the unit, but systemctl --user daemon-reload failed: ${reload.stderr || `exit ${reload.code}`}`)
+    } catch (err: any) {
+      notes.push(`Could not update ${unitPath(mode)}: ${err?.message ?? err}`)
+    }
+  }
+
   const res = await run(['systemctl', '--user', 'restart', `agentop-${mode}`])
   if (res.code !== 0) {
     return {
       ok: false,
-      message: `systemctl --user restart agentop-${mode} failed: ${res.stderr || `exit ${res.code}`}`,
+      message: [...notes, `systemctl --user restart agentop-${mode} failed: ${res.stderr || `exit ${res.code}`}`].join('\n'),
     }
   }
-  return { ok: true, message: `Restarted agentop-${mode} — it now runs the current code and config.` }
+  return {
+    ok: true,
+    message: [...notes, `Restarted agentop-${mode} — it now runs the current code and config.`].join('\n'),
+  }
 }
 
 /**
