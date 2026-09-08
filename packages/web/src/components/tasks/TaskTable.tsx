@@ -41,6 +41,8 @@ import { ConfirmModal } from '../../pages/settings/primitives'
 import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
 import { ChipSelect, statusOptions } from './ChipSelect'
+import { StatusChip } from './StatusChip'
+import { boardCopy, statusLabel } from './copy'
 import { PickerMenu } from './PickerMenu'
 import { TaskProgressBar } from './TaskProgressBar'
 import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
@@ -167,14 +169,18 @@ function cellFor(
   onStatus: (s: TaskStatus) => void,
   onPriority: (p: TaskPriorityId) => void,
   nowMs: number,
+  lang: 'pt' | 'en',
 ): React.ReactNode {
   const r = row.rollup
   switch (col) {
+    // The SAME control the delivery's own screen and the card draw — see `StatusChip`. The table
+    // used to build its own option list here and the rail built another one, in another component,
+    // with English labels either way.
     case 'status': return (
-      <ChipSelect
+      <StatusChip
         compact
         value={row.task.status}
-        options={statusOptions(STATUS, COLUMN_ORDER)}
+        lang={lang}
         onPick={v => onStatus(v as TaskStatus)}
       />
     )
@@ -371,6 +377,8 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
 
 export interface TaskTableProps {
   rows: TaskListRow[]
+  /** The reader's language. Absent = English, for a caller that has not been threaded yet. */
+  lang?: 'pt' | 'en'
   /** Details already fetched for expanded rows — subtasks come from here. */
   details: Map<string, TaskDetail>
   onOpen: (id: string) => void
@@ -490,7 +498,10 @@ export function TaskTable(p: TaskTableProps) {
           triggerStyle={{ ...button(isMobile), height: isMobile ? 44 : 28 }}
           items={groups.map(g => ({
             value: g.status,
-            label: STATUS[g.status].label,
+            // The SAME word the chip in every row of this group prints — one vocabulary, one
+            // language. The heading used to read the English constant while the cell beside it
+            // was translated.
+            label: statusLabel(g.status, p.lang ?? 'en'),
             color: STATUS[g.status].color,
             // The count of a HIDDEN group too — "hidden" must not read as "empty".
             hint: String(g.rows.length),
@@ -662,6 +673,7 @@ export function TaskTable(p: TaskTableProps) {
                                   st => p.onStatus(row.task.id, st),
                                   pr => p.onPriority?.(row.task.id, pr),
                                   nowMs,
+                                  p.lang ?? 'en',
                                 )}
                               </td>
                             ))}

@@ -18,6 +18,7 @@ import {
   NA, STATUS, button, fmtInt, fmtUSD, microLabel, numeric, pill, surface, type BoardStatus,
 } from './board'
 import { TaskProgressBar } from './TaskProgressBar'
+import { boardCopy } from './copy'
 import { TaskComposer } from './TaskComposer'
 import { attachSession, detachSession, useTaskList } from '../../lib/tasks'
 import { TaskPicker } from './TaskPicker'
@@ -150,7 +151,7 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
             </span>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button style={button(isMobile)} disabled={busy} onClick={() => setPicking(true)}>
-                <Link2 size={13} /> {pt ? 'Vincular a uma tarefa' : 'File under a task'}
+                <Link2 size={13} /> {boardCopy(p.lang).fileUnder}
               </button>
             </div>
           </div>
@@ -185,7 +186,8 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
 
       {picking && (
         <TaskPicker
-          title={pt ? 'Vincular a uma tarefa' : 'File under a task'}
+          title={boardCopy(p.lang).fileUnder}
+          lang={p.lang}
           session={p.session}
           onPick={async taskId => { await link(taskId) }}
           onDetach={() => void unlink()}

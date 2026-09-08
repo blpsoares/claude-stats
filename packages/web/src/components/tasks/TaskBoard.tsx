@@ -17,6 +17,7 @@ import {
 } from './board'
 import type { LaneKey } from './boardPrefs'
 import { TaskProgressBar } from './TaskProgressBar'
+import { statusLabel } from './copy'
 import type { TaskListRow } from '../../lib/tasks'
 
 function Facts({ row }: { row: TaskListRow }) {
@@ -193,6 +194,8 @@ function Agents({ row, live, nowMs }: {
 
 export interface BoardViewProps {
   rows: TaskListRow[]
+  /** The reader's language. Absent = English, for a caller not yet threaded. */
+  lang?: 'pt' | 'en'
   onOpen: (id: string) => void
   /** A drop into another column. It is a STATUS change, and only the server writes it. */
   onStatus?: (id: string, status: BoardStatus) => void
@@ -337,7 +340,10 @@ export function BoardView(p: BoardViewProps) {
                     ...surface, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8,
                     borderTop: `2px solid ${s.color}`, position: 'sticky', top: 0, zIndex: 1,
                   }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: s.color }}>{s.label}</span>
+                    {/* The same word the table's band and every chip print. */}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: s.color }}>
+                      {statusLabel(col.status, p.lang ?? 'en')}
+                    </span>
                     <span style={{ ...microLabel, fontSize: 11 }}>
                       {col.rows.length}{limit !== undefined ? ` / ${limit}` : ''}
                     </span>

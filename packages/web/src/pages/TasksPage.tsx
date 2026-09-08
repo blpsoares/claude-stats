@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, BarChart3, Bot, CheckCircle2, ClipboardList, ExternalLink, FileText, Link2,
+  ArrowLeft, BarChart3, Bot, ClipboardList, ExternalLink, FileText, Link2,
   Filter, LayoutGrid, MessageSquare, Pencil, Plus, Rows3, Search, Trash2, X, XCircle,
 } from 'lucide-react'
 import { PRIORITY_ORDER, type SortSpec, type TaskPriorityId } from '@agentistics/core'
@@ -46,6 +46,8 @@ import { AgentsView } from '../components/tasks/AgentsView'
 import { BlockedDialog } from '../components/tasks/BlockedDialog'
 import { TaskProgressBar } from '../components/tasks/TaskProgressBar'
 import { BetaTag } from '../components/BetaTag'
+import { StatusChip } from '../components/tasks/StatusChip'
+import { boardCopy } from '../components/tasks/copy'
 import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
 import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
@@ -127,10 +129,11 @@ function ActivityTab({ id }: { id: string }) {
   )
 }
 
-function PlanCard({ task, busy, onPatch, onStatus, onClaim }: {
+function PlanCard({ task, busy, lang, onPatch, onStatus, onClaim }: {
   task: TaskRecord
   busy: boolean
   onPatch: (patch: TaskFieldPatch) => void | Promise<void>
+  lang: 'pt' | 'en'
   onStatus: (s: TaskStatus) => void | Promise<void>
   onClaim: (release: boolean) => void | Promise<void>
 }) {
@@ -155,13 +158,14 @@ function PlanCard({ task, busy, onPatch, onStatus, onClaim }: {
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 120px', display: 'grid', gap: 5, minWidth: 0 }}>
           <span style={{ ...microLabel, fontSize: 9 }}>Status</span>
-          <ChipSelect
+          {/* The SAME chip the table cell and the card draw — see `StatusChip`. This rail used to
+              have a private copy of the control, which is how one feature came to have two status
+              dropdowns that looked and behaved differently. */}
+          <StatusChip
             value={task.status}
-            disabled={busy}
-            options={COLUMN_ORDER.map(st => ({
-              value: st, label: STATUS[st].label, color: STATUS[st].color, dim: STATUS[st].dim,
-            }))}
-            onPick={v => void onStatus(v as TaskStatus)}
+            lang={lang}
+            {...(busy ? { disabled: true } : {})}
+            onPick={st => void onStatus(st as TaskStatus)}
           />
         </div>
         <div style={{ flex: '1 1 120px', display: 'grid', gap: 5, minWidth: 0 }}>
@@ -228,7 +232,7 @@ function PlanCard({ task, busy, onPatch, onStatus, onClaim }: {
               value={value}
               label={label}
               placeholder="DD/MM/YY"
-              lang="en"
+              lang={lang}
               {...(label === 'Due' && task.startDate ? { min: task.startDate } : {})}
               onChange={v => void onPatch(label === 'Start' ? { startDate: v } : { dueDate: v })}
             />
@@ -408,7 +412,7 @@ function TaskList() {
   // The SAME filters the rest of the dashboard edits. The board is not a separate world: the date
   // range and the harness / project / repo chips scope which SESSIONS count toward each task, which
   // is what makes "what did this cost me last week" answerable.
-  const { filters } = useOutletContext<AppContext>()
+  const { filters, lang } = useOutletContext<AppContext>()
   const { rows, overview, excluded, error, reload } = useTaskList(filters)
   const navigate = useNavigate()
   const isMobile = useIsMobile()
@@ -543,7 +547,7 @@ function TaskList() {
 
       {starting && (
         <NewSessionModal
-          lang="en"
+          lang={lang}
           initialTask={starting.title}
           onClose={() => setStarting(null)}
           onStarted={async () => {
@@ -615,6 +619,7 @@ function TaskList() {
             ]))}
           />
           <BoardView
+          lang={lang}
             rows={shown}
             sort={sort}
             lanes={lanes}
@@ -630,6 +635,7 @@ function TaskList() {
       {view === 'table' && (
         <TaskTable
           rows={shown}
+          lang={lang}
           details={details}
           onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
           onStatus={(ref, status) => void toStatus([ref], status)}
@@ -1191,7 +1197,7 @@ function CommentsTab({ id, detail, onChanged }: {
 type Tab = 'overview' | 'sessions' | 'comments' | 'subtasks' | 'files' | 'activity'
 
 function TaskDetailView({ id }: { id: string }) {
-  const { filters } = useOutletContext<AppContext>()
+  const { filters, lang } = useOutletContext<AppContext>()
   const { detail, error, reload } = useTaskDetail(id, filters)
   const navigate = useNavigate()
   const isMobile = useIsMobile()
@@ -1358,6 +1364,7 @@ function TaskDetailView({ id }: { id: string }) {
           <PlanCard
             task={detail.task}
             busy={busy}
+            lang={lang}
             onPatch={async patch => { await run(() => editTask(id, patch)) }}
             onStatus={async st => {
               if (st === 'blocked') { setBlocking(true); return }
@@ -1413,13 +1420,13 @@ function TaskDetailView({ id }: { id: string }) {
             <BlockedBy id={id} task={detail.task} onChanged={reload} bare />
           </RailSection>
 
-          <RailSection id="actions" title="Actions">
-            <button style={button(isMobile)} disabled={busy} onClick={() => void run(() => markTask(id, 'done'))}>
-              <CheckCircle2 size={14} /> Mark delivered
-            </button>
-            <button style={button(isMobile)} disabled={busy} onClick={() => void run(() => markTask(id, 'abandoned'))}>
-              <XCircle size={14} /> Mark abandoned
-            </button>
+          {/*
+            * `Mark delivered` and `Mark abandoned` used to live HERE, as two buttons doing what two
+            * rows of the status chip above already did — a second place to set a status, in a
+            * panel called Actions, three sections away from the chip. They are gone: the chip is
+            * the one control, and it is at the top of this rail on every screen.
+            */}
+          <RailSection id="actions" title={boardCopy(lang).actions}>
             <button
               style={{ ...button(isMobile), color: 'var(--accent-red)' }} disabled={busy}
               onClick={() => setConfirmDelete(true)}

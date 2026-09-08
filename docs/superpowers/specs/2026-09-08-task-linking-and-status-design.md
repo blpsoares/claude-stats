@@ -10,10 +10,13 @@ a forma de fazer isso e está bem confuso — interface, componentes, formas de 
 Nothing is broken in the sense of a defect. `attachSession` works, the pickers work, the status
 writes land. What was measured in the code instead:
 
-- **The link is INVISIBLE on a session row.** `lib/sessionCard.ts` excludes `task` from the bands
-  on purpose, `FleetOverview` never draws it, and only `SessionsAside` passes `row.task` through at
-  all. So a session can be filed and there is no way to SEE that it is filed without opening a
-  menu. This is the root cause: the feature is not missing, it is unfindable.
+- **The UNFILED state is invisible, and the filed one is inert.** `CardMeta` (in
+  `RecentSessions.tsx`) does draw the delivery when a live fleet row carries one — orange, with a
+  bookmark. But a session filed under NOTHING draws nothing at all, so the one state that needs the
+  gesture is the one with no sign that a gesture exists; and the bit that is drawn is a label, not
+  a control, so seeing it teaches nothing about how to change it. `lib/sessionCard.ts` also leaves
+  `task` out of `CardFact`, so it is never part of the banding rules. This is the root cause: the
+  feature is not missing, it is unfindable from the state you are in when you need it.
 - **Seven doors to one gesture.** The row's three-dot menu (`SessionActions`, verb `task`), the
   right-click card menu (`SessionRowMenu`, verb `link-task`), the open session's Tasks tab
   (`SessionTasksTab`), the board table's sessions column (`SessionPicker`), the new-task wizard,
