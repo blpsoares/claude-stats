@@ -191,8 +191,20 @@ export function toControlSession(
     // A bare confirm is only ever offered where there is NOTHING to choose between — the
     // codex-shaped `Press enter to continue`. On a numbered dialog it would take whichever row is
     // highlighted, which on "only my fix / promote everything / stop here" is picking for somebody.
-    ...(state === 'waiting-approval' && approvalFor(v.harness) && !needsChoice(v.dialogOptions ?? [])
+    //
+    // `!needsChoice(...)` ALONE WAS NOT THAT TEST, and the gap was reported: an empty option list
+    // is also what the reader returns when it REFUSES, so a dialog it had just declined to read
+    // came out here as "nothing to choose between" and drew the confirm button on a six-option
+    // `AskUserQuestion`. That is the exact accident `dialog-choice.ts` exists to prevent, arriving
+    // through its own refusal. The refusal is now a value and it is named here.
+    ...(state === 'waiting-approval' && approvalFor(v.harness)
+      && !needsChoice(v.dialogOptions ?? []) && !v.dialogUnreadable
       ? { canApprove: true as const }
+      : {}),
+    // A dialog agentop can SEE and cannot READ. Said in words naming what does work, exactly like
+    // `chooseBlind` beside it — a verb that is simply absent reads as a broken control.
+    ...(state === 'waiting-approval' && v.dialogUnreadable && harness
+      ? { dialogBlind: s.sessDialogBlind(harness) }
       : {}),
     // Said only where it is TRUE, which is a narrower place than `approvalBlind`: that one explains
     // why a blocked session may be reading as plain `waiting`, this one explains why a session that

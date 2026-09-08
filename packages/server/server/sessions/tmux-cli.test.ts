@@ -5,7 +5,7 @@ import {
   parseTmuxList, sendKeysEnterArgs, sendKeysLiteralArgs,
   sendKeysNamedArgs, trimCapture,
   tmuxName,
-  serverOptionsArgs, HISTORY_LIMIT,
+  serverOptionsArgs, HISTORY_LIMIT, PANE_COLS, PANE_ROWS,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs,
   type TerminalProfile, tmuxListIsEmptyState,
 } from './tmux-cli'
@@ -32,8 +32,8 @@ describe('newSessionArgs', () => {
   it('uses our socket, detaches, sets the cwd, and separates the command with --', () => {
     expect(newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude', '--model', 'opus', 'fix it'] }))
       .toEqual([
-        '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-c', '/home/u/p',
-        '--', 'claude', '--model', 'opus', 'fix it',
+        '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-x', '120', '-y', '50',
+        '-c', '/home/u/p', '--', 'claude', '--model', 'opus', 'fix it',
       ])
   })
 
@@ -43,10 +43,27 @@ describe('newSessionArgs', () => {
     // `--`, or tmux reads it as one of the harness's own arguments.
     const args = newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude'], truecolor: true })
     expect(args).toEqual([
-      '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-c', '/home/u/p',
-      '-e', 'COLORTERM=truecolor', '--', 'claude',
+      '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-x', '120', '-y', '50',
+      '-c', '/home/u/p', '-e', 'COLORTERM=truecolor', '--', 'claude',
     ])
     expect(args.indexOf('-e')).toBeLessThan(args.indexOf('--'))
+  })
+
+  it('BORNS THE PANE BIG ENOUGH FOR A DIALOG — never at the 80x24 tmux default', () => {
+    /*
+     * The regression this exists for: a detached pane defaults to 80x24, a claude
+     * `AskUserQuestion` with four described options is taller than 24 rows, and its question and
+     * option `1.` are redrawn off the top before `capture-pane` ever reads it. Every surface that
+     * does not attach — the web dashboard, the VS Code panel, the cockpit — then shows a dialog
+     * that begins mid-sentence and cannot say what is being asked.
+     */
+    const args = newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude'] })
+    expect(args).toContain('-x')
+    expect(args).toContain('-y')
+    expect(args[args.indexOf('-x') + 1]).toBe(String(PANE_COLS))
+    expect(PANE_ROWS).toBeGreaterThan(24)
+    // The geometry must precede `--`, like every other tmux flag here.
+    expect(args.indexOf('-y')).toBeLessThan(args.indexOf('--'))
   })
 
   it('adds nothing when the invoker is not truecolor', () => {

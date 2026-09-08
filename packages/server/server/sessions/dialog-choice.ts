@@ -69,46 +69,119 @@ export interface DialogOption {
 const OPTION = /^\s*(❯|>)?\s*(\d{1,2})\.\s+(\S.*?)\s*$/
 
 /**
- * How far up the frame to look for the block.
+ * How far up the frame to look for the dialog's LAST option row.
  *
- * The dialog is at the bottom and the tallest real one measured is well inside this. A bound
- * matters because the scan is looking for a `1.` to stop at, and without one it would read the
- * whole scrollback on a frame that has no menu in it at all.
+ * Below the last option there is only chrome — a rule, a footer, the input box — so this is a
+ * bound on the harness's furniture, which does not grow. It is NOT a bound on the dialog.
  */
-const SCAN_LINES = 40
+const LAST_OPTION_LINES = 40
 
 /**
- * The options on screen, in order — PURE, and EMPTY when they cannot be read with confidence.
+ * How far apart two option rows of ONE menu may sit.
  *
- * Empty is a real answer and the caller must treat it as one: it means "this is a dialog, and
- * agentop cannot tell you what it is offering". Inventing a list there is exactly the failure this
- * module was written to remove.
+ * This replaced a flat 40-line ceiling on the whole block, and the distinction matters because a
+ * flat line count is not a bound on the DIALOG — it is a bound on the TERMINAL WIDTH. The same
+ * `AskUserQuestion` whose descriptions wrap onto two lines at 120 columns wraps onto four at 60,
+ * and crosses any fixed ceiling purely by the window being narrow. That is exactly how this
+ * survived its own tests: measured wide, reported from a narrow window.
+ *
+ * The gap is the structural fact instead. Between option k and option k+1 there is only option k's
+ * own description, so the block extends as far as its options do and stops where prose begins.
  */
-export function parseDialogOptions(frame: readonly string[]): DialogOption[] {
-  const from = Math.max(0, frame.length - SCAN_LINES)
-  const found: DialogOption[] = []
+const MAX_OPTION_GAP = 14
 
-  // Bottom-up, stopping at `1.` — the dialog is the last block on the screen, and its first option
-  // is where that block begins.
-  for (let i = frame.length - 1; i >= from; i--) {
+/** Why a dialog that IS on screen could not be read. Each is a fact about the frame. */
+export type DialogUnreadable =
+  /** Option rows were found and the scan never reached `1.` — the block ran off the top. */
+  | 'no-anchor'
+  /** The numbers did not come out `1..n`: a gap, a repeat, or a wrong start. */
+  | 'gap'
+  /** Two highlighted rows. A frame this parser does not understand. */
+  | 'two-cursors'
+
+/**
+ * WHAT THE SCREEN IS OFFERING — PURE, and the ONE reader of the block.
+ *
+ * `kind` is the whole point of this type. An empty option list used to be the only answer for two
+ * situations that could not be more different:
+ *
+ *  - `none`       — there is no menu. The codex-shaped `Press enter to continue`. A bare confirm
+ *                   key is the RIGHT answer here, because there is nothing to choose between.
+ *  - `unreadable` — there IS a menu and agentop could not read it. A bare confirm key takes
+ *                   whichever row is highlighted, which is choosing for the user among things that
+ *                   do different work.
+ *
+ * The caller read `[]` as the first and got the second, and the confirm button appeared on a
+ * six-option `AskUserQuestion` that the reader had just refused. That is the exact accident this
+ * module was written to remove, reintroduced through its own refusal. So the refusal is now a
+ * VALUE, and a caller that wants to offer a confirm has to ask for `none` by name.
+ */
+export interface DialogRead {
+  kind: 'options' | 'none' | 'unreadable'
+  /** The options, in order. EMPTY unless `kind` is `options` — a half-read list is never offered. */
+  options: DialogOption[]
+  /** Present only on `unreadable`. */
+  reason?: DialogUnreadable
+  /** Index of the TOPMOST option row reached, `-1` when none was. Feeds the preview's window. */
+  top: number
+}
+
+/**
+ * Read the dialog off the frame — PURE.
+ *
+ * Bottom-up, because the dialog is the last block on the screen, stopping at `1.` because that is
+ * where the block begins. Everything the old `parseDialogOptions` refused it still refuses; it now
+ * says WHICH refusal, and hands back where the block starts so the preview and the options can
+ * never describe different parts of the screen.
+ */
+export function readDialog(frame: readonly string[]): DialogRead {
+  const found: DialogOption[] = []
+  let top = -1
+  let anchored = false
+
+  for (let i = frame.length - 1; i >= 0; i--) {
+    // The LAST option is near the bottom, under nothing but chrome. Past this bound with nothing
+    // found, there is no dialog here — and reading further would be reading the scrollback.
+    if (found.length === 0 && frame.length - 1 - i > LAST_OPTION_LINES) break
     const m = OPTION.exec(frame[i] ?? '')
     if (!m) continue
-    const number = Number(m[2])
-    found.push({ number, label: m[3]!, selected: m[1] !== undefined })
-    if (number === 1) break
+    // Too far above the previous option to be part of the same menu: this is prose that happens to
+    // be numbered, and joining it to the block would invent a menu.
+    if (found.length > 0 && top - i > MAX_OPTION_GAP) break
+    found.push({ number: Number(m[2]), label: m[3]!, selected: m[1] !== undefined })
+    top = i
+    if (Number(m[2]) === 1) { anchored = true; break }
   }
 
   found.reverse()
 
+  // Nothing numbered at the bottom at all: there is no menu to read.
+  if (found.length === 0) return { kind: 'none', options: [], top: -1 }
+  // Rows were found and `1.` never was. The block is real and its top is out of reach.
+  if (!anchored) return { kind: 'unreadable', reason: 'no-anchor', options: [], top }
   // A menu is at least a choice. One option is a statement, and the caller confirms it instead.
-  if (found.length < 2) return []
+  if (found.length < 2) return { kind: 'none', options: [], top }
   // Exactly `1..n`, in order. A gap, a repeat or a wrong start means this was not read correctly —
   // and half-read options are worse than none, because they would be offered as if they were whole.
-  if (found.some((o, i) => o.number !== i + 1)) return []
+  if (found.some((o, i) => o.number !== i + 1)) return { kind: 'unreadable', reason: 'gap', options: [], top }
   // At most one highlighted row. Two cursors is a frame this parser does not understand.
-  if (found.filter(o => o.selected).length > 1) return []
+  if (found.filter(o => o.selected).length > 1) {
+    return { kind: 'unreadable', reason: 'two-cursors', options: [], top }
+  }
 
-  return found
+  return { kind: 'options', options: found, top }
+}
+
+/**
+ * The options on screen, in order — EMPTY when they cannot be read with confidence.
+ *
+ * A thin reading of `readDialog`, kept because most callers only want the list. **A caller deciding
+ * whether to send a confirm key must NOT use this** — `[]` conflates "no menu" with "unreadable
+ * menu", and that conflation is what put a blind confirm button on a six-option dialog. Ask
+ * `readDialog(...).kind === 'none'`.
+ */
+export function parseDialogOptions(frame: readonly string[]): DialogOption[] {
+  return readDialog(frame).options
 }
 
 /**

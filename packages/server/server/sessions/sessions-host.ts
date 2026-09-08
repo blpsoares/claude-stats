@@ -20,7 +20,7 @@ import { EMPTY_CONFIRM_MEMORY, confirmActivities, type ConfirmMemory } from './a
 import type { ChatTurn } from './chat-turn'
 import { transcriptReaderFor } from './harness-transcript'
 import { markFleetPhase } from './fleet-profile'
-import { parseDialogOptions, type DialogOption } from './dialog-choice'
+import { readDialog, type DialogOption, type DialogUnreadable } from './dialog-choice'
 // Taking a running session back when its registry record is gone. See `session-adopt.ts`.
 import { planAdoptions } from './session-adopt'
 // The claim for harnesses that cannot be handed a conversation id. See `task-attribution.ts`.
@@ -265,6 +265,14 @@ export function createSessionsPoller(o: {
       /** The harness mode each running session is in — see `mode-spec.ts`. */
       const modes = new Map<string, { id: string; label: string }>()
       const dialogOptions = new Map<string, DialogOption[]>()
+      /*
+       * WHY THE REFUSAL IS CARRIED AND NOT JUST THE OPTIONS.
+       *
+       * An empty option list means two opposite things — "there is no menu" and "there IS a menu
+       * and it could not be read" — and the second one must never reach a confirm button. Carrying
+       * only the options threw that distinction away at the source. See `readDialog`.
+       */
+      const dialogUnreadable = new Map<string, DialogUnreadable>()
       const chatTails = new Map<string, ChatTurn[]>()
 
       const captureStart = performance.now()
@@ -339,8 +347,9 @@ export function createSessionsPoller(o: {
           // Read from the SAME frame that decided the state, so what is offered and what the state
           // says can never describe different moments. Empty when the screen cannot be parsed with
           // confidence, which the UI reports rather than papering over.
-          const options = parseDialogOptions(frame)
-          if (options.length > 0) dialogOptions.set(r.id, options)
+          const dialog = readDialog(frame)
+          if (dialog.options.length > 0) dialogOptions.set(r.id, dialog.options)
+          if (dialog.kind === 'unreadable') dialogUnreadable.set(r.id, dialog.reason!)
         }
       })))
       markFleetPhase(`poll: capture+chatTail x${reconciled.length} (concurrency ${CAPTURE_CONCURRENCY})`, captureStart)
@@ -475,6 +484,7 @@ export function createSessionsPoller(o: {
         approvals,
         modes,
         dialogOptions,
+        dialogUnreadable,
         processes,
         conversations,
         harnessSessions,

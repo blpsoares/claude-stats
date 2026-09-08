@@ -834,8 +834,8 @@ function renderApproval(row: FleetRow): HTMLElement {
       ))
     }
     box.append(options)
-  } else if (row.approveBlind ?? row.chooseBlind ?? row.approvalBlind) {
-    box.append(el('div', 'dim', row.chooseBlind ?? row.approveBlind ?? row.approvalBlind!))
+  } else if (row.dialogBlind ?? row.approveBlind ?? row.chooseBlind ?? row.approvalBlind) {
+    box.append(el('div', 'dim', row.dialogBlind ?? row.chooseBlind ?? row.approveBlind ?? row.approvalBlind!))
   }
   return box
 }

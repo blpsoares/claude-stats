@@ -14,7 +14,7 @@ import { capClosedConversations } from './closed-cap'
 import { matchesQuery, type SearchFields } from '@agentistics/tui/control/search-scope'
 import { type HarnessProcess, sessionAtCwd } from '../live-sessions'
 import { rulesFor } from './attention-rules'
-import type { DialogOption } from './dialog-choice'
+import type { DialogOption, DialogUnreadable } from './dialog-choice'
 import { chosenName, tmuxSessionName, type HarnessSessionFile } from './harness-session-file'
 import type { HarnessSessionIndex } from './harness-sessions'
 import { idFromTmuxName } from './tmux-cli'
@@ -109,6 +109,14 @@ export interface SessionView {
    * a keystroke that confirms the highlighted row is choosing on the user's behalf.
    */
   dialogOptions?: DialogOption[]
+  /**
+   * WHY the dialog on screen could not be read, when it could not be.
+   *
+   * Distinct from an empty `dialogOptions`, and that distinction is the whole point: no options
+   * means either "nothing to choose between" (a confirm key is right) or "a menu agentop failed to
+   * read" (a confirm key takes whichever row is highlighted). Only the first may reach a button.
+   */
+  dialogUnreadable?: DialogUnreadable
   /**
    * This session was taken by the machine along with the others, and is offered back with them.
    *
@@ -440,6 +448,8 @@ export function buildSessionViews(o: {
   modes?: ReadonlyMap<string, { id: string; label: string }>
   /** The options that dialog offers, keyed by session id. Absent where they could not be read. */
   dialogOptions?: ReadonlyMap<string, DialogOption[]>
+  /** Why the dialog could not be read, keyed by session id — see `SessionView.dialogUnreadable`. */
+  dialogUnreadable?: ReadonlyMap<string, DialogUnreadable>
   /** The ids `crash-group.ts` decided fell together. A set, because the question is about a set. */
   fell?: ReadonlySet<string>
   /**
@@ -580,6 +590,9 @@ export function buildSessionViews(o: {
         : {}),
       ...(activity === 'waiting-approval' && (o.dialogOptions?.get(r.id)?.length ?? 0) > 0
         ? { dialogOptions: o.dialogOptions!.get(r.id)! }
+        : {}),
+      ...(activity === 'waiting-approval' && o.dialogUnreadable?.get(r.id)
+        ? { dialogUnreadable: o.dialogUnreadable.get(r.id)! }
         : {}),
       // Unlike the dialog above, the mode is NOT gated on an activity: a session is in a mode while
       // it works, while it waits, and while it is asking. It is gated on the frame having named

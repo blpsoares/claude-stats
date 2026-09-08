@@ -245,7 +245,7 @@ export function ApprovalCard({ row, lang, act, onWrite, answering = null }: Appr
         </button>
       ) : (
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
-          {approve?.reason ?? row.approveBlind ?? (pt
+          {row.dialogBlind ?? approve?.reason ?? row.approveBlind ?? (pt
             ? 'Esta pergunta não pode ser respondida daqui. Abra a sessão no terminal.'
             : 'This question cannot be answered from here. Open the session in the terminal.')}
         </p>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { needsChoice, parseDialogOptions } from './dialog-choice'
+import { needsChoice, parseDialogOptions, readDialog } from './dialog-choice'
 
 /**
  * VERBATIM from a live claude 2.1.232 Write permission prompt, 2026-08-14.
@@ -132,5 +132,132 @@ describe('needsChoice', () => {
     expect(needsChoice(parseDialogOptions(WRITE_PERMISSION))).toBe(true)
     expect(needsChoice(parseDialogOptions(ASK_QUESTION))).toBe(true)
     expect(needsChoice([])).toBe(false)
+  })
+})
+
+
+/**
+ * THE DIALOG FROM THE REPORT, 2026-09-07 — a multi-select `AskUserQuestion` with four options,
+ * each carrying a description that WRAPS, plus the free-text row expanded into a field and the
+ * `Chat about this` escape hatch below the rule.
+ *
+ * Reconstructed from the reported screenshot, re-wrapped at the NARROW width it was drawn at
+ * (44 columns of description) — which is the condition that reproduces it. The user could not
+ * answer it from the browser and had to open the terminal: the preview began in the middle of a
+ * sentence ("…causa'. Puramente informativo") and the card offered a bare confirm button.
+ *
+ * What makes it the regression fixture is its HEIGHT. Option 1 sits far more than 40 lines above
+ * the bottom — not because the dialog is unusual, but because the window was narrow enough for the
+ * descriptions to wrap onto four lines each. The same dialog on a wide terminal fits and parses.
+ */
+const TALL_ASK = [
+  'Vou fazer isso num worktree a partir de origin/dev.',
+  '',
+  '────────────────────────────────────────────────────────',
+  ' ☐ Gatilhos v1',
+  '',
+  'Quais gatilhos entram na v1? (o compact que você',
+  'citou é o sintoma; o contexto é a causa)',
+  '',
+  '❯ 1. [ ] Contexto ≥85% sem compact ainda',
+  '        context_tokens / resolveContextWindow.',
+  '        Dispara ANTES da perda — o handoff sai da',
+  '        sessão cheia, não de um resumo de resumo. Só',
+  '        funciona em claude/codex/antigravity',
+  '        (contextWindow: true); gemini/copilot/kimi',
+  '        não medem contexto e simplesmente não',
+  '        recebem esse card.',
+  '  2. [ ] ≥2 compacts na sessão',
+  '        compact_boundary + compactMetadata. Diz o',
+  '        custo já pago com número (\'2 compacts,',
+  '        3m29s, 2,9M descartados\'). Só Claude — exige',
+  '        um HARNESS_CAPABILITIES.compaction novo. É',
+  '        tarde para um handoff bom, mas é o sinal',
+  '        mais legível.',
+  '  3. [ ] Esperando aprovação há >N min',
+  '        attention.ts já sabe disso; o card só',
+  '        empacota a ação que já existe',
+  '        (aprovar/abrir). Barato, funciona nos 6',
+  '        harnesses, mas é quase redundante com o',
+  '        contador de \'precisa de você\' no header.',
+  '  4. [ ] Erros repetidos da mesma categoria',
+  '        tool_error_categories. Prompt sugerido:',
+  '        \'esses N erros são todos X, ataca a causa\'.',
+  '        Puramente informativo/prompt, sem migração.',
+  '        Disponível onde o adapter preenche a',
+  '        categoria.',
+  '  5. [ ] Type something',
+  '      Submit',
+  '────────────────────────────────────────────────────────',
+  '  6. Chat about this',
+  '',
+  'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  '',
+  '  ❯ /context',
+]
+
+describe('readDialog — the tall dialog that stranded a user', () => {
+  it('reads a dialog whose option 1 is far more than 40 lines up', () => {
+    const out = readDialog(TALL_ASK)
+    expect(out.kind).toBe('options')
+    expect(out.options.map(o => o.number)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(out.options[0]!.selected).toBe(true)
+  })
+
+  it('points the preview at the option block, not at a flat ten lines', () => {
+    const out = readDialog(TALL_ASK)
+    expect(TALL_ASK[out.top]).toContain('Contexto ≥85%')
+  })
+
+  it('never reaches the prose above the dialog', () => {
+    expect(readDialog(TALL_ASK).options.some(o => o.label.includes('worktree'))).toBe(false)
+  })
+})
+
+describe('readDialog — the two different empties', () => {
+  it('says `none` when there is no menu: a confirm key is the right answer there', () => {
+    const out = readDialog(['Press enter to continue', ''])
+    expect(out.kind).toBe('none')
+    expect(out.options).toEqual([])
+  })
+
+  it('says `unreadable` when option 1 is out of reach — NOT `none`', () => {
+    // The block is real; its top ran off the frame. Offering a confirm here picks the
+    // highlighted row blind, which is the accident this module exists to prevent.
+    const frame = ['  3. c', '  4. d', '❯ 5. e', '', 'Esc to cancel']
+    const out = readDialog(frame)
+    expect(out.kind).toBe('unreadable')
+    expect(out.reason).toBe('no-anchor')
+    expect(out.options).toEqual([])
+  })
+
+  it('says `unreadable` on a gap, and on two cursors', () => {
+    expect(readDialog([' 1. a', ' 3. c']).reason).toBe('gap')
+    expect(readDialog(['❯ 1. a', '❯ 2. b']).reason).toBe('two-cursors')
+  })
+
+  it('a single option is `none` — a statement, not a menu', () => {
+    expect(readDialog([' 1. Yes', '', 'Esc to cancel']).kind).toBe('none')
+  })
+
+  it('numbered prose far above the menu is not joined to it', () => {
+    const frame = [
+      '1. primeiro ponto de uma lista em prosa',
+      ...Array.from({ length: 16 }, (_, i) => `linha de prosa ${i}`),
+      '  2. b',
+      '  3. c',
+      '',
+      'Esc to cancel',
+    ]
+    // It found 3 and 2, then the gap to `1.` is wider than one option's description.
+    expect(readDialog(frame).kind).toBe('unreadable')
+  })
+})
+
+describe('parseDialogOptions stays the thin reading', () => {
+  it('agrees with readDialog on every fixture', () => {
+    for (const f of [WRITE_PERMISSION, ASK_QUESTION, TALL_ASK]) {
+      expect(parseDialogOptions(f)).toEqual(readDialog(f).options)
+    }
   })
 })

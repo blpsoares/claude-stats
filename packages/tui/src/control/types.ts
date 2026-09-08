@@ -787,6 +787,8 @@ export interface ControlSession {
    * quietly picks for them is not.
    */
   chooseBlind?: string
+  /** A dialog agentop can SEE and cannot READ — see `DialogUnreadable`. Never a confirm button. */
+  dialogBlind?: string
   /**
    * This session was taken by the machine along with the others, and comes back with them.
    *

@@ -90,9 +90,39 @@ export function resolveTruecolorTerm(env: { TERM?: string; COLORTERM?: string })
  * it inherits it. The client-side half — tmux actually forwarding RGB on attach — is the
  * `terminal-features` capability in `serverOptionsArgs`.
  */
+/**
+ * THE SIZE A DETACHED PANE IS BORN AT — and the reason it is stated instead of defaulted.
+ *
+ * `tmux new-session -d` with no `-x`/`-y` creates an 80x24 pane (measured on 3.2a). Twenty-four
+ * rows is smaller than the dialogs these harnesses draw: a claude `AskUserQuestion` with four
+ * described options is comfortably past thirty. The top of such a dialog — its question, and
+ * option `1.` — is redrawn off the pane and never reaches `capture-pane`.
+ *
+ * Everything downstream then fails in a way that looks like a parser bug and is not one:
+ * `readDialog` cannot find its anchor, `approvalTail` shows a window that begins mid-sentence, and
+ * the card ends up unable to say what the session is asking. Reported with a screenshot of exactly
+ * that, from a session running in an 80x24 pane this module had created.
+ *
+ * It is invisible from the terminal, which is why it lasted: attaching resizes the pane to the
+ * client, so a person looking at the same dialog on attach sees all of it. Only the surfaces that
+ * never attach — the web dashboard, the VS Code panel, the cockpit — read the 24-row pane.
+ *
+ * Width is generous for the same reason rather than for its own: every column a description does
+ * not wrap into is a row the dialog does not need.
+ *
+ * No compatibility floor is added: `-x`/`-y` on `new-session` is tmux 2.9, older than the `-e` this
+ * same function already passes (3.2).
+ */
+export const PANE_COLS = 120
+export const PANE_ROWS = 50
+
 export function newSessionArgs(o: { id: string; cwd: string; argv: string[]; truecolor?: boolean }): string[] {
   const env = o.truecolor ? ['-e', 'COLORTERM=truecolor'] : []
-  return sock(['new-session', '-d', '-s', tmuxName(o.id), '-c', o.cwd, ...env, '--', ...o.argv])
+  return sock([
+    'new-session', '-d', '-s', tmuxName(o.id),
+    '-x', String(PANE_COLS), '-y', String(PANE_ROWS),
+    '-c', o.cwd, ...env, '--', ...o.argv,
+  ])
 }
 
 export function killSessionArgs(id: string): string[] {
@@ -227,6 +257,11 @@ export function serverOptionsArgs(profile: TerminalProfile): string[][] {
   if (profile.truecolorTerm) {
     opts.push(sock(['set-option', '-ga', 'terminal-features', `,${profile.truecolorTerm}:RGB`]))
   }
+  // `-x`/`-y` sets the size at BIRTH; this is what it goes back to. With `window-size` at its
+  // default (`latest`) a pane follows the newest client, so the first attach resizes it to that
+  // terminal and the detach drops it to `default-size` — 80x24 again, and the dialog is unreadable
+  // from every surface once more. Set on OUR socket only, so no session of the user's is touched.
+  opts.push(sock(['set-option', '-g', 'default-size', `${PANE_COLS}x${PANE_ROWS}`]))
   opts.push(
     // Keeps a finished session listable, with its last frame still capturable — the `exited` state.
     sock(['set-option', '-g', 'remain-on-exit', 'on']),

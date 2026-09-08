@@ -158,6 +158,7 @@ export interface CliStrings {
   sessApproveUnknown: (harness: string) => string
   /** Said on a row whose dialog offers OPTIONS and whose harness has no verified way to pick one. */
   sessChooseBlind: (harness: string) => string
+  sessDialogBlind: (harness: string) => string
   /** Refused: the dialog offers N options, so there is nothing to merely "approve". */
   sessNeedsChoice: (n: number) => string
   /** Refused: the question changed between being shown and being answered. */
@@ -549,6 +550,11 @@ const EN: CliStrings = {
     `agentop has not read ${harness}'s dialog, so it will not guess which key answers it.`,
   sessChooseBlind: (harness: string) =>
     `this dialog is a choice, and nobody has verified how to pick an option on ${harness} — attach to answer it there.`,
+  // Deliberately NOT "cannot be answered": it can, on attach. And it says what agentop actually
+  // knows — that the options are there and it could not read them — because a refusal that hides
+  // its reason is indistinguishable from a control that is simply broken.
+  sessDialogBlind: (harness: string) =>
+    `this ${harness} dialog is taller than agentop can read off the screen, so it cannot say what the options are — attach to answer it there.`,
   sessNeedsChoice: (n: number) =>
     `that dialog offers ${n} options, so there is nothing to simply approve — pick one.`,
   sessChoiceGone:
@@ -858,6 +864,8 @@ const PT: CliStrings = {
     `o agentop não leu o diálogo do ${harness}, e não vai chutar qual tecla responde.`,
   sessChooseBlind: (harness: string) =>
     `esse diálogo é uma escolha, e ninguém verificou como selecionar uma opção no ${harness} — anexe para responder lá.`,
+  sessDialogBlind: (harness: string) =>
+    `esse diálogo do ${harness} é mais alto do que o agentop consegue ler da tela, então ele não sabe dizer quais são as opções — anexe para responder lá.`,
   sessNeedsChoice: (n: number) =>
     `esse diálogo tem ${n} opções, então não há o que simplesmente aprovar — escolha uma.`,
   sessChoiceGone:

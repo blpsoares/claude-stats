@@ -18,6 +18,7 @@
  * harness nobody probed — which the UI states in words.
  */
 
+import { readDialog } from './dialog-choice'
 import type { AttentionRules, SessionActivity } from './types'
 
 /**
@@ -95,6 +96,30 @@ export function attentionOf(o: {
   // with strings like `Esc to cancel · Tab to amend` on screen as source code — and one of them was
   // offered a destructive key over a question it had never asked. Reported from a real machine.
   const footer = o.frame.slice(Math.max(0, o.frame.length - FOOTER_LINES)).join('\n')
+  /*
+   * THE FOOTER IS NOT ALWAYS THE LAST LINE, AND ASSUMING IT WAS COST A USER AN AFTERNOON.
+   *
+   * Every dialog probed for this feature drew its footer on the final row, and the four-line window
+   * was sized against that. It holds only while nothing is QUEUED. Type into a session that is
+   * sitting on a question and the harness draws the input box UNDER the dialog, one row per queued
+   * line — so the dialog's footer sinks, leaves the window, and the session stops reading as
+   * blocked.
+   *
+   * That failure FEEDS ITSELF, which is what makes it worse than a missed state: the composer is
+   * unblocked by the very same reading, so the next message is accepted, the box grows another row,
+   * and the footer sinks further. Reported with a screenshot of a question that had been waiting
+   * "sei lá a quanto tempo" behind two queued messages, each marked `delivered to the session`.
+   *
+   * Widening the window is exactly what must NOT be done — matching a footer anywhere in the frame
+   * is what once offered a destructive key to a session that merely had `attention-rules.ts` open.
+   * So the window is widened only when the screen carries a REAL MENU: `readDialog` finds an option
+   * block, and a footer below `1..n` belongs to that block. Source code quoting a footer has no
+   * menu above it, so the narrow window still governs there, and the guarantee is intact.
+   */
+  const optionTop = readDialog(o.frame).top
+  const approvalWindow = optionTop >= 0
+    ? o.frame.slice(optionTop).join('\n')
+    : footer
   const working = (haystack: string) =>
     Boolean(o.rules?.working && o.rules.working.some(re => re.test(haystack)))
   // A frame whose FOOTER says something is interruptible is not a frame sitting on a dialog: the
@@ -103,7 +128,11 @@ export function attentionOf(o: {
   // anything is interruptible INCLUDING BACKGROUND AGENTS, so a whole-frame veto would suppress a
   // genuine permission prompt on a session whose subagents happen to be running. Suppressing a real
   // block is the one error worse than the one being fixed.
-  if (o.rules && !working(footer) && o.rules.approval.some(re => re.test(footer))) {
+  // The VETO stays on the narrow footer even when the match window widened. `esc to interrupt` is
+  // printed whenever anything is interruptible, background subagents included, and a veto read over
+  // the whole dialog block would suppress a real permission prompt on a busy session — the one
+  // error this module calls worse than the one being fixed.
+  if (o.rules && !working(footer) && o.rules.approval.some(re => re.test(approvalWindow))) {
     return 'waiting-approval'
   }
 
@@ -160,9 +189,6 @@ export function approvalTail(frame: readonly string[], max = 10): string[] {
   return lines.slice(start, end)
 }
 
-/** A numbered option row, in the shape `parseDialogOptions` reads. Kept in step with it by test. */
-const OPTION_ROW = /^\s*(?:❯|>)?\s*(\d{1,2})\.\s+\S/
-
 /** How far above the first option the question itself may reach. */
 const QUESTION_LINES = 12
 
@@ -175,49 +201,38 @@ const QUESTION_LINES = 12
  * nothing saying what was being asked — reported with a screenshot whose first line is the middle
  * of a sentence.
  *
- * The dialog's own structure says where it starts: its FIRST OPTION. `parseDialogOptions` already
- * anchors on `1.` for the same reason, bottom-up, because the dialog is the last block on screen.
- * So the window is "everything from a little above option 1", which grows with the dialog instead
- * of guessing at its height.
+ * THIS NO LONGER LOOKS FOR THE ANCHOR ITSELF. It did, with a bound of its own (`max` plus the
+ * question), while `readDialog` searched for the very same `1.` with a different one — two searches
+ * for one block, and the smaller one lost. That is how the preview and the options came to describe
+ * different parts of the screen on the same frame. There is one reader now, and this consumes its
+ * answer.
  *
- * IT ONLY EVER GROWS THE WINDOW, and only when it found an anchor. With no `1.` in range this
- * returns `max` unchanged — the permission-prompt case, and every frame this cannot read. Reaching
- * further up on a frame whose shape is unknown is how the conversation above a dialog ends up
- * printed under "you are about to confirm this", which is the failure `approvalTail`'s own header
- * calls the worst possible way to be wrong.
- *
- * The extra room above option 1 is bounded (`QUESTION_LINES`) for that same reason: a question is a
- * sentence or two, not a screen.
+ * The extra room ABOVE option 1 is still bounded (`QUESTION_LINES`): a question is a sentence or
+ * two, not a screen, and reaching one line too far prints somebody's earlier prose under "you are
+ * about to confirm this".
  */
 export function dialogHeight(frame: readonly string[], max: number): number {
-  // Look no further up than the question could possibly reach — the same bound the return honours.
-  const limit = Math.max(0, max) + QUESTION_LINES
-  const from = Math.max(0, frame.length - limit)
+  const { top } = readDialog(frame)
+  if (top < 0) return Math.max(0, max)
   const blank = (i: number) => (frame[i] ?? '').trim() === ''
-  for (let i = frame.length - 1; i >= from; i--) {
-    const m = OPTION_ROW.exec(frame[i] ?? '')
-    if (!m || m[1] !== '1') continue
-    /*
-     * THE QUESTION IS THE BLOCK IMMEDIATELY ABOVE OPTION 1, and a blank line is what separates it
-     * from the conversation. A flat "N lines above" cannot tell the two apart, and reaching one
-     * line too far prints somebody's earlier prose under "you are about to confirm this".
-     *
-     *   …conversation…      ← must not be reached
-     *   (blank)             ← the boundary
-     *   Devo abrir a issue…  ← the question
-     *   (blank)             ← the dialog's own spacing
-     *     1. …              ← the anchor
-     */
-    let top = i
-    // The dialog's own spacing above option 1.
-    while (top > from && blank(top - 1)) top--
-    // The question itself: the contiguous non-blank block.
-    while (top > from && !blank(top - 1)) top--
-    const height = frame.length - top
-    // Never smaller than the flat window: this only ever grows it.
-    return Math.min(limit, Math.max(Math.max(0, max), height))
-  }
-  return Math.max(0, max)
+  /*
+   * THE QUESTION IS THE BLOCK IMMEDIATELY ABOVE OPTION 1, and a blank line is what separates it
+   * from the conversation. A flat "N lines above" cannot tell the two apart.
+   *
+   *   …conversation…      ← must not be reached
+   *   (blank)             ← the boundary
+   *   Devo abrir a issue…  ← the question
+   *   (blank)             ← the dialog's own spacing
+   *     1. …              ← the anchor
+   */
+  const floor = Math.max(0, top - QUESTION_LINES)
+  let up = top
+  // The dialog's own spacing above option 1.
+  while (up > floor && blank(up - 1)) up--
+  // The question itself: the contiguous non-blank block.
+  while (up > floor && !blank(up - 1)) up--
+  // Never smaller than the flat window: this only ever grows it.
+  return Math.max(Math.max(0, max), frame.length - up)
 }
 
 /** A line that is only box-drawing or rule characters — a frame's furniture, never its content. */
