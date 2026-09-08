@@ -1354,6 +1354,62 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       })
     }
 
+    /**
+     * DOES THIS SERVER ANSWER? — the question the MCP tab could not ask.
+     *
+     * It listed CONFIGURATION and nothing else, so a server that had never worked looked exactly
+     * like one that worked perfectly, and the only way to find out was to start a session and see
+     * whether the tools were there. Reported as "fico no escuro e não sei os que estão disponíveis".
+     *
+     * It is a CHECK, never a connection. agentistics does not run MCP servers — Claude Code does,
+     * once, when a session starts — so a server "connected" from here would be connected to nothing
+     * an assistant can use. See `mcp-check.ts`.
+     *
+     * Guarded as `localShell` in `capability-guard.ts`: it starts the configured command. Only ever
+     * on an explicit press, never while merely listing — a page that spawned every configured
+     * server on load would be starting processes nobody asked for.
+     */
+    if (url.pathname === '/api/mcp/check' && req.method === 'POST') {
+      const read = await readJsonLimited<{
+        name?: string; scope?: string; projectPath?: string
+      }>(req, LIMITS.bodyBytes)
+      if (!read.ok) {
+        return new Response(JSON.stringify({ ok: false, message: read.error }), {
+          status: read.error === 'too_large' ? 413 : 400,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      try {
+        const { listMcp } = await import('./mcp-admin')
+        const { checkStdio, checkUrl } = await import('./mcp-check')
+        // The server is looked up in the CONFIGURATION, never taken from the request: a body that
+        // could name a command would be an arbitrary-exec route wearing an MCP label.
+        //
+        // `run` beside it already says whether a process is UP, and that is a different question:
+        // `idle` is the normal state of a perfectly good server nothing is using right now, and it
+        // is also what a broken one looks like. This is what tells those two apart.
+        const all = (await listMcp(read.value.projectPath ?? null)).servers
+        const found = all.find(m => m.name === read.value.name && m.scope === read.value.scope)
+        if (!found) {
+          return new Response(JSON.stringify({ ok: false, message: 'unknown server' }), {
+            status: 404, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const result = found.command
+          ? await checkStdio(found.command, found.args ?? [], found.projectPath)
+          : found.url
+            ? await checkUrl(found.url)
+            : { outcome: 'uncheckable' as const }
+        return new Response(JSON.stringify({ ok: true, ...result }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if ((url.pathname === '/api/mcp/install' || url.pathname === '/api/mcp/remove'
       || url.pathname === '/api/mcp/replace') && req.method === 'POST') {
       try {

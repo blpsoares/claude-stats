@@ -66,6 +66,7 @@ import {
   type McpEntry, type McpListPayload, type McpScope,
 } from '../../lib/mcpPanel'
 import { splitAsideTabs } from '../../lib/asideTabs'
+import { mcpCheckText } from '../../lib/mcpCheckText'
 import { fmt, fmtCost } from '@agentistics/core'
 import {
   galleryFileCount, galleryGroups, parseGalleryScope, parseGalleryView, producedGroups,
@@ -2520,6 +2521,50 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
   const [editing, setEditing] = useState<McpEntry | null>(null)
   const scopes = offerableScopes(cwd)
 
+  /**
+   * DOES IT ANSWER? — per server, on a press.
+   *
+   * The tab said whether a PROCESS was up (`running` / `idle`), and `idle` is the normal state of a
+   * perfectly good server nothing happens to be using — which is also exactly what a broken one
+   * looks like. Telling those two apart was impossible from this screen, and the only way to find
+   * out was to start a session and see whether the tools were there. "Fico no escuro e não sei os
+   * que estão disponíveis."
+   *
+   * NOT a connection, and the words never say it is: agentistics does not run MCP servers, Claude
+   * Code does, once, at session start. This starts the configured command, speaks the protocol's
+   * opening handshake, and reports what came back.
+   *
+   * Keyed by `scope:name` because one name can be configured at two scopes and they are two
+   * different servers with two different answers.
+   */
+  const [checks, setChecks] = useState<Record<string, { outcome: string; serverName?: string; exitCode?: number } | 'running'>>({})
+  const check = async (m: { name: string; scope: string }) => {
+    const key = `${m.scope}:${m.name}`
+    setChecks(c => ({ ...c, [key]: 'running' }))
+    try {
+      const res = await fetch('/api/mcp/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: m.name, scope: m.scope, ...(cwd ? { projectPath: cwd } : {}) }),
+      })
+      const out = await res.json() as { ok?: boolean; outcome?: string; handshake?: { serverName?: string }; exitCode?: number }
+      setChecks(c => ({
+        ...c,
+        [key]: out.ok && out.outcome
+          ? {
+            outcome: out.outcome,
+            ...(out.handshake?.serverName ? { serverName: out.handshake.serverName } : {}),
+            ...(out.exitCode !== undefined ? { exitCode: out.exitCode } : {}),
+          }
+          // A refused or unreachable ROUTE is not a verdict about the server, and must not be shown
+          // as one — the profile can forbid this entirely.
+          : { outcome: 'unavailable' },
+      }))
+    } catch {
+      setChecks(c => ({ ...c, [key]: { outcome: 'unavailable' } }))
+    }
+  }
+
   const write = async (path: string, body: Record<string, unknown>, row?: string) => {
     setBusy(true)
     setWorking(row ?? null)
@@ -2535,6 +2580,23 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
         setSaid({ tone: 'ok', text: (out.names ?? []).join(', ') })
         setPaste(''); setName(''); setAdding(false); setEditing(null)
         onChanged()
+        /**
+         * CHECKED AT THE ONE MOMENT SOMEBODY IS LOOKING — right after they added it.
+         *
+         * Asked for: "ao adicionar ele subir o mcp caso seja um mcp local ou tentar uma conexão,
+         * pq daí eu fico no escuro". Adding wrote a configuration and said nothing about whether it
+         * works, and the answer arrived a session later, if at all.
+         *
+         * Only here, and never while merely LISTING: a tab that started every configured server on
+         * load would be spawning processes nobody asked for, every time it was opened. One explicit
+         * act, one check.
+         *
+         * `install` is the only path that gets it — a REMOVE has nothing to check, and an EDIT
+         * leaves the row on screen with its own button.
+         */
+        if (path === '/api/mcp/install') {
+          for (const n of out.names ?? []) void check({ name: n, scope })
+        }
       } else {
         // The SERVER's own sentence, verbatim — including the harness command's own error, which
         // says far more about a refused config than any wording invented here.
@@ -2569,6 +2631,8 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
         <McpRow
           key={`${s.scope}:${s.name}`} entry={s} pt={pt} canWrite={list.canWrite} busy={busy}
           working={working === `${s.scope}:${s.name}`}
+          check={checks[`${s.scope}:${s.name}`] ?? null}
+          onCheck={() => void check(s)}
           onRemove={() => setRemoving(s)}
           onEdit={() => { setEditing(s); setSaid(null) }}
         />
@@ -2847,10 +2911,13 @@ function McpEditor({ entry, pt, busy, onCancel, onApply }: {
 }
 
 /** One configured server: what it is, where it is configured, and what it is doing right now. */
-function McpRow({ entry, pt, canWrite, busy, working, onRemove, onEdit }: {
+function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, onEdit }: {
   entry: McpEntry; pt: boolean; canWrite: boolean; busy: boolean
   /** This row is mid-write. A removal takes a second or two and must not look inert. */
   working: boolean
+  /** The last check's verdict, `'running'` while one is in flight, `null` if never asked. */
+  check: { outcome: string; serverName?: string; exitCode?: number } | 'running' | null
+  onCheck: () => void
   onRemove: () => void
   onEdit: () => void
 }) {
@@ -2906,6 +2973,34 @@ function McpRow({ entry, pt, canWrite, busy, working, onRemove, onEdit }: {
             </button>
           </>
         )}
+      </div>
+      {/* DOES IT ANSWER? The row already says whether a PROCESS is up, and `idle` is the normal
+          state of a good server nothing is using — which is also what a broken one looks like.
+          This is what tells those two apart, and it is a CHECK, not a connection: agentistics does
+          not run MCP servers, Claude Code does, once, when a session starts. */}
+      <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+        <button
+          onClick={onCheck}
+          disabled={check === 'running'}
+          style={{
+            flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
+            minHeight: isMobile ? 44 : 22, padding: isMobile ? '0 10px' : '0 7px', borderRadius: 6,
+            cursor: check === 'running' ? 'default' : 'pointer',
+            border: '1px solid var(--border-subtle)', background: 'transparent',
+            color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 10.5,
+          }}
+        >
+          {check === 'running' ? <Spinner size={11} /> : <Plug size={11} />}
+          {pt ? 'Testar' : 'Check'}
+        </button>
+        {check !== null && check !== 'running' && (() => {
+          const v = mcpCheckText(check, pt)
+          return (
+            <span style={{ fontSize: 10.5, lineHeight: 1.45, color: v.color, minWidth: 0 }}>
+              {v.text}
+            </span>
+          )
+        })()}
       </div>
       {/* WHY the status says what it says — the sentence, never a colour alone. */}
       {run.detail && (
