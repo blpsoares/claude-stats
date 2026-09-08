@@ -161,6 +161,7 @@ export function restrictionMiniTable(p: RestrictionMiniTableProps): React.ReactE
             onClick={() => p.onPage(paging.page - 1)}
             disabled={paging.page <= 0}
             aria-label={COPY.tablePrev[lang]}
+            className="ag-tap-icon"
             style={pagerBtn(isMobile, paging.page <= 0)}
           >‹</button>
           <span>{interpolate(COPY.tablePageOf[lang], { page: paging.page + 1, total: paging.pageCount })}</span>
@@ -169,6 +170,7 @@ export function restrictionMiniTable(p: RestrictionMiniTableProps): React.ReactE
             onClick={() => p.onPage(paging.page + 1)}
             disabled={paging.page >= paging.pageCount - 1}
             aria-label={COPY.tableNext[lang]}
+            className="ag-tap-icon"
             style={pagerBtn(isMobile, paging.page >= paging.pageCount - 1)}
           >›</button>
           <label style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -315,8 +317,10 @@ function pagerBtn(isMobile: boolean, disabled: boolean): React.CSSProperties {
     border: '1px solid var(--border)', background: 'transparent', borderRadius: 6,
     color: disabled ? 'var(--text-tertiary)' : 'var(--text-secondary)',
     cursor: disabled ? 'default' : 'pointer', fontFamily: 'inherit', fontSize: 13,
-    padding: isMobile ? '0 14px' : '0 8px',
-    minWidth: isMobile ? 44 : 24, minHeight: isMobile ? 44 : 22,
+    // The finger's 44px is `.ag-tap-icon`'s box on each consumer — a pager under a table should
+    // not be taller than the rows it pages through.
+    padding: isMobile ? '4px 14px' : '0 8px',
+    minWidth: 24, minHeight: 22,
     opacity: disabled ? 0.5 : 1,
   }
 }

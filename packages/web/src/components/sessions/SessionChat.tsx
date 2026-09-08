@@ -1600,11 +1600,13 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     onClick={() => editReply(null)}
                     aria-label={pt ? 'Cancelar resposta' : 'Cancel reply'}
                     title={pt ? 'Cancelar resposta' : 'Cancel reply'}
+                    className="ag-tap-icon"
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       border: 'none', background: 'transparent', padding: 2, flexShrink: 0,
-                      // 44px of finger on a phone; the icon inside stays the same size.
-                      minWidth: isMobile ? 44 : 22, minHeight: isMobile ? 44 : 22,
+                      // The finger's 44px is `.ag-tap-icon`'s invisible box; painted, a 13px glyph
+                      // sat in a square taller than the reply strip it cancels.
+                      minWidth: 22, minHeight: 22,
                       color: 'var(--text-tertiary)', cursor: 'pointer',
                     }}
                   >

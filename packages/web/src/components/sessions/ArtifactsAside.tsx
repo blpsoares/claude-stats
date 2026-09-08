@@ -2970,7 +2970,7 @@ function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, 
         <span style={{ marginLeft: 'auto', flexShrink: 0, fontSize: 10, color: 'var(--text-tertiary)' }}>{sc.label}</span>
         {canWrite && (
           <>
-            <button className="ag-tap-icon"
+            <button
               onClick={onEdit}
               disabled={busy}
               title={pt ? 'Ver e editar o JSON' : 'View and edit the JSON'}
@@ -2984,7 +2984,12 @@ function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, 
             >
               <Pencil size={11} />
             </button>
-            <button className="ag-tap-icon"
+            {/* NO `.ag-tap-icon` on this pair, and the exception is the point: Edit and Remove are
+                22px with a 6px gap, so a 44px box around either reaches ~5px into the other and
+                paints on top of it. On a destructive neighbour that is a mis-tap that runs
+                `claude mcp remove`. Where a control needs 44px and its row has no room, the answer
+                is painted height — the class is not a way to have both. */}
+            <button
               onClick={onRemove}
               disabled={busy}
               title={pt ? 'Remover' : 'Remove'}

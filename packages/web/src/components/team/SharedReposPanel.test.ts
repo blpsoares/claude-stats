@@ -338,8 +338,14 @@ describe('the table\'s two sizes and its keyboard/mobile behaviour', () => {
     expect(/isMobile\s*\n?\s*\?/.test(table)).toBe(true)
     // …and its overflow box is on the table's own container.
     expect(table).toContain("overflowX: 'auto'")
-    // Touch targets on every control the phone can reach.
-    expect(table.match(/minHeight: isMobile \? 44/g)?.length).toBeGreaterThanOrEqual(2)
+    // Touch targets on every control the phone can reach — counted across BOTH ways of giving one.
+    // A control can pay its 44px in PAINT (`minHeight: isMobile ? 44`) or take it from the
+    // projected box (`.ag-tap` / `.ag-tap-icon`, index.css), and the pager moved to the second so
+    // it would stop being taller than the rows it pages through. Counting only the first spelling
+    // made this fail on a control that had not lost its target at all.
+    const painted = table.match(/minHeight: isMobile \? 44/g)?.length ?? 0
+    const projected = table.match(/ag-tap(-icon)?/g)?.length ?? 0
+    expect(painted + projected).toBeGreaterThanOrEqual(2)
     // A <select> under 16px zooms iOS Safari and breaks the sticky header.
     expect(table).toContain('fontSize: isMobile ? 16')
   })

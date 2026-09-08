@@ -127,7 +127,9 @@ describe('touch targets are projected, not painted', () => {
       const code = stripComments(src)
       for (const m of code.matchAll(ICON_W_44)) {
         const block = blockAround(code, m.index)
-        if (!/height:\s*isMobile\s*\?\s*44\b/.test(block)) continue
+        // `(?:min)?[Hh]eight`: written as `height:` this never matched `minHeight:`, which is how
+        // two live 44x44 squares passed the guard.
+        if (!/(?:min)?[Hh]eight:\s*isMobile\s*\?\s*44\b/.test(block)) continue
         const line = lineAt(src, m.index)
         if (waived(src, line)) continue
         bad.push(`${relative(ROOT, file)}:${line}`)
@@ -145,10 +147,15 @@ describe('touch targets are projected, not painted', () => {
       const src = readFileSync(file, 'utf8')
       const code = stripComments(src)
       for (const d of code.matchAll(DECL)) {
-        // The declaration's body: to the next line that starts at column 0 with a closing brace.
+        // The declaration's body ends at whichever comes FIRST: its own closing brace at column 0,
+        // or the next module-level declaration. Taking only the brace ran a single-line const
+        // (`const x: CSSProperties = { … }`) on into the component below it, and reported that
+        // component's own intentional 44 as module-level.
         const rest = code.slice(d.index)
-        const end = rest.search(/\n\}/)
-        const body = end === -1 ? rest.slice(0, 900) : rest.slice(0, end)
+        const brace = rest.search(/\n\}/)
+        const nextDecl = rest.slice(1).search(/\n(?:export\s+)?(?:const|function|class)\s/)
+        const ends = [brace, nextDecl === -1 ? -1 : nextDecl + 1].filter(n => n >= 0)
+        const body = ends.length === 0 ? rest.slice(0, 900) : rest.slice(0, Math.min(...ends))
         // Only the UNCONDITIONAL form is refused here. A module object cannot see `isMobile`, so a
         // literal 44 in one is a desktop 44 whether or not that was the intent.
         const hit = /\b(?:minHeight|height):\s*44\b/.exec(body)
