@@ -71,6 +71,47 @@ export interface ApprovalSpec {
    */
   choice?: { kind: 'digit'; probed: string }
   /**
+   * How to reach a row on a dialog that printed NO numbers — the only way there is to move onto it.
+   *
+   * `choice` above answers a numbered dialog and cannot answer this one: there is no digit to type.
+   * Claude's trust prompt is the case (`❯ No, exit` / `  Yes, I trust this folder`), and it is the
+   * dialog where the old fallback cost the most — a bare confirm there takes `No, exit`, so from
+   * the web the only reachable answer was quitting. Reported by a user who had to open the terminal
+   * to say yes.
+   *
+   * MEASURED on claude 2.1.x under tmux on 2026-09-08, on the harness's own select component (the
+   * `/model` picker, which draws the same widget): `Down` moved the `❯` from row 2 to row 3, two
+   * `Up`s walked it back to row 1, and `Escape` closed the dialog. The trust prompt itself was NOT
+   * driven — it does not reappear on a machine that has already trusted its folders, and neither
+   * the onboarding nor the login select reaches it — which is exactly why the caller VERIFIES the
+   * cursor landed on the intended label before it confirms, instead of trusting this count.
+   *
+   * ABSENT means nobody has driven this harness's select, and a numberless dialog is then refused
+   * in words. Never fall back to `key`: that is the defect this field exists to close.
+   */
+  move?: { down: string; up: string; probed: string }
+  /**
+   * This harness's NUMBERLESS select is one contiguous line per option — so the shape reader may
+   * run on its frames.
+   *
+   * A GATE and not a flag, because the shape is not universal and reading it wrong is expensive.
+   * MEASURED 2026-09-08 by driving a live `kimi` 0.41.0 in a fresh directory: its trust prompt is
+   * numberless too, and each option carries a DESCRIPTION line at the SAME indentation, with blank
+   * lines between the option groups —
+   *
+   *      ❯ Trust this folder
+   *        Enable project MCP servers. Remembered for this folder.
+   *
+   *        Don't trust
+   *
+   * — so a contiguous-rows rule reads "Trust this folder" and its own description as two options
+   * and never reaches `Don't trust`. Half-read options are worse than none because they get
+   * OFFERED, so kimi is left OFF and its dialogs read exactly as they did before. claude's is one
+   * line per option (`❯ No, exit` / `  Yes, I trust this folder`, captured from a live session the
+   * same day), which is the only shape this reader models.
+   */
+  markerSelect?: { probed: string }
+  /**
    * How the SCREEN says a free-text field is open and taking keys.
    *
    * WHY IT CANNOT BE INFERRED FROM THE OPTION LIST. The check that shipped read the list: a field
@@ -101,6 +142,8 @@ export const APPROVAL_SPECS: Record<HarnessId, ApprovalSpec | null> = {
     key: 'Enter',
     probed: 'claude 2.1.231, 2026-08-13',
     choice: { kind: 'digit', probed: 'claude 2.1.232, 2026-08-14 (permission prompt + AskUserQuestion)' },
+    move: { down: 'Down', up: 'Up', probed: 'claude 2.1.x, 2026-09-08 (/model picker, driven under tmux)' },
+    markerSelect: { probed: 'claude, 2026-09-08 (trust prompt, captured from a live session)' },
     fieldOpen: {
       pattern: /ctrl\+g to edit in VS Code/i,
       probed: 'claude 2.1.263, 2026-09-08 (AskUserQuestion "Type something.")',
@@ -153,6 +196,27 @@ export function choiceKey(spec: ApprovalSpec | undefined, n: number): string | n
   // Only single digits are typeable as one key. A dialog with more than nine options would need a
   // different mechanism, and inventing one for a case nobody has seen is how a guess ships.
   return spec.choice.kind === 'digit' && n <= 9 ? String(n) : null
+}
+
+/**
+ * Can this harness pick a row on a dialog of THIS shape? — PURE.
+ *
+ * The two shapes need two different capabilities and a caller that asks only about `choice` offers
+ * a picker it cannot honour on a numberless dialog — or, worse, withholds one it could. `null`
+ * (the read found no menu) is not a pick at all.
+ */
+export function canPick(
+  spec: ApprovalSpec | undefined,
+  select: 'numbered' | 'marker' | null,
+): boolean {
+  if (select === 'numbered') return !!spec?.choice
+  if (select === 'marker') return !!spec?.move
+  return false
+}
+
+/** Whether the NUMBERLESS shape reader may run on this harness's frames — see `markerSelect`. */
+export function readsMarkerSelect(harness: HarnessId | undefined): boolean {
+  return !!approvalFor(harness)?.markerSelect
 }
 
 /** The spec for a harness, or `undefined` when its dialog was never read. */

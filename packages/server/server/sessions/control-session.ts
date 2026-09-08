@@ -16,7 +16,7 @@
 import { contextFraction, fmt, fmtCost } from '@agentistics/core'
 import type { ControlSession, SessionState } from '@agentistics/tui/control'
 import type { CliStrings } from '../cli-i18n'
-import { approvalFor, isFreeTextOption } from './approval-spec'
+import { approvalFor, canPick, isFreeTextOption } from './approval-spec'
 import { needsChoice } from './dialog-choice'
 import { pickTitle } from './harness-session-file'
 import type { ResolvedRepoFacts } from './repo-facts'
@@ -178,10 +178,14 @@ export function toControlSession(
     // Picking one of them needs a VERIFIED way to select by number on this harness. Only claude has
     // one; everywhere else the options are shown and the answer is a refusal that names why, because
     // falling back to the confirm key would choose for the user among things that differ.
-    ...(needsChoice(v.dialogOptions ?? []) && approvalFor(v.harness)?.choice
+    // The capability asked for is the one THIS dialog's shape needs: a digit for a numbered list, a
+    // move for a numberless one. Asking only about `choice` withheld the picker from claude's trust
+    // prompt — which prints no numbers — and left the bare confirm in its place, so the only
+    // reachable answer was the highlighted `No, exit`.
+    ...(needsChoice(v.dialogOptions ?? []) && canPick(approvalFor(v.harness), v.dialogSelect ?? null)
       ? { canChoose: true as const }
       : {}),
-    ...(needsChoice(v.dialogOptions ?? []) && !approvalFor(v.harness)?.choice && harness
+    ...(needsChoice(v.dialogOptions ?? []) && !canPick(approvalFor(v.harness), v.dialogSelect ?? null) && harness
       ? { chooseBlind: s.sessChooseBlind(harness) }
       : {}),
     // The verb exists only where BOTH halves are true: the session is asking, and somebody has read

@@ -110,6 +110,13 @@ export interface SessionView {
    */
   dialogOptions?: DialogOption[]
   /**
+   * HOW one of `dialogOptions` is picked — `numbered` (type the digit) or `marker` (move onto it).
+   *
+   * Carried rather than re-derived downstream, because the two need different capabilities of the
+   * harness and a surface that assumes "numbered" offers a digit the dialog never printed.
+   */
+  dialogSelect?: 'numbered' | 'marker'
+  /**
    * WHY the dialog on screen could not be read, when it could not be.
    *
    * Distinct from an empty `dialogOptions`, and that distinction is the whole point: no options
@@ -448,6 +455,8 @@ export function buildSessionViews(o: {
   modes?: ReadonlyMap<string, { id: string; label: string }>
   /** The options that dialog offers, keyed by session id. Absent where they could not be read. */
   dialogOptions?: ReadonlyMap<string, DialogOption[]>
+  /** How those options are picked, keyed by session id — see `SessionView.dialogSelect`. */
+  dialogSelect?: ReadonlyMap<string, 'numbered' | 'marker'>
   /** Why the dialog could not be read, keyed by session id — see `SessionView.dialogUnreadable`. */
   dialogUnreadable?: ReadonlyMap<string, DialogUnreadable>
   /** The ids `crash-group.ts` decided fell together. A set, because the question is about a set. */
@@ -590,6 +599,9 @@ export function buildSessionViews(o: {
         : {}),
       ...(activity === 'waiting-approval' && (o.dialogOptions?.get(r.id)?.length ?? 0) > 0
         ? { dialogOptions: o.dialogOptions!.get(r.id)! }
+        : {}),
+      ...(activity === 'waiting-approval' && o.dialogSelect?.get(r.id)
+        ? { dialogSelect: o.dialogSelect.get(r.id)! }
         : {}),
       ...(activity === 'waiting-approval' && o.dialogUnreadable?.get(r.id)
         ? { dialogUnreadable: o.dialogUnreadable.get(r.id)! }
