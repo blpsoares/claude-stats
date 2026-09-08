@@ -18,9 +18,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Clock, Pin, PinOff, Plus, RotateCcw, Search, Send, X } from 'lucide-react'
 import type { Filters } from '@agentistics/core'
 import {
-  ACTIVE_STATES, DEFAULT_ORDER, filterSessions, sessionNotify, sortSessions,
-  type ControlSession,
+  ACTIVE_STATES, filterSessions, sessionNotify,
+  type ControlSession, type SessionGroup,
 } from '@agentistics/tui/control/session-fleet'
+import { projectGroups, showsProjectHeadings } from '../../lib/fleetGroups'
 import { rowSelected } from '../../lib/fleetSelection'
 import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
@@ -320,19 +321,27 @@ export function SessionsAside({
    * is running, ranked by what needs you most, and everything else beneath it.
    *
    * `DEFAULT_ORDER` (`state`, via `sessionRank`) is the SAME ranking the terminal cockpit breaks
-   * ties on, so "sorted by status" means one thing in both places.
+   * ties on, so "sorted by status" means one thing in both places — `projectGroups` applies it
+   * inside each project band and orders the bands themselves by their most urgent member.
+   *
+   * Inside a band the rows are grouped BY PROJECT (`lib/fleetGroups.ts`), and a band holding one
+   * project draws no heading at all — see that module's header. On a machine whose whole fleet sits
+   * in one checkout this therefore looks exactly as it did.
    */
-  const bands = useMemo((): { label: string; rows: ControlSession[] }[] => {
+  const bands = useMemo((): { label: string; groups: SessionGroup[] }[] => {
     const rest = matched.filter(r => !pinned.has(pinKeyOf(r)))
     return [
-      { label: pt ? 'Ativas' : 'Active', rows: sortSessions(rest.filter(r => active.has(r.state)), DEFAULT_ORDER) },
+      { label: pt ? 'Ativas' : 'Active', groups: projectGroups(rest.filter(r => active.has(r.state)), lang) },
       // Never computed while activeOnly is on — those rows are the ones the switch is withholding,
       // not a second list to render beside it.
-      { label: pt ? 'Inativas' : 'Inactive', rows: activeOnly ? [] : sortSessions(rest.filter(r => !active.has(r.state)), DEFAULT_ORDER) },
+      { label: pt ? 'Inativas' : 'Inactive', groups: activeOnly ? [] : projectGroups(rest.filter(r => !active.has(r.state)), lang) },
     ]
-  }, [matched, pinned, active, activeOnly, pt])
+  }, [matched, pinned, active, activeOnly, pt, lang])
 
-  const total = bands.reduce((n, b) => n + b.rows.length, 0) + pinnedRows.length
+  const total = bands.reduce(
+    (n, b) => n + b.groups.reduce((m, g) => m + g.sessions.length, 0),
+    0,
+  ) + pinnedRows.length
   const filterCount = (filters.harnesses?.length ?? 0) + filters.projects.length
     + (filters.repos?.length ?? 0) + filters.models.length
 
@@ -599,7 +608,7 @@ export function SessionsAside({
                 // The label is not unique — two dimensions can legitimately produce one word, and
                 // an empty band still holds its place in the order.
                 key={`${i}-${b.label}`}
-                label={b.label} rows={b.rows} pinned={pinned}
+                label={b.label} groups={b.groups} pinned={pinned}
                 sessionId={sessionId} tap={tap} onPin={flip}
                 onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(sessionPath(s.id)))}
                 {...(rowsById ? { rowsById } : {})}
@@ -731,9 +740,10 @@ export function SessionsAside({
 
 /** One band of the two-way (active/inactive) split. Absent when it would be empty — an empty
  *  band with a heading and no rows under it is a label pretending to be information. */
-function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
+function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
   label: string
-  rows: readonly ControlSession[]
+  /** The band's rows, already grouped by project and ordered — see `lib/fleetGroups.ts`. */
+  groups: readonly SessionGroup[]
   pinned: ReadonlySet<string>
   sessionId?: string
   tap?: number
@@ -742,7 +752,11 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsB
   rowsById?: Map<string, { verbs: RowVerb[] }>
   onOpenMenu: (session: ControlSession, x: number, y: number, verbs: RowVerb[]) => void
 }) {
-  if (rows.length === 0) return null
+  const count = groups.reduce((n, g) => n + g.sessions.length, 0)
+  if (count === 0) return null
+  // One project under this band names it twice — the band heading is directly above. See the rule
+  // in `fleetGroups.ts`; it is the same one the cockpit's cascade applies to its own root.
+  const headings = showsProjectHeadings(groups)
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{
@@ -751,23 +765,36 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsB
         textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)',
       }}>
         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-        <span style={{ marginLeft: 'auto', fontWeight: 600, opacity: 0.75 }}>{rows.length}</span>
+        <span style={{ marginLeft: 'auto', fontWeight: 600, opacity: 0.75 }}>{count}</span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {rows.map(s => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            selected={rowSelected(s, sessionId)}
-            pinned={pinned.has(pinKeyOf(s))}
-            {...(tap ? { tap } : {})}
-            onPin={() => onPin(s)}
-            onOpen={() => onOpen(s)}
-            {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
-            onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
-          />
-        ))}
-      </div>
+      {groups.map(g => (
+        <div key={g.key} style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: headings ? 10 : 0 }}>
+          {headings && (
+            // Deliberately quieter than the band above it — lowercase, no letter-spacing — so the
+            // two headings read as a hierarchy rather than as two lists.
+            <div style={{
+              display: 'flex', alignItems: 'baseline', gap: 6, padding: '4px 9px 2px',
+              fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)',
+            }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.label}</span>
+              <span style={{ marginLeft: 'auto', opacity: 0.7 }}>{g.sessions.length}</span>
+            </div>
+          )}
+          {g.sessions.map(s => (
+            <SessionRow
+              key={s.id}
+              session={s}
+              selected={rowSelected(s, sessionId)}
+              pinned={pinned.has(pinKeyOf(s))}
+              {...(tap ? { tap } : {})}
+              onPin={() => onPin(s)}
+              onOpen={() => onOpen(s)}
+              {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
+              onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   )
 }
