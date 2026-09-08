@@ -96,6 +96,8 @@ export interface SessionsAsideProps {
     title?: string
     project?: string
     cwd?: string
+    /** Already localized by the server — the word the fleet list prints for this row's state. */
+    stateLabel?: string
   }>
   /** Performs a verb. Absent exactly where `rowsById` is absent. */
   act?: (req: {
@@ -197,11 +199,14 @@ export function SessionsAside({
       const verb = (r.verbs as RowVerb[] | undefined)?.find(v => v.action === 'prompt')
       const enabled = Boolean(verb?.enabled)
       if (enabled) sendable++
-      sendRows.push({
-        ...base,
-        enabled,
-        ...(!enabled && verb?.reason ? { reason: verb.reason } : {}),
-      })
+      // The verb carries no reason of its own — `prompt` is enabled by being LIVE and nothing else
+      // (a session sitting on a dialog is refused later by the host, which re-reads the screen).
+      // So the reason is that fact, said with the state the SERVER already localized rather than a
+      // second vocabulary invented here.
+      const stateWord = typeof r.stateLabel === 'string' ? r.stateLabel : ''
+      const reason = verb?.reason
+        ?? (pt ? 'não está rodando' : 'not running') + (stateWord ? ` · ${stateWord}` : '')
+      sendRows.push({ ...base, enabled, ...(enabled ? {} : { reason }) })
     }
     return { fellRows, sendRows, sendable }
   }, [rowsById, pt])
