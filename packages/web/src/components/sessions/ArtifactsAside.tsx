@@ -126,7 +126,7 @@ export interface ArtifactsAsideProps {
    * whole sentence is "the harness is running something", and pressing it to land on the file list
    * answers a question nobody asked. See `artifactsStore.ts`.
    */
-  tabRequest?: { tab: string; at: number } | null
+  tabRequest?: { tab: string; at: number; ref?: string } | null
   sessionId: string
   lang: 'pt' | 'en'
   /** Every file this session touched, newest first. */
@@ -362,11 +362,31 @@ export function ArtifactsAside({
    * An unknown tab is IGNORED rather than defaulted: whoever wrote it meant something this panel
    * does not have, and dropping them on Files would look like the request was honoured.
    */
+  /**
+   * The step the edge strip asked for, until the reader moves on.
+   *
+   * It does two things and they are deliberately the same state: the row opens itself, and it is
+   * highlighted so the eye finds it in a feed that may be long. The highlight FADES — it exists to
+   * answer "where", and a marker that stays becomes part of the row.
+   */
+  const [focusStep, setFocusStep] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (focusStep === undefined) return
+    // Long enough to be found, short enough not to become furniture.
+    const t = setTimeout(() => setFocusStep(undefined), 4000)
+    return () => clearTimeout(t)
+  }, [focusStep])
+
   const askedAt = tabRequest?.at
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
       || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
+    // A requested STEP comes with the tab: the edge strip names an action, so pressing it
+    // lands on that row rather than on the top of a feed to be searched. Set unconditionally,
+    // including to undefined, so a later request with no step clears the previous one — a
+    // highlight left over from an earlier press would point at the wrong line.
+    setFocusStep(tabRequest?.ref)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -1713,15 +1733,31 @@ function StepBlock({ label, text, tone }: { label: string; text: string; tone?: 
   )
 }
 
-function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
+function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
   e: LiveEvent; pt: boolean; now: number; onOpen?: () => void; status?: WriteStatus
   sessionId: string
   /** Set inside a SUBAGENT's activity: its refs live in its own transcript, not the parent's. */
   agentId?: string
+  /** The edge strip pointed at THIS row: it opens itself and wears a marker until it fades. */
+  focused?: boolean
 }) {
   const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(focused === true)
   const openable = stepOpenable(e)
+  // It may become the pointed-at row after it was drawn — the strip is pressed while the feed is
+  // already on screen. Opening then is the same gesture one render later; it never CLOSES anything,
+  // so a row the reader shut stays shut.
+  const wasFocused = useRef(focused === true)
+  useEffect(() => {
+    if (focused === true && !wasFocused.current) setOpen(true)
+    wasFocused.current = focused === true
+  }, [focused])
+  /** Brings the pointed-at row into view — `nearest`, never `smooth`: the feed follows its own tail
+   *  and a smooth scroll racing that leaves the box drifting. */
+  const rowRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (focused === true) rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [focused])
   const detail = useStepDetail(sessionId, e, open, pt, agentId)
   const notice = detail ? stepNotice(detail, pt) : null
   const meta: Record<LiveEvent['kind'], { icon: React.ReactNode; color: string; label: string }> = {
@@ -1744,7 +1780,14 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
    */
   const Tag = openable ? 'button' : 'div'
   return (
-    <div style={{ borderRadius: 7, background: open ? 'var(--bg-elevated)' : 'transparent' }}>
+    <div
+      ref={rowRef}
+      style={{
+        borderRadius: 7,
+        background: open ? 'var(--bg-elevated)' : 'transparent',
+        ...(focused === true ? { animation: 'ag-row-flash 1.6s ease-in-out 2' } : {}),
+      }}
+    >
     <div style={{ display: 'flex', alignItems: 'flex-start' }}>
     <Tag
       {...(openable ? {
@@ -2313,6 +2356,16 @@ function SubagentCard({ row, pt, now, onOpen }: {
         )}
       </div>
       <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+        /* "It is here." A marker that ENDS: three beats and gone. A highlight that stays becomes
+           part of the row, and then it is pointing at nothing. Background and a ring, never a
+           colour on the text — the row still has to be readable while it is being pointed at. */
+        @keyframes ag-row-flash {
+          0%, 100% { background: transparent; box-shadow: 0 0 0 0 transparent }
+          15%, 55% {
+            background: color-mix(in srgb, var(--anthropic-orange) 20%, transparent);
+            box-shadow: 0 0 0 1px color-mix(in srgb, var(--anthropic-orange) 55%, transparent)
+          }
+        }
         /* The line being executed. A BACKGROUND pulse, not an opacity one: the text must stay
            readable through the whole cycle — a command you cannot read while it runs is the one
            moment you most want to read it. Soft on purpose; it sits under a monospace block. */
