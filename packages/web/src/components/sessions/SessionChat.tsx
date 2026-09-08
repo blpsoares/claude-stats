@@ -52,7 +52,7 @@ import {
   applySkill, emptyPickerReason, filterSkills, flattenGroups, groupSkills, slashMisplaced,
   slashQuery, stepSkill,
 } from '../../lib/skillMenu'
-import { markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
+import { composeReply, markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
 import { pendingEchoes } from '@agentistics/core'
 import {
   applyDraftRequest, consumeDraftRequest, getDraftRequest, useDraftRequest,
@@ -1181,7 +1181,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     // Quote first, then the paths, then what was typed. The quote is trimmed to a few lines: a
     // reply that repeats forty lines back at the session costs it context for no benefit.
     const quote = replyTo ? quoteFor(replyTo) : ''
-    const full = [quote, ...attached.map(a => a.path), text].filter(x => x !== '').join('\n')
+    // `composeReply` puts a BLANK LINE between the blocks, and that is not formatting: joined with a
+    // single newline, CommonMark's lazy continuation pulls what was typed into the blockquote, and
+    // the person's own words render inside the grey bar as if the session had said them.
+    const full = composeReply({ quote, paths: attached.map(a => a.path), text })
     /**
      * THE COMPOSER EMPTIES ON THE KEYSTROKE, NOT ON THE ANSWER.
      *
