@@ -1034,7 +1034,8 @@ A metric no session could answer is dropped rather than printed as a zero."
 
 - [ ] **Step 1: Carry the field**
 
-In `packages/web/src/lib/fleet.ts`, on the type describing the `/api/fleet` response, add:
+In `packages/web/src/lib/fleet.ts`, on `interface FleetPayload` (line 84, the one holding
+`sessions: FleetRow[]`), add:
 
 ```ts
   /** This machine's 30-day behaviour baseline — see `session-profile.ts`. */
@@ -1105,15 +1106,23 @@ export function ProfilePanel({ baseline, pt }: { baseline?: Baseline; pt: boolea
 
 In `packages/web/src/components/sessions/FleetOverview.tsx`, find the branch that renders the "no sessions" sentence and add `<ProfilePanel baseline={fleet?.baseline} pt={pt} />` **after** it, never in place of it. Do not change the sentence — it is what distinguishes "nothing is running" from "the filter withheld it".
 
-- [ ] **Step 4: Verify at 390px**
+- [ ] **Step 4: The 390px check is DEFERRED, deliberately — do not run a dev server**
 
-Run `bun run dev`, open the sessions view with no sessions matching, set the viewport to 390px wide, and confirm in the browser console:
+`CLAUDE.md` requires every UI change to be verified at 390px (`document.documentElement.scrollWidth
+<= window.innerWidth` must hold), and that verification is NOT waived. It is deferred to the end of
+the branch for one reason: ports 47291/47292 belong to the user's running production instance, which
+is serving an older build with no `baseline` field at all — so a dev server started here would either
+collide with those ports or render a panel with nothing in it, and either way prove nothing.
 
-```js
-document.documentElement.scrollWidth <= window.innerWidth
-```
+**Do not start, stop or restart any server as part of this task.** The branch owner runs the check
+against a build of this branch once the whole plan is done, and it is tracked in the progress ledger
+as an open item until then.
 
-Expected: `true`. The grid uses `auto-fit` with a 120px minimum, so it collapses to two columns at 390px; if it does not, reduce the minimum rather than adding a media query.
+What you CAN do, and must: keep the grid collapse-safe by construction. `repeat(auto-fit,
+minmax(120px, 1fr))` fits two columns inside 390px minus the page padding without a media query, and
+every cell carries `minWidth: 0` so a long label cannot push the track wider than its share. If you
+need a wider minimum than 120px, you have changed the thing this step exists to protect — say so in
+your report rather than adding a media query.
 
 - [ ] **Step 5: Run the full suite**
 
