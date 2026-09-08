@@ -140,9 +140,10 @@ export function ModelBreakdown({ modelUsage, note, currency = 'USD', brlRate = 1
   const totalCacheRead = entries.reduce((s, [, u]) => s + u.cacheReadInputTokens, 0)
   const totalCacheWrite = entries.reduce((s, [, u]) => s + u.cacheCreationInputTokens, 0)
 
+  // 44px is the finger's, not the paint's — every consumer of this style carries `.ag-tap`,
+  // which projects the target invisibly. At `borderRadius: 999` a 44px-tall pill is an ellipse.
   const chip = (active: boolean): React.CSSProperties => ({
-    padding: isMobile ? '0 11px' : '4px 10px',
-    minHeight: isMobile ? 44 : undefined,
+    padding: isMobile ? '5px 12px' : '4px 10px',
     borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 11.5,
     border: `1px solid ${active ? 'var(--anthropic-orange)' : 'var(--border)'}`,
     background: active ? 'var(--anthropic-orange-dim)' : 'var(--bg-card)',
@@ -170,9 +171,9 @@ export function ModelBreakdown({ modelUsage, note, currency = 'USD', brlRate = 1
       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
         {([['cost', pt ? 'Custo' : 'Cost'], ['tokens', 'Tokens'], ['model', pt ? 'Nome' : 'Name']] as Array<[SortKey, string]>)
           .map(([k, label]) => (
-            <button key={k} onClick={() => setSortKey(k)} style={chip(sortKey === k)}>{label}</button>
+            <button key={k} onClick={() => setSortKey(k)} className="ag-tap" style={chip(sortKey === k)}>{label}</button>
           ))}
-        <button onClick={() => setByProvider(v => !v)} style={chip(byProvider)}>
+        <button onClick={() => setByProvider(v => !v)} className="ag-tap" style={chip(byProvider)}>
           {pt ? 'Por provedor' : 'By provider'}
         </button>
       </div>

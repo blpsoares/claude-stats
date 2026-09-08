@@ -22,6 +22,8 @@ import { Section } from '../components/Section'
 import { ModelBreakdown } from '../components/ModelBreakdown'
 import { ActivityChart } from '../components/ActivityChart'
 import { RecentSessions } from '../components/RecentSessions'
+import { ScopedSessions } from '../components/ScopedSessions'
+import { StatTile, STAT_TILE_GRID } from '../components/StatTile'
 import { MetricNote } from '../components/MetricNote'
 import { BetaTag } from '../components/BetaTag'
 import { RepoTasksTab } from '../components/tasks/RepoTasksTab'
@@ -158,15 +160,15 @@ export default function RepoDetailPage() {
       </div>
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10 }}>
         <StatTile label={pt ? 'Sessões' : 'Sessions'} value={String(scoped.totalSessions)} />
         <StatTile label={pt ? 'Custo' : 'Cost'} value={fmtCost(scoped.totalCostUSD, currency, brlRate)} accent />
         {/* ONE tokens tile — the total of all four billed counters, where this used to be input
             and output as two tiles (the pair that comes to 0,34 % of the volume). The four
             counters themselves are the line UNDER this strip, not tiles in it: the grid is
-            `repeat(auto-fit, minmax(120px, 1fr))`, which fits `floor((W + gap) / 130)` columns —
-            ten at ~1400px — so taking the strip to eleven tiles stranded the last one alone on a
-            second row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
+            `STAT_TILE_GRID`, an `auto-fit` over `minmax(150px, 1fr)` — about eight columns at
+            ~1400px — so taking the strip past that count strands the last tile alone on a second
+            row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
             is priced from, so the tokens and the money describe the same turns under the repo
             scope. */}
         <StatTile
@@ -252,7 +254,7 @@ export default function RepoDetailPage() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10, marginBottom: 14 }}>
                 <StatTile label={pt ? 'Runs' : 'Runs'} value={String(ciSessions.length)} />
                 <StatTile label={pt ? 'Tokens' : 'Tokens'} value={fmt(ciSessions.reduce((a, s) => a + sessionTokenTotal(s), 0))} />
                 <StatTile label="Commits" value={String(ciSessions.reduce((a, s) => a + (s.git_commits ?? 0), 0))} />
@@ -269,9 +271,15 @@ export default function RepoDetailPage() {
       )}
 
       {tab === 'sessions' && (
-        <Section title={<><Clock size={14} /> {pt ? 'Sessões recentes' : 'Recent sessions'}</>}>
-          {/* RecentSessions has its own built-in sort (date/tokens/messages/tools/files). */}
-          <RecentSessions sessions={sessions} lang={lang} onSelect={setSelectedSession} />
+        <Section title={<><Clock size={14} /> {pt ? 'Sessões' : 'Sessions'}</>}>
+          {/* `ScopedSessions`, not `RecentSessions`: this tab is already scoped to ONE repository,
+              so the browser's group-by, status filter, six-key sort, search and grid toggle re-ask
+              questions the page has answered — and cost the first screen of a phone before a single
+              session appeared. What is left is what the tab is for: each session's metrics, and the
+              way into it. See the module comment on ScopedSessions for the rest.
+              The Actions tab above keeps `RecentSessions` on purpose: a CI runner's session was
+              never on this machine's fleet, so it has no /sessions row to link to. */}
+          <ScopedSessions sessions={sessions} lang={lang} currency={currency} brlRate={brlRate} />
         </Section>
       )}
 
@@ -426,18 +434,6 @@ function MemberComparePanel({ sessions, lang, currency, brlRate }: {
           ))}
         </div>
       </div>
-    </div>
-  )
-}
-
-function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
-  return (
-    <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px',
-      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-    }}>
-      <span style={{ fontSize: 18, fontWeight: 700, color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)', whiteSpace: 'nowrap' }}>{value}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
     </div>
   )
 }

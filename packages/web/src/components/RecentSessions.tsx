@@ -751,8 +751,10 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
           {/* Shortcuts & Sort */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            {/* Status shortcuts */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {/* Status shortcuts. `flexWrap` because these rows do NOT wrap on their own: the sort
+                row in particular ran straight off the right edge of the card on a phone, taking its
+                last key ("Files") with it — the parent wraps, the inner rows did not. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0 }}>
               <Filter size={12} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
               {shortcutOptions.map(opt => (
                 <PillButton key={opt.key} active={statusShortcut === opt.key} onClick={() => { setStatusShortcut(opt.key); setPage(0) }}>
@@ -765,7 +767,7 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
             <div style={{ width: 1, height: 16, background: 'var(--border-subtle)' }} />
 
             {/* Sort keys */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0 }}>
               <ArrowUpDown size={12} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
               {sortOptions.map(opt => (
                 <PillButton key={opt.key} active={sortKey === opt.key} onClick={() => changeSort(opt.key)}>
@@ -777,8 +779,10 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
           </div>
 
           {/* Search Input & View Mode */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <div style={{ position: 'relative', width: 180 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 auto', justifyContent: 'flex-end', minWidth: 0 }}>
+            {/* The search field gives way before the row does — a fixed 180 beside a
+                `flexShrink: 0` wrapper is what pushed this block past the card's right edge. */}
+            <div style={{ position: 'relative', flex: '1 1 180px', minWidth: 130, maxWidth: 240 }}>
               <Search
                 size={12}
                 style={{
@@ -2296,9 +2300,12 @@ function PinButton({ sessionId, lang }: { sessionId: string; lang: 'pt' | 'en' }
           : (lang === 'pt' ? `Fixar no topo (até ${MAX_PINNED})` : `Pin to top (up to ${MAX_PINNED})`)}
         aria-label={pinned ? (lang === 'pt' ? 'Desafixar' : 'Unpin') : (lang === 'pt' ? 'Fixar' : 'Pin')}
         aria-pressed={pinned}
+        // `.ag-tap-icon` and not a 44x44 box: on a phone this drew an empty square the height of
+        // three rows of the card it sits on, and the title beside it lost the width to it.
+        className="ag-tap-icon"
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
+          width: 30, height: 30, borderRadius: 8,
           border: pinned ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
           background: pinned ? 'rgba(232,105,11,0.1)' : 'transparent',
           color: pinned ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',

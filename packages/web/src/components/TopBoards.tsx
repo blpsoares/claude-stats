@@ -324,9 +324,9 @@ export function TopBoards({ sessions, lang, currency, brlRate, onSelectSession }
           <button
             key={m}
             onClick={() => setMetric(m)}
+            className="ag-tap"
             style={{
-              padding: isMobile ? '8px 14px' : '4px 10px',
-              minHeight: isMobile ? 44 : undefined,
+              padding: isMobile ? '5px 12px' : '4px 10px',
               borderRadius: 999,
               border: `1px solid ${metric === m ? 'var(--anthropic-orange)' : 'var(--border)'}`,
               background: metric === m ? 'var(--anthropic-orange)' : 'transparent',

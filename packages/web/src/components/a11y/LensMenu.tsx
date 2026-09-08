@@ -63,8 +63,9 @@ export function LensMenu({ lens, x, y, text, isMobile, global, onChange, onSetGl
   // it already yields last).
   const readout: React.CSSProperties = { minWidth: 36, textAlign: 'right', flexShrink: 0 }
 
+  // Every consumer carries `.ag-tap`, which is where the 44px finger target lives now.
   const chip = (on: boolean): React.CSSProperties => ({
-    padding: isMobile ? '10px 12px' : '5px 10px', minHeight: isMobile ? 44 : undefined,
+    padding: isMobile ? '6px 12px' : '5px 10px',
     borderRadius: 7, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
     border: '1px solid ' + (on ? 'var(--anthropic-orange)' : 'var(--border)'),
     background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
@@ -92,7 +93,7 @@ export function LensMenu({ lens, x, y, text, isMobile, global, onChange, onSetGl
           <span>{text.shape}</span>
           <span style={{ display: 'flex', gap: 6 }}>
             {(['rect', 'circle'] as const).map(s => (
-              <button key={s} style={chip(lens.shape === s)} onClick={() => onChange({ shape: s })}>
+              <button key={s} className="ag-tap" style={chip(lens.shape === s)} onClick={() => onChange({ shape: s })}>
                 {s === 'rect' ? text.rect : text.circle}
               </button>
             ))}
