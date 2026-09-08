@@ -86,7 +86,7 @@ export type FleetActionId =
    * `deleteTask` removes a piece of work by NAME, which is why it is the one action here whose
    * subject comes from `text`.
    */
-  | 'reopenFell' | 'deleteTask'
+  | 'reopenFell' | 'deleteTask' | 'broadcast'
 
 export interface FleetActionRequest {
   id: string
@@ -95,6 +95,19 @@ export interface FleetActionRequest {
   text?: string
   /** The option NUMBER for `approve` on a numbered dialog. Never defaulted — see `answerSession`. */
   choice?: number
+  /**
+   * The rows a FLEET action acts on: which of the fallen to reopen, which sessions to broadcast to.
+   *
+   * It can only ever NARROW a set the server has already decided. `reopenFell` intersects it with
+   * the group `planCrashGroup` computed here, and `broadcast` with the fleet's own live rows — so a
+   * caller naming arbitrary ids reaches nothing that was not already going to be offered. That is
+   * what makes a list safe to accept at all, and it is checked in `selectFell` / `planBroadcast`
+   * rather than trusted from here.
+   *
+   * For `reopenFell`, ABSENT means the whole group and an EMPTY ARRAY means nothing. The two are
+   * deliberately different; see `selectFell`.
+   */
+  ids?: string[]
 }
 
 /** How a verb is offered to the page: performable, present-but-refused, or absent. */
@@ -125,6 +138,15 @@ export interface FleetRow {
   stateLabel: string
   /** True for a row agentop hosts. An `external`/`closed` row carries no activity and no verbs. */
   actionable: boolean
+  /**
+   * This row is one of the sessions the machine TOOK — a reboot, a laptop closed with it open.
+   *
+   * Only the COUNT used to travel, on the reasoning that the rows are already in this list and
+   * shipping the set twice is two things that can disagree. True, and the mark was never sent — so
+   * the browser had a count with no way to know WHICH rows it was about, and could offer nothing
+   * but all-or-nothing. This is the mark, not a second copy of the set.
+   */
+  fell?: boolean
   task?: string
   note?: string
   model?: string
@@ -206,6 +228,7 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
     state: row.state,
     stateLabel: row.stateLabel,
     actionable: row.actionable,
+    ...(row.fell ? { fell: true } : {}),
     ...(row.task ? { task: row.task } : {}),
     ...(row.note ? { note: row.note } : {}),
     ...(row.model ? { model: row.model } : {}),

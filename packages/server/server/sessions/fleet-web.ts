@@ -65,7 +65,13 @@ export interface FleetPayload {
   tasks: string[]
   /** The tasks the user marked FINISHED — a statement about the work, not about any session. */
   finishedTasks?: string[]
-  /** How many sessions FELL together, when some did — the "reopen what fell" offer. */
+  /**
+   * The fall: how many, and when.
+   *
+   * WHICH rows is not repeated here — they are in `sessions`, each marked `fell`, and shipping the
+   * set twice is two things that can disagree about it. The count is what a summary line needs; the
+   * marks are what a list somebody ticks needs.
+   */
   fell?: { count: number; atMs: number }
   /**
    * The same fleet, ARRANGED as the caller asked (`fleet-arrange.ts`).
@@ -227,6 +233,19 @@ export async function runFleetAction(
   const s = controlStrings(lang)
   const host = await hostFor(lang)
   const text = (req.text ?? '').trim()
+  /*
+   * `ids` ARRIVES FROM A BROWSER, so its SHAPE is checked here and nowhere else.
+   *
+   * The route reads the whole body as a `FleetActionRequest`; a declared type is not a parse. A
+   * bare string would iterate as CHARACTERS in the group planners, quietly turning one id into
+   * dozens of one-letter ones — the planners would reject every one of them, so the failure is a
+   * confusing report rather than an unsafe act, but a confusing report is what people file bugs
+   * about. `undefined` survives as `undefined`: for `reopenFell` that means THE WHOLE GROUP, and
+   * collapsing it into an empty array would silently turn "reopen them all" into "reopen nothing".
+   */
+  const ids = Array.isArray(req.ids)
+    ? req.ids.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : undefined
 
   switch (req.action) {
     case 'approve':
@@ -283,12 +302,25 @@ export async function runFleetAction(
       if (!host.interruptSession) return { ok: false, message: s.sessionsNoHost }
       return await host.interruptSession(req.id)
     }
-    // Acts on the GROUP that fell together, not on a row — the caller names nothing, and the
-    // cockpit's own `task-reopen` arithmetic decides which sessions were in it. A caller that could
-    // pass a list could resurrect anything on this machine.
+    /**
+     * Acts on the GROUP that fell together, not on a row. `ids` can only NARROW that group: the
+     * server computes it with `planCrashGroup` and `selectFell` intersects, so a caller naming
+     * arbitrary ids resurrects nothing — which is what the older "the caller names nothing" rule
+     * was protecting, kept by construction rather than by refusing to listen.
+     *
+     * ABSENT is the whole group (the cockpit's `R`); an EMPTY ARRAY is nothing. Never collapsed.
+     */
     case 'reopenFell':
       if (!host.reopenFell) return { ok: false, message: s.sessionsNoHost }
-      return await host.reopenFell()
+      return await host.reopenFell(ids)
+    /**
+     * ONE PROMPT, SEVERAL SESSIONS. The ids narrow the fleet's own live rows, and every send still
+     * goes through `promptSession`, which re-reads that session's screen as it types — see
+     * `broadcastPrompt`. Nothing here bypasses a single-session rule.
+     */
+    case 'broadcast':
+      if (!host.broadcastPrompt) return { ok: false, message: s.sessionsNoHost }
+      return await host.broadcastPrompt(ids ?? [], text)
     // The one action whose subject is a NAME rather than a row: a task is not a session.
     case 'deleteTask':
       if (!host.deleteTask) return { ok: false, message: s.sessionsNoHost }

@@ -1035,10 +1035,13 @@ const EN: ControlStrings = {
   sessionsReopenConfirm: task => `Reopen "${task}"?`,
   sessionsFellWord: 'fell together',
   sessionsFellNote: (count, ago) =>
-    `${count} session${count === 1 ? '' : 's'} fell ${ago} — R reopens them`,
+    `${count} session${count === 1 ? '' : 's'} ${count === 1 ? 'was' : 'were'} open when the machine `
+    + `stopped ${ago} — press R to bring ${count === 1 ? 'it' : 'them'} back`,
   sessionsFellConfirm: (count, ago) =>
-    `Reopen the ${count} session${count === 1 ? '' : 's'} that fell ${ago}? `
-    + 'Each comes back as a new session resuming its own conversation; anything still running is left alone.',
+    `Bring back the ${count} session${count === 1 ? '' : 's'} that ${count === 1 ? 'was' : 'were'} open `
+    + `when the machine stopped ${ago}? `
+    + 'Each resumes its own conversation where it left off, under a new session; '
+    + 'anything still running is left alone.',
   sessionsDeleteTaskAsk: (task, count) => count === 0
     ? `Remove the task "${task}"? No session is filed under it.`
     : `Remove the task "${task}"? The ${count} session${count === 1 ? '' : 's'} filed under it `
@@ -1589,12 +1592,15 @@ const PT: ControlStrings = {
   sessionsReopenConfirm: task => `Reabrir "${task}"?`,
   sessionsFellWord: 'caíram juntas',
   sessionsFellNote: (count, ago) =>
-    (count === 1 ? `1 sessão caiu ${ago} — R reabre` : `${count} sessões caíram ${ago} — R reabre todas`),
+    (count === 1
+      ? `1 sessão estava aberta quando a máquina parou ${ago} — R traz de volta`
+      : `${count} sessões estavam abertas quando a máquina parou ${ago} — R traz todas de volta`),
   sessionsFellConfirm: (count, ago) =>
     (count === 1
-      ? `Reabrir a sessão que caiu ${ago}? `
-      : `Reabrir as ${count} sessões que caíram ${ago}? `)
-    + 'Cada uma volta como uma sessão nova retomando a própria conversa; o que ainda estiver rodando fica como está.',
+      ? `Trazer de volta a sessão que estava aberta quando a máquina parou ${ago}? `
+      : `Trazer de volta as ${count} sessões que estavam abertas quando a máquina parou ${ago}? `)
+    + 'Cada uma retoma a própria conversa de onde parou, sob uma sessão nova; '
+    + 'o que ainda estiver rodando fica como está.',
   sessionsDeleteTaskAsk: (task, count) => count === 0
     ? `Remover a tarefa "${task}"? Nenhuma sessão está sob ela.`
     : `Remover a tarefa "${task}"? ${count === 1 ? 'A sessão' : `As ${count} sessões`} sob ela `
