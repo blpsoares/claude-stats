@@ -1,6 +1,9 @@
 import { readFile } from 'fs/promises'
 import type { SessionMeta, SessionAgentMetrics } from '@agentistics/core'
-import { parseSessionJsonl, activeMinutesFromClaudeJsonl, contextTokensFromClaudeJsonl } from './jsonl'
+import {
+  parseSessionJsonl, activeMinutesFromClaudeJsonl, contextTokensFromClaudeJsonl,
+  compactsFromClaudeJsonl, skillUsesFromClaudeJsonl, type CompactStats,
+} from './jsonl'
 import { extractAgentMetrics } from './agent-metrics'
 import { enrichFromSubagentTranscripts } from './subagent-metrics'
 import { basename } from 'path'
@@ -67,7 +70,16 @@ export async function cachedParseSession(
 // above describes: without a bump, every transcript already in this cache went on answering in the
 // shape from before the field existed, so only the three sessions being appended to right now
 // gained it. Measured before the bump: 3 of 658.
-const SESSION_SHAPE = 'v4'
+// v5: `compact_count`/`compact_ms`/`compact_dropped_tokens` moved from written-only-above-zero to
+// written whenever this session's own transcript was read (`0` is now a real answer, the whole
+// point of the change — see the comment on those fields in `SessionMeta`), and `skill_uses` was
+// added outright. Both are exactly the case this stamp exists for: `parseSessionJsonl` now produces
+// a DIFFERENT `SessionMeta` for the same bytes it already parsed once, and a row cached under the
+// old shape has neither field — which `session-profile.ts`'s `n` reads as "no transcript was read
+// for this session" rather than "read, and it compacted/invoked nothing". A closed conversation's
+// transcript never changes again, so without this bump every session already in this cache would
+// have stayed excluded from the baseline forever.
+const SESSION_SHAPE = 'v5'
 
 /** Everything `scanProjectDir` needs from a transcript whose session already exists in
  *  Claude's own session-meta — which carries none of it. */
@@ -80,6 +92,16 @@ export interface EnrichResult {
   contextTokens: number | null
   /** Agent metrics, or null when the session invoked no agent. */
   agentMetrics: SessionAgentMetrics | null
+  /**
+   * What compaction cost this transcript. `count`/`ms` are real answers ONCE this function has
+   * actually read the file — matching the rule `parseSessionJsonl` follows for the same fields on
+   * `SessionMeta` (see the comment there): a null `EnrichResult` (file gone or empty) is the only
+   * way this metric stays unanswered, never a zeroed `compact`. `droppedTokens` stays absent when
+   * no record carried one. See `compactsFromClaudeJsonl`.
+   */
+  compact: CompactStats
+  /** Skill invocations by name; `{}` is a real answer once the transcript has been read. */
+  skillUses: Record<string, number>
 }
 
 /**
@@ -96,8 +118,16 @@ export interface EnrichResult {
  * `gc()` drops the originals. **Bump it whenever a field is added to, removed from, or
  * changed in `EnrichResult`.** Costs one slow build; the alternative is a metric that
  * is silently blank and looks like missing data rather than a stale cache.
+ *
+ * v4: `compact` and `skillUses` were added. This path serves `_source: 'meta'` sessions — the data.ts
+ * comment above the branch that calls it says outright that this is MOST Claude sessions — and
+ * before this bump it never computed either metric at all, so `compact_count`/`skill_uses` could
+ * only ever be filled by `parseSessionJsonl` reading the raw transcript directly (the `'jsonl'`
+ * source, the minority once a session ages into `session-meta`). Without the bump a row already
+ * cached under `v3` would go on answering with neither field forever, the same "silently blank"
+ * failure this comment already warns about for every other field here.
  */
-const ENRICH_SHAPE = 'v3'
+const ENRICH_SHAPE = 'v4'
 
 /** The first `claude-*` model in the transcript's opening 200 lines — the same scan
  *  `scanProjectDir` did inline, kept identical on purpose. */
@@ -156,6 +186,8 @@ export async function cachedEnrich(
     activeMinutes: activeMinutesFromClaudeJsonl(lines) ?? null,
     contextTokens: contextTokensFromClaudeJsonl(lines) ?? null,
     agentMetrics: metrics.totalInvocations > 0 ? metrics : null,
+    compact: compactsFromClaudeJsonl(lines),
+    skillUses: skillUsesFromClaudeJsonl(lines),
   }
   cache.set('enrich', stamp, result, variant)
   return withSubagentNumbers(result, filePath)
