@@ -31,6 +31,14 @@ export type FleetActionId =
   | 'interrupt'
   /** Advance the harness to its NEXT mode. It cycles; there is no key that picks one. */
   | 'cycleMode'
+  /**
+   * FLEET verbs — they act on a SET, not on the row whose `id` is in the request.
+   *
+   * `reopenFell` takes back what the machine took; `broadcast` types one prompt into several
+   * sessions. Both carry `ids`, and both can only ever NARROW a set the server itself computed —
+   * see `FleetActionRequest.ids`.
+   */
+  | 'reopenFell' | 'broadcast'
 
 /** The verbs this page can PERFORM. The rest are shown, dimmed, with their reason. */
 export const PERFORMABLE: ReadonlySet<FleetActionId> = new Set<FleetActionId>([
@@ -60,6 +68,8 @@ export interface FleetRow {
   state: 'working' | 'waiting' | 'waiting-approval' | 'exited' | 'lost' | 'unknown' | 'closed'
   stateLabel: string
   actionable: boolean
+  /** This row is one of the sessions the machine TOOK — see the server's `FleetRow.fell`. */
+  fell?: boolean
   task?: string
   note?: string
   model?: string
@@ -96,6 +106,13 @@ export interface FleetPayload {
   tasks: string[]
   /** Tasks the user marked finished. A statement about the work, not about any session's state. */
   finishedTasks: string[]
+  /**
+   * The last fall: how many sessions the machine took, and when.
+   *
+   * WHICH rows is not repeated here — they are in `sessions`, each marked `fell`. The count is what
+   * a summary line needs; the marks are what a list somebody ticks needs.
+   */
+  fell?: { count: number; atMs: number }
 }
 
 const EMPTY: FleetPayload = { sessions: [], rows: [], attention: 0, tasks: [], finishedTasks: [] }
@@ -129,6 +146,12 @@ export interface FleetState {
     action: FleetActionId
     text?: string
     choice?: number
+    /**
+     * The rows a GROUP verb acts on — `reopenFell` and `broadcast`. It can only ever NARROW the
+     * group the server already resolved: absent means "all of it", and an empty array means
+     * nothing, which is not the same thing and is never collapsed into it.
+     */
+    ids?: readonly string[]
   }) => Promise<{ ok: boolean; message: string; id?: string }>
 }
 

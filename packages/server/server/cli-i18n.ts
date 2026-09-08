@@ -177,6 +177,14 @@ export interface CliStrings {
   sessNoFell: string
   sessFellOpened: (opened: number, skipped: number, held: number) => string
   sessFellNoneOpened: (skipped: number) => string
+  /** Every row that was ticked has since left the group — the list the caller acted on has moved. */
+  sessFellGone: (count: number) => string
+  /** Nothing was ticked. Never read as "all" — see `selectFell`. */
+  sessFellNonePicked: string
+  /** A broadcast that was refused before anything was typed. */
+  sessBroadcastRefused: (reason: string, skipped: number) => string
+  /** What a broadcast did, per outcome. Partial delivery is the NORMAL case. */
+  sessBroadcastDone: (sent: number, failed: number, skipped: number) => string
   /**
    * Refusing to open a conversation a live session already has, and NAMING that session.
    *
@@ -580,6 +588,26 @@ const EN: CliStrings = {
     + (skipped > 0 ? ` ${skipped} could not be reopened.` : ''),
   sessFellNoneOpened: (skipped: number) =>
     `none of the ${skipped} session(s) that fell could be reopened.`,
+  sessFellGone: (count: number) =>
+    `${count} session(s) picked are no longer in that group — they ended, or another window reopened `
+    + 'them already. Nothing was opened.',
+  sessFellNonePicked: 'no session was picked, so nothing was reopened.',
+  sessBroadcastRefused: (reason: string, skipped: number) => {
+    if (reason === 'no-text') return 'nothing was typed, so nothing was sent.'
+    if (reason === 'no-selection') return 'no session was picked. This never means all of them.'
+    if (reason === 'too-many') {
+      return 'that is more sessions than one message may reach at once — pick fewer, or send twice.'
+    }
+    return `none of the ${skipped} session(s) picked can take a prompt right now — see the reason on each.`
+  },
+  sessBroadcastDone: (sent: number, failed: number, skipped: number) => {
+    const parts = [`sent to ${sent} session${sent === 1 ? '' : 's'}`]
+    // Named separately: a REFUSAL at write time (the session was asking after all) and a row that
+    // was never eligible are two different things to do something about.
+    if (failed > 0) parts.push(`${failed} refused it`)
+    if (skipped > 0) parts.push(`${skipped} could not be sent to`)
+    return `${parts.join(', ')}.`
+  },
   sessResumeInUse: (holder: string) =>
     `that conversation is already open in ${holder} — open it there instead of starting a second assistant in it.`,
   sessAdoptFailed: (holder: string) =>
@@ -891,6 +919,24 @@ const PT: CliStrings = {
     + (skipped > 0 ? ` ${skipped} não puderam ser reabertas.` : ''),
   sessFellNoneOpened: (skipped: number) =>
     `nenhuma das ${skipped} sessão(ões) que caíram pôde ser reaberta.`,
+  sessFellGone: (count: number) =>
+    `${count} sessão(ões) escolhida(s) não está(ão) mais nesse grupo — terminaram, ou outra janela já `
+    + 'reabriu. Nada foi aberto.',
+  sessFellNonePicked: 'nenhuma sessão foi escolhida, então nada foi reaberto.',
+  sessBroadcastRefused: (reason: string, skipped: number) => {
+    if (reason === 'no-text') return 'nada foi escrito, então nada foi enviado.'
+    if (reason === 'no-selection') return 'nenhuma sessão foi escolhida. Isso nunca quer dizer todas.'
+    if (reason === 'too-many') {
+      return 'são mais sessões do que uma mensagem alcança de uma vez — escolha menos, ou envie duas vezes.'
+    }
+    return `nenhuma das ${skipped} sessão(ões) escolhida(s) pode receber um prompt agora — veja o motivo em cada uma.`
+  },
+  sessBroadcastDone: (sent: number, failed: number, skipped: number) => {
+    const parts = [`enviado para ${sent} sessão${sent === 1 ? '' : 'ões'}`]
+    if (failed > 0) parts.push(`${failed} recusou`)
+    if (skipped > 0) parts.push(`${skipped} não pôde receber`)
+    return `${parts.join(', ')}.`
+  },
   sessResumeInUse: (holder: string) =>
     `essa conversa já está aberta em ${holder} — abra ela por lá, em vez de colocar um segundo assistente dentro dela.`,
   sessAdoptFailed: (holder: string) =>

@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Clock, Pin, PinOff, Plus, Search, X } from 'lucide-react'
+import { Clock, Pin, PinOff, Plus, RotateCcw, Search, Send, X } from 'lucide-react'
 import type { Filters } from '@agentistics/core'
 import {
   ACTIVE_STATES, DEFAULT_ORDER, filterSessions, sessionNotify, sortSessions,
@@ -24,6 +24,7 @@ import {
 import { rowSelected } from '../../lib/fleetSelection'
 import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
+import { SessionPickModal, type PickModalRow } from '../sessions/SessionPickModal'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
 import { TaskPicker } from '../tasks/TaskPicker'
@@ -88,9 +89,22 @@ export interface SessionsAsideProps {
    * Absent on a surface that cannot act (a central relaying a machine that has not granted the
    * screen/action switches yet): the menu is then not opened at all, rather than opened inert.
    */
-  rowsById?: Map<string, { verbs: RowVerb[] }>
+  rowsById?: Map<string, {
+    verbs: RowVerb[]
+    /** This row is one of the sessions the machine TOOK — see the server's `FleetRow.fell`. */
+    fell?: boolean
+    title?: string
+    project?: string
+    cwd?: string
+  }>
   /** Performs a verb. Absent exactly where `rowsById` is absent. */
-  act?: (req: { id: string; action: string; text?: string }) => Promise<{ ok: boolean; message: string; id?: string }>
+  act?: (req: {
+    id: string
+    action: string
+    text?: string
+    /** Narrows a GROUP verb (`reopenFell`, `broadcast`). Absent = the whole group. */
+    ids?: readonly string[]
+  }) => Promise<{ ok: boolean; message: string; id?: string }>
 }
 
 /** The colour a state is said in. `running` is its own token, not `success`, which reads teal. */
@@ -143,6 +157,44 @@ export function SessionsAside({
   const { sessionId } = useParams()
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
+  /** Which GROUP modal is open, if any. Both are the one picker — see `SessionPickModal`. */
+  const [picking, setPicking] = useState<'reopen' | 'send' | null>(null)
+  const [groupBusy, setGroupBusy] = useState(false)
+
+  /*
+   * THE TWO GROUP VERBS, derived from the rows the server already shaped.
+   *
+   * `fell` is the machine's own crash grouping (`crash-group.ts`), which errs toward EXCLUDING: a
+   * session with no evidence it was ever alive is never in it. We do not re-derive it here — a
+   * second implementation of "which sessions fell together" is exactly the defect this bridge
+   * exists to prevent.
+   *
+   * Who can receive a prompt is likewise the SERVER's answer, read off each row's own `prompt`
+   * verb: it is the same resolution the cockpit acts on, and it already accounts for a session
+   * that is not running and for one sitting on an open dialog (where a typed line goes into the
+   * dialog's filter and the submit takes the highlighted option).
+   */
+  const groupRows = useMemo(() => {
+    const fellRows: PickModalRow[] = []
+    const sendRows: PickModalRow[] = []
+    if (!rowsById) return { fellRows, sendRows }
+    for (const s of rowsById.values() as Iterable<any>) {
+      const row: PickModalRow = {
+        id: s.id ?? '',
+        title: s.title || (pt ? 'sem título' : 'untitled'),
+        ...(s.project ? { detail: s.project } : {}),
+      }
+      if (!row.id) continue
+      if (s.fell) fellRows.push(row)
+      if ((s.verbs as RowVerb[] | undefined)?.some(v => v.action === 'prompt' && v.enabled)) sendRows.push(row)
+    }
+    return { fellRows, sendRows }
+  }, [rowsById, pt])
+
+  const canAct = Boolean(act) && !hideNew
+  const showFell = canAct && groupRows.fellRows.length > 0
+  // One session is not a broadcast — the row's own composer is right there and says so better.
+  const showSend = canAct && groupRows.sendRows.length > 1
   /**
    * The pinned set, from the module that already owns it.
    *
@@ -287,6 +339,76 @@ export function SessionsAside({
         <Plus size={14} />
         {pt ? 'Nova sessão' : 'New session'}
       </button>
+      )}
+
+      {/*
+        * THE GROUP VERBS, under "New session" because that is where starting work lives.
+        *
+        * "Reopen what fell" appears only when something DID fall, and it names the count: a button
+        * that is always there teaches nothing, and a bare "reopen" is a different promise from
+        * "reopen 6 sessions". Neither is offered on a surface that cannot act — a button whose only
+        * outcome is a refusal is a button that teaches the wrong thing.
+        */}
+      {showFell && (
+        <button
+          onClick={() => setPicking('reopen')}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+            margin: '0 2px', padding: '9px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
+            border: '1px solid var(--anthropic-orange)', background: 'rgba(232,146,90,0.08)',
+            color: 'var(--anthropic-orange)', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600,
+          }}
+        >
+          <RotateCcw size={14} />
+          {pt
+            ? (groupRows.fellRows.length === 1 ? 'Reabrir 1 sessão que caiu' : `Reabrir ${groupRows.fellRows.length} sessões que caíram`)
+            : (groupRows.fellRows.length === 1 ? 'Reopen 1 session that fell' : `Reopen ${groupRows.fellRows.length} sessions that fell`)}
+        </button>
+      )}
+
+      {showSend && (
+        <button
+          onClick={() => setPicking('send')}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+            margin: '0 2px', padding: '7px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
+            border: '1px dashed var(--border)', background: 'transparent',
+            color: 'var(--text-tertiary)', fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
+            e.currentTarget.style.color = 'var(--anthropic-orange)'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.borderColor = 'var(--border)'
+            e.currentTarget.style.color = 'var(--text-tertiary)'
+          }}
+        >
+          <Send size={13} />
+          {pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
+        </button>
+      )}
+
+      {picking && act && (
+        <SessionPickModal
+          kind={picking}
+          lang={lang}
+          rows={picking === 'reopen' ? groupRows.fellRows : groupRows.sendRows}
+          busy={groupBusy}
+          onClose={() => { if (!groupBusy) setPicking(null) }}
+          onConfirm={(ids, text) => {
+            setGroupBusy(true)
+            /*
+             * The GROUP is addressed, never a row: the id is the anchor the route needs and `ids`
+             * is what narrows it. Sending `ids` even when every row is ticked is deliberate — the
+             * fleet polls every five seconds, and "all of them" resolved on the server a moment
+             * later is not the list this person just read and agreed to.
+             */
+            void act({ id: ids[0] ?? '', action: picking === 'reopen' ? 'reopenFell' : 'broadcast', ids, ...(text ? { text } : {}) })
+              .then(out => { setNotice(out.message); setPicking(null) })
+              .finally(() => setGroupBusy(false))
+          }}
+        />
       )}
 
       {creating && (

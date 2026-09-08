@@ -1566,14 +1566,34 @@ export interface ControlHost {
   answerSession?(id: string, choice?: number, text?: string): Promise<ActionResult>
 
   /**
-   * Reopen every session of the last fall, in the background.
+   * Reopen the sessions of the last fall, in the background.
    *
    * The same arithmetic `openTask` runs (`task-reopen.ts`), over the set `ControlSessions.fell`
    * names instead of over a task: a row still running is left alone and reported as such, a row
    * already finished is not resurrected, an unresolvable one is skipped AND counted, and everything
    * reopened retires the row it replaced.
+   *
+   * `ids` NARROWS it to a chosen few. `undefined` means the whole group and is what a caller with
+   * no selection to make passes — the cockpit's `R`, one keypress on a group already named. An
+   * EMPTY ARRAY reopens nothing and is never read as "all": unticking every row in the browser's
+   * list is a decision, and starting eight assistants because a list arrived empty is the accident
+   * `selectFell` exists to make impossible.
    */
-  reopenFell?(): Promise<ActionResult>
+  reopenFell?(ids?: readonly string[]): Promise<ActionResult>
+
+  /**
+   * ONE PROMPT, SEVERAL SESSIONS.
+   *
+   * The most powerful thing on this screen, and it changes none of the rules that make a single
+   * prompt safe: every session is still written by `promptSession`, which RE-READS its screen at
+   * the moment it types. A broadcast that skipped that to save round trips would be the one gesture
+   * here able to answer a dozen dialogs at once.
+   *
+   * The report is PER SESSION. Partial success is the normal outcome — one takes it, one is
+   * mid-dialog by the time its turn comes, one has just died — and "sent to 5 sessions" would hide
+   * exactly the failures the re-read exists to produce.
+   */
+  broadcastPrompt?(ids: readonly string[], text: string): Promise<ActionResult>
 
   renameSession?(id: string, label: string): Promise<ActionResult>
   noteSession?(id: string, text: string): Promise<ActionResult>

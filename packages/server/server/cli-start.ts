@@ -135,6 +135,11 @@ import { answerFollowUp } from './sessions/answer-followup'
 import { liveTranscriptDeps, runTranscriptSearch } from './sessions/transcript-run'
 import { rulesFor } from './sessions/attention-rules'
 import { planCrashGroup, planFellOffer } from './sessions/crash-group'
+import { selectFell } from './sessions/fell-selection'
+import {
+  broadcastReport, planBroadcast, type BroadcastOutcome,
+} from './sessions/broadcast-plan'
+import { sessionRunning } from '@agentistics/tui/control/session-dimensions'
 import { loadHarnessSessions } from './sessions/harness-sessions'
 import { idleServers, isServerCommand } from './idle-servers'
 import { planTaskDelete, taskDeleteIsNoop } from './sessions/task-delete'
@@ -3182,7 +3187,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * registry read and one `tmux list-sessions`, and it is the difference between reopening what
      * fell and reopening what fell as of a moment ago.
      */
-    async reopenFell(): Promise<ActionResult> {
+    async reopenFell(ids?: readonly string[]): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
       const blocked = await backend.unavailable()
@@ -3192,10 +3197,73 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       const group = planCrashGroup({ entries: await readRegistry(), backendIds })
       if (!group || group.entries.length === 0) return { ok: false, message: s.sessNoFell }
 
-      const { plan, opened, skipped } = await reopenEntries(group.entries, s)
+      /**
+       * `undefined` is the whole group; `[]` is nothing. The difference is the safety — see
+       * `selectFell`. An id the group does not hold is REPORTED rather than dropped: it means the
+       * caller is acting on a list that has moved, and a count that quietly shrinks is what makes
+       * somebody press again.
+       */
+      const { chosen, unknown } = selectFell(group.entries, ids ?? null)
+      if (chosen.length === 0) {
+        return { ok: false, message: unknown.length > 0 ? s.sessFellGone(unknown.length) : s.sessFellNonePicked }
+      }
+
+      const { plan, opened, skipped } = await reopenEntries(chosen, s)
       return taskReopenSucceeded(plan, opened)
-        ? { ok: true, message: s.sessFellOpened(opened, skipped, plan.heldElsewhere.length) }
-        : { ok: false, message: s.sessFellNoneOpened(skipped) }
+        ? { ok: true, message: s.sessFellOpened(opened, skipped + unknown.length, plan.heldElsewhere.length) }
+        : { ok: false, message: s.sessFellNoneOpened(skipped + unknown.length) }
+    },
+
+    /**
+     * ONE PROMPT, SEVERAL SESSIONS — and every one of them written the ordinary way.
+     *
+     * `promptSession` is called per session precisely because it RE-READS the screen at the moment
+     * it types. A session that was running when the browser drew its list may be sitting on a
+     * permission prompt now, where a typed sentence goes into the dialog's filter and the submit
+     * takes whatever is highlighted. Sending N lines from one poll-old belief would be the one
+     * gesture in this product able to answer a dozen dialogs at once.
+     *
+     * SEQUENTIAL, not parallel. Each send types into a tmux pane and waits for the pane to settle;
+     * `pane-writer.ts` serialises writes per pane, but the sessions here are different panes and
+     * would genuinely run at once — a dozen assistants all starting to work in the same instant is
+     * a load spike on the machine the user is sitting at. One at a time is also what makes the
+     * report readable in the order the list was shown.
+     */
+    async broadcastPrompt(ids: readonly string[], text: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      const fleet = await this.sessions?.()
+      const rows = fleet?.sessions ?? []
+      const plan = planBroadcast({
+        text,
+        ids,
+        rows: rows.map(r => ({
+          id: r.id,
+          title: r.title,
+          running: sessionRunning(r),
+          // The row's own knowledge of an open dialog. The HOST still re-reads at write time; this
+          // only keeps a doomed send out of the list before anything is typed.
+          blocked: (r.approvalLines?.length ?? 0) > 0,
+        })),
+      })
+      if (!plan.ok) return { ok: false, message: s.sessBroadcastRefused(plan.reason, plan.skipped.length) }
+
+      const outcomes: BroadcastOutcome[] = []
+      for (const t of plan.targets) {
+        const out = await this.promptSession!(t.id, text)
+        outcomes.push({ id: t.id, title: t.title, ok: out.ok, message: out.message })
+      }
+      const report = broadcastReport(outcomes, plan.skipped)
+      return {
+        // ANY delivery is a success for the gesture; the sentence carries the rest. A broadcast
+        // where four of five landed is not a failure, and reporting it as one would send somebody
+        // to re-send to the four that already have it.
+        ok: report.sent > 0,
+        message: s.sessBroadcastDone(report.sent, report.failed, report.skipped.length),
+      }
     },
 
     /**
