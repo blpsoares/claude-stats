@@ -1984,7 +1984,12 @@ export function Sessions({
             {fleet.unavailable ? ''
               : truncate(emptyReason, listBody)}
           </Text>
-          {profileLines(fleet.baseline, listBody, s)
+          {/* A failed poll can still hand back a baseline — the store read that builds it sits on
+              a path with no early return before `unavailable` is checked. So the profile is gated
+              on the SAME condition as the sentence above it, not on `baseline` alone: rendering it
+              under a blanked sentence is the exact thing that sentence's own blanking exists to
+              prevent. */}
+          {fleet.unavailable ? null : profileLines(fleet.baseline, listBody, s)
             .slice(0, Math.max(0, cockpit.listRows - 1))
             .map((line, i) => (
               <Text key={i} dimColor>{line}</Text>
