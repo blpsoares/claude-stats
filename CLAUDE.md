@@ -2264,6 +2264,24 @@ harness must not break.
   21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
   local day would make it disagree with the cost and the messages beside it, and no day-granular
   split can express a local day for a non-UTC zone.
+- **A TRANSCRIPT THAT IS NOT THERE YET IS NOT A TRANSCRIPT THAT IS NOWHERE.** Three resolvers
+  memoized their answer by conversation id — the found path AND the `null` — so an unresolvable id
+  cost one scan instead of one per poll. The intent is right; caching the `null` was not. **A
+  harness writes a conversation's transcript when the conversation first says something**, so a
+  session agentop has just started has no file for its first seconds, the chat view's very first
+  poll lands inside that window, and the miss was then handed to every later poll FOR THE LIFE OF
+  THE SERVER PROCESS. Reported on a session created from the wizard: the step-3 prompt never
+  appeared, the next message sat at `delivered to the session — not read yet` for eight minutes,
+  and no reply ever arrived — while the terminal tab, which reads the pane and not the transcript,
+  showed the whole conversation. Confirmed by the clock: the chat came back only because the server
+  was restarted 13 minutes later, which is the only thing that clears a per-process memo.
+  `transcript-path-memo.ts` (pure) is the one rule now — **a found path is remembered forever** (a
+  transcript does not move), **a miss expires** (`TRANSCRIPT_MISS_TTL_MS`), the same shape and the
+  same reason as `repo-facts.ts`'s negative TTL. And the two costs are separated: Claude's DIRECT
+  path is one `stat` and is checked on EVERY call, so a new session is readable the moment its file
+  appears, while only the SCAN (a `readdir` plus a `stat` per project — 281 of them on a real
+  machine) is paced by the TTL. **claude, codex and kimi** memoized and are fixed; **antigravity and
+  copilot** re-check their paths every call and are immune by construction; gemini has no reader.
 - **A SESSION'S GIT STATS ARE READ WHERE IT WORKED, NOT WHERE IT IS FILED.** `project_path` is the
   transcript's FIRST cwd — the project the session belongs to — and `current_cwd` is where it ended
   up. They differ exactly in the git-WORKTREE case this file mandates for concurrent work, and a
