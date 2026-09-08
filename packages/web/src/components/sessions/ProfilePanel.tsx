@@ -6,13 +6,19 @@ import { SHOWN, roundProfile } from '@agentistics/tui/control/profile-lines'
  * to `SHOWN` must fail the build here rather than printing `activeMinutes` at a reader. `SHOWN` and
  * `roundProfile` themselves come from the cockpit's own pure module — this panel used to re-declare
  * both, so a metric added there reached the terminal and silently not the dashboard.
+ *
+ * The LABELS still are not shared, though — this file keeps its own EN/PT copy of the cockpit's
+ * `PROFILE_METRIC_EN`/`PROFILE_METRIC_PT` (`packages/tui/src/control/i18n.ts`) rather than importing
+ * them, because this panel's copy is the DASHBOARD's own wording and the two are allowed to read
+ * differently. What must not drift is which KEYS each one covers — `ProfilePanel.test.ts` cross-
+ * checks that.
  */
-const LABEL_EN: Record<ProfileMetric, string> = {
+export const LABEL_EN: Record<ProfileMetric, string> = {
   messages: 'messages', activeMinutes: 'active minutes', compacts: 'compacts',
   skills: 'skills', mcpServers: 'MCP servers', subagents: 'subagents',
   tokens: 'tokens', toolErrors: 'tool errors',
 }
-const LABEL_PT: Record<ProfileMetric, string> = {
+export const LABEL_PT: Record<ProfileMetric, string> = {
   messages: 'mensagens', activeMinutes: 'minutos ativos', compacts: 'compacts',
   skills: 'skills', mcpServers: 'servidores MCP', subagents: 'subagentes',
   tokens: 'tokens', toolErrors: 'erros de ferramenta',

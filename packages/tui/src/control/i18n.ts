@@ -17,14 +17,19 @@ import type { BackupLayer, BackupScheduleId, TabId, TeamMode } from './types'
  *
  * `Record<ProfileMetric, string>` and NOT a `Record<string, string>` with a `?? key` fallback: a
  * seventh metric must fail the BUILD here, not print `activeMinutes` to somebody reading a panel.
+ *
+ * EXPORTED so `ProfilePanel.tsx` — the web panel's OWN copy of this same map — can be cross-checked
+ * against it: nothing else keeps a translator who updates one from forgetting its twin, since the
+ * two are separately-typed literals in separate packages and TypeScript checks each one only
+ * against `ProfileMetric` itself, never against each other.
  */
-const PROFILE_METRIC_EN: Record<ProfileMetric, string> = {
+export const PROFILE_METRIC_EN: Record<ProfileMetric, string> = {
   messages: 'messages', activeMinutes: 'active minutes', compacts: 'compacts',
   skills: 'skills', mcpServers: 'MCP servers', subagents: 'subagents',
   tokens: 'tokens', toolErrors: 'tool errors',
 }
 
-const PROFILE_METRIC_PT: Record<ProfileMetric, string> = {
+export const PROFILE_METRIC_PT: Record<ProfileMetric, string> = {
   messages: 'mensagens', activeMinutes: 'minutos ativos', compacts: 'compacts',
   skills: 'skills', mcpServers: 'servidores MCP', subagents: 'subagentes',
   tokens: 'tokens', toolErrors: 'erros de ferramenta',
