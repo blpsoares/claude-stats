@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { projectKind, takePerKind, type ProjectKind } from '@agentistics/core'
-import { KIND_TABS, kindEmpty, kindHint, kindLabel } from './projectTabs'
+import { KIND_TABS, kindCount, kindEmpty, kindHint, kindLabel, kindMore } from './projectTabs'
 
 describe('the tabs', () => {
   it('opens on All, and offers exactly three kinds beside it', () => {
@@ -116,3 +116,36 @@ describe('takePerKind — a folder named like your repo cannot push your repo of
     expect(takePerKind([row('folder')], c => projectKind(c), -1)).toEqual([])
   })
 })
+
+describe('kindCount / kindMore — the tabs say what is THERE, not what fits', () => {
+  /**
+   * THE REPORTED CASE: the tabs read `Repositories 12 · Projects 12 · Folders 12` on a machine
+   * with about twenty repositories. Twelve is `PROJECTS_PER_KIND`, the per-kind cap — so every tab
+   * showed the same number, always, whatever the machine held.
+   */
+  const totals = { repo: 21, project: 34, folder: 58 }
+
+  it('a tab counts what matched, not the rows it was given', () => {
+    expect(kindCount('repo', 12, totals)).toBe(21)
+  })
+
+  it('ALL counts every kind, not the rows on screen', () => {
+    expect(kindCount('all', 36, totals)).toBe(113)
+  })
+
+  it('with no totals from the server the tab counts its rows — and claims nothing more', () => {
+    // An older server does not send them. Counting the rows is then the only true statement
+    // available, and `kindMore` must stay silent rather than infer a cap.
+    expect(kindCount('repo', 12, undefined)).toBe(12)
+    expect(kindMore(12, undefined, true)).toBe(null)
+  })
+
+  it('says how many of how many, but only when some are being held back', () => {
+    expect(kindMore(12, 21, true)).toEqual({ shown: 12, total: 21 })
+    expect(kindMore(21, 21, true)).toBe(null)
+    // Never claims more exist than are shown: a total below the row count is a disagreement, and
+    // the honest answer to a disagreement is to say nothing.
+    expect(kindMore(12, 5, true)).toBe(null)
+  })
+})
+

@@ -18,9 +18,10 @@ import { useEffect, useRef, useState } from 'react'
 import { sessionTime } from '../../lib/sessionTime'
 import { asideCache, asideKey } from '../../lib/asideCache'
 import { BarChart3, X } from 'lucide-react'
-import { fmt, fmtCost, type HarnessId, type SessionMeta } from '@agentistics/core'
+import { fmt, fmtCost, type CostBasis, type HarnessId, type SessionMeta } from '@agentistics/core'
 import { HARNESS_LABELS } from '../../lib/harness'
 import { sessionStats, statReason } from '../../lib/sessionStats'
+import { costBasisLabel, viewCost } from '../../lib/costBasis'
 
 export interface SessionStatsMenuProps {
   harness: string
@@ -49,10 +50,29 @@ export interface SessionStatsMenuProps {
    * panel with a piece off the screen.
    */
   touch?: boolean
+  /**
+   * The basis the DASHBOARD is on, which is where this card opens.
+   *
+   * The card can be switched to the other one to compare, and that switch is LOCAL: it lasts as
+   * long as the card is open and changes nothing global. The dashboard's basis is a decision about
+   * how the user reads their money; looking at one session in the other basis for a moment is not.
+   */
+  costBasis?: CostBasis
+  /**
+   * `C/A` for THIS session's harness — `planAllocation(basis).byHarness[harness]`.
+   *
+   * Per-harness and never the aggregate: a session is one harness's spend, and pricing it against
+   * a factor that also covers a subscription paying for something else is not an allocation of
+   * anything. `null` (or absent) means no plan covers this harness, and then there is NO toggle —
+   * an offer whose only outcome is "no registered plan" is the dead control this product refuses
+   * everywhere else.
+   */
+  planFactor?: number | null
 }
 
 export function SessionStatsMenu({
   harness, sessionId, meta, lang, currency, brlRate, startedModel, startedEffort, touch = false,
+  costBasis = 'api', planFactor = null,
 }: SessionStatsMenuProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
@@ -80,6 +100,17 @@ export function SessionStatsMenu({
       .catch(() => { if (alive) setFacts(f => f ?? { unavailable: pt ? 'Não foi possível ler.' : 'Could not read it.' }) })
     return () => { alive = false }
   }, [open, factsKey, sessionId, pt])
+  /**
+   * THE BASIS THIS CARD IS SHOWING — local, and paired with the dashboard every time it opens.
+   *
+   * The toggle exists so one session can be read in the other basis for a moment; it is not a
+   * decision about how the user reads their money, which is what the dashboard's switch is. So it
+   * is re-seeded from `costBasis` on every open, and closing the card is what puts it back — there
+   * is nothing to put back, because nothing global was ever changed.
+   */
+  const [basisHere, setBasisHere] = useState<CostBasis>(costBasis)
+  useEffect(() => { if (open) setBasisHere(costBasis) }, [open, costBasis])
+
   const boxRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -99,6 +130,15 @@ export function SessionStatsMenu({
   const h = harness as HarnessId
   const s = sessionStats(h, sessionId, meta)
   const money = (usd: number) => fmtCost(usd, currency, brlRate)
+  /**
+   * The plan side is offered only when it can actually be produced for THIS harness — see
+   * `planFactor`. `viewCost` is what applies it, and it refuses rather than inventing: a basis it
+   * cannot produce comes back as the API figure flagged, and `costBasisLabel` then says API.
+   */
+  const canSwitchBasis = typeof planFactor === 'number' && Number.isFinite(planFactor)
+  const inBasis = (usd: number) =>
+    viewCost(usd, { basis: basisHere, factor: canSwitchBasis ? planFactor : null, allocated: true })
+  const cost = s.costUSD === null ? null : inBasis(s.costUSD)
   const label = (HARNESS_LABELS as Record<string, string>)[harness] ?? harness
 
   /** The sentence for an absent figure — see the header. */
@@ -220,9 +260,38 @@ export function SessionStatsMenu({
           </Block>
 
           <Block title={pt ? 'Custo' : 'Cost'}>
-            {s.costUSD === null
+            {/* THE TOGGLE IS ONLY HERE WHEN A PLAN COVERS THIS HARNESS. Without a factor the plan
+                side could only ever answer "no registered plan", and a control whose one outcome is
+                a refusal teaches the same wrong thing as a missing one. */}
+            {canSwitchBasis && (
+              <div role="group" aria-label={pt ? 'Base do custo' : 'Cost basis'} style={{
+                display: 'flex', gap: 2, padding: 2, marginBottom: 6, borderRadius: 7,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+              }}>
+                {(['api', 'plan'] as const).map(b => {
+                  const on = basisHere === b
+                  return (
+                    <button
+                      key={b}
+                      onClick={() => setBasisHere(b)}
+                      aria-pressed={on}
+                      style={{
+                        flex: 1, minHeight: touch ? 32 : 22, borderRadius: 5, border: 'none',
+                        cursor: 'pointer', fontFamily: 'inherit', fontSize: 10.5,
+                        fontWeight: on ? 700 : 500,
+                        background: on ? 'var(--bg-surface)' : 'transparent',
+                        color: on ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
+                      }}
+                    >
+                      {b === 'api' ? 'API' : (pt ? 'Plano' : 'Plan')}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {cost === null
               ? <Absent text={na('cost')} />
-              : <Line k={pt ? 'Estimado (API)' : 'Estimated (API)'} v={money(s.costUSD)} />}
+              : <Line k={costBasisLabel(cost, pt)} v={money(cost.usd)} />}
           </Block>
 
           {/* ASKED FOR: how long this session has been going. Two figures, not one, and the pair is
@@ -260,7 +329,9 @@ export function SessionStatsMenu({
                   <>
                     <Line k={pt ? 'Rodaram' : 'Ran'} v={fmt(s.subagents.count)} />
                     <Line k="Tokens" v={fmt(s.subagents.tokens)} />
-                    <Line k={pt ? 'Custo' : 'Cost'} v={money(s.subagents.costUSD)} />
+                    {/* The same basis as the card's own cost row: two money figures in one card
+                        under two different bases is a card that cannot be added up. */}
+                    <Line k={pt ? 'Custo' : 'Cost'} v={money(inBasis(s.subagents.costUSD).usd)} />
                   </>
                 )
             ) : <Absent text={na('agents')} />}

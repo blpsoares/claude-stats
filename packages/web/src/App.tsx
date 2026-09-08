@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { useData, useDerivedStats, LIVE_INTERVAL_OPTIONS, LIVE_INTERVAL_OPTIONS_RISKY } from './hooks/useData'
 import { usePlanBasis } from './hooks/usePlanBasis'
-import { planScopeHarnesses, planScopeNote } from './lib/costBasis'
+import { planScopeHarnesses, planScopeNote, sessionPlanFactor } from './lib/costBasis'
 import { bootLoading } from './lib/bootPhase'
 import { DEFAULT_CARD_ORDER, migrateCardOrder, type CardId } from './lib/cardOrder'
 import { BillingIntroModal } from './components/BillingIntroModal'
@@ -3185,6 +3185,8 @@ export default function AppLayout() {
           lang={lang === 'pt' ? 'pt' : 'en'}
           currency={currency}
           brlRate={brlRate}
+          costBasis={costBasis}
+          planFactor={sessionPlanFactor(planBasis.basis, selectedFleetSession.harness)}
           {...(selectedFleetSession.model ? { startedModel: selectedFleetSession.model } : {})}
           {...(selectedFleetSession.effort ? { startedEffort: selectedFleetSession.effort } : {})}
         />

@@ -7,7 +7,7 @@
  * lets the whole surface be rewritten without changing a single behaviour.
  */
 
-import type { HarnessId } from '@agentistics/core'
+import type { HarnessId, ProjectKind } from '@agentistics/core'
 import type { CliLang } from './lang'
 import type { GithubSection } from './backup'
 import type { SearchFields, SearchScope } from './search-scope'
@@ -1696,11 +1696,26 @@ export interface ControlHost {
    */
   startableHarnesses?(): Promise<SessionHarnessOption[]>
 
-  /** Places a new session could start, ranked. `query` may be empty, which opens on recency. */
-  searchProjects?(query: string): Promise<ProjectOption[]>
+  /**
+   * Places a new session could start, ranked — with HOW MANY of each kind matched.
+   *
+   * The two travel together because they come from one search. `options` is what fits on screen
+   * (capped per kind so a tab can never be emptied by a different kind's budget); `totals` is what
+   * is actually there. Counting `options` instead is what made the web wizard's tabs read
+   * `Repositories 12 · Projects 12 · Folders 12` on a machine with twenty repositories — the cap,
+   * shown as a fact about the machine.
+   */
+  searchProjects?(query: string): Promise<ProjectSearchResult>
 
   /** Start one. An attached request comes back with a ticket the shell hands to `ControlExit`. */
   spawnSession?(req: SpawnSessionRequest): Promise<SpawnSessionResult>
+}
+
+/** One search of the places a session could start: what to show, and how much there is. */
+export interface ProjectSearchResult {
+  options: ProjectOption[]
+  /** Matches per kind BEFORE the cap — see `countPerKind`. */
+  totals: Record<ProjectKind, number>
 }
 
 /** One harness the wizard may offer, and the shape of the questions it earns. */

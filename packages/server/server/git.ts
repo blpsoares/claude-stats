@@ -135,6 +135,53 @@ export async function getCommitsInWindow(
   }
 }
 
+/**
+ * The directories to ask about a SESSION's commits, best first.
+ *
+ * A session is filed under the directory it was OPENED in (`project_path`, the transcript's first
+ * `cwd`) and may have moved — into a git worktree, which is how this repository mandates concurrent
+ * work is done. A worktree is checked out on its own branch, so the main checkout's HEAD has never
+ * seen the commits made there and `git log` in the project answers with NOTHING. Reported as
+ * `Commits 2 · Lines +0 / −0 · Files 0` on a session card: a count of commits beside a confident
+ * zero of what they changed. Measured on the reporting machine — nothing in the checkout, +688/−66
+ * over 25 files in the worktree, for the very window that produced those two commits.
+ *
+ * It is the same distinction `sessionAtCwd` already makes for live-session detection, and it goes
+ * the same way: the two disagree precisely in the worktree case, and the more specific one is
+ * right. The project stays as a FALLBACK, for a session whose last directory is not a repository
+ * at all (a `cd /tmp`), and the list holds ONE entry whenever the session never moved — asking
+ * twice for the ordinary case is the git work this module's other tests exist to bound.
+ */
+export function sessionGitPaths(projectPath: string, currentCwd?: string): string[] {
+  const out: string[] = []
+  for (const p of [currentCwd, projectPath]) {
+    if (p && !out.includes(p)) out.push(p)
+  }
+  return out
+}
+
+/**
+ * What this SESSION's window changed, asked of the directory it was actually working in.
+ *
+ * One coherent answer from ONE directory — never a per-field max across two, which could take the
+ * lines from a worktree and the file count from the checkout and report a pair that never
+ * co-existed. The first directory that has anything to say wins.
+ */
+export async function getSessionFileStats(
+  projectPath: string,
+  currentCwd: string | undefined,
+  afterIso: string,
+  beforeIso: string,
+): Promise<{ linesAdded: number; linesRemoved: number; filesModified: number }> {
+  const empty = { linesAdded: 0, linesRemoved: 0, filesModified: 0 }
+  const paths = sessionGitPaths(projectPath, currentCwd)
+  for (const path of paths) {
+    const stats = await getGitFileStats(path, afterIso, beforeIso)
+    if (stats.filesModified > 0) return stats
+  }
+  return empty
+}
+
 export async function getGitFileStats(
   projectPath: string,
   afterIso: string,

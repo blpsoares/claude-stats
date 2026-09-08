@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { activeInDays, activeInWindow, daysBetween, MAX_RANGE_DAYS, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
+import { activeInDays, activeInWindow, dayKey, daysBetween, expandHours, MAX_RANGE_DAYS, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
@@ -1284,6 +1284,29 @@ export function computeDerivedStats(
         // lifetime messages to take a ratio from, they go to the user side, which is what an
         // unattributable message already does everywhere else.
         ...splitMessages(cut.messages, s.user_message_count ?? 0, s.assistant_message_count ?? 0),
+        /**
+         * WHEN, cut to the range as well — the chart's own counter.
+         *
+         * `message_hours` is a lifetime array carrying no day, so a conversation open since
+         * Tuesday brought every hour it had ever run in into today's chart: measured with `Today`
+         * selected on a real machine, bars across all 24 hours for someone who started at 8am,
+         * totalling 33.427 against the 4.905 messages the same filter reported one card above.
+         *
+         * Rebuilt from the day split rather than filtered, because an hour is not a day and the
+         * lifetime array has nothing on it to filter BY. A session whose days carry no `hours`
+         * (written before the field existed) KEEPS its lifetime array — the rule this projection
+         * already applies to a session with no `daily` at all: a record that cannot be split is
+         * not a record that did nothing.
+         */
+        ...(cut.hours && Object.keys(cut.hours).length > 0
+          ? { message_hours: expandHours(cut.hours) }
+          : {}),
+        /**
+         * The tooltip's "first and last message in this hour" — filtered, not rebuilt, because
+         * these ARE instants and carry their own day. Same UTC day rule as `rangeDays`.
+         */
+        user_message_timestamps: (s.user_message_timestamps ?? [])
+          .filter(ts => rangeDays.has(dayKey(ts))),
       }
     })
 

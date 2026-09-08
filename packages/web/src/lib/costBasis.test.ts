@@ -1,5 +1,5 @@
-import { describe, test, expect } from 'bun:test'
-import { costBasisMarker, formatMultiple, planCostSubtitle, planScopeHarnesses, planScopeNote, viewCost } from './costBasis'
+import { describe, expect, it, test } from 'bun:test'
+import { costBasisLabel, costBasisMarker, formatMultiple, sessionPlanFactor, planCostSubtitle, planScopeHarnesses, planScopeNote, viewCost } from './costBasis'
 
 describe('viewCost', () => {
   test('api basis is an identity', () => {
@@ -163,3 +163,51 @@ describe('formatMultiple', () => {
     expect(formatMultiple(8.5, 'en')).toBe('8.50×')
   })
 })
+
+describe('costBasisLabel — the row says WHICH basis it is showing', () => {
+  it('names the API estimate as an estimate', () => {
+    expect(costBasisLabel(viewCost(10, { basis: 'api', factor: null }), true)).toBe('Estimado (API)')
+    expect(costBasisLabel(viewCost(10, { basis: 'api', factor: null }), false)).toBe('Estimated (API)')
+  })
+
+  it('names a plan figure an ALLOCATION, because no session was billed on its own', () => {
+    const v = viewCost(10, { basis: 'plan', factor: 0.5, allocated: true })
+    expect(v.usd).toBe(5)
+    expect(costBasisLabel(v, true)).toBe('Rateado (plano)')
+    expect(costBasisLabel(v, false)).toBe('Allocated (plan)')
+  })
+
+  it('a plan figure that could not be produced says so, and never wears the plan label', () => {
+    // `viewCost` hands back the API number flagged. The label must follow the basis ACTUALLY used,
+    // or a real API figure is shown under a heading claiming it is the user's plan cost.
+    const v = viewCost(10, { basis: 'plan', factor: null })
+    expect(v.unavailable).toBe(true)
+    expect(costBasisLabel(v, false)).toBe('Estimated (API)')
+  })
+})
+
+describe('sessionPlanFactor — a session allocates against ITS OWN harness', () => {
+  const basis = {
+    planCostUSD: 50, apiCostUSD: 200, multiple: 4, effectiveCostPerMTokens: null,
+    coverage: { computable: true } as never,
+    perHarness: {
+      claude: { planCostUSD: 50, apiCostUSD: 200, coverage: { computable: true } },
+      codex: { planCostUSD: 0, apiCostUSD: 0, coverage: { computable: false } },
+    },
+    uncoveredHarnesses: ['codex'],
+  } as never as import('@agentistics/core').AggregatePlanBasis
+
+  it('is the covered harness own C/A, not the aggregate', () => {
+    expect(sessionPlanFactor(basis, 'claude')).toBeCloseTo(0.25, 6)
+  })
+
+  it('is null for a harness no plan covers — which is what removes the toggle', () => {
+    expect(sessionPlanFactor(basis, 'codex')).toBe(null)
+    expect(sessionPlanFactor(basis, 'gemini')).toBe(null)
+  })
+
+  it('is null with no basis at all — a central, or nobody has registered a plan', () => {
+    expect(sessionPlanFactor(null, 'claude')).toBe(null)
+  })
+})
+

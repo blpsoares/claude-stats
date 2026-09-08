@@ -1797,3 +1797,79 @@ describe('the activity calendar counts the days a session WORKED', () => {
     expect(on4.sessions).toBe(2)
   })
 })
+
+/**
+ * THE REPORTED CASE — "the Today filter is lying A LOT: there is an activity chart for the whole
+ * day when I did nothing before 8am".
+ *
+ * `message_hours` is a LIFETIME array carrying no day, so a conversation open since Tuesday put
+ * every hour it had ever run in into today's chart. Measured on the reporter's machine: bars in
+ * all 24 hours, totalling 33.427 against the 4.905 messages the same filter reported one card
+ * above it.
+ */
+describe('the hour chart under a date filter', () => {
+  const DAY = '2026-09-08'
+  const OTHER = '2026-09-06'
+  const hoursOf = (h: Record<string, number>) => h
+
+  const openSinceSaturday = {
+    session_id: 'long', harness: 'claude', project_path: '/p',
+    start_time: '2026-09-06T16:00:00.000Z',
+    input_tokens: 100, output_tokens: 100,
+    // The lifetime array: afternoon and evening on the 6th, morning on the 8th.
+    message_hours: [16, 16, 16, 22, 22, 8, 9, 9],
+    user_message_timestamps: [`${OTHER}T19:00:00.000Z`, `${DAY}T12:00:00.000Z`],
+    daily: {
+      [OTHER]: { input_tokens: 50, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 5, hours: hoursOf({ '16': 3, '22': 2 }) },
+      [DAY]: { input_tokens: 50, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 3, hours: hoursOf({ '8': 1, '9': 2 }) },
+    },
+  } as unknown as SessionMeta
+
+  const data = {
+    statsCache: { dailyTokens: {}, dailyActivity: [], dailyModelTokens: [], modelUsage: {}, hourCounts: {}, lastComputedDate: '2026-01-01' },
+    sessions: [openSinceSaturday], projects: [], allSessions: [], harnesses: ['claude'],
+  } as unknown as import('@agentistics/core').AppData
+
+  const onDay = (day: string): import('@agentistics/core').Filters =>
+    ({ dateRange: 'all', customStart: day, customEnd: day, projects: [], models: [] })
+
+  test('a day gets THAT day\'s hours, not every hour the session ever ran in', () => {
+    const d = computeDerivedStats(data, onDay(DAY))!
+    expect(d.hourCounts).toEqual({ 8: 1, 9: 2 })
+  })
+
+  test('the session is still selected — it worked today, it just did not work all day', () => {
+    // The bug that would replace this one: filing the session on its START day drops it from
+    // today entirely, and "today" reads empty for anyone whose conversation has been open a while.
+    expect(computeDerivedStats(data, onDay(DAY))!.totalSessions).toBe(1)
+  })
+
+  test('another day gets its own hours', () => {
+    expect(computeDerivedStats(data, onDay(OTHER))!.hourCounts).toEqual({ 16: 3, 22: 2 })
+  })
+
+  test('the tooltip\'s timestamps are cut to the range too', () => {
+    const d = computeDerivedStats(data, onDay(DAY))!
+    expect(Object.keys(d.hourMeta)).toHaveLength(1)
+  })
+
+  test('unfiltered, the lifetime array is what it has always been', () => {
+    const all = computeDerivedStats(data, { dateRange: 'all', customStart: '', customEnd: '', projects: [], models: [] })!
+    expect(all.hourCounts).toEqual({ 16: 3, 22: 2, 8: 1, 9: 2 })
+  })
+
+  test('a session with no per-day hours KEEPS its lifetime array — never an invented empty day', () => {
+    // Records written before the field existed. Under-reporting them would be the same class of
+    // error in the other direction, and it would be invisible.
+    const old = {
+      ...openSinceSaturday, session_id: 'old',
+      daily: { [DAY]: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 3 } },
+    } as unknown as SessionMeta
+    const d = computeDerivedStats(
+      { ...data, sessions: [old] } as unknown as import('@agentistics/core').AppData,
+      onDay(DAY),
+    )!
+    expect(d.hourCounts).toEqual({ 16: 3, 22: 2, 8: 1, 9: 2 })
+  })
+})
+

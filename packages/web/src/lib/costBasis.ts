@@ -11,7 +11,7 @@
  * plan figure is an ALLOCATION — no row was individually billed — and a label that can be
  * forgotten will be.
  */
-import type { AggregatePlanBasis, CostBasis, HarnessId } from '@agentistics/core'
+import { planAllocation, type AggregatePlanBasis, type CostBasis, type HarnessId } from '@agentistics/core'
 
 export interface CostView {
   usd: number
@@ -48,6 +48,22 @@ export function viewCost(
     allocated: opts.allocated ?? false,
     unavailable: false,
   }
+}
+
+/**
+ * The KEY of a cost row: which basis the number beside it is in.
+ *
+ * It follows `view.basis` — what was ACTUALLY applied — never what was requested. A plan figure
+ * that could not be produced comes back as the API number flagged `unavailable`, and labelling
+ * that "plan" would put a real API cost under a heading claiming it is the user's subscription.
+ *
+ * "Allocated" rather than "plan cost": within a session, a plan figure is a SHARE of a
+ * subscription — nothing was billed for this conversation on its own — and a label that can be
+ * forgotten will be.
+ */
+export function costBasisLabel(view: CostView, pt: boolean): string {
+  if (view.basis === 'plan') return pt ? 'Rateado (plano)' : 'Allocated (plan)'
+  return pt ? 'Estimado (API)' : 'Estimated (API)'
 }
 
 /**
@@ -147,4 +163,23 @@ export function formatMultiple(multiple: number | null, lang: 'pt' | 'en'): stri
   const decimals = multiple >= 100 ? 0 : multiple >= 10 ? 1 : 2
   const value = multiple.toFixed(decimals)
   return lang === 'pt' ? `${value.replace('.', ',')}×` : `${value}×`
+}
+
+/**
+ * `C/A` for ONE session — the factor a per-session plan figure is allocated by.
+ *
+ * PER HARNESS, never the aggregate. A session is one harness's spend, and rescaling it by a factor
+ * that also covers a subscription paying for something else allocates it against a plan it has
+ * nothing to do with — the same rule `AgentMetricsPanel` follows for a Claude-only metric.
+ *
+ * `null` whenever no plan covers that harness, which is what makes the basis toggle ABSENT rather
+ * than present and answering "no registered plan".
+ */
+export function sessionPlanFactor(
+  basis: AggregatePlanBasis | null,
+  harness: string,
+): number | null {
+  if (!basis) return null
+  const factor = planAllocation(basis).byHarness[harness as HarnessId]
+  return typeof factor === 'number' && Number.isFinite(factor) ? factor : null
 }

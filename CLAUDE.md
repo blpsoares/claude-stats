@@ -2247,6 +2247,88 @@ harness must not break.
   complete. `Today` is its own preset ("only today, in progress") and is not the calendar's "today"
   ("up to today"); both end at the END of the day, so a session a few seconds ahead of the browser's
   clock is not excluded.
+  **THE HOUR CHART IS CUT THE SAME WAY, and it needed its own field to be cuttable at all.**
+  `message_hours` is a LIFETIME array of hour-of-day values carrying no day, so it survived every
+  cut `sliceSession` made around it: with `Today` selected on a real machine the "Usage by hour"
+  chart drew bars in ALL 24 HOURS for someone who had started at 8am, totalling 33.427 against the
+  4.905 messages the card above it reported under the same filter. `SessionDayUsage.hours` is the
+  measurement (hour of the LOCAL clock -> count, written in `jsonl.ts` at the same line that pushes
+  to `message_hours`, so the two can never disagree), `sliceSession` sums it and `expandHours`
+  rebuilds the array — which is what lets the chart, the PDF export and the drilldown read the
+  range's hours without any of them knowing a range exists. `user_message_timestamps` is FILTERED
+  rather than rebuilt: those are instants and carry their own day. A session whose days carry no
+  `hours` (a record written before the field existed) KEEPS its lifetime array, the same rule a
+  session with no `daily` already had — a record that cannot be split is not one that did nothing.
+  **The remaining artefact is the UTC day itself, and it is deliberate**: a `daily` key is a UTC day
+  while an hour bucket is local, so at UTC-3 `Today` legitimately includes the previous evening's
+  21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
+  local day would make it disagree with the cost and the messages beside it, and no day-granular
+  split can express a local day for a non-UTC zone.
+- **A TRANSCRIPT THAT IS NOT THERE YET IS NOT A TRANSCRIPT THAT IS NOWHERE.** Three resolvers
+  memoized their answer by conversation id — the found path AND the `null` — so an unresolvable id
+  cost one scan instead of one per poll. The intent is right; caching the `null` was not. **A
+  harness writes a conversation's transcript when the conversation first says something**, so a
+  session agentop has just started has no file for its first seconds, the chat view's very first
+  poll lands inside that window, and the miss was then handed to every later poll FOR THE LIFE OF
+  THE SERVER PROCESS. Reported on a session created from the wizard: the step-3 prompt never
+  appeared, the next message sat at `delivered to the session — not read yet` for eight minutes,
+  and no reply ever arrived — while the terminal tab, which reads the pane and not the transcript,
+  showed the whole conversation. Confirmed by the clock: the chat came back only because the server
+  was restarted 13 minutes later, which is the only thing that clears a per-process memo.
+  `transcript-path-memo.ts` (pure) is the one rule now — **a found path is remembered forever** (a
+  transcript does not move), **a miss expires** (`TRANSCRIPT_MISS_TTL_MS`), the same shape and the
+  same reason as `repo-facts.ts`'s negative TTL. And the two costs are separated: Claude's DIRECT
+  path is one `stat` and is checked on EVERY call, so a new session is readable the moment its file
+  appears, while only the SCAN (a `readdir` plus a `stat` per project — 281 of them on a real
+  machine) is paced by the TTL. **claude, codex and kimi** memoized and are fixed; **antigravity,
+  copilot and gemini** need no memo — each computes or checks its two candidate paths on every call
+  — and are immune by construction. A new reader that needs a DIRECTORY LISTING to find its file
+  needs this memo, and needs it this way round.
+- **A SESSION'S GIT STATS ARE READ WHERE IT WORKED, NOT WHERE IT IS FILED.** `project_path` is the
+  transcript's FIRST cwd — the project the session belongs to — and `current_cwd` is where it ended
+  up. They differ exactly in the git-WORKTREE case this file mandates for concurrent work, and a
+  worktree sits on a branch the main checkout's HEAD has never seen: `git log` in the project
+  answers with nothing, so the session card read `Commits 2 · Lines +0 / −0 · Files 0` — a count of
+  commits beside a confident zero of what they changed. Measured on the reporting machine: nothing
+  in the checkout, **+688 / −66 over 25 files** in the worktree, for the very window that produced
+  those commits. `sessionGitPaths` (pure) asks where the session ENDED first and keeps the project
+  as the FALLBACK (a session whose last directory is not a repository at all), and holds ONE entry
+  whenever the session never moved — asking twice for the ordinary case is the git work
+  `git-stats.test.ts` exists to bound. `getSessionFileStats` takes the first directory that has
+  anything to say and never a per-field max across two, which could report lines from the worktree
+  beside a file count from the checkout: a pair that never co-existed. Same distinction
+  `sessionAtCwd` already makes for live-session detection.
+- **THE SESSION CARD'S BASIS TOGGLE IS LOCAL, AND IT IS ABSENT WHEN NO PLAN COVERS THE HARNESS.**
+  `SessionStatsMenu` opens on the DASHBOARD's `costBasis` and can be switched to the other basis to
+  read one session — re-seeded from the global on every open, changing nothing global, so closing
+  the card is what puts it back because nothing was ever moved. The factor is
+  `sessionPlanFactor(planBasis.basis, harness)` — **per harness, never the aggregate**: a session is
+  one harness's spend, and rescaling it by a factor that also covers a subscription paying for
+  something else allocates it against a plan it has nothing to do with (same rule
+  `AgentMetricsPanel` follows). A `null` factor removes the TOGGLE rather than leaving a Plan button
+  whose one outcome is "no registered plan". The row's key is `costBasisLabel`, which follows the
+  basis ACTUALLY applied — `viewCost` hands back the API figure flagged when it cannot produce a
+  plan one, and labelling that "plan" would put a real API cost under the user's subscription. Both
+  money figures in the card (the session's and its subagents') move together: two bases in one card
+  is a card that cannot be added up.
+- **`fleetIndex` IS A LOOKUP, AND ITS `values()` ARE NOT THE FLEET.** It keys every row TWICE on
+  purpose — by its own id and by its conversation id, so one map answers a link carrying either —
+  so a session that knows its conversation is in it twice. The broadcast picker was built by
+  iterating that map and offered `Active 22` on a machine running 11 (8 `waiting` + 3 `working`),
+  over an `All` of 357 against a fleet of 329: every session with a conversation link was listed
+  twice and counted twice, on a button that writes into live assistants. `buildPickRows`
+  (`web/src/lib/sessionPick.ts`, pure) now owns both picker lists and DEDUPES BY ID — deliberately
+  there rather than at the one caller, because the map is correct as a lookup and the next caller to
+  iterate it would hit the same thing.
+- **A COUNT IS WHAT MATCHED, NEVER WHAT A CAP RETURNED.** The new-session wizard's tabs read
+  `Repositories 12 · Projects 12 · Folders 12` on a machine holding 237 / 211 / 5.284 — they were
+  counting the rows they had been handed, and `PROJECTS_PER_KIND` is 12, so every tab showed the cap
+  whatever the machine held and whatever was typed. `findProjects` returns `{rows, totals}` (the
+  totals from the pure `countPerKind`, over the SAME `kindOf` the cap is applied with, so a row can
+  never be counted under one kind and budgeted under another), `/api/fleet/new` carries
+  `projectTotals`, and `kindCount` / `kindMore` (`web/src/lib/projectTabs.ts`) put the true total on
+  the tab plus "Showing 12 of 237" under the list. `projectTotals` is OPTIONAL on the wire: absent
+  means an older server did not say, and the tabs then count their rows and claim nothing more.
 - **A tag may be pinned to a PERIOD** (`TagDoc.window`, inclusive `yyyy-MM-dd`, each end independently
   optional) — that is what makes a tag answer "I ran harness X on this project from the 4th to the
   18th; what did it cost?" instead of only "these sources, all time". It is an AND on top of the
