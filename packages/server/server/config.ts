@@ -73,6 +73,12 @@ export const WORKFLOWS_STORE_DIR = join(AGENTISTICS_DATA_DIR, 'workflows')
 // root as a legacy Claude session, so a registry file there would be parsed as session metrics.
 export const MANAGED_SESSIONS_FILE = join(AGENTISTICS_DATA_DIR, 'managed-sessions.json')
 
+// The task book: the deliveries sessions are filed under, and the attempts (configurations) each
+// one was tried with. Lives beside the registry, and for the same reason it is not inside
+// CONSOLIDATED_DIR — `loadConsolidated` would read a flat *.json at that root as session metrics.
+export const TASKS_FILE = process.env.AGENTISTICS_TASKS_FILE
+  ?? join(AGENTISTICS_DATA_DIR, 'tasks.json')
+
 // Derived-value cache for JSONL parses: <data dir>/cache.db (SQLite).
 // DERIVED STATE ONLY — every row is recomputable from the file it names, so deleting
 // this file may only ever cost one slow build. Never store anything here that is not

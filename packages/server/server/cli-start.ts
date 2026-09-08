@@ -1452,7 +1452,11 @@ async function ensureSessionsPoller(): Promise<SessionsPoller> {
     loadHarnessSessions,
     // Written once per session, not once per poll — the poller only calls this when the harness's
     // own record disagrees with the registry.
-    recordConversation: (id, conversationId) => patchSession(id, { conversationId }),
+    // The link kind travels WITH the id. Dropping it here would persist a first-sighting claim as
+    // though the CLI had been handed that conversation, which is the one thing the field exists to
+    // keep apart — see `ManagedSession.conversationLink`.
+    recordConversation: (id, conversationId, conversationLink) =>
+      patchSession(id, { conversationId, conversationLink }),
     // The `/rename` name, persisted so the title survives the process — same once-per-change
     // discipline. See `ManagedSession.harnessName` and `pickTitle`.
     recordHarnessName: (id, name, since) =>
@@ -1513,6 +1517,9 @@ async function spawnManaged(req: {
   effort?: string
   label?: string
   task?: string
+  /** See `ManagedSession.taskId`: recorded at spawn, the one moment it is a fact. */
+  taskId?: string
+  attemptId?: string
 }, s: CliStrings): Promise<SpawnSessionResult> {
   const backend = await resolveBackend()
   const blocked = await backend.unavailable()
@@ -1560,11 +1567,16 @@ async function spawnManaged(req: {
     ...(req.effort ? { effort: req.effort } : {}),
     ...(req.label ? { label: req.label } : {}),
     ...(req.task ? { task: req.task } : {}),
+    // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+    ...(req.taskId ? { taskId: req.taskId } : {}),
+    ...(req.attemptId ? { attemptId: req.attemptId } : {}),
     // Recorded at the one moment it is certain — the harness was just handed this id, or we asked
     // it to reopen this conversation. Without it a fresh session's link exists only while the
     // harness's own record does (`harness-sessions.ts`, claude alone), so a session started with
     // the cockpit closed had nothing to fall back on but the harness-and-directory guess.
-    ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+    ...(planned.plan.conversationId
+      ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+      : {}),
     // Which repository this directory is in, while the directory is provably there. See
     // `ManagedSession.repo`: a worktree removed later leaves a path that names nothing, and the
     // grouping fell through to its last path segment as though it were a project.

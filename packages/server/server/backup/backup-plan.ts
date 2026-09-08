@@ -369,6 +369,16 @@ const ALWAYS: string[] = [
   // on the reference machine. It grows, which is an argument for watching it, not for dropping it —
   // the layer's own size accounting reports it like everything else.
   '.agentistics/attachments',
+  // The task BOARD. Titles, descriptions, comments, subtasks, blockers, links, priorities, the
+  // claim state and the activity log — every word of it typed by a person or written by an agent
+  // working for one, and reproducible from nothing: the sessions it measures survive, but which
+  // work they were FOR does not exist anywhere else. Tens of KB.
+  '.agentistics/tasks.json',
+  // The files attached to those tasks — specs, plans, screenshots pasted into a comment. Same
+  // argument as `attachments` above: user content, referenced by records that DO travel, and gone
+  // for good if the machine is. It grows, which is an argument for watching it in the size
+  // accounting rather than for leaving it behind.
+  '.agentistics/task-files',
   // The index that makes those attachments findable again: which session each was typed
   // into, and when (`attachment-web.ts`'s ATTACHMENT_LOG). It travels WITH them for the
   // obvious reason — restoring the images and losing the record would put every

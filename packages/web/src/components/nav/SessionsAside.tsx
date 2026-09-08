@@ -26,6 +26,8 @@ import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
+import { TaskPicker } from '../tasks/TaskPicker'
+import { attachSession, detachSession } from '../../lib/tasks'
 import { SessionFacts } from '../sessions/SessionFacts'
 import { sessionPath } from '../../lib/sessionRoute'
 import {
@@ -168,6 +170,8 @@ export function SessionsAside({
   const [dragOver, setDragOver] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string; state: string; verbs: RowVerb[] } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null)
+  /** The task picker, anchored where the menu was — see `pickMenuAction`. */
+  const [linking, setLinking] = useState<{ id: string; x: number; y: number } | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -178,6 +182,12 @@ export function SessionsAside({
   const pickMenuAction = (action: string) => {
     if (!menu) return
     const { id } = menu
+    if (action === 'link-task') {
+      // The picker is anchored where the menu was, so the gesture stays in one place on screen.
+      setLinking({ id, x: menu.x, y: menu.y })
+      setMenu(null)
+      return
+    }
     if (action === 'rename') {
       const target = rows.find(r => r.id === id)
       setRenaming({ id, title: target?.title ?? '' })
@@ -450,6 +460,39 @@ export function SessionsAside({
           </>
         )}
       </div>
+
+      {linking && (
+        <TaskPicker
+          at={{ x: linking.x, y: linking.y }}
+          title={pt ? 'Vincular a uma tarefa' : 'Link to a task'}
+          {...(() => {
+            // The row the menu was opened on, so the picker can name what it is filed under and
+            // offer to unfile it — the same contract the three-dot menu passes.
+            const row = rows.find(r => r.id === linking.id)
+            return row
+              ? {
+                session: {
+                  id: row.id, title: row.title, harness: row.harness,
+                  ...(row.task ? { task: row.task } : {}),
+                },
+              }
+              : {}
+          })()}
+          onPick={async taskId => {
+            const ok = await attachSession(taskId, linking.id)
+            setNotice(ok
+              ? (pt ? 'Sessão vinculada à tarefa.' : 'Session filed under the task.')
+              : (pt ? 'Não foi possível vincular.' : 'Could not link that session.'))
+          }}
+          onDetach={async () => {
+            const ok = await detachSession(linking.id, linking.id)
+            setNotice(ok
+              ? (pt ? 'Sessão desvinculada.' : 'No longer filed under a task.')
+              : (pt ? 'Não foi possível desvincular.' : 'Could not unfile that session.'))
+          }}
+          onClose={() => setLinking(null)}
+        />
+      )}
 
       {/* The row's context menu (Task 6) — rename / stop / reopen, exactly the row's own verbs. */}
       {menu && (

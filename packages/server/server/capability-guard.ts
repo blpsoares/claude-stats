@@ -58,6 +58,14 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   // next fleet route someone adds must be guarded by having been added AT ALL, never by having
   // remembered a second table.
   ['/api/fleet', 'localShell'],
+  // The task board reads the session registry and the local store, and its DELIVER verb runs git in
+  // the directories those sessions ran in. That is host power, so it rides the same capability as
+  // the fleet — and a prefix for the same reason: the next task route must be guarded by having
+  // been added at all, never by having remembered a second table.
+  ['/api/tasks', 'localShell'],
+  // The file store is addressed by file id rather than under `/api/tasks/`, so it needs its own
+  // entry: a route that is not registered here is assumed harmless.
+  ['/api/task-files', 'localShell'],
   // The web dashboard's read of the backup engine and its "run now" button. `status` walks the
   // metrics layer and the backup history; `run` spawns `git bundle`/`git diff` across every known
   // repository and, depending on the configured layers, copies the raw harness directories

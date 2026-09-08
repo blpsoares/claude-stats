@@ -55,8 +55,13 @@ export interface SessionPatch {
   labelSince?: number
   note?: string
   task?: string
+  /** See `ManagedSession.taskId` — stamped at spawn, patched only when a row is re-attributed. */
+  taskId?: string
+  attemptId?: string
   endedAt?: string
   conversationId?: string
+  /** See `ManagedSession.conversationLink`. Written beside `conversationId`, never on its own. */
+  conversationLink?: 'assigned' | 'observed'
   /** The harness's own `/rename` name, persisted so the title survives the process — see
    *  `ManagedSession.harnessName`. Written by the poller only when it CHANGES, one write per rename. */
   harnessName?: string
@@ -111,12 +116,19 @@ function sanitize(raw: unknown): ManagedSession | null {
       : {}),
     ...(typeof s.note === 'string' ? { note: s.note } : {}),
     ...(typeof s.task === 'string' ? { task: s.task } : {}),
+    ...(typeof s.taskId === 'string' ? { taskId: s.taskId } : {}),
+    ...(typeof s.attemptId === 'string' ? { attemptId: s.attemptId } : {}),
     ...(typeof s.endedAt === 'string' ? { endedAt: s.endedAt } : {}),
     // Written by `resumeSession` and `openTask` and, until this line existed, dropped on the way back
     // in — so the exact conversation a reopened session drives was recorded and then never read, and
     // the next reopen fell back to the harness+directory guess that cannot tell two sessions of one
     // repository apart. `SessionPatch` has carried the field all along.
     ...(typeof s.conversationId === 'string' ? { conversationId: s.conversationId } : {}),
+    // Only the two words this field can hold. An unknown one would flow into the rollup's sentence
+    // about whether a cost came from an assigned id or a claimed one, as though it meant something.
+    ...(s.conversationLink === 'assigned' || s.conversationLink === 'observed'
+      ? { conversationLink: s.conversationLink }
+      : {}),
     // A number, and finite: this is a hand-editable file, and `lastSeenMs: "yesterday"` reaching
     // `crash-group.ts` would put a NaN comparison in charge of which sessions get reopened.
     ...(typeof s.lastSeenMs === 'number' && Number.isFinite(s.lastSeenMs)

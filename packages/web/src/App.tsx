@@ -12,7 +12,7 @@ import {
   PanelLeft, RefreshCw, Server, Settings, Shield, ShieldCheck,
   SlidersHorizontal, Sparkles, Sun, Tag as TagIcon, Target, TerminalSquare,
   TrendingUp, Trophy, Users, Wrench, X, Zap,
-  ZoomIn,
+  ZoomIn, ClipboardList,
 } from 'lucide-react'
 import { useData, useDerivedStats, LIVE_INTERVAL_OPTIONS, LIVE_INTERVAL_OPTIONS_RISKY } from './hooks/useData'
 import { usePlanBasis } from './hooks/usePlanBasis'
@@ -38,6 +38,7 @@ import { ModelBreakdown } from './components/ModelBreakdown'
 import { ProjectsList } from './components/ProjectsList'
 import { FiltersBar } from './components/FiltersBar'
 import { NotificationToasts } from './components/NotificationToasts'
+import { BetaTag } from './components/BetaTag'
 import { KeyboardProbe, keyboardProbeOn } from './components/KeyboardProbe'
 import { shouldResetDocumentScroll } from './lib/viewportReset'
 import { MagnifierLayer } from './components/a11y/MagnifierLayer'
@@ -727,6 +728,8 @@ function MobileBottomNav({
     active?: boolean
     accent?: boolean
     badge?: string
+    /** See the desktop rail: the two navs mark the same features, or one of them lies. */
+    beta?: boolean
   }
   // The switch's badge, from the SHARED fleet poll (see lib/fleet.ts) — no extra request.
   const { fleet: mobileFleet } = useFleet(lang === 'pt' ? 'pt' : 'en')
@@ -739,6 +742,7 @@ function MobileBottomNav({
       ? [{ key: 'members', label: pt ? 'Membros' : 'Members', icon: Users, onClick: () => { closeSheet(); navigate('/members') }, active: location.pathname.startsWith('/members') } as Tile]
       : []),
     { key: 'top', label: pt ? 'Top' : 'Top', icon: Trophy, onClick: () => { closeSheet(); navigate('/top') }, active: location.pathname.startsWith('/top') },
+    { key: 'tasks', label: 'Entregas', icon: ClipboardList, onClick: () => { closeSheet(); navigate('/tasks') }, active: location.pathname.startsWith('/tasks'), beta: true },
     { key: 'tags', label: 'Tags', icon: TagIcon, onClick: () => { closeSheet(); navigate('/tags') }, active: location.pathname.startsWith('/tags') },
     { key: 'custom', label: pt ? 'Personalizado' : 'Custom', icon: Layers, onClick: () => { closeSheet(); navigate('/custom') }, active: location.pathname.startsWith('/custom') },
     { key: 'export', label: pt ? 'Exportar' : 'Export', icon: FileDown, onClick: () => { closeSheet(); navigate('/export') }, active: location.pathname.startsWith('/export') },
@@ -912,6 +916,8 @@ function MobileBottomNav({
               >
                 <Icon size={19} strokeWidth={1.8} />
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{tile.label}</span>
+                {/* Top-LEFT, so it cannot collide with the count badge on the right. */}
+                {tile.beta && <BetaTag what={tile.label} style={{ position: 'absolute', top: 4, left: 5 }} />}
                 {tile.badge && (
                   <span style={{
                     position: 'absolute', top: 4, right: 5,
@@ -1098,7 +1104,11 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, o
   // A resize in progress. Only used to suspend the collapse animation — see the aside's `transition`.
   const [dragging, setDragging] = useState(false)
 
-  const items: { to: string; labelPt: string; labelEn: string; icon: React.ReactNode }[] = [
+  const items: {
+    to: string; labelPt: string; labelEn: string; icon: React.ReactNode
+    /** Still being tried out — see `BetaTag`. Marked HERE so the rail and the sheet agree. */
+    beta?: boolean
+  }[] = [
     { to: '/',          labelPt: 'Home',         labelEn: 'Home',         icon: <Home size={17} /> },
     { to: '/costs',     labelPt: 'Custos',       labelEn: 'Costs',        icon: <DollarSign size={17} /> },
     { to: '/top',       labelPt: 'Top de uso',   labelEn: 'Top usage',    icon: <Trophy size={17} /> },
@@ -1106,6 +1116,7 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, o
     { to: '/repositories', labelPt: 'Repositórios', labelEn: 'Repositories', icon: <GitBranch size={17} /> },
     // Members/machines only exist on a central — a solo machine has exactly one of each.
     ...(isCentral ? [{ to: '/members', labelPt: 'Membros', labelEn: 'Members', icon: <Users size={17} /> }] : []),
+    { to: '/tasks',     labelPt: 'Entregas',     labelEn: 'Deliveries',   icon: <ClipboardList size={17} />, beta: true },
     { to: '/tags',      labelPt: 'Tags',         labelEn: 'Tags',         icon: <TagIcon size={17} /> },
     { to: '/tools',     labelPt: 'Ferramentas',  labelEn: 'Tools',        icon: <Wrench size={17} /> },
     { to: '/custom',    labelPt: 'Personalizado',labelEn: 'Custom',       icon: <Layers size={17} /> },
@@ -1197,6 +1208,9 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, o
               >
                 <span style={{ flexShrink: 0, display: 'flex' }}>{item.icon}</span>
                 {!collapsed && label}
+                {/* Collapsed, the rail has no room for the word — a dot in the same colour carries
+                    it, and the tooltip says what it means. Never colour alone anywhere it fits. */}
+                {item.beta && <BetaTag what={label} compact={collapsed} style={collapsed ? { marginLeft: 2 } : { marginLeft: 'auto' }} />}
               </NavLink>
             </CollapsedTip>
           )

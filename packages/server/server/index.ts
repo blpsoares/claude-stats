@@ -1483,6 +1483,240 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    // The task board. `capability-guard.ts` has already refused these on an exposed profile; the
+    // handlers hold no arithmetic of their own (see `task-web.ts`).
+    // The page's own filters, read off the query string. The board is scoped exactly as every other
+    // surface is — see `task-filter.ts`.
+    const taskFilterOf = (u: URL) => {
+      const list = (k: string) => {
+        const v = u.searchParams.get(k)
+        return v ? v.split(',').filter(Boolean) : undefined
+      }
+      return {
+        ...(u.searchParams.get('from') ? { from: u.searchParams.get('from')! } : {}),
+        ...(u.searchParams.get('to') ? { to: u.searchParams.get('to')! } : {}),
+        ...(list('harnesses') ? { harnesses: list('harnesses') } : {}),
+        ...(list('projects') ? { projects: list('projects') } : {}),
+        // `repos` may legitimately name the empty bucket, so an explicit empty member survives.
+        ...(u.searchParams.has('repos')
+          ? { repos: (u.searchParams.get('repos') ?? '').split(',') }
+          : {}),
+      }
+    }
+
+    if (url.pathname === '/api/tasks' && req.method === 'GET') {
+      const { listTasks } = await import('./sessions/task-web')
+      return json(await listTasks(taskFilterOf(url)))
+    }
+    // The two ORCHESTRATION reads, matched before the generic `<ref>` GET below — otherwise
+    // `next` and `activity` resolve as task references and answer 404 for a board that has them.
+    if (url.pathname === '/api/tasks/next' && req.method === 'GET') {
+      const { nextTasks } = await import('./sessions/task-web')
+      const limit = Number(url.searchParams.get('limit'))
+      return json(await nextTasks({
+        ...(url.searchParams.get('actor') ? { actor: url.searchParams.get('actor')! } : {}),
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+      }))
+    }
+    if (url.pathname === '/api/tasks/activity' && req.method === 'GET') {
+      const { taskActivity } = await import('./sessions/task-web')
+      const limit = Number(url.searchParams.get('limit'))
+      return json({
+        events: await taskActivity({
+          ...(url.searchParams.get('task') ? { ref: url.searchParams.get('task')! } : {}),
+          ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        }),
+      })
+    }
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
+      const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      const { showTask } = await import('./sessions/task-web')
+      const found = await showTask(ref, taskFilterOf(url))
+      if (!found) return json({ error: 'no_such_task' }, 404)
+      return json(found)
+    }
+    if (url.pathname === '/api/tasks' && req.method === 'POST') {
+      const body = await req.json().catch(() => ({})) as { title?: string; detail?: string }
+      const { createTask } = await import('./sessions/task-web')
+      const made = await createTask({ title: body.title ?? '', ...(body.detail !== undefined ? { detail: body.detail } : {}) })
+      if (!made) return json({ error: 'title_required' }, 400)
+      return json({ task: made })
+    }
+
+    // A task file, by its own id. Separate from the task routes because a download is addressed by
+    // the FILE and a caller holding a file id has no reason to know which task it hangs off.
+    if (url.pathname.startsWith('/api/task-files/')) {
+      const fileId = decodeURIComponent(url.pathname.slice('/api/task-files/'.length))
+      const mod = await import('./sessions/task-web')
+      if (req.method === 'DELETE') {
+        return json({ ok: await mod.removeFile(fileId) }, 200)
+      }
+      const got = await mod.fetchFile(fileId)
+      if (!got) return json({ error: 'no_such_file' }, 404)
+      // `.buffer` rather than the view: a Uint8Array is not a BodyInit in this lib target.
+      return new Response(got.bytes.buffer as ArrayBuffer, {
+        headers: {
+          ...CORS_HEADERS,
+          'Content-Type': 'application/octet-stream',
+          // The name is the one the user gave, quoted — it never reached the filesystem.
+          'Content-Disposition': `attachment; filename="${got.name.replace(/"/g, '')}"`,
+        },
+      })
+    }
+
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'DELETE') {
+      const ref = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      const { deleteTask } = await import('./sessions/task-web')
+      return json({ ok: await deleteTask(ref) })
+    }
+
+    if (url.pathname.startsWith('/api/tasks/') && req.method === 'POST') {
+      const rest = decodeURIComponent(url.pathname.slice('/api/tasks/'.length))
+      // `<ref>/comments`, `<ref>/subtasks`, `<ref>/files`, `<ref>` (status/edit). The ref may itself
+      // contain slashes only if someone named a task that way, so the VERB is taken from the tail.
+      const slash = rest.lastIndexOf('/')
+      const verb = slash === -1 ? '' : rest.slice(slash + 1)
+      const known = verb === 'comments' || verb === 'subtasks' || verb === 'files'
+        || verb === 'links' || verb === 'sessions' || verb === 'claim' || verb === 'move'
+      const ref = known ? rest.slice(0, slash) : rest
+      const mod = await import('./sessions/task-web')
+
+      if (verb === 'files') {
+        const form = await req.formData().catch(() => null)
+        const file = form?.get('file')
+        if (!(file instanceof File)) return json({ error: 'file_required' }, 400)
+        const fileId = await mod.attachFile(ref, {
+          name: file.name,
+          bytes: new Uint8Array(await file.arrayBuffer()),
+          ...(typeof form?.get('kind') === 'string' ? { kind: String(form.get('kind')) } : {}),
+          ...(typeof form?.get('author') === 'string' ? { author: String(form.get('author')) } : {}),
+        })
+        return json({ ok: fileId !== null, id: fileId }, fileId !== null ? 200 : 400)
+      }
+
+      const body = await req.json().catch(() => ({})) as Record<string, unknown>
+      if (verb === 'comments') {
+        // `id` present means an EDIT or a DELETE of that comment; absent means a new one.
+        if (typeof body.id === 'string') {
+          const ok = body.remove === true
+            ? await mod.removeComment(body.id)
+            : await mod.editComment(body.id, String(body.body ?? ''))
+          return json({ ok }, ok ? 200 : 400)
+        }
+        const ok = await mod.addComment(ref, {
+          author: String(body.author ?? 'unknown'),
+          body: String(body.body ?? ''),
+        })
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (verb === 'sessions') {
+        if (typeof body.detach === 'string') {
+          return json({ ok: await mod.detachSession(body.detach) })
+        }
+        const ok = await mod.attachSession(ref, String(body.sessionId ?? ''))
+        return json({ ok }, ok ? 200 : 404)
+      }
+      if (verb === 'links') {
+        if (typeof body.remove === 'string') {
+          return json({ ok: await mod.removeLink(ref, body.remove) })
+        }
+        const ok = await mod.addLink(ref, {
+          url: String(body.url ?? ''),
+          ...(typeof body.label === 'string' ? { label: body.label } : {}),
+          ...(typeof body.kind === 'string' ? { kind: body.kind } : {}),
+        })
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (verb === 'subtasks') {
+        if (typeof body.id === 'string') {
+          if (body.remove === true) return json({ ok: await mod.removeSubtask(body.id) })
+          // A bare `{id, done}` is the tick; anything else is a column edit. Both land on
+          // `patchSubtask`, which derives `done` from `status` so the two cannot disagree.
+          if (typeof body.done === 'boolean' && Object.keys(body).length === 2) {
+            return json({ ok: await mod.setSubtaskDone(body.id, body.done) })
+          }
+          return json({ ok: await mod.patchSubtask(body.id, {
+            ...(typeof body.title === 'string' ? { title: body.title } : {}),
+            ...(typeof body.status === 'string' ? { status: body.status as never } : {}),
+            ...(typeof body.assignee === 'string' ? { assignee: body.assignee } : {}),
+            ...(typeof body.dueDate === 'string' ? { dueDate: body.dueDate } : {}),
+            ...(typeof body.startDate === 'string' ? { startDate: body.startDate } : {}),
+            ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
+            ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
+          }) })
+        }
+        const ok = await mod.addSubtask(ref, String(body.title ?? ''))
+        return json({ ok }, ok ? 200 : 400)
+      }
+      if (verb === 'claim') {
+        // `release: true` gives it back; anything else takes it. One verb, because a caller holding
+        // a task reference thinks in terms of "mine / not mine", not two endpoints.
+        if (body.release === true) {
+          const out = await mod.releaseTask({
+            ref, by: String(body.by ?? ''), ...(body.force === true ? { force: true } : {}),
+          })
+          return json(out, out.ok ? 200 : 409)
+        }
+        const out = await mod.claimTask({
+          ref,
+          by: String(body.by ?? ''),
+          ...(typeof body.leaseMs === 'number' ? { leaseMs: body.leaseMs } : {}),
+          ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
+          ...(typeof body.note === 'string' ? { note: body.note } : {}),
+          ...(body.takeover === true ? { takeover: true } : {}),
+        })
+        // 409, not 400: the request was well formed and somebody else has it — the one status a
+        // caller can act on by waiting.
+        return json(out, out.ok ? 200 : out.reason === 'no_such_task' ? 404 : 409)
+      }
+      if (verb === 'move') {
+        const index = Number(body.index)
+        if (!Number.isFinite(index)) return json({ error: 'bad_index' }, 400)
+        const out = await mod.moveTask({
+          ref, index,
+          ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+        })
+        return json(out, out.ok ? 200 : 404)
+      }
+      const FIELDS = ['title', 'detail', 'priority', 'assignee', 'dueDate', 'startDate'] as const
+      if (FIELDS.some(f => typeof body[f] === 'string') || Array.isArray(body.labels)) {
+        const ok = await mod.editTask(ref, {
+          ...Object.fromEntries(FIELDS.filter(f => typeof body[f] === 'string').map(f => [f, body[f] as string])),
+          ...(Array.isArray(body.labels)
+            ? { labels: body.labels.filter((v): v is string => typeof v === 'string') }
+            : {}),
+          ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
+        })
+        return json({ ok }, ok ? 200 : 404)
+      }
+      // Blockers ALONE. With a `status` beside them the two belong to one move — "this is blocked,
+      // and here is what by" — and answering it here would set the blockers and silently drop the
+      // status, which is what happened: the task kept its old column and the caller was told ok.
+      if (Array.isArray(body.blockedBy) && typeof body.status !== 'string') {
+        const ok = await mod.setBlockedBy(ref, body.blockedBy.filter((v): v is string => typeof v === 'string'))
+        return json({ ok }, ok ? 200 : 404)
+      }
+      const { TASK_STATUSES } = await import('./sessions/task-model')
+      const to = typeof body.status === 'string'
+        && (TASK_STATUSES as readonly string[]).includes(body.status)
+        ? body.status as import('./sessions/task-model').TaskStatus
+        : null
+      if (!to) return json({ error: 'bad_status' }, 400)
+      const out = await mod.markTask(
+        ref, to,
+        typeof body.actor === 'string' ? body.actor : undefined,
+        {
+          ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+          ...(Array.isArray(body.blockedBy)
+            ? { blockedBy: body.blockedBy.filter((v): v is string => typeof v === 'string') }
+            : {}),
+        },
+      )
+      // 422, not 404: the task exists and the move is understood — it is missing the one thing
+      // `blocked` cannot be recorded without. A 4xx a caller can act on, with a code that says so.
+      return json(out, out.ok ? 200 : out.message === 'blocked_needs_reason' ? 422 : 404)
+    }
+
     /**
      * The RAW fleet snapshot, in the cockpit's own shape.
      *

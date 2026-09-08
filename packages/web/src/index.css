@@ -119,6 +119,19 @@
   scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
 }
 
+/*
+ * Form controls do NOT inherit `font-family` from `body` — the UA stylesheet gives them the system
+ * font. Without this line every `button`, `input`, `select` and `table` in the app renders in a
+ * different typeface from the text beside it, which is what makes a screen look assembled rather
+ * than designed. Found on the task board, but it was never scoped to it.
+ *
+ * `font-size` is deliberately NOT inherited here: the mobile 16px guard below depends on inputs
+ * carrying their own size, and several controls are intentionally smaller than body text.
+ */
+button, input, textarea, select, table {
+  font-family: inherit;
+}
+
 html, body {
   height: 100%;
   background: var(--bg-base);

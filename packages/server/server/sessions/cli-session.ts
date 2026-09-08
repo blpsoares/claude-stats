@@ -37,6 +37,9 @@ import { createSessionsPoller, type SessionSnapshot } from './sessions-host'
 import { isServerProcess, readServerSnapshot } from './shared-snapshot'
 import { needsAttention, type SessionView } from './session-view'
 import { planTaskReopen, taskReopenSucceeded } from './task-reopen'
+import { TASKS_FILE } from '../config'
+import { createTaskStore } from './task-store'
+import { newAttemptId, newTaskId, type Attempt, type Task } from './task-model'
 import { liveConversationHolders } from './live-claims'
 import { POLL_MS, SETTLE_MS, spawnOutcome } from './spawn-outcome'
 import { parseHarnessAgents } from './harness-agents'
@@ -231,7 +234,13 @@ async function start(
     ...(cmd.effort ? { effort: cmd.effort } : {}),
     ...(cmd.label ? { label: cmd.label } : {}),
     ...(cmd.task ? { task: cmd.task } : {}),
-    ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+    // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+    ...(cmd.taskId ? { taskId: cmd.taskId } : {}),
+    ...(cmd.attemptId ? { attemptId: cmd.attemptId } : {}),
+    // The link is EXACT here: the CLI was handed this id (`SpawnSpec.assignId`).
+    ...(planned.plan.conversationId
+      ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+      : {}),
     ...(await recordedRepo(cwd)),
   })
 
@@ -282,6 +291,57 @@ function stateWord(v: SessionView): string {
 }
 
 /**
+ * The Task and the Attempts a batch is filed under, created on first sight.
+ *
+ * A task is matched by TITLE and an attempt by LABEL within that task, so running the same batch
+ * twice adds sessions to the work that exists rather than forking a second copy of it — which is
+ * exactly what "the same task under four configs, measured" needs.
+ *
+ * The attempt's `config` records what was ASKED FOR at spawn, never what is inferred later: that is
+ * the whole point of the middle level, and a configuration reconstructed after the fact from the
+ * sessions would just be a description of what happened.
+ */
+async function resolveTaskAndAttempts(
+  cmd: Extract<SessionCommand, { kind: 'batch' }>,
+): Promise<{ taskId: string; attempts: Map<string, string> }> {
+  const store = createTaskStore(TASKS_FILE)
+  const book = await store.read()
+  const now = new Date().toISOString()
+
+  let task = book.tasks.find(t => t.title === cmd.task)
+  if (!task) {
+    // A task a batch is starting is `in_progress` by construction: sessions are about to run.
+    task = { id: newTaskId(), title: cmd.task, status: 'in_progress', createdAt: now, updatedAt: now }
+    await store.upsertTask(task)
+  }
+  const created: Task = task
+
+  const attempts = new Map<string, string>()
+  for (const spec of cmd.specs) {
+    const label = spec.attempt
+    if (!label || attempts.has(label)) continue
+    const existing = book.attempts.find(a => a.taskId === created.id && a.label === label)
+    if (existing) { attempts.set(label, existing.id); continue }
+    const attempt: Attempt = {
+      id: newAttemptId(),
+      taskId: created.id,
+      label,
+      config: {
+        harness: spec.harness,
+        ...(spec.model ? { model: spec.model } : {}),
+        ...(spec.effort ? { effort: spec.effort } : {}),
+      },
+      status: 'running',
+      startedAt: now,
+      updatedAt: now,
+    }
+    await store.upsertAttempt(attempt)
+    attempts.set(label, attempt.id)
+  }
+  return { taskId: created.id, attempts }
+}
+
+/**
  * `agentop session batch` — start several sessions at once, all filed under one task.
  *
  * The command an ASSISTANT drives. Every session is started detached, because a batch by definition
@@ -297,6 +357,12 @@ async function batch(
 ): Promise<number> {
   const started: Array<{ id: string; harness: string; cwd: string }> = []
   const failed: Array<{ harness: string; reason: string }> = []
+
+  // The task book, resolved BEFORE the first spawn: the ids are stamped on the rows, and a row
+  // started before its task existed would carry a name and no id — the unattributed case
+  // `task-rollup.ts` has to report as a hole. Best effort: a book that cannot be written costs the
+  // ids, never the sessions.
+  const resolved = await resolveTaskAndAttempts(cmd).catch(() => null)
 
   for (const spec of cmd.specs) {
     const cwd = spec.cwd ? resolve(spec.cwd) : process.cwd()
@@ -335,10 +401,17 @@ async function batch(
       cwd,
       createdAt: new Date().toISOString(),
       task: cmd.task,
+      // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+      ...(resolved?.taskId ? { taskId: resolved.taskId } : {}),
+      ...(spec.attempt && resolved?.attempts.get(spec.attempt)
+        ? { attemptId: resolved.attempts.get(spec.attempt)! }
+        : {}),
       ...(spec.model ? { model: spec.model } : {}),
       ...(spec.effort ? { effort: spec.effort } : {}),
       ...(spec.name ? { label: spec.name } : {}),
-      ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+      ...(planned.plan.conversationId
+        ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+        : {}),
       ...(await recordedRepo(cwd)),
     })
     const liveBackend = await backend.list().catch(() => [])
@@ -429,11 +502,17 @@ async function openTask(task: string, json: boolean, backend: SessionBackend): P
       id, harness: m.harness, cwd: m.cwd, createdAt: new Date().toISOString(), task,
       label: row.label,
       ...(m.note ? { note: m.note } : {}),
+      // INHERITED from the row being replaced, never taken from the request: a reopened session is
+      // the same piece of work, and the attribution is what says so. See `ManagedSession.taskId`.
+      ...(m.taskId ? { taskId: m.taskId } : {}),
+      ...(m.attemptId ? { attemptId: m.attemptId } : {}),
       // The conversation is known EXACTLY here — we just handed its id to the CLI. The cockpit's
       // reopen verb has recorded it since it was written; this path had not, so the same gesture
       // left a row that knew which conversation it drove or one that did not, depending on where it
       // was pressed. `planTaskReopen` exists to stop precisely that kind of drift.
-      ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+      ...(planned.plan.conversationId
+        ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+        : {}),
       // The REPLACEMENT re-measures rather than copying `m.repo`: a reopen is the moment to notice
       // that the worktree came back, and copying a recorded value would carry one stale answer
       // through every session ever reopened from it.

@@ -18,6 +18,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
+import { TaskPicker } from '../tasks/TaskPicker'
+import { BetaTag } from '../BetaTag'
+import { attachSession, detachSession } from '../../lib/tasks'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
 
 export interface SessionActionsProps {
@@ -68,14 +71,27 @@ export interface SessionActionsProps {
 }
 
 /** The verbs that take a line of text before they can run. */
-const TEXT_VERBS = new Set<string>(['rename', 'note', 'task'])
+/**
+ * Verbs that ask for a line of text before they run.
+ *
+ * `task` is NOT one of them any more. It used to open a bare field, which meant filing a session
+ * under existing work required remembering the name and typing it identically — and a name typed
+ * one character differently is a second task with the metrics split between them. It now opens the
+ * same `TaskPicker` the board and the aside use: search, pick, or create.
+ */
+const TEXT_VERBS = new Set<string>(['rename', 'note'])
 
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
 
+/** The verbs that belong to the delivery board rather than to the session itself. */
+const TASK_VERBS = new Set<string>(['task', 'openTask', 'finishTask'])
+
 export function SessionActions({
   row, lang, act, onGone, onOpened, extra = [], extraTop,
 }: SessionActionsProps) {
+  /** Open when the `task` verb was picked — see `TEXT_VERBS`. */
+  const [linking, setLinking] = useState(false)
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
   const [asking, setAsking] = useState<FleetVerb | null>(null)
@@ -113,9 +129,11 @@ export function SessionActions({
   function pick(v: FleetVerb) {
     if (!v.enabled) return
     setNotice(null)
+    // Filing under a task is a CHOICE from what exists, not a line of text — see `TEXT_VERBS`.
+    if (v.action === 'task') { setOpen(false); setLinking(true); return }
     if (TEXT_VERBS.has(v.action)) {
       // Seeded with what the row already has, so renaming is an edit rather than a retype.
-      setDraft(v.action === 'rename' ? row.title : v.action === 'note' ? (row.note ?? '') : (row.task ?? ''))
+      setDraft(v.action === 'rename' ? row.title : (row.note ?? ''))
       setAsking(v)
       return
     }
@@ -138,6 +156,29 @@ export function SessionActions({
       >
         <MoreHorizontal size={16} />
       </button>
+
+      {linking && (
+        <TaskPicker
+          title={pt ? 'Vincular a uma tarefa' : 'File under a task'}
+          // The session goes IN, so the picker can show what it is filed under now, offer to
+          // unfile it, and pre-link it on a new task. Without it the picker can only ever move a
+          // session from one task to another.
+          session={{ id: row.id, title: row.title, harness: row.harness, ...(row.task ? { task: row.task } : {}) }}
+          onPick={async taskId => {
+            const ok = await attachSession(taskId, row.id)
+            setNotice(ok
+              ? (pt ? 'Sessão vinculada.' : 'Filed under the task.')
+              : (pt ? 'Não foi possível vincular.' : 'Could not file that session.'))
+          }}
+          onDetach={async () => {
+            const ok = await detachSession(row.id, row.id)
+            setNotice(ok
+              ? (pt ? 'Sessão desvinculada.' : 'No longer filed under a task.')
+              : (pt ? 'Não foi possível desvincular.' : 'Could not unfile that session.'))
+          }}
+          onClose={() => setLinking(false)}
+        />
+      )}
 
       {open && (
         <>
@@ -269,7 +310,14 @@ export function SessionActions({
                     onMouseEnter={e => { if (v.enabled) e.currentTarget.style.background = 'var(--bg-elevated)' }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
                   >
-                    <span>{v.label}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      {v.label}
+                      {/* The task verbs are the delivery board reaching into this menu. Marked
+                          here too: a reader who only ever opens this menu never sees the board's
+                          own header, and a caveat shown on four surfaces of six is worse than
+                          none — they conclude the unmarked two are the finished part. */}
+                      {TASK_VERBS.has(v.action) && <BetaTag what={pt ? 'As tarefas' : 'Tasks'} />}
+                    </span>
                     {/* The row's OWN sentence for why it cannot take this verb. A control that
                         refuses silently is indistinguishable from one that is broken. */}
                     {!v.enabled && v.reason && (
