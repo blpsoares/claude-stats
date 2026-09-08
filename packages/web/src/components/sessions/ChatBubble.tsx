@@ -25,8 +25,11 @@ import remarkGfm from 'remark-gfm'
 // message written across several lines renders as one run-on paragraph — which is what "the
 // messages are not formatted" turned out to mean. `HarnessChat` has always used it.
 import remarkBreaks from 'remark-breaks'
-import { Check, Clock, Copy, CornerUpLeft, Image as ImageIcon, Loader, User } from 'lucide-react'
+import { ArrowUpRight, Check, Clock, Copy, CornerUpLeft, Image as ImageIcon, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
+import { chatNote, type ChatNoteTab } from '../../lib/chatNote'
+import { openArtifacts } from '../../lib/artifactsStore'
+import { useIsMobile } from '../../hooks/useIsMobile'
 import { splitSlashLine } from '../../lib/slashLine'
 import { resolveMarkerPaths, splitImageAttachments, splitImageMarkers } from '../../lib/attachmentPreview'
 import type { AttachmentSend } from '@agentistics/core'
@@ -127,54 +130,82 @@ export interface ChatBubbleProps {
  * `onReply` is a fresh closure per render in the parent, so this alone would not have been enough —
  * see `SessionChat.tsx`'s `useCallback` on it.
  */
-/**
- * The Portuguese for each note `chat-envelope.ts` produces.
- *
- * The server composes these in English because it has no language — every other already-localized
- * refusal in this product is worded by the machine, but a note like this is chrome, not a machine's
- * answer. An unmapped note falls through untranslated rather than being dropped: a missing
- * translation is a small thing, a missing line is the defect this exists to fix.
- */
-const SYSTEM_NOTE_PT: Record<string, string> = {
-  'background task reported back': 'tarefa em segundo plano respondeu',
-  'system reminder': 'lembrete do sistema',
-  'local-command caveat': 'aviso de comando local',
-  'command output': 'saída de comando',
-  'slash command': 'comando de barra',
-  'shell command': 'comando de shell',
-  // The notes the FIVE non-claude readers produce (`antigravity-chat.ts`, `codex-chat.ts`,
-  // `copilot-chat.ts`, `kimi-chat.ts`). They arrived with their readers and this table did not grow
-  // with them, so a conversation in any of those harnesses printed English chrome in the middle of
-  // a Portuguese screen. The fall-through above is what kept that a cosmetic gap rather than a
-  // missing line, which is why it survived unnoticed — it is still the right fall-through.
-  'a system message': 'uma mensagem do sistema',
-  'the conversation was truncated': 'a conversa foi truncada',
-  'the harness reported an error': 'o assistente reportou um erro',
-  'instructions from the harness': 'instruções do assistente',
-  'project instructions were loaded': 'instruções do projeto foram carregadas',
-  'the environment was described to the assistant': 'o ambiente foi descrito ao assistente',
-  'the system prompt was set': 'o prompt de sistema foi definido',
-  'the model was changed': 'o modelo foi trocado',
-  'the model was switched': 'o modelo foi trocado',
-  'the session ended': 'a sessão terminou',
-  'the session reported an error': 'a sessão reportou um erro',
-  'the turn was aborted': 'o turno foi interrompido',
-  'context from the editor': 'contexto vindo do editor',
-  'the collaboration mode changed': 'o modo de colaboração mudou',
-  'a reminder about the task list': 'um lembrete sobre a lista de tarefas',
-  'the harness stated its permissions': 'o assistente informou suas permissões',
-  'the permission mode was announced': 'o modo de permissão foi anunciado',
 
-  // The untagged `isMeta` entries — see `chat-envelope.ts`'s second measurement.
-  'a skill was loaded': 'uma skill foi carregada',
-  'a skill was re-invoked': 'uma skill foi reinvocada',
-  'a message from another session': 'uma mensagem de outra sessão',
-  'the conversation was compacted': 'a conversa foi compactada — o resumo do que veio antes',
-  'an image was attached': 'uma imagem foi anexada',
-  'the session was resumed': 'a sessão foi retomada',
-  'an idle notice about another session': 'aviso de ociosidade sobre outra sessão',
-  'a context-usage report': 'relatório de uso de contexto',
-  'injected by the assistant': 'injetado pelo assistente',
+/**
+ * A SYSTEM NOTE — the harness acting under the user's role, named in one phrase.
+ *
+ * Reported as "eu nunca sei o que eles significam": the note names a KIND and the body is
+ * deliberately dropped (a `system-reminder` is a page of text nobody wants in their chat), which
+ * leaves a chip whose whole content is a label about something the reader cannot see or reach.
+ *
+ * TWO SHAPES, and they look different on purpose. A note whose action HAS a place in the aside is
+ * a button that takes you there — `openArtifacts`, the same call the edge strip makes, so it opens
+ * the ASIDE and not a full screen — and it wears an arrow so the affordance is visible before the
+ * click. A note with nowhere to go TELLS you instead, on tap or hover. One appearance for both
+ * would make half the chips silently inert, which this product treats as indistinguishable from
+ * broken.
+ *
+ * The explanation of a NAVIGATING chip lives in its `title`/`aria-label` rather than inline: its
+ * answer is the place it takes you to, and a sentence plus a destination on one 10px chip is two
+ * targets in a control that has room for one.
+ */
+function SystemNote({ note, pt }: { note: string; pt: boolean }) {
+  const { label, help, tab } = chatNote(note, pt)
+  const [shown, setShown] = useState(false)
+  const isMobile = useIsMobile()
+
+  const chip: React.CSSProperties = {
+    fontSize: 10.5, lineHeight: 1.4, color: 'var(--text-tertiary)',
+    padding: '3px 10px', borderRadius: 999,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+    maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    fontFamily: 'inherit',
+    // THE TAP TARGET IS 44px, THE CHIP IS NOT. A conversation can hold a run of these back to
+    // back, and a 44px band per note would push the messages apart; padding plus an equal negative
+    // margin buys the target without changing a pixel of the layout. Mobile only — 44 is the
+    // mobile number, and applying it on a pointer would put a huge invisible box over the text
+    // above and below.
+    ...(isMobile ? { padding: '14px 10px', margin: '-11px 0' } : {}),
+  }
+
+  if (tab !== null) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '2px 0' }}>
+        <button
+          onClick={() => openArtifacts(tab satisfies ChatNoteTab)}
+          {...(help ? { title: help, 'aria-label': `${label} — ${help}` } : {})}
+          style={{ ...chip, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          <ArrowUpRight size={11} style={{ flexShrink: 0, color: 'var(--anthropic-orange)' }} />
+        </button>
+      </div>
+    )
+  }
+
+  // Nothing to go to. The chip tells you what it was instead — on TAP as well as hover, because a
+  // phone has no hover and this is the half of the report that is about not understanding.
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '2px 0',
+    }}>
+      <button
+        onClick={() => setShown(v => !v)}
+        aria-expanded={shown}
+        disabled={help === null}
+        {...(help ? { title: help } : {})}
+        style={{ ...chip, cursor: help === null ? 'default' : 'help' }}
+      >
+        {label}{help !== null && ' ⓘ'}
+      </button>
+      {shown && help !== null && (
+        <span role="note" style={{
+          fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)',
+          maxWidth: '80%', textAlign: 'center',
+        }}>{help}</span>
+      )}
+    </div>
+  )
 }
 
 export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId, attachmentSends }: ChatBubbleProps) {
@@ -336,20 +367,7 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
   }
 
   if (turn.system) {
-    return (
-      <div style={{
-        display: 'flex', justifyContent: 'center', padding: '2px 0',
-      }}>
-        <span style={{
-          fontSize: 10.5, lineHeight: 1.4, color: 'var(--text-tertiary)',
-          padding: '3px 10px', borderRadius: 999,
-          background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-          maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>
-          {pt ? SYSTEM_NOTE_PT[turn.system] ?? turn.system : turn.system}
-        </span>
-      </div>
-    )
+    return <SystemNote note={turn.system} pt={pt} />
   }
 
   const color = (HARNESS_COLORS as Record<string, string>)[harness] ?? 'var(--text-secondary)'
