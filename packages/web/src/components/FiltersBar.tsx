@@ -184,6 +184,7 @@ const CTL: React.CSSProperties = {
  * Desktop keeps 30: applying the mobile number there turns a compact filter row into a row of
  * buttons, which is the mistake this repository's own mobile rules call out by name.
  */
+// @touch-intentional this object IS the mobile target — consumers spread it only when `isMobile`, so it never reaches a desktop layout.
 const mobileTarget: React.CSSProperties = { height: 'auto', minHeight: 44 }
 
 /** Search input used inside the value pickers (members / repositories). */
@@ -1044,14 +1045,13 @@ export function FiltersBar({ only, filters, onChange, projects, sessionCountByPr
               boxSizing: 'border-box',
               padding: 6,
             }}>
-              <button
+              <button className="ag-tap"
                 onClick={() => setOpenPicker(null)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 4,
                   background: 'transparent', border: 'none', cursor: 'pointer',
                   color: 'var(--text-tertiary)', fontSize: 11, fontFamily: 'inherit',
-                  padding: isMobile ? '0 6px' : '2px 6px 6px',
-                  minHeight: isMobile ? 44 : undefined,
+                  padding: isMobile ? '6px 6px' : '2px 6px 6px',
                 }}
               >
                 <ChevronDown size={11} style={{ transform: 'rotate(90deg)' }} />

@@ -92,7 +92,7 @@ export function ChipSelect({
 
   return (
     <>
-      <button
+      <button className="ag-tap"
         ref={trigger}
         onClick={e => { e.stopPropagation(); toggle() }}
         disabled={disabled}
@@ -106,7 +106,6 @@ export function ChipSelect({
           borderRadius: compact ? 5 : 7,
           border: `1px solid ${current.color}`, background: current.dim, color: current.color,
           fontSize: compact ? 11 : 12, fontWeight: 600, whiteSpace: 'nowrap',
-          minHeight: isMobile ? 44 : undefined,
           opacity: disabled ? 0.6 : 1,
         }}
       >
@@ -126,7 +125,7 @@ export function ChipSelect({
             boxShadow: 'var(--shadow-elevated)', maxHeight: PANEL_MAX, overflowY: 'auto',
           }}>
             {options.map(o => (
-              <button
+              <button className="ag-tap"
                 key={o.value}
                 onClick={e => {
                   e.stopPropagation()
@@ -138,7 +137,6 @@ export function ChipSelect({
                   cursor: 'pointer', textAlign: 'left', padding: '6px 9px', borderRadius: 5,
                   background: o.value === value ? o.dim : 'transparent',
                   color: o.color, fontSize: 11.5, fontWeight: 600,
-                  minHeight: isMobile ? 44 : undefined,
                 }}
               >{o.label}</button>
             ))}

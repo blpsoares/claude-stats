@@ -269,7 +269,7 @@ export function SessionActionsMenu({ ctrl, onActivate, extraItems }: {
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-      <button
+      <button className="ag-tap-icon"
         onClick={() => setOpen(v => !v)}
         title={t.menu}
         aria-label={t.menu}
@@ -277,7 +277,7 @@ export function SessionActionsMenu({ ctrl, onActivate, extraItems }: {
         aria-expanded={open}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
+          width: 30, height: 30, borderRadius: 8,
           border: open ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
           background: open ? 'rgba(232,105,11,0.1)' : 'var(--bg-surface)',
           color: open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',

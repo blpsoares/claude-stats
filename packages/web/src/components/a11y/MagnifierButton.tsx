@@ -80,14 +80,14 @@ export function MagnifierButton({ ctx }: { ctx: AppContext }) {
 
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
-      <button
+      <button className="ag-tap-icon"
         onClick={() => (isCoarse ? toggleOpen() : a11y.addLens())}
         onContextMenu={e => { e.preventDefault(); toggleOpen() }}
         title={isCoarse ? text.headerTitleMobile : `${text.headerTitle} — ${text.headerHint}`}
         aria-label={isCoarse ? text.headerTitleMobile : text.headerTitle}
         aria-haspopup="dialog"
         style={{
-          width: isMobile ? 44 : 32, height: isMobile ? 44 : 32,
+          width: 32, height: 32,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           borderRadius: 8, border: '1px solid var(--border)', background: 'transparent',
           color: 'var(--anthropic-orange)', cursor: 'pointer', position: 'relative', flexShrink: 0,
