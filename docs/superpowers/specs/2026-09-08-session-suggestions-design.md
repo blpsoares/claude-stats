@@ -65,9 +65,21 @@ than zero. `compactsFromClaudeJsonl` encodes both rules and its tests pin the se
 
 ### Two measured facts that decide the design
 
-**Messages are heavily skewed: median 58, mean 134.** The mean is 2,3x the
-median and describes no session anybody has. So the profile reports the **median** by default. The
-mean is used only where the question is literally a rate.
+**Messages are heavily skewed: median 2, mean 10,4 — p75 6, p90 24, p99 179, max 422.** The mean is
+**5,2x** the median and describes no session anybody has. So the profile reports the **median** by
+default; the mean is used only where the question is literally a rate.
+
+**Read the product's own field, not the raw lines.** An earlier pass of this figure counted lines
+carrying `"type":"user"` and reported a median of 58. That is wrong by roughly 8x: a `tool_result`
+is a user-role message too, so the count was turns plus every tool answer. Measured on one session:
+310 `type:"user"` lines, 37 actual human turns. `SessionMeta.user_message_count` is the number the
+parser already computes correctly, and it is what `profileOf` reads.
+
+**Two populations, and the document keeps them apart.** Messages, tokens, active time and tool
+errors come from the CONSOLIDATE STORE — 479 sessions inside the 30-day window, including sessions
+whose transcript is long gone, which is exactly what the store is for. Compaction and skills come
+from SURVIVING TRANSCRIPTS (452), because nothing else can answer for them. That is why `n` is per
+metric rather than one sample size.
 
 **Compacts are RARE, with a long tail.** Median 0, mean 0,095: 18 of 452 sessions had one at all,
 and 8 had two or more — the tail runs 1 (x10), 2 (x3), 4 (x2), 5, 6, **8**. This kills the ratio
@@ -120,7 +132,7 @@ or subagents. One shared `n` would compute the skills average over sessions that
 had one — a denominator that is quietly wrong in the direction of "you use fewer skills than you
 think".
 
-Measured over the 452: 444 carry messages, 61 carry skills, 43 carry subagents.
+Measured today: 479 sessions in the window carry messages (from the store); of the 452 surviving transcripts, 61 carry skills and 43 carry subagents.
 
 ### What it reports
 
