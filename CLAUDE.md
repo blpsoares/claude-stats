@@ -2362,6 +2362,24 @@ harness must not break.
   copilot and gemini** need no memo — each computes or checks its two candidate paths on every call
   — and are immune by construction. A new reader that needs a DIRECTORY LISTING to find its file
   needs this memo, and needs it this way round.
+- **A CHECK THAT CANNOT ANSWER MUST SAY SO, NOT RETURN THE CONVENIENT ANSWER.** `sendTextTo` types a
+  prompt and sends `Enter`, and `submit-check.ts` exists because tmux's exit code says the keys were
+  WRITTEN and nothing about the harness having acted on them. Its test was `frameChanged` over the
+  whole pane — "what a submit reliably does is change the frame: the input empties" — which is true
+  of a STILL pane and meaningless on a BUSY one: a session mid-turn advances its spinner glyph, its
+  elapsed timers and its token counter on its own. Measured 2026-09-08 on a live pane, two captures
+  200 ms apart with NOTHING sent between them, three lines differed. So the check returned `true` on
+  the first 60 ms poll of every send to a working session, the bounded retry NEVER fired, and a
+  swallowed return was reported as delivered — the composer cleared and the row said "delivered · it
+  reads this when its turn ends" over a prompt still in the harness's input box, found there with 36
+  minutes on the clock. **That is the worst place to lose the retry**: a busy session is exactly
+  where the return is at risk (the input arrives as one burst, the harness reads it as a paste, and
+  a return landing inside that burst is a newline) and also the only place a successful submit shows
+  nothing, because the message goes to a queue rather than starting a turn. So the pane is ASKED
+  whether it animates — two captures before the return, nothing sent between — and `needsSecondReturn`
+  resolves every case it cannot settle TOWARD the keystroke: a redundant return on an emptied input
+  does nothing, a missing one strands a message until somebody opens the terminal. A still pane keeps
+  the old behaviour exactly.
 - **A SESSION'S GIT STATS ARE READ WHERE IT WORKED, NOT WHERE IT IS FILED.** `project_path` is the
   transcript's FIRST cwd — the project the session belongs to — and `current_cwd` is where it ended
   up. They differ exactly in the git-WORKTREE case this file mandates for concurrent work, and a
