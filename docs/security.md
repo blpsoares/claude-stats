@@ -235,6 +235,37 @@ than this:**
    connection does not stop that repo's GitHub Actions runs or OTel metrics from reaching the same
    central by a different path.
 
+### 8.0a What a shared session document carries — the compaction figures and the skill names
+
+`TeamSessionDoc` is `Omit<SessionMeta, …>`, so a field added to `SessionMeta` travels to a central
+by default and is stored in Mongo. Two were added with the behaviour baseline
+(`packages/core/src/session-profile.ts`) and the decision is recorded here rather than left to be
+discovered later:
+
+- **`compact_count` / `compact_ms` / `compact_dropped_tokens`** — counts and durations. They carry
+  no text and describe the *shape* of a conversation, exactly as `user_message_count` and
+  `tool_errors` already do. Shared.
+- **`skill_uses`** — a map of skill NAME to a count (`superpowers:brainstorming: 2`). This is the
+  one that needed a decision, because a skill name can be private: a skill is a file in
+  `~/.claude/skills/` or a plugin, and a house style names them after internal systems
+  (`acme-deploy:rollback`). It is **not** free text and not chat — it cannot carry a pasted
+  credential, which is what `redactSecrets` exists for — but it does name a tool the user chose to
+  install.
+
+**The judgement: shared, and bounded by the same rules as everything else.** A skill name is
+metadata about the machine's own tooling, of the same order as `model`, `languages` and the tool
+names already in `tool_counts` — which have always travelled and which name MCP servers
+(`mcp__<server>__<tool>`) with the same specificity. It is subject to the per-connection sharing
+rules like any other part of the session: a session in a withheld repository or project does not
+reach that central at all, so a project's skills go with it. **Nothing on the central reads either
+field** — no view, aggregate or export shows them today; they travel because the document is
+whole, and they are there for a machine's own profile if the surface ever moves.
+
+**If that is the wrong trade for a deployment, the lever is the sharing rules, not a redactor.**
+`redactSecrets` is deliberately precise and value-shaped (see the team-mode rules in CLAUDE.md); a
+rule that ate skill names would be a rule about a field, which is a different mechanism and would
+have to be a declared per-connection option rather than a silent scrub.
+
 ### 8.1 Rules are per machine, and how a machine finds out
 
 Sharing rules live on the machine that declares them. Restricting a repository on one laptop does
