@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { activeInDays, activeInWindow, dayKey, dayKeyOfMs, daysBetween, MAX_RANGE_DAYS, sliceSession } from './sessionDaySlice'
+import { activeInDays, activeInWindow, dayKey, dayKeyOfMs, daysBetween, expandHours, MAX_RANGE_DAYS, sliceSession } from './sessionDaySlice'
 
 const day = (n: number) => ({
   input_tokens: n, output_tokens: n, cache_read_input_tokens: n,
@@ -148,5 +148,50 @@ describe('dayKeyOfMs', () => {
     expect(dayKeyOfMs(Date.parse('2026-09-06T23:59:59.999Z'))).toBe('2026-09-06')
     expect(dayKeyOfMs(0)).toBe('1970-01-01')
     expect(dayKeyOfMs(Number.NaN)).toBe('')
+  })
+})
+
+describe('the hours a session worked INSIDE the range', () => {
+  /**
+   * THE REPORTED CASE — the "Usage by hour" chart under `Today` drew bars across the whole day on
+   * a machine whose owner started at 8am. `message_hours` is a LIFETIME array with no day on it,
+   * so a conversation open since the 3rd brought every hour it had ever run in into today's chart.
+   */
+  const OPEN_SINCE_TUESDAY = {
+    start_time: '2026-09-03T23:23:46.121Z',
+    daily: {
+      '2026-09-03': { ...day(10), hours: { '16': 40, '22': 12 } },
+      '2026-09-08': { ...day(30), hours: { '8': 19, '9': 15 } },
+    },
+  }
+
+  it('today gets today\'s hours, not every hour the session ever ran in', () => {
+    const out = sliceSession(OPEN_SINCE_TUESDAY, new Set(['2026-09-08']))!
+    expect(out.hours).toEqual({ 8: 19, 9: 15 })
+  })
+
+  it('a multi-day range sums the same hour across its days', () => {
+    const out = sliceSession(
+      { daily: { a: { ...day(1), hours: { '9': 2 } }, b: { ...day(1), hours: { '9': 3, '10': 1 } } } },
+      new Set(['a', 'b']),
+    )!
+    expect(out.hours).toEqual({ 9: 5, 10: 1 })
+  })
+
+  it('a day with no hours recorded contributes none — never a guess', () => {
+    // Records written before the field existed. The caller keeps the old rule for those; what it
+    // must never get from here is an invented distribution.
+    const out = sliceSession({ daily: { '2026-09-08': day(30) } }, new Set(['2026-09-08']))!
+    expect(out.hours).toEqual({})
+  })
+
+  it('expandHours is one entry per message, in hour order — the shape message_hours has', () => {
+    expect(expandHours({ 9: 2, 8: 1 })).toEqual([8, 9, 9])
+  })
+
+  it('expandHours refuses what is not an hour of a day', () => {
+    // A key that is not 0..23 cannot be drawn on a 24-bar chart, and repeating a junk value as
+    // many times as it claims is how one bad record becomes a hang.
+    expect(expandHours({ 24: 5, '-1': 5, x: 5, 9: 1 })).toEqual([9])
   })
 })

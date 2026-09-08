@@ -16,13 +16,14 @@
  * host per request would fire one per poll.
  */
 
-import type { HarnessId } from '@agentistics/core'
+import type { HarnessId, ProjectKind } from '@agentistics/core'
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { recordPrompt } from './pending-prompts'
 import { conversationOfRow } from './row-conversation'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
+import type { ProjectSearchResult } from '@agentistics/tui/control'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions' 
 import { fleetRow, type FleetActionRequest, type FleetRow } from './fleet-row'
 import { planFleetSpawn, type FleetSpawnBody } from './fleet-spawn'
@@ -611,6 +612,12 @@ export async function readFleetPullRequests(
 }
 
 /** The questions a start EARNS, and the places it could happen — the wizard, as data. */
+/** What a search that could not run answers: no rows, and no claim about how many there are. */
+const EMPTY_PROJECT_SEARCH: ProjectSearchResult = {
+  options: [],
+  totals: { repo: 0, project: 0, folder: 0 },
+}
+
 export interface FleetNewOptions {
   /**
    * Derived by the host from the spawn specs, so a harness with no spec is ABSENT rather than
@@ -643,8 +650,16 @@ export interface FleetNewOptions {
     /** The effort used when none is passed, under exactly `defaultModel`'s rule. */
     defaultEffort?: string
   }[]
-  /** Ranked places, from the LOCAL store — so the picker answers with no network and a cold cache. */
+  /** Ranked places, from the LOCAL store — so the picker answers with no network and a cold cache.
+   *  CAPPED per kind: what fits on screen, never how many there are. See `projectTotals`. */
   projects: { path: string; label: string; repo?: string; detail: string; source: string }[]
+  /**
+   * How many places of each kind MATCHED, before the cap — the number the tabs carry.
+   *
+   * Optional so a client reading an older central still parses; absent means "this server does not
+   * say", and the wizard then counts its rows and stops claiming a total it cannot know.
+   */
+  projectTotals?: Record<ProjectKind, number>
   /** The tasks that already exist here, so filing the new session is a pick, not a spelling test. */
   tasks: string[]
   /**
@@ -669,7 +684,9 @@ export async function readNewOptions(lang: CliLang, query: string): Promise<Flee
     type Defaults = Awaited<ReturnType<typeof readHarnessDefaults>>
     const [harnesses, projects, tasks] = await Promise.all([
       host.startableHarnesses(),
-      host.searchProjects ? host.searchProjects(query).catch(() => []) : Promise.resolve([]),
+      host.searchProjects
+        ? host.searchProjects(query).catch(() => EMPTY_PROJECT_SEARCH)
+        : Promise.resolve(EMPTY_PROJECT_SEARCH),
       host.sessionTasks ? host.sessionTasks().catch(() => []) : Promise.resolve([]),
     ])
     // What each CLI will actually do here with no flags, read from THIS MACHINE's own settings
@@ -698,13 +715,21 @@ export async function readNewOptions(lang: CliLang, query: string): Promise<Flee
           ...(defaultEffort ? { defaultEffort } : {}),
         }
       }),
-      projects: projects.map(p => ({
+      projects: projects.options.map(p => ({
         path: p.path,
         label: p.label,
         ...(p.repo ? { repo: p.repo } : {}),
         detail: p.detail,
         source: p.source,
       })),
+      /**
+       * HOW MANY of each kind matched, which is NOT how many rows came back.
+       *
+       * The rows are capped per kind so a tab can never be emptied by another kind's budget; the
+       * tabs then counted the rows and read `12 · 12 · 12` on a machine with twenty repositories.
+       * A cap shown as a count is a number that can never be anything but the cap.
+       */
+      projectTotals: projects.totals,
       tasks,
     }
   } catch (e) {

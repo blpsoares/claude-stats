@@ -49,6 +49,7 @@ import {
   DEFAULT_SESSION_VIEW,
 } from '../src/control/types'
 import type { HarnessId } from '@agentistics/core'
+import { countPerKind, projectKind } from '@agentistics/core'
 import { GROUPINGS, type SessionGroupingId } from '../src/control/sessions'
 import type { CliLang } from '../src/control/lang'
 // The real string table, not a copy of it. Every label on this screen arrives from the host already
@@ -470,8 +471,11 @@ function fakeHost(opts: Options, apiUrl?: string): ControlHost {
       { id: 'codex', label: 'codex', modelSuggestions: ['gpt-5.4', 'gpt-5.4-mini'], supportsModel: true, efforts: [] },
       { id: 'kimi', label: 'kimi', modelSuggestions: ['kimi-k3'], supportsModel: true, efforts: [] },
     ],
-    searchProjects: async (query: string) => FAKE_PROJECTS
-      .filter(p => p.label.toLowerCase().includes(query.trim().toLowerCase())),
+    searchProjects: async (query: string) => {
+      const options = FAKE_PROJECTS
+        .filter(p => p.label.toLowerCase().includes(query.trim().toLowerCase()))
+      return { options, totals: countPerKind(options, projectKind) }
+    },
     // `--fail-spawn` drives the wizard's REFUSAL path, which is the one that used to eat the
     // prompt: it closed the wizard and put the reason on a status line one row tall.
     spawnSession: async () => (opts.failSpawn

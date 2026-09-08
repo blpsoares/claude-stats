@@ -65,6 +65,7 @@ import type {
   SpawnSessionRequest,
   SpawnSessionResult,
   ProjectOption,
+  ProjectSearchResult,
   ResumeSessionRequest,
   StartOption,
   BootOption,
@@ -3490,9 +3491,9 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       })
     },
 
-    async searchProjects(query: string): Promise<ProjectOption[]> {
+    async searchProjects(query: string): Promise<ProjectSearchResult> {
       const found = await findProjects(query, process.cwd())
-      return found.map(c => ({
+      return { totals: found.totals, options: found.rows.map(c => ({
         path: c.path,
         // Name and repo travel SEPARATELY: the picker aligns them into columns, and a pre-joined
         // label is one cell holding two facts that no column arithmetic can take apart again.
@@ -3500,7 +3501,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         ...(c.remote ? { repo: repoShortName(c.remote) } : {}),
         detail: candidatePath(c, homedir()),
         source: c.source,
-      }))
+      })) }
     },
 
     /**

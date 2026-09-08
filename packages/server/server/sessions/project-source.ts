@@ -17,7 +17,7 @@
  */
 
 import { homedir } from 'node:os'
-import { PROJECTS_PER_KIND, projectKind, takePerKind } from '@agentistics/core'
+import { countPerKind, PROJECTS_PER_KIND, projectKind, takePerKind, type ProjectKind } from '@agentistics/core'
 import { loadConsolidated } from '../consolidate'
 import { isDirectory, scanDirectories } from './dir-scan'
 import {
@@ -74,9 +74,22 @@ export function forgetProjects(): void {
  * `cwd` is always a candidate, with or without history — starting where you already are is the
  * single most common thing anyone wants, and routing that through a search would bury it.
  */
+export interface ProjectSearch {
+  /** The rows to offer, ranked then capped per kind. */
+  rows: ProjectCandidate[]
+  /**
+   * How many MATCHED, per kind — before the cap.
+   *
+   * The tabs carry these. Counting the returned rows instead made every tab read `12`, which is the
+   * cap: a number that can never be anything else, stated as though it were a fact about the
+   * machine. `rows` is what fits on screen; this is what is there.
+   */
+  totals: Record<ProjectKind, number>
+}
+
 export async function findProjects(
   query: string, cwd: string, perKind = PROJECTS_PER_KIND,
-): Promise<ProjectCandidate[]> {
+): Promise<ProjectSearch> {
   const known = await allCandidates()
 
   const fixed: ProjectCandidate[] = [{
@@ -107,7 +120,10 @@ export async function findProjects(
    * to push the one you want off the list. See `takePerKind`.
    */
   const ranked = searchCandidates(withFixedCandidates(known, fixed), query, Number.MAX_SAFE_INTEGER)
-  return takePerKind(ranked, c => projectKind(c), perKind)
+  return {
+    rows: takePerKind(ranked, c => projectKind(c), perKind),
+    totals: countPerKind(ranked, c => projectKind(c)),
+  }
 }
 
 function baseName(path: string): string {

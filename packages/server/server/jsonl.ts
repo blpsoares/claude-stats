@@ -239,7 +239,7 @@ export async function parseSessionJsonl(
     const key = iso.slice(0, 10)
     let d = daily.get(key)
     if (!d) {
-      d = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 0 }
+      d = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 0, hours: {} }
       daily.set(key, d)
     }
     return d
@@ -310,7 +310,21 @@ export async function parseSessionJsonl(
     if (ts) {
       if (!startTime) startTime = ts
       lastTime = ts
-      try { messageHours.push(new Date(ts).getHours()) } catch { /* skip */ }
+      /**
+       * WHEN this line happened, twice: once lifetime and once ON ITS OWN DAY.
+       *
+       * The same value into both, from the same parse, so the day split can never disagree with
+       * the lifetime array about what hour a line fell in — the whole point of `hours` is that a
+       * date-filtered chart can be rebuilt from it and read the same as the unfiltered one.
+       * Local clock, per the harness contract (§ timestamps); the DAY key stays UTC, per
+       * `tagSessionDay`, which is the rule every other day series in this product uses.
+       */
+      try {
+        const hour = new Date(ts).getHours()
+        messageHours.push(hour)
+        const d = dayOf(ts)
+        if (d) { d.hours ??= {}; d.hours[hour] = (d.hours[hour] ?? 0) + 1 }
+      } catch { /* skip */ }
       const tsMs = Date.parse(ts)
       if (!Number.isNaN(tsMs)) {
         turnEvent = { ts: tsMs }

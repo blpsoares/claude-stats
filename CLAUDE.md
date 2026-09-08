@@ -2247,6 +2247,32 @@ harness must not break.
   complete. `Today` is its own preset ("only today, in progress") and is not the calendar's "today"
   ("up to today"); both end at the END of the day, so a session a few seconds ahead of the browser's
   clock is not excluded.
+  **THE HOUR CHART IS CUT THE SAME WAY, and it needed its own field to be cuttable at all.**
+  `message_hours` is a LIFETIME array of hour-of-day values carrying no day, so it survived every
+  cut `sliceSession` made around it: with `Today` selected on a real machine the "Usage by hour"
+  chart drew bars in ALL 24 HOURS for someone who had started at 8am, totalling 33.427 against the
+  4.905 messages the card above it reported under the same filter. `SessionDayUsage.hours` is the
+  measurement (hour of the LOCAL clock -> count, written in `jsonl.ts` at the same line that pushes
+  to `message_hours`, so the two can never disagree), `sliceSession` sums it and `expandHours`
+  rebuilds the array — which is what lets the chart, the PDF export and the drilldown read the
+  range's hours without any of them knowing a range exists. `user_message_timestamps` is FILTERED
+  rather than rebuilt: those are instants and carry their own day. A session whose days carry no
+  `hours` (a record written before the field existed) KEEPS its lifetime array, the same rule a
+  session with no `daily` already had — a record that cannot be split is not one that did nothing.
+  **The remaining artefact is the UTC day itself, and it is deliberate**: a `daily` key is a UTC day
+  while an hour bucket is local, so at UTC-3 `Today` legitimately includes the previous evening's
+  21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
+  local day would make it disagree with the cost and the messages beside it, and no day-granular
+  split can express a local day for a non-UTC zone.
+- **A COUNT IS WHAT MATCHED, NEVER WHAT A CAP RETURNED.** The new-session wizard's tabs read
+  `Repositories 12 · Projects 12 · Folders 12` on a machine holding 237 / 211 / 5.284 — they were
+  counting the rows they had been handed, and `PROJECTS_PER_KIND` is 12, so every tab showed the cap
+  whatever the machine held and whatever was typed. `findProjects` returns `{rows, totals}` (the
+  totals from the pure `countPerKind`, over the SAME `kindOf` the cap is applied with, so a row can
+  never be counted under one kind and budgeted under another), `/api/fleet/new` carries
+  `projectTotals`, and `kindCount` / `kindMore` (`web/src/lib/projectTabs.ts`) put the true total on
+  the tab plus "Showing 12 of 237" under the list. `projectTotals` is OPTIONAL on the wire: absent
+  means an older server did not say, and the tabs then count their rows and claim nothing more.
 - **A tag may be pinned to a PERIOD** (`TagDoc.window`, inclusive `yyyy-MM-dd`, each end independently
   optional) — that is what makes a tag answer "I ran harness X on this project from the 4th to the
   18th; what did it cost?" instead of only "these sources, all time". It is an AND on top of the
