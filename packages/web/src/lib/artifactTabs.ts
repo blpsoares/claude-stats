@@ -37,7 +37,7 @@ export function isDoc(path: string): boolean {
 
 /** One thing the session did, in the order it did it. */
 export interface LiveEvent {
-  kind: 'wrote' | 'read' | 'ran' | 'thought' | 'delegated'
+  kind: 'wrote' | 'read' | 'ran' | 'thought' | 'delegated' | 'used'
   /** When the turn that produced it was recorded, ISO — absent on a transcript that carries none. */
   at?: string
   /** The path, the command, or the first line of what was said — already trimmed for a row. */
@@ -74,6 +74,23 @@ export interface LiveTurn {
 /** Tools that READ rather than change anything. */
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead', 'WebFetch', 'WebSearch'])
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
+
+
+/**
+ * A tool's name as a person reads it.
+ *
+ * An MCP tool arrives as `mcp__<server>__<tool>` — the wire name, not a name anybody would say. It
+ * becomes `<server> · <tool>`, which keeps BOTH halves: `browser_click` alone loses which server
+ * did it, and on a machine running several MCPs that is the interesting half.
+ *
+ * Everything else is returned unchanged. This is a MAPPING, never a filter — the same rule
+ * `canonicalTool` states on the server: a name it does not know passes through as itself, so a new
+ * tool shows up as itself rather than disappearing.
+ */
+export function toolDisplayName(name: string): string {
+  const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(name)
+  return m ? `${m[1]} · ${m[2]}` : name
+}
 
 /** One line of a longer text, for a row that has one line to give. */
 function firstLine(s: string, max = 160): string {
@@ -112,6 +129,7 @@ export function liveEvents(turns: readonly LiveTurn[]): LiveEvent[] {
       // A command that writes is BOTH events, in the order they happen: it ran, and then the file
       // appeared. Collapsing them would lose either what was run or what it produced, and the feed
       // is asked for both.
+      const before = out.length
       if (c.name === 'Bash' && c.detail) out.push(ev('ran', c.detail, ref))
       for (const w of c.writes ?? []) out.push(ev('wrote', w, ref))
       if (WRITE_TOOLS.has(c.name) && c.detail) out.push(ev('wrote', c.detail, ref))
@@ -119,6 +137,20 @@ export function liveEvents(turns: readonly LiveTurn[]): LiveEvent[] {
       // A subagent is a delegation, not a command — it is the one tool call that starts more work
       // somewhere else, and reading it as "ran" hides that.
       else if (c.name === 'Agent' || c.name === 'Task') out.push(ev('delegated', c.detail ?? c.name, ref))
+      /*
+       * A CALL THAT MATCHED NOTHING ABOVE IS STILL SOMETHING THAT HAPPENED.
+       *
+       * The chain used to end here, so any tool outside those four sets produced no row at all.
+       * MCP tools are all of them: measured on one subagent, 95 calls — every one
+       * `mcp__playwright__*` — and the panel said "This subagent recorded no actions." It had done
+       * ninety-five. `toolDetail` on the server looks for `command`/`file_path`/`query`/…, none of
+       * which an MCP call carries, so there was no text either.
+       *
+       * So the fallback names the TOOL, which is always known. This is the `canonicalTool` rule
+       * applied to a feed: a MAPPING, never a filter — a name nothing recognises passes through as
+       * itself rather than disappearing, and a tool added tomorrow is visible without a change here.
+       */
+      if (out.length === before) out.push(ev('used', c.detail || toolDisplayName(c.name), ref))
     }
   }
   return out

@@ -91,7 +91,7 @@ export function resolveArtifactLayout(
  */
 export interface EdgeHint {
   /** The verb, already localized by the caller's own table. */
-  kind: 'wrote' | 'read' | 'ran' | 'thought' | 'delegated'
+  kind: 'wrote' | 'read' | 'ran' | 'thought' | 'delegated' | 'used'
   /** The path or command it names. */
   text: string
   /**

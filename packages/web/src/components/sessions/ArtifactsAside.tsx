@@ -1766,6 +1766,9 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
     ran: { icon: <Terminal size={11} />, color: 'var(--text-secondary)', label: pt ? 'rodou' : 'ran' },
     thought: { icon: <Brain size={11} />, color: '#a78bfa', label: pt ? 'pensou' : 'thought' },
     delegated: { icon: <Send size={11} />, color: '#22c55e', label: pt ? 'delegou' : 'delegated' },
+    // Anything this feed has no verb of its own for. An MCP call is the common case, and it is
+    // named rather than dropped — see `toolDisplayName`.
+    used: { icon: <Plug size={11} />, color: 'var(--text-tertiary)', label: pt ? 'usou' : 'used' },
   }
   const m = meta[e.kind]
   const mono = e.kind === 'wrote' || e.kind === 'read' || e.kind === 'ran'
