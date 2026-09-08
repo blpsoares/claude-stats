@@ -126,7 +126,7 @@ import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey, isFreeTextOption} from './sessions/approval-spec'
+import { approvalFor, choiceKey, fieldIsOpen, isFreeTextOption } from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
@@ -3305,9 +3305,19 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
               stillAsking: rules.approval.some(re => re.test(frame.join('\n'))),
               before: options, after: parseDialogOptions(frame), choice,
             })
-            // Only a dialog we no longer recognise means a field replaced the option list. `done`
-            // (it closed on the digit alone), `submit` and `stuck` all mean no field opened.
-            return step.kind === 'changed'
+            // TWO SIGNALS, and either one is positive evidence that a field is taking keys.
+            //
+            // The option list going away is one: a field that REPLACES the dialog leaves nothing
+            // for `parseDialogOptions` to recognise. That was the only signal, and on claude
+            // 2.1.263 it is never true — the field opens IN PLACE, the row keeps its label until
+            // something is typed, and the whole list stays put. Measured 2026-09-08; the result was
+            // that a field which HAD opened was reported as one that had not, and the answer was
+            // refused in words describing the opposite of what happened.
+            //
+            // The footer is the other, and it is the one that fires here (`approval-spec.ts`'s
+            // `fieldOpen`). `null` from it means nobody probed this harness — NOT that the field is
+            // shut — so it only ever adds evidence and never withdraws the list signal.
+            return step.kind === 'changed' || fieldIsOpen(managed.harness, frame) === true
           })
           if (out === 'no-field') return { ok: false, message: s.sessAnswerNoField(picked.label) }
           return out === 'sent'

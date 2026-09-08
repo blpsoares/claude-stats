@@ -47,6 +47,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
+import { FOOTER_LINES } from './attention'
 
 export interface ApprovalSpec {
   /**
@@ -69,6 +70,28 @@ export interface ApprovalSpec {
    * inferred from the other harnesses' footers, which say `Enter select` and nothing about digits.
    */
   choice?: { kind: 'digit'; probed: string }
+  /**
+   * How the SCREEN says a free-text field is open and taking keys.
+   *
+   * WHY IT CANNOT BE INFERRED FROM THE OPTION LIST. The check that shipped read the list: a field
+   * that opened was assumed to REPLACE the options, so a list still parsing the same way meant the
+   * digit had merely moved the highlight. Measured against claude 2.1.263 on 2026-09-08, that is
+   * false — the field opens IN PLACE, the row keeps its `Type something.` label until something is
+   * typed into it, and every other option stays exactly where it was. So the guard read a field
+   * that HAD opened as one that had not, and refused a perfectly good answer in words that named
+   * the opposite of what happened. Reported as the option's number being fired instead of letting
+   * you type.
+   *
+   * The footer is the honest signal. `ctrl+g to edit in VS Code` is an affordance only a TEXT FIELD
+   * has, and it tracks the field rather than the dialog: driving a live session, it appeared the
+   * moment the digit landed on `Type something.` and disappeared the moment an arrow moved the
+   * highlight off it. Matched in the footer only, like every other rule here — this product is
+   * developed with this product, and a transcript quoting the hint is a certainty.
+   *
+   * ABSENT means nobody has probed it. A caller must then treat "did the field open" as unknowable
+   * from the frame and fall back to whatever positive evidence it has, never to a guess.
+   */
+  fieldOpen?: { pattern: RegExp; probed: string }
   /** Provenance — the exact CLI version the dialog came from, and the date. */
   probed: string
 }
@@ -78,6 +101,10 @@ export const APPROVAL_SPECS: Record<HarnessId, ApprovalSpec | null> = {
     key: 'Enter',
     probed: 'claude 2.1.231, 2026-08-13',
     choice: { kind: 'digit', probed: 'claude 2.1.232, 2026-08-14 (permission prompt + AskUserQuestion)' },
+    fieldOpen: {
+      pattern: /ctrl\+g to edit in VS Code/i,
+      probed: 'claude 2.1.263, 2026-09-08 (AskUserQuestion "Type something.")',
+    },
   },
   // No `choice` below this line, and that is a statement rather than a gap: each of these footers
   // says `Enter` selects, and none of them says anything about typing a number. Nobody has driven
@@ -131,4 +158,21 @@ export function choiceKey(spec: ApprovalSpec | undefined, n: number): string | n
 /** The spec for a harness, or `undefined` when its dialog was never read. */
 export function approvalFor(harness: HarnessId | undefined): ApprovalSpec | undefined {
   return harness ? (APPROVAL_SPECS[harness] ?? undefined) : undefined
+}
+
+/**
+ * Does this frame show a free-text field OPEN and taking keys?
+ *
+ * `null` when the harness has no probed signal — "unknowable from the frame", which is a different
+ * answer from `false` and must not be collapsed into it: a caller that treats "nobody looked" as
+ * "the field did not open" refuses every answer on every harness but the one that was measured.
+ *
+ * FOOTER ONLY, in the last few lines, exactly like `attention-rules.ts` and for the same reason:
+ * a session editing this file has the hint on screen all day.
+ */
+export function fieldIsOpen(harness: HarnessId | undefined, frame: readonly string[]): boolean | null {
+  const spec = approvalFor(harness)
+  if (!spec?.fieldOpen) return null
+  const footer = frame.slice(Math.max(0, frame.length - FOOTER_LINES)).join('\n')
+  return spec.fieldOpen.pattern.test(footer)
 }
