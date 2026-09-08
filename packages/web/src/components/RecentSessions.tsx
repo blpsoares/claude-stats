@@ -5,6 +5,7 @@ import { formatProjectName, repoShortName, sessionLabel, sessionTokenTotal } fro
 import type { SessionActivity } from '../lib/sessionNotifications'
 import type { FleetActionId, FleetRow, FleetVerb } from '../lib/fleet'
 import { primaryAction, isWatchable, type PrimaryAction } from '../lib/sessionActions'
+import { bandRepeats, type CardFact, type SessionGrouping } from '../lib/sessionCard'
 import { SessionActionsMenu, SessionActionsPanel, useSessionActionsController } from './SessionActions'
 import { useTerminalStream } from '../hooks/useTerminalStream'
 import { useTerminalWrite } from '../hooks/useTerminalWrite'
@@ -111,8 +112,9 @@ interface Props {
 }
 
 /** `task` is deliberately absent: a task is a fact of the agentop session registry, not of a
- *  stored `SessionMeta`, so a "group by task" here could only ever produce one "no task" band. */
-export type SessionGrouping = 'none' | 'status' | 'repo' | 'project' | 'harness' | 'model' | 'marked'
+ *  stored `SessionMeta`, so a "group by task" here could only ever produce one "no task" band.
+ *  The type itself lives in the pure `lib/sessionCard.ts`, beside the rule that reads it. */
+export type { SessionGrouping }
 
 const STATUS_BUCKETS: Record<SessionActivity, { label: string; color: string }> = {
   'waiting-approval': { label: 'Aguardando aprovação', color: '#ef4444' },
@@ -268,6 +270,14 @@ function Chip({
       {label}
     </div>
   )
+}
+
+/** How a harness is NAMED — the one mapping `getSessionBucketKey` bands by and `HarnessBadge`
+ *  prints, so a card can ask whether its band's heading already says this harness. */
+function harnessLabel(harness?: string): string {
+  if (!harness) return ''
+  const h = harness.toLowerCase()
+  return (HARNESS_LABELS as Record<string, string>)[h] ?? harness
 }
 
 function HarnessBadge({ harness }: { harness?: string }) {
@@ -991,6 +1001,8 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
                           authorName={authorName}
                           viewMode={viewMode}
                           theme={theme}
+                          grouping={groupBy}
+                          bandLabel={g.label}
                         />
                       ))}
                     </div>
@@ -1159,7 +1171,11 @@ function ResumeCommandModal({
     }
   }, [])
 
-  const nativeCmd = resumeCommand(s) || (s.project_path ? `cd '${s.project_path}' && ${s.harness || 'claude'} --resume ${s.session_id}` : `${s.harness || 'claude'} --resume ${s.session_id}`)
+  // `resumeCommand` returns null for a harness with no verified resume-by-id flag, and Gemini is
+  // the reason it is a deliberate null: `gemini --resume` takes "latest" or a list index, not a
+  // session id. The old fallback here invented exactly that command — a plausible line that opens
+  // the WRONG conversation — so there is no fallback: the option says the harness has none.
+  const nativeCmd = resumeCommand(s)
   const agentopCmd = s.project_path
     ? `cd '${s.project_path}' && agentop session attach ${s.session_id}`
     : `agentop session attach ${s.session_id}`
@@ -1309,7 +1325,9 @@ function ResumeCommandModal({
               {lang === 'pt' ? `Opção 2: Via ${HARNESS_LABELS[s.harness ?? 'claude']} Nativo` : `Option 2: Via Native ${HARNESS_LABELS[s.harness ?? 'claude']}`}
             </span>
             <button
+              disabled={!nativeCmd}
               onClick={() => {
+                if (!nativeCmd) return
                 navigator.clipboard.writeText(nativeCmd)
                 setCopiedNative(true)
                 setTimeout(() => setCopiedNative(false), 2000)
@@ -1325,7 +1343,8 @@ function ResumeCommandModal({
                 color: copiedNative ? '#22c55e' : 'var(--text-primary)',
                 fontSize: 11,
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: nativeCmd ? 'pointer' : 'not-allowed',
+                opacity: nativeCmd ? 1 : 0.45,
               }}
             >
               {copiedNative ? <Check size={12} color="#22c55e" /> : <Copy size={12} />}
@@ -1339,11 +1358,14 @@ function ResumeCommandModal({
               background: 'var(--bg-base)',
               padding: '8px 12px',
               borderRadius: 6,
-              color: 'var(--text-primary)',
               wordBreak: 'break-all',
+              fontStyle: nativeCmd ? undefined : 'italic',
+              color: nativeCmd ? 'var(--text-primary)' : 'var(--text-tertiary)',
             }}
           >
-            {nativeCmd}
+            {nativeCmd ?? (lang === 'pt'
+              ? `${HARNESS_LABELS[s.harness ?? 'claude']} não tem um comando que reabre uma sessão pelo id — use a Opção 1.`
+              : `${HARNESS_LABELS[s.harness ?? 'claude']} has no command that reopens a session by id — use Option 1.`)}
           </code>
         </div>
       </div>
@@ -1379,6 +1401,10 @@ interface SessionCardProps {
   theme?: 'dark' | 'light'
   /** Who a write-channel send is attributed to (threaded to the actions controller for the audit). */
   authorName?: string
+  /** How the list is banded, and this band's own heading — what the card need not repeat. A card
+   *  outside any band (the pinned block, a flat list) passes neither and keeps every fact. */
+  grouping?: SessionGrouping
+  bandLabel?: string
 }
 
 function SessionCard(props: SessionCardProps) {
@@ -1425,26 +1451,37 @@ function StatusPill({ color, label }: { color: string; label: string }) {
 
 /** The recessed second line — WHERE the session lives and WHAT it is on, when the fleet knows: the
  *  project/repo, the model, and (live) the task and note. This is the "who/what" context, kept quiet
- *  under the title so the state and the title stay the loud things. */
-function CardMeta({ s, fleetRow, lang }: { s: SessionMeta; fleetRow?: FleetRow; lang: 'pt' | 'en' }) {
+ *  under the title so the state and the title stay the loud things.
+ *
+ *  A fact the BAND already states is dropped (`bandRepeats`) — five cards under a
+ *  `blpsoares/agentistics` heading each spending a line on `blpsoares/agentistics` is the width
+ *  their titles were cut for. And the bits carry NO `·` separators: they are laid out as wrapping
+ *  flex items, so every separator drawn between them was one wrap away from being left dangling at
+ *  the end of a line with nothing after it. Each bit leads with its own icon; the gap is the
+ *  separator. */
+function CardMeta({ s, fleetRow, lang, grouping, bandLabel }: {
+  s: SessionMeta
+  fleetRow?: FleetRow
+  lang: 'pt' | 'en'
+  /** How the list is banded, and what THIS band is called — together they say what not to repeat. */
+  grouping?: SessionGrouping
+  bandLabel?: string
+}) {
   const bits: React.ReactNode[] = []
+  const g = grouping ?? 'none'
+  const said = (fact: CardFact, value?: string) => bandRepeats(g, fact, value, bandLabel)
   const repo = s.git_remote ? repoShortName(s.git_remote) : ''
   const project = fleetRow?.project || (s.project_path ? formatProjectName(s.project_path) : '')
-  if (project) bits.push(<span key="p" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Folder size={11} style={{ opacity: 0.7 }} />{project}</span>)
-  if (repo) bits.push(<span key="r" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><GitCommit size={11} style={{ opacity: 0.7 }} />{repo}</span>)
+  if (project && !said('project', project)) bits.push(<span key="p" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><Folder size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project}</span></span>)
+  if (repo && !said('repo', repo)) bits.push(<span key="r" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><GitCommit size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo}</span></span>)
   const model = fleetRow?.model || s.model
-  if (model) bits.push(<span key="m" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Tag size={11} style={{ opacity: 0.7 }} />{model}</span>)
-  if (fleetRow?.task) bits.push(<span key="t" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--anthropic-orange)' }}><Bookmark size={11} />{fleetRow.task}</span>)
-  if (fleetRow?.note) bits.push(<span key="n" style={{ fontStyle: 'italic', opacity: 0.85 }} title={fleetRow.note}>“{truncate(fleetRow.note, 60)}”</span>)
+  if (model && !said('model', model)) bits.push(<span key="m" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><Tag size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model}</span></span>)
+  if (fleetRow?.task) bits.push(<span key="t" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--anthropic-orange)', minWidth: 0 }}><Bookmark size={11} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fleetRow.task}</span></span>)
+  if (fleetRow?.note) bits.push(<span key="n" style={{ fontStyle: 'italic', opacity: 0.85, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fleetRow.note}>“{truncate(fleetRow.note, 60)}”</span>)
   if (bits.length === 0) return null
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', minWidth: 0 }}>
-      {bits.map((b, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <span style={{ opacity: 0.4 }}>·</span>}
-          {b}
-        </React.Fragment>
-      ))}
+    <div style={{ display: 'flex', alignItems: 'center', columnGap: 14, rowGap: 4, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', minWidth: 0 }}>
+      {bits}
     </div>
   )
 }
@@ -1467,8 +1504,9 @@ function CardChips({ s, lang }: { s: SessionMeta; lang: 'pt' | 'en' }) {
   )
 }
 
-/** The small buttons that open the metrics modal / the resume-command modal. Grouped so both card
- *  variants render them the same way. */
+/** The footer of a HISTORY card: the metrics modal and the resume-command modal. A LIVE card draws
+ *  neither — its metrics are in the kebab and its resume is the fleet's own verb (see
+ *  `LiveSessionCard`). */
 function CardFooterButtons({ s, lang, onSelect, onResume }: {
   s: SessionMeta; lang: 'pt' | 'en'; onSelect?: (s: SessionMeta) => void; onResume: () => void
 }) {
@@ -1494,11 +1532,23 @@ function CardFooterButtons({ s, lang, onSelect, onResume }: {
 /** The outer card shell + clickable header shared by both variants. `accent` is the state colour
  *  drawn as a left rule so a row that needs you is spotted without reading it. `affordance` is the
  *  trailing icon that says what a click does — a chevron in the list (expands inline) or a maximize
- *  glyph in the grid (opens the modal, so the grid layout never stretches). */
+ *  glyph in the grid (opens the modal, so the grid layout never stretches).
+ *
+ *  There are TWO header shapes, because a grid column is not a short list row.
+ *
+ *  LIST: one wrapping row — state, harness, title, then the actions right-aligned. There is room
+ *  for the identity and the verbs side by side, and at this width that reads as one line.
+ *
+ *  GRID (~320px): a SUMMARY, in the cockpit's order. State and the open-affordance lead; the TITLE
+ *  then gets a full-width line of its own and may take two, because it is the one thing a reader
+ *  cannot do without and the wrapping row cut it to `Sessions card re…`; the meta follows; the
+ *  actions come LAST, on their own row, left-aligned. Under the wrapping row those same actions
+ *  landed right-aligned in the middle of the card, next to nothing, reading as debris. */
 function CardShell({
-  accent, expanded, onToggle, statusPill, harness, title, right, meta, affordance, children,
+  accent, layout, expanded, onToggle, statusPill, harness, title, right, meta, affordance, children,
 }: {
   accent: string
+  layout: 'list' | 'grid'
   expanded: boolean
   onToggle: () => void
   statusPill: React.ReactNode
@@ -1509,6 +1559,16 @@ function CardShell({
   affordance: React.ReactNode
   children?: React.ReactNode
 }) {
+  const isGrid = layout === 'grid'
+  const titleStyle: React.CSSProperties = isGrid
+    ? {
+        fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+        // Two lines, then an ellipsis — a grid title is worth a second line and never a third.
+        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        wordBreak: 'break-word', lineHeight: 1.3,
+      }
+    : { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }
+
   return (
     <div
       style={{
@@ -1519,34 +1579,45 @@ function CardShell({
     >
       <div
         onClick={onToggle}
-        style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '12px 16px', cursor: 'pointer', userSelect: 'none', minWidth: 0 }}
+        style={{ display: 'flex', flexDirection: 'column', gap: isGrid ? 8 : 6, padding: '12px 16px', cursor: 'pointer', userSelect: 'none', minWidth: 0 }}
       >
-        {/* The header WRAPS. In a grid column (~360px) the action cluster is `flexShrink:0` and wide
-            (a "Send a prompt" button + pin + kebab + maximize), so on one non-wrapping row it crushed
-            the title to nothing and clipped the harness badge — the fields did not fit the column.
-            With `flexWrap`, when the actions cannot sit beside the identity they drop to their own
-            row and the pill + badge + title keep a full-width line where the title is readable; on a
-            wide card everything stays on one row exactly as before. `marginLeft:auto` right-aligns
-            the actions on the shared row (replacing space-between, which mis-spaces a wrapped line). */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, rowGap: 8, minWidth: 0, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 170px', minWidth: 0 }}>
-            {statusPill}
-            <HarnessBadge harness={harness} />
-            <span
-              style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
-              title={title}
-            >
-              {title}
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
-            {right}
-            <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex' }}>
-              {affordance}
-            </span>
-          </div>
-        </div>
-        {meta}
+        {isGrid ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              {statusPill}
+              <HarnessBadge harness={harness} />
+              <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex', marginLeft: 'auto', flexShrink: 0 }}>
+                {affordance}
+              </span>
+            </div>
+            <span style={titleStyle} title={title}>{title}</span>
+            {meta}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+              {right}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* The header WRAPS. When the action cluster cannot sit beside the identity it drops to
+                its own row and the pill + badge + title keep a full-width line where the title is
+                readable. `marginLeft:auto` right-aligns the actions on the shared row (replacing
+                space-between, which mis-spaces a wrapped line). */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, rowGap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 170px', minWidth: 0 }}>
+                {statusPill}
+                <HarnessBadge harness={harness} />
+                <span style={titleStyle} title={title}>{title}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
+                {right}
+                <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex' }}>
+                  {affordance}
+                </span>
+              </div>
+            </div>
+            {meta}
+          </>
+        )}
       </div>
       {expanded && (
         <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px 14px', minWidth: 0 }}>
@@ -1589,7 +1660,7 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
   // 44px touch targets on mobile (the repo rule); the compact desktop size otherwise.
   const btn: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: isMobile ? 40 : 24, height: isMobile ? 40 : 22,
+    width: isMobile ? 44 : 24, height: isMobile ? 44 : 22,
     borderRadius: 4, border: 'none', background: 'transparent', color: 'var(--text-secondary)',
     cursor: 'pointer', padding: 0,
   }
@@ -1613,7 +1684,7 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
       <button
         onClick={() => setTerminalZoom(1)}
         title={lang === 'pt' ? 'Tamanho padrão' : 'Reset size'}
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 32, minHeight: isMobile ? 40 : undefined, padding: 0 }}
+        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: isMobile ? 44 : 32, minHeight: isMobile ? 44 : undefined, padding: 0 }}
       >
         {Math.round(zoom * 100)}%
       </button>
@@ -1752,7 +1823,7 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
             aria-label={lang === 'pt' ? 'Ampliar o terminal' : 'Enlarge the terminal'}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: isMobile ? 40 : 26, height: isMobile ? 40 : 22, borderRadius: 6,
+              width: isMobile ? 44 : 26, height: isMobile ? 44 : 22, borderRadius: 6,
               border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
               color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
             }}
@@ -1803,7 +1874,7 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
             title={lang === 'pt' ? 'Reconectar' : 'Reconnect'}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-              minHeight: isMobile ? 40 : 28, padding: isMobile ? '0 14px' : '4px 12px', borderRadius: 8,
+              minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 12px', borderRadius: 8,
               fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
               border: `1px solid ${TERM_TONE_COLOR.stalled}`, background: 'transparent', color: TERM_TONE_COLOR.stalled,
             }}
@@ -2178,7 +2249,7 @@ function PrimaryButton({ primary, lang, onExpand, onPick }: {
       title={title ?? label}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
-        minHeight: isMobile ? 40 : 30, padding: isMobile ? '0 14px' : '5px 12px', borderRadius: 8,
+        minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '5px 12px', borderRadius: 8,
         fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
         border: filled ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
         background: filled ? 'var(--anthropic-orange)' : 'var(--bg-surface)',
@@ -2227,7 +2298,7 @@ function PinButton({ sessionId, lang }: { sessionId: string; lang: 'pt' | 'en' }
         aria-pressed={pinned}
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 40 : 30, height: isMobile ? 40 : 30, borderRadius: 8,
+          width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
           border: pinned ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
           background: pinned ? 'rgba(232,105,11,0.1)' : 'transparent',
           color: pinned ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
@@ -2307,7 +2378,7 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
               aria-label={lang === 'pt' ? 'Fechar' : 'Close'}
               style={{
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                width: isMobile ? 40 : 30, height: isMobile ? 40 : 30, borderRadius: 8,
+                width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
                 border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
               }}
             >
@@ -2326,7 +2397,7 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
 
 // ---- the two card variants -----------------------------------------------------------------------
 
-function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleetAction, theme, viewMode, authorName }: SessionCardProps & {
+function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleetAction, theme, viewMode, authorName, grouping, bandLabel }: SessionCardProps & {
   fleetRow: FleetRow
   onFleetAction: NonNullable<SessionCardProps['onFleetAction']>
 }) {
@@ -2334,7 +2405,6 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   const [expanded, setExpanded] = useState(false)
   const modalOpen = useOpenModalSession() === s.session_id
   const setModalOpen = (open: boolean) => setOpenModalSession(open ? s.session_id : null)
-  const [showResumeModal, setShowResumeModal] = useState(false)
   const ctrl = useSessionActionsController(fleetRow, lang, onFleetAction, authorName)
   // The state indicator reads the FLEET — the same source the primary action reads — so the pill,
   // the accent and the lead action can never contradict each other.
@@ -2348,7 +2418,10 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   const openCard = () => { if (isGrid) setModalOpen(true); else setExpanded(v => !v) }
 
   const statusPill = <StatusPill color={accent} label={fleetRow.stateLabel} />
-  const meta = <CardMeta s={s} fleetRow={fleetRow} lang={lang} />
+  const meta = <CardMeta s={s} fleetRow={fleetRow} lang={lang} grouping={grouping} bandLabel={bandLabel} />
+  // The badge is dropped when the band's own heading is this harness — the same rule `CardMeta`
+  // applies to the project, the repo and the model.
+  const harnessBadge = bandRepeats(grouping ?? 'none', 'harness', harnessLabel(s.harness), bandLabel) ? undefined : s.harness
 
   // The card is session CONTROL, not a session dossier: only the metric chips stay on it. The first
   // prompt / latest-messages block and the "Session metrics" button moved off — the deep-dive lives
@@ -2359,18 +2432,24 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   // off a torn-down render service — an async, uncatchable throw once per toggle (invisible in dev
   // under StrictMode, real in the production build). The duplicate SSE the modal briefly holds is the
   // lesser cost, and it is bounded by the connecting stall/reconnect above.
+  // RESUME IS ONE CONTROL HERE, and it is the fleet's. A live card used to carry a `Resume` footer
+  // button opening a modal whose first option was `agentop session attach <id>` — the very command
+  // the panel two rows above already hands over — beside a NATIVE `<harness> --resume <id>`, which
+  // on a session agentop hosts starts a SECOND, unmanaged process against the same conversation.
+  // So the button is gone: what reopens this row is the fleet `resume` verb (the row's lead button
+  // when the state is about it, the kebab otherwise — one controller, one path), and what enters it
+  // from a terminal is the attach command in the panel. The command modal stays on HISTORY cards,
+  // where nothing else can reach a stored conversation.
   const body = (large: boolean) => (
     <>
       {watchable && <TerminalRegion id={fleetRow.id} theme={theme ?? 'dark'} lang={lang} fill={large} onMaximize={large ? undefined : () => setModalOpen(true)} row={fleetRow} act={onFleetAction} authorName={authorName} />}
       <SessionActionsPanel ctrl={ctrl} />
       <CardChips s={s} lang={lang} />
-      <CardFooterButtons s={s} lang={lang} onResume={() => setShowResumeModal(true)} />
     </>
   )
 
   return (
     <>
-      {showResumeModal && <ResumeCommandModal s={s} lang={lang} onClose={() => setShowResumeModal(false)} />}
       {modalOpen && (
         <CardModal statusPill={statusPill} harness={s.harness} title={titleOf(s)} meta={meta} lang={lang} onClose={() => setModalOpen(false)}>
           {body(true)}
@@ -2378,10 +2457,11 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
       )}
       <CardShell
         accent={accent}
+        layout={isGrid ? 'grid' : 'list'}
         expanded={isGrid ? false : expanded}
         onToggle={openCard}
         statusPill={statusPill}
-        harness={s.harness}
+        harness={harnessBadge}
         title={titleOf(s)}
         right={
           <>
@@ -2407,7 +2487,7 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   )
 }
 
-function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: SessionCardProps) {
+function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode, grouping, bandLabel }: SessionCardProps) {
   const isGrid = viewMode === 'grid'
   const [expanded, setExpanded] = useState(false)
   const modalOpen = useOpenModalSession() === s.session_id
@@ -2418,7 +2498,8 @@ function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: Se
   const openCard = () => { if (isGrid) setModalOpen(true); else setExpanded(v => !v) }
 
   const statusPill = <StatusPill color={status.color} label={lang === 'pt' ? status.labelPt : status.labelEn} />
-  const meta = <CardMeta s={s} lang={lang} />
+  const meta = <CardMeta s={s} lang={lang} grouping={grouping} bandLabel={bandLabel} />
+  const harnessBadge = bandRepeats(grouping ?? 'none', 'harness', harnessLabel(s.harness), bandLabel) ? undefined : s.harness
   // History rows have no fleet controller, so no kebab to move "Session metrics" into — it stays a
   // footer button here (unlike the live card, which routes it through SessionActionsMenu).
   const body = () => (
@@ -2438,10 +2519,11 @@ function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: Se
       )}
       <CardShell
         accent={status.color}
+        layout={isGrid ? 'grid' : 'list'}
         expanded={isGrid ? false : expanded}
         onToggle={openCard}
         statusPill={statusPill}
-        harness={s.harness}
+        harness={harnessBadge}
         title={titleOf(s)}
         right={
           <>

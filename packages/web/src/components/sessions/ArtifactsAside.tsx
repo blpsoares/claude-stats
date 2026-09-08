@@ -67,6 +67,7 @@ import {
   type McpEntry, type McpListPayload, type McpScope,
 } from '../../lib/mcpPanel'
 import { splitAsideTabs } from '../../lib/asideTabs'
+import { mcpCheckText } from '../../lib/mcpCheckText'
 import { fmt, fmtCost } from '@agentistics/core'
 import {
   galleryFileCount, galleryGroups, parseGalleryScope, parseGalleryView, producedGroups,
@@ -127,7 +128,7 @@ export interface ArtifactsAsideProps {
    * whole sentence is "the harness is running something", and pressing it to land on the file list
    * answers a question nobody asked. See `artifactsStore.ts`.
    */
-  tabRequest?: { tab: string; at: number } | null
+  tabRequest?: { tab: string; at: number; ref?: string } | null
   sessionId: string
   lang: 'pt' | 'en'
   /**
@@ -373,11 +374,31 @@ export function ArtifactsAside({
    * An unknown tab is IGNORED rather than defaulted: whoever wrote it meant something this panel
    * does not have, and dropping them on Files would look like the request was honoured.
    */
+  /**
+   * The step the edge strip asked for, until the reader moves on.
+   *
+   * It does two things and they are deliberately the same state: the row opens itself, and it is
+   * highlighted so the eye finds it in a feed that may be long. The highlight FADES — it exists to
+   * answer "where", and a marker that stays becomes part of the row.
+   */
+  const [focusStep, setFocusStep] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (focusStep === undefined) return
+    // Long enough to be found, short enough not to become furniture.
+    const t = setTimeout(() => setFocusStep(undefined), 4000)
+    return () => clearTimeout(t)
+  }, [focusStep])
+
   const askedAt = tabRequest?.at
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
       || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs' || t === 'tasks') setTab(t)
+    // A requested STEP comes with the tab: the edge strip names an action, so pressing it
+    // lands on that row rather than on the top of a feed to be searched. Set unconditionally,
+    // including to undefined, so a later request with no step clears the previous one — a
+    // highlight left over from an earlier press would point at the wrong line.
+    setFocusStep(tabRequest?.ref)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedAt])
 
@@ -1743,15 +1764,31 @@ function StepBlock({ label, text, tone }: { label: string; text: string; tone?: 
   )
 }
 
-function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
+function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
   e: LiveEvent; pt: boolean; now: number; onOpen?: () => void; status?: WriteStatus
   sessionId: string
   /** Set inside a SUBAGENT's activity: its refs live in its own transcript, not the parent's. */
   agentId?: string
+  /** The edge strip pointed at THIS row: it opens itself and wears a marker until it fades. */
+  focused?: boolean
 }) {
   const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(focused === true)
   const openable = stepOpenable(e)
+  // It may become the pointed-at row after it was drawn — the strip is pressed while the feed is
+  // already on screen. Opening then is the same gesture one render later; it never CLOSES anything,
+  // so a row the reader shut stays shut.
+  const wasFocused = useRef(focused === true)
+  useEffect(() => {
+    if (focused === true && !wasFocused.current) setOpen(true)
+    wasFocused.current = focused === true
+  }, [focused])
+  /** Brings the pointed-at row into view — `nearest`, never `smooth`: the feed follows its own tail
+   *  and a smooth scroll racing that leaves the box drifting. */
+  const rowRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (focused === true) rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [focused])
   const detail = useStepDetail(sessionId, e, open, pt, agentId)
   const notice = detail ? stepNotice(detail, pt) : null
   const meta: Record<LiveEvent['kind'], { icon: React.ReactNode; color: string; label: string }> = {
@@ -1760,6 +1797,9 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
     ran: { icon: <Terminal size={11} />, color: 'var(--text-secondary)', label: pt ? 'rodou' : 'ran' },
     thought: { icon: <Brain size={11} />, color: '#a78bfa', label: pt ? 'pensou' : 'thought' },
     delegated: { icon: <Send size={11} />, color: '#22c55e', label: pt ? 'delegou' : 'delegated' },
+    // Anything this feed has no verb of its own for. An MCP call is the common case, and it is
+    // named rather than dropped — see `toolDisplayName`.
+    used: { icon: <Plug size={11} />, color: 'var(--text-tertiary)', label: pt ? 'usou' : 'used' },
   }
   const m = meta[e.kind]
   const mono = e.kind === 'wrote' || e.kind === 'read' || e.kind === 'ran'
@@ -1774,7 +1814,14 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId }: {
    */
   const Tag = openable ? 'button' : 'div'
   return (
-    <div style={{ borderRadius: 7, background: open ? 'var(--bg-elevated)' : 'transparent' }}>
+    <div
+      ref={rowRef}
+      style={{
+        borderRadius: 7,
+        background: open ? 'var(--bg-elevated)' : 'transparent',
+        ...(focused === true ? { animation: 'ag-row-flash 1.6s ease-in-out 2' } : {}),
+      }}
+    >
     <div style={{ display: 'flex', alignItems: 'flex-start' }}>
     <Tag
       {...(openable ? {
@@ -2343,6 +2390,16 @@ function SubagentCard({ row, pt, now, onOpen }: {
         )}
       </div>
       <style>{`@keyframes ag-agent-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+        /* "It is here." A marker that ENDS: three beats and gone. A highlight that stays becomes
+           part of the row, and then it is pointing at nothing. Background and a ring, never a
+           colour on the text — the row still has to be readable while it is being pointed at. */
+        @keyframes ag-row-flash {
+          0%, 100% { background: transparent; box-shadow: 0 0 0 0 transparent }
+          15%, 55% {
+            background: color-mix(in srgb, var(--anthropic-orange) 20%, transparent);
+            box-shadow: 0 0 0 1px color-mix(in srgb, var(--anthropic-orange) 55%, transparent)
+          }
+        }
         /* The line being executed. A BACKGROUND pulse, not an opacity one: the text must stay
            readable through the whole cycle — a command you cannot read while it runs is the one
            moment you most want to read it. Soft on purpose; it sits under a monospace block. */
@@ -2494,6 +2551,50 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
   const [editing, setEditing] = useState<McpEntry | null>(null)
   const scopes = offerableScopes(cwd)
 
+  /**
+   * DOES IT ANSWER? — per server, on a press.
+   *
+   * The tab said whether a PROCESS was up (`running` / `idle`), and `idle` is the normal state of a
+   * perfectly good server nothing happens to be using — which is also exactly what a broken one
+   * looks like. Telling those two apart was impossible from this screen, and the only way to find
+   * out was to start a session and see whether the tools were there. "Fico no escuro e não sei os
+   * que estão disponíveis."
+   *
+   * NOT a connection, and the words never say it is: agentistics does not run MCP servers, Claude
+   * Code does, once, at session start. This starts the configured command, speaks the protocol's
+   * opening handshake, and reports what came back.
+   *
+   * Keyed by `scope:name` because one name can be configured at two scopes and they are two
+   * different servers with two different answers.
+   */
+  const [checks, setChecks] = useState<Record<string, { outcome: string; serverName?: string; exitCode?: number } | 'running'>>({})
+  const check = async (m: { name: string; scope: string }) => {
+    const key = `${m.scope}:${m.name}`
+    setChecks(c => ({ ...c, [key]: 'running' }))
+    try {
+      const res = await fetch('/api/mcp/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: m.name, scope: m.scope, ...(cwd ? { projectPath: cwd } : {}) }),
+      })
+      const out = await res.json() as { ok?: boolean; outcome?: string; handshake?: { serverName?: string }; exitCode?: number }
+      setChecks(c => ({
+        ...c,
+        [key]: out.ok && out.outcome
+          ? {
+            outcome: out.outcome,
+            ...(out.handshake?.serverName ? { serverName: out.handshake.serverName } : {}),
+            ...(out.exitCode !== undefined ? { exitCode: out.exitCode } : {}),
+          }
+          // A refused or unreachable ROUTE is not a verdict about the server, and must not be shown
+          // as one — the profile can forbid this entirely.
+          : { outcome: 'unavailable' },
+      }))
+    } catch {
+      setChecks(c => ({ ...c, [key]: { outcome: 'unavailable' } }))
+    }
+  }
+
   const write = async (path: string, body: Record<string, unknown>, row?: string) => {
     setBusy(true)
     setWorking(row ?? null)
@@ -2509,6 +2610,23 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
         setSaid({ tone: 'ok', text: (out.names ?? []).join(', ') })
         setPaste(''); setName(''); setAdding(false); setEditing(null)
         onChanged()
+        /**
+         * CHECKED AT THE ONE MOMENT SOMEBODY IS LOOKING — right after they added it.
+         *
+         * Asked for: "ao adicionar ele subir o mcp caso seja um mcp local ou tentar uma conexão,
+         * pq daí eu fico no escuro". Adding wrote a configuration and said nothing about whether it
+         * works, and the answer arrived a session later, if at all.
+         *
+         * Only here, and never while merely LISTING: a tab that started every configured server on
+         * load would be spawning processes nobody asked for, every time it was opened. One explicit
+         * act, one check.
+         *
+         * `install` is the only path that gets it — a REMOVE has nothing to check, and an EDIT
+         * leaves the row on screen with its own button.
+         */
+        if (path === '/api/mcp/install') {
+          for (const n of out.names ?? []) void check({ name: n, scope })
+        }
       } else {
         // The SERVER's own sentence, verbatim — including the harness command's own error, which
         // says far more about a refused config than any wording invented here.
@@ -2543,6 +2661,8 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
         <McpRow
           key={`${s.scope}:${s.name}`} entry={s} pt={pt} canWrite={list.canWrite} busy={busy}
           working={working === `${s.scope}:${s.name}`}
+          check={checks[`${s.scope}:${s.name}`] ?? null}
+          onCheck={() => void check(s)}
           onRemove={() => setRemoving(s)}
           onEdit={() => { setEditing(s); setSaid(null) }}
         />
@@ -2609,11 +2729,37 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
             border: '1px solid var(--border-subtle)',
           }}
         >
+          {/* THE THREE SHAPES, SHOWN. This said them in prose — "the whole block, one named entry,
+              or just the config" — and was reported as not knowing which to use, with two of the
+              three pasted side by side to ask which was right. Both were. A JSON shape is something
+              you recognise by SEEING it; a sentence describing one is a sentence you have to
+              translate into the thing before you can compare it with what is on your clipboard.
+              `parseMcpPaste` accepts all three and has since it was written — this is only the
+              screen catching up with what the parser already does. */}
           <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
             {pt
-              ? 'Cole o JSON do servidor — o bloco `mcpServers` inteiro, uma entrada nomeada, ou só a configuração (aí o nome é obrigatório).'
-              : 'Paste the server’s JSON — the whole `mcpServers` block, one named entry, or just the config (then the name is required).'}
+              ? 'Cole o JSON do servidor. Qualquer um destes três funciona:'
+              : 'Paste the server’s JSON. Any of these three works:'}
           </p>
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 5,
+            padding: '6px 8px', borderRadius: 6,
+            background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
+          }}>
+            {([
+              ['{"mcpServers": {"serena": {…}}}', pt ? 'o bloco inteiro, como vem no README' : 'the whole block, as a README gives it'],
+              ['{"serena": {…}}', pt ? 'só a entrada nomeada' : 'just the named entry'],
+              ['{"command": "serena", "args": […]}', pt ? 'só a configuração — aí o Nome abaixo é obrigatório' : 'just the config — then the Name below is required'],
+            ] as const).map(([shape, what]) => (
+              <div key={shape} style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+                <code style={{
+                  fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10.5,
+                  color: 'var(--text-secondary)', overflowWrap: 'anywhere',
+                }}>{shape}</code>
+                <span style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>{what}</span>
+              </div>
+            ))}
+          </div>
           <textarea
             value={paste}
             onChange={e => setPaste(e.target.value)}
@@ -2795,10 +2941,13 @@ function McpEditor({ entry, pt, busy, onCancel, onApply }: {
 }
 
 /** One configured server: what it is, where it is configured, and what it is doing right now. */
-function McpRow({ entry, pt, canWrite, busy, working, onRemove, onEdit }: {
+function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, onEdit }: {
   entry: McpEntry; pt: boolean; canWrite: boolean; busy: boolean
   /** This row is mid-write. A removal takes a second or two and must not look inert. */
   working: boolean
+  /** The last check's verdict, `'running'` while one is in flight, `null` if never asked. */
+  check: { outcome: string; serverName?: string; exitCode?: number } | 'running' | null
+  onCheck: () => void
   onRemove: () => void
   onEdit: () => void
 }) {
@@ -2854,6 +3003,34 @@ function McpRow({ entry, pt, canWrite, busy, working, onRemove, onEdit }: {
             </button>
           </>
         )}
+      </div>
+      {/* DOES IT ANSWER? The row already says whether a PROCESS is up, and `idle` is the normal
+          state of a good server nothing is using — which is also what a broken one looks like.
+          This is what tells those two apart, and it is a CHECK, not a connection: agentistics does
+          not run MCP servers, Claude Code does, once, when a session starts. */}
+      <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+        <button
+          onClick={onCheck}
+          disabled={check === 'running'}
+          style={{
+            flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
+            minHeight: isMobile ? 44 : 22, padding: isMobile ? '0 10px' : '0 7px', borderRadius: 6,
+            cursor: check === 'running' ? 'default' : 'pointer',
+            border: '1px solid var(--border-subtle)', background: 'transparent',
+            color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 10.5,
+          }}
+        >
+          {check === 'running' ? <Spinner size={11} /> : <Plug size={11} />}
+          {pt ? 'Testar' : 'Check'}
+        </button>
+        {check !== null && check !== 'running' && (() => {
+          const v = mcpCheckText(check, pt)
+          return (
+            <span style={{ fontSize: 10.5, lineHeight: 1.45, color: v.color, minWidth: 0 }}>
+              {v.text}
+            </span>
+          )
+        })()}
       </div>
       {/* WHY the status says what it says — the sentence, never a colour alone. */}
       {run.detail && (

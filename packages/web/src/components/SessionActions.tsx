@@ -63,7 +63,6 @@ const T = {
     working: 'Executando…',
     sendingTo: 'Escrevendo em',
     auditTitle: 'Enviados a esta sessão',
-    auditEmpty: 'Nada foi enviado a esta sessão por este navegador ainda.',
     auditOk: 'entregue',
     auditFail: 'falhou',
     by: 'por',
@@ -92,7 +91,6 @@ const T = {
     working: 'Running…',
     sendingTo: 'Writing to',
     auditTitle: 'Sent to this session',
-    auditEmpty: 'Nothing has been sent to this session from this browser yet.',
     auditOk: 'delivered',
     auditFail: 'failed',
     by: 'by',
@@ -279,7 +277,7 @@ export function SessionActionsMenu({ ctrl, onActivate, extraItems }: {
         aria-expanded={open}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 40 : 30, height: isMobile ? 40 : 30, borderRadius: 8,
+          width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
           border: open ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
           background: open ? 'rgba(232,105,11,0.1)' : 'var(--bg-surface)',
           color: open ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
@@ -519,52 +517,55 @@ export function SessionActionsPanel({ ctrl }: { ctrl: SessionActionsController }
 
       {/* The write-channel AUDIT for this session: every prompt this browser sent here, with the
           author, the exact text, the time, and whether it landed. A send can never disappear in
-          silence — the record outlives the transient result line above. */}
+          silence — the record outlives the transient result line above.
+
+          It draws only once there IS one. A heading over "nothing has been sent to this session
+          from this browser yet" is two rows spent saying nothing, on every card, forever — and
+          those rows are exactly what made the expanded card unreadable. Nothing is lost: the
+          record appears the moment the first send is recorded. */}
+      {audit.length > 0 && (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 0.2 }}>
-          <History size={12} /> {t.auditTitle}{audit.length > 0 ? ` · ${audit.length}` : ''}
+          <History size={12} /> {t.auditTitle} · {audit.length}
         </div>
-        {audit.length === 0 ? (
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', fontStyle: 'italic' }}>{t.auditEmpty}</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
-            {audit.map(e => (
-              <div
-                key={e.id}
-                style={{
-                  fontSize: 11, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-card)',
-                  border: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <span
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700, fontSize: 10,
-                      padding: '1px 6px', borderRadius: 999,
-                      color: e.ok ? '#22c55e' : '#ef4444',
-                      background: e.ok ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
-                      border: `1px solid ${e.ok ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                    }}
-                  >
-                    {e.ok ? <Check size={10} /> : <X size={10} />} {e.ok ? t.auditOk : t.auditFail}
-                  </span>
-                  <span style={{ color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }} title={e.at}>
-                    {auditTime(e.at)}
-                  </span>
-                  <span style={{ color: 'var(--text-tertiary)' }}>{t.by}</span>
-                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }} title={e.author}>
-                    {e.author}
-                  </span>
-                </div>
-                <span style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{e.text}</span>
-                {!e.ok && e.message && (
-                  <span style={{ color: '#ef4444', fontSize: 10 }}>{e.message}</span>
-                )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
+          {audit.map(e => (
+            <div
+              key={e.id}
+              style={{
+                fontSize: 11, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-card)',
+                border: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700, fontSize: 10,
+                    padding: '1px 6px', borderRadius: 999,
+                    color: e.ok ? '#22c55e' : '#ef4444',
+                    background: e.ok ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)',
+                    border: `1px solid ${e.ok ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                  }}
+                >
+                  {e.ok ? <Check size={10} /> : <X size={10} />} {e.ok ? t.auditOk : t.auditFail}
+                </span>
+                <span style={{ color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }} title={e.at}>
+                  {auditTime(e.at)}
+                </span>
+                <span style={{ color: 'var(--text-tertiary)' }}>{t.by}</span>
+                <span style={{ color: 'var(--text-secondary)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }} title={e.author}>
+                  {e.author}
+                </span>
               </div>
-            ))}
-          </div>
-        )}
+              <span style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{e.text}</span>
+              {!e.ok && e.message && (
+                <span style={{ color: '#ef4444', fontSize: 10 }}>{e.message}</span>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
+      )}
     </div>
   )
 }

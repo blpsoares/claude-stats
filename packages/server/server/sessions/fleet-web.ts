@@ -30,7 +30,7 @@ import { arrangeFleet, type FleetArrangement, type FleetViewRequest } from './fl
 import { markFleetPhase, timeFleetPhase } from './fleet-profile'
 import { readHarnessSkills, skillsReason, type HarnessSkill } from './harness-skills'
 import { modelsFor, type ModelOption } from '@agentistics/core'
-import { artifactPathsFromTurns } from './artifact-file'
+import { artifactPathsFromTurns, type AllowedArtifact } from './artifact-file'
 import type { ArtifactResponse } from './artifact-web'
 
 // The REQUEST shape lives in the leaf `fleet-row.ts` so `index.ts` can name it without naming
@@ -849,16 +849,31 @@ export async function readFleetArtifactMedia(
   const { readSessionChat } = await import('./chat-web')
   const chat = await readSessionChat(host, lang, row.id)
   const { resolveArtifactPath } = await import('./artifact-list')
-  const raw = artifactPathsFromTurns(chat.turns)
-  const allowed = [...new Set(raw.flatMap(p => {
-    const r = resolveArtifactPath(p, row.cwd!)
-    return r ? [p, r] : [p]
-  }))]
-  const asked = resolveArtifactPath(path, row.cwd) ?? path
+  const { realpath } = await import('node:fs/promises')
+  const real = async (p: string): Promise<string | null> => {
+    try { return await realpath(p) } catch { return null }
+  }
+  /**
+   * RESOLVED, LIKE THE TEXT ROUTE. This used to hand `planArtifactRead` lexical paths — the same
+   * string as both `named` and `real` — which is exactly the shape that turns the escape gate off:
+   * a file inside the cwd that is a link to somewhere else was served without anything following
+   * the link. The pure module now takes both forms per entry so a caller cannot make that mistake
+   * silently; this is the caller that was making it.
+   */
+  const cwdReal = await real(row.cwd)
+  if (cwdReal === null) {
+    return { ok: false, status: 404, message: pt ? 'Não é um arquivo.' : 'Not a file.' }
+  }
   const { planArtifactRead } = await import('./artifact-file')
-  const plan = planArtifactRead({
-    path: allowed.includes(path) ? asked : path, cwd: row.cwd, allowed,
-  })
+  const allowed: AllowedArtifact[] = []
+  for (const raw of artifactPathsFromTurns(chat.turns)) {
+    const named = resolveArtifactPath(raw, cwdReal)
+    if (!named) continue
+    const r = await real(raw)
+    if (r !== null) allowed.push({ named, real: r })
+  }
+  const askedReal = await real(resolveArtifactPath(path, cwdReal) ?? path)
+  const plan = planArtifactRead({ path: askedReal ?? '', cwd: cwdReal, allowed })
   if (!plan.ok) {
     return {
       ok: false, status: 403,

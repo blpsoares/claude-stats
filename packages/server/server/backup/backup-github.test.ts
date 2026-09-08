@@ -1,8 +1,5 @@
 import { test, expect } from 'bun:test'
-import {
-  GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict,
-  isBackupTag, parseReleaseBody, releaseTag, tagLabel, tooLargeUploadMessage, uploadVerdict,
-} from './backup-github'
+import { GITHUB_NEAR_LIMIT_BYTES, GITHUB_RELEASE_LIMIT_BYTES, buildReleaseBody, githubFitVerdict, isBackupTag, parseReleaseBody, releaseTag, tagLabel, tooLargeUploadMessage, uploadVerdict } from './backup-github'
 import type { BackupLayer } from './backup-plan'
 
 const bytes = (over: Partial<Record<BackupLayer, number | null>> = {}): Record<BackupLayer, number | null> => ({

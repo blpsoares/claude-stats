@@ -14,9 +14,9 @@
  */
 
 import { realpath, readFile, stat } from 'node:fs/promises'
-import { relative } from 'node:path'
+import { isAbsolute, relative, resolve as resolvePath } from 'node:path'
 import type { CliLang } from '../cli-lang'
-import { planArtifactRead, type ArtifactRefusal } from './artifact-file'
+import { planArtifactRead, type AllowedArtifact, type ArtifactRefusal } from './artifact-file'
 
 /**
  * The most a file may carry into the page. Far above any spec and far below anything that would
@@ -36,10 +36,10 @@ export function artifactRefusalText(reason: ArtifactRefusal, lang: CliLang): str
       return pt
         ? 'Esta sessão não escreveu esse arquivo, então ele não pode ser aberto por aqui.'
         : 'This session did not write that file, so it cannot be opened from here.'
-    case 'outside-cwd':
+    case 'escaped':
       return pt
-        ? 'Esse caminho fica fora da pasta da sessão.'
-        : 'That path resolves outside the session’s folder.'
+        ? 'Esse caminho resolve para outro lugar — não é onde a sessão o escreveu, nem está dentro da pasta dela. Um link no meio do caminho aponta para fora, então ele não é aberto por aqui.'
+        : 'That path resolves somewhere else — it is neither where the session wrote it nor inside the session’s folder. A link along the way points outside, so it is not opened from here.'
     case 'not-a-file':
       return pt ? 'Isso é uma pasta, não um arquivo.' : 'That is a folder, not a file.'
     case 'binary':
@@ -51,6 +51,17 @@ export function artifactRefusalText(reason: ArtifactRefusal, lang: CliLang): str
         ? 'Não consegui ler esse arquivo agora — ele pode ter sido movido ou apagado.'
         : 'That file could not be read just now — it may have been moved or deleted.'
   }
+}
+
+/**
+ * Where the transcript NAMED a path, with no link followed — `path.resolve`, not `realpath`.
+ *
+ * `..` is collapsed lexically, which is correct here: the question this answers is "where did the
+ * session say the file is", and the escape is caught by comparing this with the real answer.
+ */
+function lexical(raw: string, cwd: string): string {
+  const p = raw.trim()
+  return isAbsolute(p) ? resolvePath(p) : resolvePath(cwd, p)
 }
 
 /** A NUL byte in the first chunk. The same test `file(1)` starts from, and enough for this. */
@@ -75,10 +86,16 @@ export async function readArtifact(
   const pathReal = await resolve(requested)
   if (pathReal === null) return refuse('unreadable')
 
-  const allowed: string[] = []
+  /**
+   * BOTH FORMS PER PATH — see `planArtifactRead`. `named` is the transcript's own path resolved
+   * against the cwd LEXICALLY (no links followed); `real` is where it actually is. The gate is the
+   * comparison, so handing in one path twice would silently turn it off.
+   */
+  const allowed: AllowedArtifact[] = []
   for (const a of allowedRaw) {
-    const r = await resolve(a)
-    if (r !== null) allowed.push(r)
+    const real = await resolve(a)
+    if (real === null) continue
+    allowed.push({ named: lexical(a, cwdReal), real })
   }
 
   const plan = planArtifactRead({ path: pathReal, cwd: cwdReal, allowed })

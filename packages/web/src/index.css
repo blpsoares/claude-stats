@@ -303,6 +303,39 @@ html.ag-viewport-locked > body {
   }
 }
 
+/* ── The focus ring ──────────────────────────────────────────────────────────
+   NOTHING IN THIS APP FOCUSES WHITE. Asked for directly, and the browser is what does it: with no
+   `outline` of our own the UA default applies, and Chrome's `outline: auto` on a dark surface draws
+   a WHITE ring — the one colour this product uses nowhere else, on every button, input, link and
+   tab stop in the application.
+
+   `:focus-visible` and not `:focus`, so a MOUSE click never draws a ring while a keyboard tab
+   always does — which is the whole reason the pseudo-class exists, and why replacing the outline
+   outright (`outline: none`) is not an option: it would leave a keyboard user with no idea where
+   they are, which is worse than the wrong colour.
+
+   The ring is drawn with `outline` rather than `box-shadow` on purpose: an outline follows
+   `border-radius`, costs no layout, and cannot be clipped by an ancestor's `overflow` the way a
+   shadow is — and several of these controls live inside scrolling boxes.
+
+   `outline-offset` keeps it off the control's own border so a bordered input does not read as
+   having two borders. Anything wanting a different ring overrides it AFTER this rule; nothing here
+   sets a colour on `:focus` alone, so nothing is competing with it. */
+:focus-visible {
+  outline: 2px solid var(--anthropic-orange);
+  outline-offset: 2px;
+  /* Removes the UA's own ring where a browser draws BOTH (Safari keeps its default alongside a
+     custom outline on some form controls). */
+  -webkit-focus-ring-color: var(--anthropic-orange);
+}
+
+/* An element that is already ORANGE gets the ring in the text colour instead: an orange ring two
+   pixels off an orange button is invisible, which is the same failure as the white one seen from
+   the other side. */
+.ag-focus-invert:focus-visible {
+  outline-color: var(--text-primary);
+}
+
 /* iOS zoom guard.
    Safari auto-zooms the viewport whenever a focused field's font-size is under 16px, which
    leaves the page scrolled sideways and breaks the sticky header. The app styles its fields
@@ -483,6 +516,25 @@ html.ag-viewport-locked > body {
 /* A task list is a list of states, not of bullets. */
 .ag-chat-md li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; }
 .ag-chat-md input[type="checkbox"] { margin-right: 7px; accent-color: var(--anthropic-orange); }
+
+/*
+ * THE APP'S ACCENT, ON EVERY NATIVE CONTROL THAT HAS ONE.
+ *
+ * A range, a checkbox and a radio each paint themselves with the user agent's own accent unless
+ * told otherwise, and on a dark theme that is a violet which belongs to no part of this product.
+ * Reported on the accessibility lens, whose five sliders sat purple beside its own orange buttons.
+ *
+ * Measured before writing this: 10 range inputs in the app and ONE of them set the colour, inline.
+ * Nine were the browser's. A rule per control is a rule nine people have to remember, which is why
+ * this is one selector instead — a new slider is correct by existing.
+ *
+ * `accent-color` and nothing else: it is the one property that recolours a native control without
+ * replacing it, so the thumb, the track and the focus ring stay the platform's — which is what an
+ * ACCESSIBILITY surface most needs to keep.
+ */
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] { accent-color: var(--anthropic-orange); }
 
 .ag-chat-md a { color: var(--anthropic-orange); text-decoration: none; }
 .ag-chat-md a:hover { text-decoration: underline; }

@@ -46,7 +46,7 @@ export interface ArtifactsState {
    * next render puts them back. Asking twice for the same tab is two requests, so the stamp changes
    * even when the tab does not.
    */
-  tabRequest: { tab: string; at: number } | null
+  tabRequest: { tab: string; at: number; ref?: string } | null
 }
 
 const EMPTY: ArtifactsState = {
@@ -89,10 +89,12 @@ export function setArtifactCount(sessionId: string, count: number): void {
     : { sessionId, count, open: false, dismissed: false, tabRequest: null })
 }
 
-export function openArtifacts(tab?: string): void {
+export function openArtifacts(tab?: string, ref?: string): void {
   emit({
     ...state, open: true,
-    ...(tab === undefined ? {} : { tabRequest: { tab, at: Date.now() } }),
+    // `ref` names a STEP to open once the tab is there — the edge strip names an action, and
+    // pressing it should land on that row rather than on the top of a feed to be searched.
+    ...(tab === undefined ? {} : { tabRequest: { tab, at: Date.now(), ...(ref ? { ref } : {}) } }),
   })
 }
 

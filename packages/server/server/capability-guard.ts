@@ -16,6 +16,12 @@ import { CAPS, type Capabilities } from './exposure'
 /** Exact path → capability. Detail sub-paths are handled by the prefix table below. */
 const EXACT: ReadonlyMap<string, keyof Capabilities> = new Map<string, keyof Capabilities>([
   ['/api/exec', 'localShell'],
+  // It SPAWNS `tailscale` to read what this machine is already serving — a process, so it is host
+  // power and belongs here. It configures nothing; see `secure-origin.ts`.
+  ['/api/secure-origin', 'localShell'],
+  // It STARTS the configured MCP command to see whether it answers. Host power, and the reason the
+  // route looks the server up in the CONFIG rather than taking a command from the body.
+  ['/api/mcp/check', 'localShell'],
   ['/api/chat-tty', 'localChat'],
   ['/api/chat-harnesses', 'localChat'],
   ['/api/projects-list', 'localTranscripts'],

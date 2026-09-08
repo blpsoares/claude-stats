@@ -396,6 +396,21 @@ export interface WorkflowRun {
   }
 }
 
+/**
+ * One attachment agentop typed into a session's pane, and when.
+ *
+ * The record exists so a `[Image #4]` marker can find its file again: a harness that is mid-turn
+ * queues an arriving message and substitutes markers for its images, so the PATH that normally
+ * survives into the transcript is gone. The file is still on disk — this says which session it went
+ * to. See `sessions/attachment-log.ts` (the record) and `lib/attachmentPreview.ts` (the rule).
+ */
+export interface AttachmentSend {
+  sessionId: string
+  /** When agentop wrote the file, which is within a second of typing its path. */
+  atMs: number
+  path: string
+}
+
 export interface PriceEntry {
   input: number
   output: number

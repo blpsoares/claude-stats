@@ -379,6 +379,12 @@ const ALWAYS: string[] = [
   // for good if the machine is. It grows, which is an argument for watching it in the size
   // accounting rather than for leaving it behind.
   '.agentistics/task-files',
+  // The index that makes those attachments findable again: which session each was typed
+  // into, and when (`attachment-web.ts`'s ATTACHMENT_LOG). It travels WITH them for the
+  // obvious reason — restoring the images and losing the record would put every
+  // `[Image #N]` back to a chip on the restored machine, which is the defect the record
+  // exists to fix. Kilobytes: one line per file.
+  '.agentistics/attachment-sends.jsonl',
   // Claude's deep aggregate. It is the only surviving source of pre-30-day totals once Claude
   // Code's own cleanup has run, and it is 24 KB.
   '.claude/stats-cache.json',

@@ -153,3 +153,33 @@ export function parseReply(raw: string | null): ReplyTarget | null {
     return excerpt ? { role, text, excerpt: true } : { role, text }
   } catch { return null }
 }
+
+
+/**
+ * The message a reply actually sends: the quote, then the attachment paths, then what was typed.
+ *
+ * THE BLANK LINE AFTER THE QUOTE IS THE POINT. These were joined with a single `\n`, which is
+ * valid Markdown for something else entirely: CommonMark's LAZY CONTINUATION pulls a plain line
+ * that follows a `>` line straight into the blockquote. So
+ *
+ *     > what the session said
+ *     reabre essa sessao e manda meu prompt
+ *
+ * renders as ONE quote containing both — the person's own words sat inside the grey bar, credited
+ * to the turn they were answering. Reported exactly that way: "apenas a parte mencionada deve ficar
+ * nessa linha vertical cinza, a minha parte do texto deve ficar como texto branco e fora dessa
+ * barra".
+ *
+ * A blank line ends the block, and everything after it is the writer's own paragraph. The paths get
+ * the same treatment for the same reason — a bare path swallowed by the quote reads as something
+ * the session said rather than a file being handed to it.
+ *
+ * Empty parts are dropped, so a message with no quote is exactly what was typed and gains no
+ * leading blank line.
+ */
+export function composeReply(
+  { quote, paths, text }: { quote: string; paths: readonly string[]; text: string },
+): string {
+  const blocks = [quote, paths.join('\n'), text].map(b => b.trim()).filter(b => b !== '')
+  return blocks.join('\n\n')
+}

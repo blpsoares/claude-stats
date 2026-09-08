@@ -20,7 +20,7 @@
  */
 
 import { resolve, isAbsolute } from 'node:path'
-import { stat } from 'node:fs/promises'
+import { realpath, stat } from 'node:fs/promises'
 import { withinDirectory } from './artifact-file'
 
 export interface ListedArtifact {
@@ -90,7 +90,23 @@ export async function listArtifactsWithOutside(
     // and reverted — it is shared, and widening the guard to all of it defeats the symlink-escape
     // check for any session whose folder is itself under it. The list must not offer what the read
     // route will refuse, so it applies the identical rule.
-    if (!withinDirectory(path, cwd)) { outsideSeen.add(path); continue }
+    /**
+     * THE SAME RULE THE READ ROUTE APPLIES, and it has to stay identical: a list that offers what
+     * the reader refuses is the control-that-reads-as-broken.
+     *
+     * It is no longer "inside the cwd". A session writes `~/.claude/projects/<project>/memory/
+     * MEMORY.md` — which is what writing a memory IS in this product — and that was listed and then
+     * refused, with the two halves of one screen disagreeing about the same file. What the gate is
+     * FOR is the symlink escape, and the sharper test is whether resolution MOVED the file: where
+     * the transcript NAMED it, or else inside the folder. See `planArtifactRead`.
+     *
+     * `realpath` is what makes the first half mean anything — without following the links there is
+     * nothing to compare against and every path trivially equals itself. One extra syscall on a
+     * list that already stats each file.
+     */
+    const real = await realpath(path).catch(() => null)
+    if (real === null) continue
+    if (real !== path && !withinDirectory(real, cwd)) { outsideSeen.add(path); continue }
     seen.add(path)
     try {
       const st = await stat(path)

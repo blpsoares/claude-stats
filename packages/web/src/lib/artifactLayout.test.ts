@@ -61,3 +61,36 @@ describe('edgeHint', () => {
     expect(edgeHint({ open: false, events: [], isMobile: false })).toBeNull()
   })
 })
+
+describe('the edge hint carries the step it names', () => {
+  // The strip NAMES what is happening; pressing it should land on that row, opened. So the step
+  // travels with it — see `EdgeHint.ref`.
+  it('carries the step of the action it names', () => {
+    expect(edgeHint({
+      open: false, isMobile: false,
+      events: [
+        { kind: 'read', text: 'a.ts', live: false, ref: 'old' },
+        { kind: 'ran', text: 'bun test', live: true, ref: 'toolu_9' },
+      ],
+    })).toEqual({ kind: 'ran', text: 'bun test', ref: 'toolu_9' })
+  })
+
+  // `undefined` means "open the feed"; `''` would name a step that is not there, and the two must
+  // not read the same downstream.
+  it('omits the ref entirely when the event has none', () => {
+    const h = edgeHint({
+      open: false, isMobile: false,
+      events: [{ kind: 'thought', text: 'weighing two options', live: true }],
+    })
+    expect(h).toEqual({ kind: 'thought', text: 'weighing two options' })
+    expect(h && 'ref' in h).toBe(false)
+  })
+
+  it('does not carry an empty ref either', () => {
+    const h = edgeHint({
+      open: false, isMobile: false,
+      events: [{ kind: 'ran', text: 'ls', live: true, ref: '' }],
+    })
+    expect(h && 'ref' in h).toBe(false)
+  })
+})

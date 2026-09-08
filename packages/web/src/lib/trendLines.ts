@@ -128,3 +128,55 @@ export function linePoints(
     return `${(i * step).toFixed(1)},${y.toFixed(1)}`
   }).join(' ')
 }
+
+/**
+ * ONE DAY, IN THE READER'S OWN NOTATION.
+ *
+ * The chart printed its span as `2026-09-05 to 2026-09-07` — the key `SessionMeta.daily` is written
+ * with, which is a storage format and not a date anybody reads. In Portuguese it is `05/09/2026`,
+ * and it was being shown to a Portuguese reader.
+ *
+ * Built from the PARTS rather than through `Date`, deliberately: `new Date('2026-09-05')` parses as
+ * UTC midnight and `toLocaleDateString` then renders it in the local zone, which west of Greenwich
+ * is the day BEFORE. The string already names the day; there is nothing to convert.
+ *
+ * `withYear` is false for an axis tick, where the year repeats on every label and the width is the
+ * scarce thing, and true where the span is stated once.
+ */
+export function formatDay(day: string, lang: 'pt' | 'en', withYear = true): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
+  // Not a day this can read: returned untouched rather than mangled into something that looks like
+  // a date and is not.
+  if (!m) return day
+  const [, y, mo, d] = m as unknown as [string, string, string, string]
+  if (lang === 'pt') return withYear ? `${d}/${mo}/${y}` : `${d}/${mo}`
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const name = MONTHS[Number(mo) - 1] ?? mo
+  return withYear ? `${name} ${Number(d)}, ${y}` : `${name} ${Number(d)}`
+}
+
+/**
+ * WHICH DAYS GET A TICK under the line, and where each one sits (0..1 across the width).
+ *
+ * The line had no axis at all — its own note called a line with no scale a decoration and answered
+ * that with a SENTENCE above it, which is a caption and still not a scale. Asked for: put the dates
+ * on an axis.
+ *
+ * At most three: the first, the last, and the middle when there is room for it. More than that on a
+ * strip a few hundred pixels wide overlaps, and an overlapping label is worse than an absent one —
+ * the first and the last are what a span is read from anyway.
+ *
+ * A single day yields ONE tick rather than the same date twice at both ends.
+ */
+export function trendTicks(days: readonly string[]): { day: string; at: number }[] {
+  if (days.length === 0) return []
+  if (days.length === 1) return [{ day: days[0]!, at: 0.5 }]
+  const last = days.length - 1
+  const out = [{ day: days[0]!, at: 0 }, { day: days[last]!, at: 1 }]
+  // Three days is the smallest span where a middle tick names a day the ends do not.
+  if (days.length >= 5) {
+    const mid = Math.floor(last / 2)
+    out.splice(1, 0, { day: days[mid]!, at: mid / last })
+  }
+  return out
+}

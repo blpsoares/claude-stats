@@ -1,4 +1,5 @@
 import { test, expect } from 'bun:test'
+import { execFileSync } from 'child_process'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -225,4 +226,76 @@ test('the last run is order-independent — it does not depend on the caller hav
 
 test('with no records at all there is no last run', () => {
   expect(lastBackupRun([])).toBeNull()
+})
+
+// ---------------------------------------------------------------------------------
+// The same question, reached from the other side: `lastBackupRun` was arrived at twice,
+// independently, from the same measured failure. These cases are kept beside the ones
+// above because they pin things those do not — a PRUNED record specifically, ordering
+// independence, and the grep guard that fails the build if a schedule is ever fed the
+// restorable-from timestamp again. That guard is what stops the four call sites drifting
+// back apart.
+/**
+ * `lastBackupRun` — WHEN ONE LAST RAN, which is not the question `lastBackup` answers.
+ *
+ * Measured on a real machine: with `deleteLocalAfterUpload` the archive goes to GitHub and the
+ * local copy is deleted seconds later (17:20:13 written, 17:20:20 pruned), so every record reads
+ * absent, `lastBackup` answers null on every check, and a schedule set to DAILY fired on every one
+ * — nine runs in an afternoon, spaced at the daemon's fifteen-minute polling interval.
+ */
+test('lastBackupRun counts a PRUNED run: retention deleting the file does not un-run the backup', () => {
+  const entries = markPresence(
+    [rec({ at: '2026-09-07T17:20:13.507Z', path: '/b/new.tar.zst' })],
+    new Set(['/b/new.tar.zst']),
+    () => false,
+  )
+  expect(entries[0]!.presence).toBe('pruned')
+  expect(lastBackup(entries)).toBe(null)
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-07T17:20:13.507Z')
+})
+
+test('lastBackupRun counts a MISSING run too — it happened, whatever became of the file', () => {
+  const entries = markPresence(
+    [rec({ at: '2026-09-07T10:00:00.000Z', path: '/gone.tar.zst' })], new Set(), () => false,
+  )
+  expect(entries[0]!.presence).toBe('missing')
+  expect(lastBackupRun(entries)?.at).toBe('2026-09-07T10:00:00.000Z')
+})
+
+test('lastBackupRun takes the NEWEST regardless of presence, and of the order it is handed', () => {
+  // The newest is the pruned one; an older record must not win just by still being restorable.
+  const entries = markPresence(
+    [
+      rec({ at: '2026-09-05T00:00:00.000Z', path: '/old.tar.zst' }),
+      rec({ at: '2026-09-07T00:00:00.000Z', path: '/new.tar.zst' }),
+    ],
+    new Set(['/new.tar.zst']),
+    p => p === '/old.tar.zst',
+  )
+  expect(lastBackup(entries)?.path).toBe('/old.tar.zst')
+  expect(lastBackupRun(entries)?.path).toBe('/new.tar.zst')
+  // Order-independent, for the reason `lastPerHarness` gives.
+  expect(lastBackupRun([...entries].reverse())?.path).toBe('/new.tar.zst')
+})
+
+test('lastBackupRun is null only when nothing was ever recorded', () => {
+  expect(lastBackupRun([])).toBe(null)
+})
+
+/**
+ * THE GUARD. Feeding a schedule the restorable-backup timestamp is the bug above, and it was in
+ * four places at once — the daemon plus the three surfaces that print "next run". Greps the
+ * server's own source, the same shape `backup-coverage.lint.test.ts` and `tokens.lint.test.ts` use.
+ */
+test('no schedule is fed the restorable-backup timestamp', () => {
+  const src = join(import.meta.dir, '..')
+  let out = ''
+  try {
+    out = execFileSync('grep', ['-rn', '-B3', 'lastAt:', src, '--include=*.ts'], { encoding: 'utf-8' })
+  } catch {
+    // grep exits non-zero when nothing matched; an empty result is a legitimate answer here.
+    out = ''
+  }
+  const offenders = out.split('\n').filter(l => l.includes('lastBackup(') && !l.includes('.test.ts'))
+  expect(offenders).toEqual([])
 })

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Users, Plus, Trash2, Copy, CheckCheck, RefreshCw, AlertCircle, Pencil, Check, X, RotateCw } from 'lucide-react'
 import type { MemberPresence } from '@agentistics/core'
 import { copyText } from '../lib/clipboard'
+import { subscribeEvent } from '../lib/eventStream'
 import { useIsMobile } from '../hooks/useIsMobile'
 
 /** Shared 5-column grid for the desktop members table (status · user · label · last-seen · actions).
@@ -172,12 +173,11 @@ export function TeamMembers({ lang, presence }: Props) {
   // Instant refresh on server events (a member connecting/disconnecting fires an
   // immediate SSE 'change'), with a 10s poll as a fallback for latency drift.
   useEffect(() => {
-    const es = new EventSource('/api/events')
-    const onChange = () => { void loadMembers(true) }
-    es.addEventListener('change', onChange)
-    es.onerror = () => { /* browser auto-reconnects; ignore */ }
+    // Share the one `/api/events` socket (see lib/eventStream.ts) instead of opening a second one;
+    // the shared source keeps EventSource's own auto-reconnect, so no onerror handling is needed here.
+    const off = subscribeEvent('change', () => { void loadMembers(true) })
     const id = setInterval(() => { void loadMembers(true) }, 10_000)
-    return () => { es.removeEventListener('change', onChange); es.close(); clearInterval(id) }
+    return () => { off(); clearInterval(id) }
   }, [loadMembers])
 
   // Load the central's include-offline-data policy.
