@@ -37,6 +37,12 @@ export interface TaskSessionRow {
   harness: string
   cwd: string
   attemptId: string | null
+  /**
+   * The SUBTASK this session is filed under, when it is filed under one rather than under the
+   * delivery itself. Null is the delivery — the two are one attachment, never two; see
+   * `task-attach.ts`.
+   */
+  subtaskId: string | null
   createdAt: string
   endedAt?: string
   label?: string
@@ -242,6 +248,7 @@ export function buildTaskDetail(o: {
         harness: r.harness,
         cwd: r.cwd,
         attemptId: r.attemptId ?? null,
+        subtaskId: r.subtaskId ?? null,
         createdAt: r.createdAt,
         ...(r.endedAt ? { endedAt: r.endedAt } : {}),
         ...(r.label ? { label: r.label } : {}),

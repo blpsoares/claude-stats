@@ -247,6 +247,17 @@ export interface ManagedSession {
    * existed resolves through `legacyTaskId`.
    */
   taskId?: string
+  /**
+   * The SUBTASK this session is filed under, when it is filed under one.
+   *
+   * **A session is filed under a task OR under one of its subtasks, never both.** `task-attach.ts`
+   * is the only thing that decides the pair, and the invariant it keeps is that a set `subtaskId`
+   * means `taskId` is that subtask's OWN task. The parent is stored all the same, because the
+   * delivery's cost must keep including the work — direct sessions plus every subtask's IS the
+   * delivery — but the two are ONE attachment read through `filedUnder`, never two. Reading them
+   * as two is the double-count that rule exists to prevent.
+   */
+  subtaskId?: string
   attemptId?: string
   /**
    * The last time this session was OBSERVED ALIVE, epoch ms — stamped at creation, then refreshed by

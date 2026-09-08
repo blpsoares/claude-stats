@@ -20,7 +20,8 @@ import {
 import { TaskProgressBar } from './TaskProgressBar'
 import { boardCopy } from './copy'
 import { TaskComposer } from './TaskComposer'
-import { attachSession, detachSession, useTaskList } from '../../lib/tasks'
+import { attachSession, detachSession, useTaskDetail, useTaskList } from '../../lib/tasks'
+import { SessionPlacement } from './SessionPlacement'
 import { TaskPicker } from './TaskPicker'
 import { BetaTag } from '../BetaTag'
 
@@ -53,7 +54,14 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
     [rows, p.session.task],
   )
 
-  const refresh = async () => { await reload(); p.onChanged?.() }
+  /**
+   * The delivery's own detail, which is where its SUBTASKS and this session's placement live. Only
+   * fetched once the session is filed under something — `useTaskDetail` is given no ref otherwise
+   * and asks nothing.
+   */
+  const { detail, reload: reloadDetail } = useTaskDetail(current?.task.id)
+
+  const refresh = async () => { await reload(); await reloadDetail(); p.onChanged?.() }
 
   const link = async (taskId: string) => {
     setBusy(true)
@@ -156,6 +164,22 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
             </div>
           </div>
         )}
+
+      {/* WHERE inside the delivery. Only once it is filed at all: a placement control on a session
+          that belongs to nothing would be asking which room of a house nobody has bought. */}
+      {current && detail && (
+        <SessionPlacement
+          taskId={current.task.id}
+          taskTitle={current.task.title}
+          sessionId={p.session.id}
+          subtasks={detail.subtasks}
+          {...(detail.sessions.find(r => r.id === p.session.id)
+            ? { row: detail.sessions.find(r => r.id === p.session.id)! }
+            : {})}
+          lang={p.lang}
+          onChanged={refresh}
+        />
+      )}
 
       {/* The composer, INLINE — the same form the board opens in a dialog, with this session
           pre-linked. Creating a task from the session you are sitting in should not mean leaving
