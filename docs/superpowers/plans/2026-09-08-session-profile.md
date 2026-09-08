@@ -632,8 +632,7 @@ them over sessions that could never have carried one."
 **Files:**
 - Create: `packages/server/server/sessions/fleet-profile.ts`
 - Create: `packages/server/server/sessions/fleet-profile.test.ts`
-- Modify: `packages/server/server/index.ts` (the `GET /api/fleet` handler)
-- Modify: `packages/server/server/sessions/fleet-row.ts` (the response type)
+- Modify: `packages/server/server/sessions/fleet-web.ts` (the `FleetPayload` interface at line 44, and `readFleet`'s success return at line 186)
 
 **Interfaces:**
 - Consumes: `profileOf`, `Baseline`, `PROFILE_WINDOW_DAYS` from `@agentistics/core`.
@@ -755,7 +754,7 @@ Expected: PASS — 3 tests.
 
 - [ ] **Step 5: Add `baseline` to the fleet response**
 
-In `packages/server/server/sessions/fleet-row.ts`, on the interface describing the `/api/fleet` response body (the one holding `sessions`), add:
+In `packages/server/server/sessions/fleet-web.ts`, add to `interface FleetPayload` (line 44):
 
 ```ts
   /** This machine's 30-day behaviour baseline. Absent when the store could not be read at all. */
@@ -766,13 +765,30 @@ and import the type: `import type { Baseline } from '@agentistics/core'`.
 
 - [ ] **Step 6: Fill it in the handler**
 
-In `packages/server/server/index.ts`, in the `GET /api/fleet` handler, wrap the baseline read so a failure never costs the fleet:
+The `GET /api/fleet` handler in `index.ts` delegates the whole payload to `readFleet`, so the field
+is filled THERE and `index.ts` is not touched at all.
+
+In `packages/server/server/sessions/fleet-web.ts`, inside `readFleet`, before the success `return`
+(line 186):
 
 ```ts
-      const baseline = await cachedBaseline(loadConsolidated, Date.now()).catch(() => undefined)
+    // A failed store read costs freshness, never the fleet: the fleet is what this route is for.
+    const baseline = await cachedBaseline(
+      async () => [...(await loadConsolidated()).values()],
+      Date.now(),
+    ).catch(() => undefined)
 ```
 
-and include `...(baseline ? { baseline } : {})` in the JSON body beside `sessions`. Import `cachedBaseline` from `./sessions/fleet-profile` and `loadConsolidated` from `./consolidate` — if `loadConsolidated`'s signature does not match `() => Promise<SessionMeta[]>`, wrap it in an arrow that adapts it rather than changing its signature.
+and add `...(baseline ? { baseline } : {})` to that returned object.
+
+**`loadConsolidated` returns a `Map<string, SessionMeta>`, not an array** — the arrow above adapts
+it. Do not change `loadConsolidated`'s signature; it has other callers.
+
+Add the imports: `cachedBaseline` from `./fleet-profile`, `loadConsolidated` from `../consolidate`.
+
+**Leave the two failure returns alone.** `readFleet` has an early return for a host that cannot read
+sessions (line 182) and a catch-all return (line 202). Those are the "this install has no fleet"
+answers, and they stay exactly as they are — this task adds a field to the success path only.
 
 - [ ] **Step 7: Verify the route answers**
 
@@ -794,7 +810,7 @@ Expected: PASS.
 ```bash
 git add packages/server/server/sessions/fleet-profile.ts \
         packages/server/server/sessions/fleet-profile.test.ts \
-        packages/server/server/sessions/fleet-row.ts packages/server/server/index.ts
+        packages/server/server/sessions/fleet-web.ts
 git commit -m "feat(server): ship the behaviour baseline on /api/fleet
 
 Computed once behind a 5-minute TTL. It rides the fleet payload rather than
