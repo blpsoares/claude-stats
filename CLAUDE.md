@@ -2264,6 +2264,24 @@ harness must not break.
   21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
   local day would make it disagree with the cost and the messages beside it, and no day-granular
   split can express a local day for a non-UTC zone.
+- **A SYSTEM NOTE SAYS WHAT IT MEANS, AND GOES WHERE ITS ACTION IS — OR SAYS SO.** A note is the
+  harness acting under the user's role: `chat-envelope.ts` names the KIND in one phrase and drops
+  the BODY, which is right (a `system-reminder` is a page of text nobody wants in a chat) and
+  leaves a chip whose whole content is a label about something the reader can neither see nor
+  reach — reported as "nunca sei o que eles significam". `web/src/lib/chatNote.ts` (pure) is ONE
+  ROW PER NOTE carrying all three answers together — the Portuguese, the one-sentence explanation,
+  and the aside `tab` where its action is. One table and not three, because a note that gained a
+  translation without anyone deciding whether it leads anywhere is the silent half-answer this
+  replaces; `chatNote.test.ts` greps the server's own sources and fails the build when a note can
+  be emitted that this table does not carry — the gap the old `SYSTEM_NOTE_PT` fell into when five
+  readers arrived with notes of their own. **TWO SHAPES, deliberately different**: a note with a
+  destination is a button wearing an arrow that calls `openArtifacts(tab)` — the same call the edge
+  strip makes, so it opens the ASIDE and never a full screen — and a note with nowhere to go tells
+  you instead, on tap as well as hover, because a phone has no hover. One appearance for both would
+  make half the chips silently inert. **`tab` is NOT filled in wherever it would fit**: `command
+  output` would point at the `live` feed, hundreds of rows deep, and with no step id on a chat turn
+  the click lands at the top of a list to be searched — which the edge strip's own comment already
+  calls a navigation control rather than an answer. Those explain and do not navigate.
 - **A TRANSCRIPT THAT IS NOT THERE YET IS NOT A TRANSCRIPT THAT IS NOWHERE.** Three resolvers
   memoized their answer by conversation id — the found path AND the `null` — so an unresolvable id
   cost one scan instead of one per poll. The intent is right; caching the `null` was not. **A
