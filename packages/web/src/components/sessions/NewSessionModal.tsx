@@ -75,7 +75,12 @@ export interface NewSessionModalProps {
   lang: 'pt' | 'en'
   onClose: () => void
   /** Called with the new session's id when one starts, so the page can select it immediately. */
-  onStarted: (id?: string) => void
+  /**
+   * The session was started. `started` describes it well enough for the caller to say so while the
+   * row is still on its way — see `SessionCreating`; the fleet does not hold it yet, so nothing
+   * downstream can look these up.
+   */
+  onStarted: (id?: string, started?: { harness?: string; label?: string }) => void
   /**
    * Pre-fill the task field.
    *
@@ -437,7 +442,10 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
         // Still `busy` — the button keeps saying it is working, because it is.
         if (json.id) await waitForRow(json.id)
         setBusy(false)
-        onStarted(json.id)
+        onStarted(json.id, {
+          ...(harness ? { harness: harness.id } : {}),
+          ...(label ? { label } : {}),
+        })
         return
       }
       setBusy(false)
