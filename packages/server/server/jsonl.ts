@@ -120,6 +120,74 @@ export function contextTokensFromClaudeJsonl(lines: string[]): number | undefine
   return last > 0 ? last : undefined
 }
 
+/** What a session's compactions cost it. `droppedTokens` is absent when no record reported one. */
+export interface CompactStats {
+  count: number
+  ms: number
+  droppedTokens?: number
+}
+
+/**
+ * COMPACTIONS, off the raw transcript — PURE.
+ *
+ * `cumulativeDroppedTokens` is CUMULATIVE and monotonic, so it is a MAX and never a sum: measured
+ * on a real five-compact session it runs 954.238 → 4.785.215, and adding those reports 14,4M for a
+ * session that dropped 4,8M. The field is also frequently absent (27 of 46 real records), and an
+ * absent measurement stays `undefined` — a `0` there would claim a session that compacted five
+ * times dropped nothing.
+ *
+ * Takes an `Iterable<string>` rather than an array so the caller can pass `iterLines(content)`
+ * directly. `parseSessionJsonl` deliberately never materialises its lines — the header on
+ * `iterLines` records why, with the measurement — and an array parameter here would have forced it
+ * to.
+ */
+export function compactsFromClaudeJsonl(lines: Iterable<string>): CompactStats {
+  let count = 0
+  let ms = 0
+  let dropped: number | undefined
+  for (const line of lines) {
+    // Cheap reject before the parse: most lines are not this.
+    if (!line.includes('compact_boundary')) continue
+    let e: Record<string, unknown>
+    try { e = JSON.parse(line) as Record<string, unknown> } catch { continue }
+    if (e.type !== 'system' || e.subtype !== 'compact_boundary') continue
+    const meta = e.compactMetadata as Record<string, unknown> | undefined
+    if (!meta) continue
+    count++
+    if (typeof meta.durationMs === 'number') ms += meta.durationMs
+    const c = meta.cumulativeDroppedTokens
+    if (typeof c === 'number') dropped = Math.max(dropped ?? 0, c)
+  }
+  return dropped === undefined ? { count, ms } : { count, ms, droppedTokens: dropped }
+}
+
+/**
+ * SKILL INVOCATIONS, by the skill's own name — PURE.
+ *
+ * A skill is a `Skill` tool_use whose `input.skill` names it. A call with no readable name is
+ * skipped rather than filed under a placeholder: an invented bucket would show up in the profile as
+ * a skill somebody uses.
+ */
+export function skillUsesFromClaudeJsonl(lines: Iterable<string>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const line of lines) {
+    if (!line.includes('"Skill"')) continue
+    let e: Record<string, unknown>
+    try { e = JSON.parse(line) as Record<string, unknown> } catch { continue }
+    const msg = e.message as Record<string, unknown> | undefined
+    const content = msg?.content
+    if (!Array.isArray(content)) continue
+    for (const p of content as Record<string, unknown>[]) {
+      if (p.type !== 'tool_use' || p.name !== 'Skill') continue
+      const input = p.input as Record<string, unknown> | undefined
+      const name = input?.skill
+      if (typeof name !== 'string' || name === '') continue
+      out[name] = (out[name] ?? 0) + 1
+    }
+  }
+  return out
+}
+
 export function activeMinutesFromClaudeJsonl(lines: string[]): number | undefined {
   const events: TurnEvent[] = []
   for (const raw of lines) {
@@ -552,6 +620,9 @@ export async function parseSessionJsonl(
     ? await enrichFromSubagentTranscripts(extractAgentMetrics(iterLines(content), modelId), filePath, sessionId)
     : undefined
 
+  const compaction = compactsFromClaudeJsonl(iterLines(content))
+  const skillUses = skillUsesFromClaudeJsonl(iterLines(content))
+
   return {
     session_id: sessionId,
     project_path: projectPath,
@@ -567,6 +638,30 @@ export async function parseSessionJsonl(
     assistant_chars: assistantChars,
     assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
+    // `0` and `{}` ARE REAL ANSWERS HERE, and are written as such. This parser has just walked the
+    // whole transcript, so "it compacted zero times" / "it invoked no skill" is a measurement, and
+    // an ABSENT field means only that no transcript was read for this session. Writing them only
+    // above zero made `session-profile.ts`'s `n` identical to its `nonZero` for both metrics: the
+    // panel printed `compacts: 2 (n=23)` beside `messages: 2 (n=479)`, reading as "your typical
+    // session compacts twice" when 23 of 479 sessions ever compacted at all and the typical one
+    // compacts none. `compact_dropped_tokens` stays conditional — no record carrying one is a
+    // different fact from a record carrying zero.
+    //
+    // `source === 'subdir'` is the exception, and it is the one `backfill-compaction.ts` records:
+    // there the file just read is a SUBAGENT's stand-in for a session whose own transcript is gone,
+    // and a subagent runs its own context and compacts on its own (5 of this machine's 255 subagent
+    // transcripts carry a `compact_boundary`). Stamping its count on the session would be a
+    // confident wrong number where the honest answer is that the evidence is gone.
+    ...(source === 'jsonl'
+      ? {
+          compact_count: compaction.count,
+          compact_ms: compaction.ms,
+          ...(compaction.droppedTokens !== undefined
+            ? { compact_dropped_tokens: compaction.droppedTokens }
+            : {}),
+          skill_uses: skillUses,
+        }
+      : {}),
     tool_output_tokens: toolOutputTokens,
     agent_file_reads: agentFileReads,
     languages: Array.from(languageSet),

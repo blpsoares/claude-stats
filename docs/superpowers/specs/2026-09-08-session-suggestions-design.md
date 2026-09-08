@@ -14,7 +14,7 @@ Turn what agentistics already measures about a session into two things a person 
    messages"), which doubles as the sessions tab's empty state.
 
 They are one feature, not two, and the reason is the sentence each card has to produce. `2 compacts`
-is a threshold somebody invented. `2 compacts — 6 of your 700 sessions ever reached that` is a
+is a threshold somebody invented. `2 compacts — 8 of your 452 sessions ever reached that` is a
 measurement. The profile is what makes a suggestion earned rather than a nag, so it is built first.
 
 ## Scope
@@ -26,12 +26,16 @@ the profile, and the migrate orchestration.
 three weeks ago is the same class of bug as offering `start` on a running service). They may come
 later and would reuse `session-profile.ts` untouched.
 
-## Ground truth (measured on one machine, 2026-09-08, 700 Claude sessions)
+## Ground truth (measured on one machine, 2026-09-08, 452 Claude sessions)
 
-**Read the whole history, not the live directory.** The first pass of these figures scanned only
-`~/.claude/projects` and under-measured by 40%: Claude deletes transcripts after `cleanupPeriodDays`,
-so that directory holds 420 sessions reaching back to 2026-08-11, while `~/.agentistics/archive`
-holds 284 more. The corrected numbers below are over the union (700 unique transcripts). See
+**Count SESSIONS, and read the whole history.** These figures were wrong twice. The first pass
+scanned only `~/.claude/projects`, which Claude prunes after `cleanupPeriodDays` — it reaches back
+to 2026-08-11 and holds 423 sessions, while `~/.agentistics/archive` holds more. The second pass
+added the archive and counted 284 extra files, but 255 of those are SUBAGENT transcripts
+(`<session>/subagents/agent-*.jsonl`), not sessions: they are one session's agents, and counting
+them split that session's compactions across files while inflating every denominator. The numbers
+below are over the 452 real session transcripts — 423 live plus 29 archive-only, basenames matching
+a session UUID. See
 "The compacts baseline is bounded by surviving transcripts" for why this is a permanent property of
 these particular metrics rather than a one-off mistake.
 
@@ -42,29 +46,48 @@ Everything the profile can report today, and what it costs to add.
 | messages | `user_message_count` / `assistant_message_count` | ✅ |
 | active time, cost, tokens | `active_minutes`, `calcCost`, the four counters | ✅ |
 | tool errors by category | `tool_error_categories` | ✅ |
-| MCP servers used | `mcp__*` keys in `tool_counts` | ✅ (10 distinct, 88 sessions) |
-| subagents | `agentMetrics` / `Agent` tool_use | ✅ (585 calls, 50 sessions) |
-| **skills** | `Skill` tool_use, `input.skill` | ✅ (103 invocations, 26 distinct, 57 sessions) — **CLAUDE.md says otherwise and is stale** |
+| MCP servers used | `mcp__*` keys in `tool_counts` | ✅ (10 distinct, 90 sessions) |
+| subagents | `agentMetrics` / `Agent` tool_use | ✅ (586 calls, 43 sessions) |
+| **skills** | `Skill` tool_use, `input.skill` | ✅ (112 invocations, 26 distinct, 61 sessions) — **CLAUDE.md says otherwise and is stale** |
 | **compacts** | `compact_boundary` + `compactMetadata` | ❌ **new field** |
 | context level | `context_tokens` / `resolveContextWindow` | ✅ (gated by `contextWindow`) |
 
 `compactMetadata` carries `trigger` (`auto`/`manual`), `preTokens`, `postTokens`,
-`cumulativeDroppedTokens` and `durationMs`. Across those 700 sessions: **46 compacts in 23 sessions,
-83 minutes spent compacting, 30M tokens dropped.**
+`cumulativeDroppedTokens` and `durationMs`. Across those 452 sessions: **43 compacts in 18 sessions,
+88 minutes spent compacting, 21,3M tokens dropped.**
+
+`cumulativeDroppedTokens` is cumulative and monotonic — measured across one real five-compact
+session: `954.238 → 1.910.306 → 2.876.708 → 3.829.252 → 4.785.215`. So a session's figure is its
+LAST reading and the fleet total is the sum of those, never the sum of every record: that error
+reported 30M against a true 19,4M, and 14,4M against a true 4,8M on the session above. The field is
+also absent from 27 of the 46 records, so a session whose records all lack it reports nothing rather
+than zero. `compactsFromClaudeJsonl` encodes both rules and its tests pin the sequence.
 
 ### Two measured facts that decide the design
 
-**Messages are heavily skewed: median 30, mean 92, p90 185, max 3.911.** The mean is 3,1x the
-median and describes no session anybody has. So the profile reports the **median** by default. The
-mean is used only where the question is literally a rate.
+**Messages are heavily skewed: median 2, mean 10,4 — p75 6, p90 24, p99 179, max 422.** The mean is
+**5,2x** the median and describes no session anybody has. So the profile reports the **median** by
+default; the mean is used only where the question is literally a rate.
 
-**Compacts are RARE, with a long tail.** Median 0, mean 0,066: 23 of 700 sessions had one at all,
-and only 6 had two or more — but the tail runs 1 (x17), 2, 4 (x2), 5, 6, **8**. This kills the ratio
-framing for that metric: "5x your average" is not a sentence when the average is 0,066, and dividing
+**Read the product's own field, not the raw lines.** An earlier pass of this figure counted lines
+carrying `"type":"user"` and reported a median of 58. That is wrong by roughly 8x: a `tool_result`
+is a user-role message too, so the count was turns plus every tool answer. Measured on one session:
+310 `type:"user"` lines, 37 actual human turns. `SessionMeta.user_message_count` is the number the
+parser already computes correctly, and it is what `profileOf` reads.
+
+**Two populations, and the document keeps them apart.** Messages, tokens, active time and tool
+errors come from the CONSOLIDATE STORE — 479 sessions inside the 30-day window, including sessions
+whose transcript is long gone, which is exactly what the store is for. Compaction and skills come
+from SURVIVING TRANSCRIPTS (452), because nothing else can answer for them. That is why `n` is per
+metric rather than one sample size.
+
+**Compacts are RARE, with a long tail.** Median 0, mean 0,095: 18 of 452 sessions had one at all,
+and 8 had two or more — the tail runs 1 (x10), 2 (x3), 4 (x2), 5, 6, **8**. This kills the ratio
+framing for that metric: "5x your average" is not a sentence when the average is 0,095, and dividing
 by a zero median is not a sentence at all. See "Two ways to state a deviation" below.
 
 The tail is the reason the trigger is worth having at all. A session at 8 compacts has spent real
-time and dropped real context, and it is invisible in every average that includes the 677 sessions
+time and dropped real context, and it is invisible in every average that includes the 434 sessions
 that never compacted once.
 
 ## Architecture
@@ -109,7 +132,7 @@ or subagents. One shared `n` would compute the skills average over sessions that
 had one — a denominator that is quietly wrong in the direction of "you use fewer skills than you
 think".
 
-Measured over the 700: 692 carry messages, 57 carry skills, 50 carry subagents.
+Measured today: 479 sessions in the window carry messages (from the store); of the 452 surviving transcripts, 61 carry skills and 43 carry subagents.
 
 ### What it reports
 
@@ -134,10 +157,10 @@ interface Suggestion {
 
 A card may only ever say something true, and which sentence is true depends on the baseline:
 
-- **Ratio** — when the median is meaningfully above zero. *"340 messages — your median is 30 (30d,
-  n=692)."*
-- **Rarity** — when the median is zero or near it, which is the compacts case. *"2 compacts — 6 of
-  your 700 sessions ever reached that."*
+- **Ratio** — when the median is meaningfully above zero. *"340 messages — your median is 58 (30d,
+  n=444)."*
+- **Rarity** — when the median is zero or near it, which is the compacts case. *"2 compacts — 8 of
+  your 452 sessions ever reached that."*
 
 Picking the ratio unconditionally is how a rare event gets reported as a division by almost-zero and
 reads as a fault in the dashboard rather than a fact about the session.
@@ -154,8 +177,8 @@ reads as a fault in the dashboard rather than a fact about the session.
 **Context is the trigger that matters and compacts is the symptom.** After two compacts the session
 is already at ~10k post-compact tokens: the handoff you would migrate has mostly been thrown away.
 The context trigger fires *before* the loss. The compacts trigger stays because it is the most legible
-sentence there is — it names minutes and tokens already spent — but it fires on roughly 0,9% of
-sessions (6 of 700) and must not be mistaken for the load-bearing one.
+sentence there is — it names minutes and tokens already spent — but it fires on roughly 1,8% of
+sessions (8 of 452) and must not be mistaken for the load-bearing one.
 
 ### Anti-nag rules
 
@@ -213,14 +236,24 @@ Measured on this machine, 2026-09-08:
 | | count |
 |---|---|
 | sessions in the consolidate store | 708 |
-| with a surviving transcript (live + archive) | 700 |
-| live only (`~/.claude/projects`, back to 2026-08-11) | 420 |
+| with a surviving SESSION transcript (live + archive) | 452 |
+| subagent transcripts, which are not sessions and were once miscounted as such | 255 |
+| live only (`~/.claude/projects`, back to 2026-08-11) | 423 |
 
-- **Eight sessions are already unrecoverable** for these metrics — the store knows them, no transcript
-  does.
-- **The 284-session archive is frozen.** It exists because `archiveMode` used to be `full`; it is
+- **The store holds more sessions than any transcript can still answer for** — those are already
+  unrecoverable for these metrics.
+- **The archive is frozen.** It holds 29 further session transcripts. It exists because
+  `archiveMode` used to be `full`; it is
   `consolidate` now, so nothing is being added to it. From here on, a transcript that ages past
   `cleanupPeriodDays` is gone.
+- **A further ~68 sessions are recoverable only through evidence that must not be used.** Their own
+  transcript is gone but a `<session-id>/subagents/` directory survives (5 live, 63 archived), and
+  `data.ts` already has a `_source: 'subdir'` fallback that reads the first agent file as a stand-in
+  for every other metric. Compaction is the one metric where that would be wrong: a subagent runs
+  its own context and compacts on its own (5 of this machine's 255 subagent transcripts carry their
+  own `compact_boundary`), so the session would be credited with its agent's compactions — and this
+  number feeds the MIGRATE trigger, so the error would not sit quietly on a dashboard, it would
+  propose moving a session that never burned its own context. Those sessions keep `undefined`.
 - **Therefore the field must be stamped early.** Once `compact_count` is written onto `SessionMeta`
   and persisted, it survives the cleanup like every other metric — but only from the day it ships.
   Backfill is a one-shot opportunity bounded by what is on disk when the feature lands, and it
@@ -228,7 +261,7 @@ Measured on this machine, 2026-09-08:
 
 The `n` per metric already carries this honestly: the compacts baseline simply reports the smaller
 denominator it actually had. What it must never do is compute the average over the store's 708 while
-counting compacts from 700.
+counting compacts from the smaller set that still has a transcript.
 
 ## The frontier, asserted in a test
 
@@ -251,7 +284,7 @@ store and the team uploader like any other metric.
 
 `CLAUDE.md` states that Skills "are not recorded as individual tool_use events in the JSONL — only a
 `skill_listing` attachment appears". That is no longer true: there is a `Skill` tool whose
-`input.skill` names the skill, and this machine has 103 such invocations of 26 distinct skills across 57 sessions. The line
+`input.skill` names the skill, and this machine has 112 such invocations of 26 distinct skills across 61 sessions. The line
 is corrected as part of this work, because this is the feature that depends on it.
 
 ## Open questions

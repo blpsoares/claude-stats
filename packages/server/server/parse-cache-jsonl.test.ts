@@ -4,7 +4,10 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { openParseCache } from './parse-cache'
 import { cachedParseSession, cachedEnrich } from './parse-cache-jsonl'
-import { parseSessionJsonl, activeMinutesFromClaudeJsonl, contextTokensFromClaudeJsonl } from './jsonl'
+import {
+  parseSessionJsonl, activeMinutesFromClaudeJsonl, contextTokensFromClaudeJsonl,
+  compactsFromClaudeJsonl, skillUsesFromClaudeJsonl,
+} from './jsonl'
 
 const dirs: string[] = []
 async function tempDir(): Promise<string> {
@@ -107,6 +110,38 @@ describe('cachedParseSession', () => {
     expect(b._source).toBe('subdir')
     cache.close()
   })
+
+  test('a row written under an older session shape is never served', async () => {
+    // This is the exact defect the SESSION_SHAPE bump exists to prevent: `compact_count` and
+    // `skill_uses` were added to `parseSessionJsonl`'s output (and `compact_count`/`compact_ms`
+    // moved from written-only-above-zero to written whenever the transcript was read) without a
+    // stamp bump. A row cached under the OLD shape then went on being served forever — a closed
+    // conversation's transcript never changes, so the entry never invalidates on its own — with
+    // both fields silently absent, which `session-profile.ts` reads as "no transcript was read"
+    // rather than "read, and it compacted/invoked nothing".
+    const { dir, file } = await fixture()
+    const cache = await openParseCache(join(dir, 'cache.db'))
+    const st = await stat(file)
+    const stamp = { path: file, mtimeMs: st.mtimeMs, size: st.size }
+
+    // Exactly what the shape before this fix produced: a valid SessionMeta (both fields are
+    // optional) that simply never carries `compact_count`/`compact_ms`/`skill_uses`.
+    const stale = await parseSessionJsonl(file, 'sess-1', '/fallback', 'jsonl')
+    delete (stale as { compact_count?: number }).compact_count
+    delete (stale as { compact_ms?: number }).compact_ms
+    delete (stale as { skill_uses?: Record<string, number> }).skill_uses
+    cache.set('session', stamp, stale, 'v4:jsonl')
+
+    const fresh = await cachedParseSession(cache, file, 'sess-1', '/fallback', 'jsonl')
+    // A hit under the retired 'v4:jsonl' variant would have returned `stale`, whose fields are
+    // absent — proving the bump is what forces a recompute rather than the shape being irrelevant
+    // to begin with (TRANSCRIPT carries neither a compaction nor a skill invocation, so a fresh
+    // parse answers with real zeros, not with nothing).
+    expect(fresh.compact_count).toBe(0)
+    expect(fresh.compact_ms).toBe(0)
+    expect(fresh.skill_uses).toEqual({})
+    cache.close()
+  })
 })
 
 describe('cachedEnrich', () => {
@@ -184,6 +219,23 @@ describe('cachedEnrich', () => {
     const r = await cachedEnrich(cache, file, '')
     expect(r?.contextTokens).toBe(contextTokensFromClaudeJsonl(TRANSCRIPT.split('\n')) ?? null)
     expect(r?.contextTokens).toBeGreaterThan(0)
+    cache.close()
+  })
+
+  test('fills compaction and skill fields for a meta-sourced session', async () => {
+    // The bug this closes: `cachedEnrich` served `_source: 'meta'` sessions — MOST Claude
+    // sessions — and never computed `compact`/`skillUses` at all, so the two metrics could only
+    // ever be filled by `parseSessionJsonl` reading a session's own raw transcript directly. A
+    // session that had already aged into `session-meta` was permanently blank on both.
+    const { dir, file } = await fixture()
+    const cache = await openParseCache(join(dir, 'cache.db'))
+    const r = await cachedEnrich(cache, file, '')
+    // TRANSCRIPT has neither a compact_boundary nor a Skill tool_use — the real answer is zero,
+    // not absence, matching `parseSessionJsonl`'s own rule that a read transcript answers `0`/`{}`.
+    expect(r?.compact).toEqual(compactsFromClaudeJsonl(TRANSCRIPT.split('\n')))
+    expect(r?.compact).toEqual({ count: 0, ms: 0 })
+    expect(r?.skillUses).toEqual(skillUsesFromClaudeJsonl(TRANSCRIPT.split('\n')))
+    expect(r?.skillUses).toEqual({})
     cache.close()
   })
 
