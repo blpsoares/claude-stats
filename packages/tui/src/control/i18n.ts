@@ -214,6 +214,10 @@ export interface ControlStrings {
   sessionsLoading: string
   /** Said when the host does not implement the fleet at all — not the same as an empty fleet. */
   sessionsUnsupported: string
+  /** The heading over the behaviour profile drawn under the empty-state sentence. */
+  profileHeading: (days: number, sessions: number) => string
+  /** A profile metric's own label, by its `ProfileMetric` key. */
+  profileMetric: (key: string) => string
   /** The summary row: "3 sessions · 1 waiting on you". */
   /**
    * How many rows are ON SCREEN, and out of how many the machine has.
@@ -910,6 +914,11 @@ const EN: ControlStrings = {
   sessionsEmptyFiltered: 'nothing matches · esc clears the filter',
   sessionsLoading: 'reading…',
   sessionsUnsupported: 'session management is not available on this machine.',
+  profileHeading: (days, sessions) => `Your last ${days} days · ${sessions} sessions`,
+  profileMetric: key => ({
+    messages: 'messages', activeMinutes: 'active minutes', compacts: 'compacts',
+    skills: 'skills', mcpServers: 'MCP servers', subagents: 'subagents',
+  } as Record<string, string>)[key] ?? key,
   // `N of M sessions` read as "N of your M open sessions", which is not what either number is: the
   // second is every session this machine KNOWS, closed conversations and lost rows included, and
   // the first is only what the current view draws. Two counts of different kinds joined by "of" is
@@ -1493,6 +1502,11 @@ const PT: ControlStrings = {
   sessionsEmptyFiltered: 'nada corresponde · esc limpa o filtro',
   sessionsLoading: 'lendo…',
   sessionsUnsupported: 'gerenciamento de sessões não está disponível nesta máquina.',
+  profileHeading: (days, sessions) => `Seus últimos ${days} dias · ${sessions} sessões`,
+  profileMetric: key => ({
+    messages: 'mensagens', activeMinutes: 'minutos ativos', compacts: 'compacts',
+    skills: 'skills', mcpServers: 'servidores MCP', subagents: 'subagentes',
+  } as Record<string, string>)[key] ?? key,
   // Ver a nota na versão em inglês: dois números de espécies diferentes ligados por "de" são lidos
   // como um só, e o medidor de memória do cabeçalho (`ram 4/18`) está na mesma tela.
   sessionsCount: (shown: number, total: number) => (shown === total

@@ -89,6 +89,7 @@ import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
 import { lastBackup, lastPerHarness, lastBackupRun, loadBackupHistory } from './backup/backup-store'
 import { scheduleStatus } from './backup/schedule'
 import { loadConsolidated } from './consolidate'
+import { cachedBaseline } from './sessions/fleet-baseline'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
 import { flagFor, type CentralRuntimeId, type CentralRuntimeOption } from './central-runtime'
 import { onOutputLine, publishLines, streamCommand } from './cli-stream'
@@ -2789,6 +2790,14 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       // Read on every snapshot rather than cached: the toggle and the verb both write it, and a
       // stale copy would leave a task the user just finished still heading a live section.
       const finishedTasks = (await timeFleetPhase('sessions: readPreferences', readPreferences)).finishedTasks ?? []
+      // The 30-day behaviour baseline, behind its own 5-minute cache (`fleet-baseline.ts`) — the
+      // same one `/api/fleet` reads for the web sessions view, so the cockpit and the dashboard
+      // never disagree about what "typical" means here. A failed store read costs freshness, never
+      // the fleet: the fleet is what this method is for.
+      const baseline = await timeFleetPhase(
+        'sessions: cachedBaseline',
+        () => cachedBaseline(async () => [...(await loadConsolidated()).values()], Date.now()),
+      ).catch(() => undefined)
       // Resolved per session and MEMOIZED by directory: a directory does not change repository, and
       // this poll runs every five seconds over the whole fleet — asking git three times per session
       // per tick would be a hundred processes a minute to learn the same thing. What the registry
@@ -2824,6 +2833,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         ...(finishedTasks.length > 0 ? { finishedTasks } : {}),
         ...(detachHint ? { detachHint } : {}),
         ...(snap.unavailable ? { unavailable: snap.unavailable } : {}),
+        ...(baseline ? { baseline } : {}),
       }
     },
 

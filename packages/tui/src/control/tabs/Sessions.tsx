@@ -35,6 +35,7 @@ import { ACTION_SEP, actionAtColumn, fitActionRow } from '../chrome.ts'
 import { Divider } from '../Surface'
 import { PANE_MIN_ROWS, paneBadgeRoom, paneTitleRoom } from '../chrome.ts'
 import { Pane, paneBody, paneRows } from '../Pane'
+import { profileLines } from '../profile-lines'
 
 /** Columns a pane spends on its left edge: one of border, one of padding. */
 const PANE_EDGE_X = 2
@@ -1973,10 +1974,22 @@ export function Sessions({
         // turned into `lost` rows are still there, still named and still reopenable, so "no
         // sessions" would be false — and a blank pane under a strict filter is indistinguishable
         // from a broken one.
-        <Text dimColor wrap="truncate">
-          {fleet.unavailable ? ''
-            : truncate(emptyReason, listBody)}
-        </Text>
+        //
+        // The behaviour profile fills the space an empty list leaves dead — BELOW that sentence,
+        // never instead of it. Sliced to the rows this pane actually has: an Ink screen that
+        // overflows its `height` is composited over the rows below it, not clipped, and the
+        // sentence above already spends one row of the same budget.
+        <Box flexDirection="column" flexShrink={0}>
+          <Text dimColor wrap="truncate">
+            {fleet.unavailable ? ''
+              : truncate(emptyReason, listBody)}
+          </Text>
+          {profileLines(fleet.baseline, listBody, s)
+            .slice(0, Math.max(0, cockpit.listRows - 1))
+            .map((line, i) => (
+              <Text key={i} dimColor>{line}</Text>
+            ))}
+        </Box>
       ) : grid && page ? (
         <Box flexDirection="column" width={cardsBody} flexShrink={0}>
           {/* One band per group, and the air to the right of a short group is DELIBERATE: it is
