@@ -140,6 +140,8 @@ export interface FleetRow {
   approvalBlind?: string
   approveBlind?: string
   chooseBlind?: string
+  /** Why a visible dialog could not be read. Carries the refusal, never a fallback confirm. */
+  dialogBlind?: string
   conversationBlind?: string
   /** `agentop session attach <handle>` — what a browser offers instead of attaching. */
   attachCommand: string
@@ -173,7 +175,7 @@ export function verbReason(
   s: ControlStrings,
 ): string | undefined {
   if (row.state === 'unknown' && action !== 'resume') return s.sessionsExternalNote
-  if (action === 'approve') return row.chooseBlind ?? row.approveBlind ?? row.approvalBlind
+  if (action === 'approve') return row.dialogBlind ?? row.chooseBlind ?? row.approveBlind ?? row.approvalBlind
   if (action === 'resume' && !row.resume) return row.conversationBlind
   return undefined
 }
@@ -215,6 +217,7 @@ export function fleetRow(row: ControlSession, s: ControlStrings): FleetRow {
     ...(row.approvalBlind ? { approvalBlind: row.approvalBlind } : {}),
     ...(row.approveBlind ? { approveBlind: row.approveBlind } : {}),
     ...(row.chooseBlind ? { chooseBlind: row.chooseBlind } : {}),
+    ...(row.dialogBlind ? { dialogBlind: row.dialogBlind } : {}),
     ...(row.conversationBlind ? { conversationBlind: row.conversationBlind } : {}),
     attachCommand: `agentop session attach ${sessionHandleOf(row.id)}`,
     verbs,

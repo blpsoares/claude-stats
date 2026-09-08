@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { QUIET_MS, approvalTail, attentionOf, digestFrame, frameTail, backgroundWork, dialogHeight
 } from './attention'
+import { rulesFor } from './attention-rules'
 import type { AttentionRules } from './types'
 
 const NOW = 1_786_600_000_000
@@ -409,5 +410,66 @@ describe('approvalTail carries the QUESTION, not just the answers', () => {
     ]
     // Never the whole frame: a question is a sentence or two, not a screen.
     expect(approvalTail(tall, 10).length).toBeLessThanOrEqual(22)
+  })
+})
+
+describe('a QUEUED message pushes the dialog footer off the bottom', () => {
+  const NOW2 = 1_700_000_000_000
+  const rules2 = rulesFor('claude')
+  const read2 = (frame: string[]) => attentionOf({
+    alive: true,
+    lastActivityMs: NOW2 - 30_000,
+    nowMs: NOW2,
+    frame,
+    frameDigest: 'same',
+    prevDigest: 'same',
+    rules: rules2,
+  })
+
+  /**
+   * VERBATIM in shape from the report of 2026-09-07 — an `AskUserQuestion` (the previews variant,
+   * whose footer carries `n to add notes`) with TWO messages queued underneath it.
+   *
+   * The harness draws the input box below the dialog, one row per queued line, so the dialog's
+   * footer sat five rows above the bottom and fell outside `FOOTER_LINES`. The session stopped
+   * reading as blocked, the composer unblocked, and both messages were accepted and marked
+   * `delivered to the session` — into the dialog's own filter. The user sat waiting on a question
+   * that had already been asked.
+   */
+  const QUEUED_UNDER_A_DIALOG = [
+    'Contra o que a sessão atual é comparada?',
+    '',
+    '❯ 1. Últimos 30 dias, todas as sessões (recomendado)',
+    '  2. Do projeto, com fallback global',
+    '  3. Por harness, últimos 30 dias',
+    '────────────────────────────────────────',
+    '  Chat about this',
+    '',
+    'Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel',
+    '',
+    '❯ /context',
+    '❯ /home/mithrandir/.agentistics/attachments/d3a25822-image.png',
+    '  nao consegui responder por aqui, tive que abrir o terminal.',
+    '  A resposta interativa ainda ta bem bugada, aproveita e corrige isso tbm',
+  ]
+
+  it('is STILL blocked — the footer sank, the question did not go away', () => {
+    expect(read2(QUEUED_UNDER_A_DIALOG)).toBe('waiting-approval')
+  })
+
+  it('reads the same dialog with nothing queued, exactly as before', () => {
+    expect(read2(QUEUED_UNDER_A_DIALOG.slice(0, 9))).toBe('waiting-approval')
+  })
+
+  it('does NOT extend that trust to a quoted footer with no menu above it', () => {
+    // The window only widens over a real `1..n` block. Source code keeps the narrow footer rule,
+    // which is what stops a session editing these very patterns being called blocked.
+    expect(read2([
+      '● Editing attention-rules.ts',
+      '     /Enter to select · ↑\\/↓ to navigate/,',
+      '✻ Leavening… (18m · ↓ 23.0k tokens)',
+      '❯ ',
+      '⏵⏵ auto mode on · esc to interrupt',
+    ])).toBe('working')
   })
 })

@@ -64,6 +64,7 @@ export interface FleetRow {
   approvalBlind?: string
   approveBlind?: string
   chooseBlind?: string
+  dialogBlind?: string
   conversationBlind?: string
   attachCommand: string
   verbs: FleetVerb[]

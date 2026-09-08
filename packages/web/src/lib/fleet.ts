@@ -74,6 +74,8 @@ export interface FleetRow {
   approvalBlind?: string
   approveBlind?: string
   chooseBlind?: string
+  /** A dialog agentop can see and cannot read. Renders as a refusal, never as a confirm button. */
+  dialogBlind?: string
   conversationBlind?: string
   attachCommand: string
   verbs: FleetVerb[]
