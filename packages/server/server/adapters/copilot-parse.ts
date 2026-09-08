@@ -1,5 +1,5 @@
 import type { SessionMeta, TurnEvent } from '@agentistics/core'
-import { activeMinutesOf } from '@agentistics/core'
+import { activeMinutesOf, charCount } from '@agentistics/core'
 import { canonicalTool, countGitCommands } from '../harness-activity'
 
 /** Pure: parse a Copilot events.jsonl string into a normalized SessionMeta.
@@ -12,6 +12,8 @@ export function parseCopilotEvents(content: string, fallbackId: string): Session
   let cwd = ''
   let startTime = ''
   let endTime = ''
+  // Summed in the SAME branch that increments the count beside it — see `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMessages = 0
   let assistantTurns = 0
   let toolErrors = 0
@@ -70,6 +72,8 @@ export function parseCopilotEvents(content: string, fallbackId: string): Session
       }
     } else if (type === 'user.message') {
       userMessages++
+      { const n = charCount(typeof data.content === 'string' ? data.content : '')
+        if (n > 0) { userChars += n; userCharMsgs++ } }
       if (ts) {
         userMessageTimestamps.push(ts)
         messageHours.push(new Date(ts).getHours())
@@ -78,6 +82,15 @@ export function parseCopilotEvents(content: string, fallbackId: string): Session
       if (!firstPrompt && typeof data.content === 'string') {
         firstPrompt = data.content.trim().slice(0, 500)
       }
+    } else if (type === 'assistant.message') {
+      // THE ASSISTANT'S CHARACTERS COUNT THEMSELVES, on the event that carries the words.
+      //
+      // `assistant.turn_start` below is the TURN counter and holds no text — dividing characters by
+      // it would be a division whose halves describe different sets, which is the defect
+      // `promptChars.ts` records having measured on Claude. `data.content` is the same field
+      // `copilot-chat.ts` reads for the bubble, so the two agree about what was said.
+      { const n = charCount(typeof data.content === 'string' ? data.content : '')
+        if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
     } else if (type === 'assistant.turn_start') {
       assistantTurns++
       if (turnEvent) turnEvent.userPrompt = true
@@ -157,7 +170,11 @@ export function parseCopilotEvents(content: string, fallbackId: string): Session
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMessages,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantTurns,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
     tool_output_tokens: {},
     agent_file_reads: {},

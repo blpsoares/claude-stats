@@ -1,4 +1,4 @@
-import { isLocalModelId } from '@agentistics/core'
+import { isLocalModelId, charCount } from '@agentistics/core'
 import { canonicalTool, countGitCommands } from '../harness-activity'
 import type { SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf } from '@agentistics/core'
@@ -90,6 +90,9 @@ export interface KimiWireTotals {
   contextTokens?: number
   contextAtMs?: number
   userPrompts: number
+  /** Characters the person wrote, and how many prompts they came from — see `promptChars.ts`. */
+  userChars: number
+  userCharMsgs: number
   assistantTurns: number
   toolCounts: Record<string, number>
   toolErrors: number
@@ -115,7 +118,7 @@ export interface KimiWireTotals {
 export function emptyKimiTotals(): KimiWireTotals {
   return {
     inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0,
-    userPrompts: 0, assistantTurns: 0, toolCounts: {}, toolErrors: 0, gitCommits: 0, gitPushes: 0, usesMcp: false,
+    userPrompts: 0, userChars: 0, userCharMsgs: 0, assistantTurns: 0, toolCounts: {}, toolErrors: 0, gitCommits: 0, gitPushes: 0, usesMcp: false,
     firstPrompt: '', hours: [], userTimestamps: [], firstTimeMs: 0, lastTimeMs: 0, turnEvents: [],
   }
 }
@@ -168,6 +171,8 @@ export function accumulateKimiWire(
         const origin = d.origin as { kind?: string } | undefined
         if (origin?.kind && origin.kind !== 'user') break
         acc.userPrompts++
+        { const n = charCount(textOfPrompt(d.input))
+          if (n > 0) { acc.userChars += n; acc.userCharMsgs++ } }
         if (turnEvent) turnEvent.userPrompt = true
         if (time > 0) {
           const dt = new Date(time)
@@ -290,7 +295,17 @@ export function buildKimiSession(
     duration_minutes: duration,
     active_minutes: activeMinutes,
     user_message_count: totals.userPrompts,
+    user_chars: totals.userChars,
+    user_char_messages: totals.userCharMsgs,
     assistant_message_count: totals.assistantTurns,
+    // NO `assistant_chars` FOR KIMI, and it is a finding rather than an omission.
+    //
+    // Kimi's assistant text is on `context.append_message`, and WHICH of those is the assistant is
+    // decided by the `message.origin` kimi stamps — a classification that already exists, in
+    // `kimi-chat.ts`. Counting it here would be a second implementation of that rule, in a module
+    // that cannot see the first, and the two would drift; copilot needed no such rule, which is why
+    // it HAS the field. So this is absent, the surface says N/A, and it becomes writable the day
+    // the classification is shared rather than copied.
     tool_counts: totals.toolCounts,
     tool_output_tokens: {},
     agent_file_reads: {},

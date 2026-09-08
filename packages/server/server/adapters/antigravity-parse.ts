@@ -25,7 +25,7 @@
 //     and handed to this parser as `options.tokens` — this module stays pure.
 
 import type { ModelUsage, SessionMeta, TurnEvent } from '@agentistics/core'
-import { activeMinutesOf, emptyModelUsage, sessionModelUsage } from '@agentistics/core'
+import { activeMinutesOf, emptyModelUsage, sessionModelUsage, charCount } from '@agentistics/core'
 import { canonicalTool, countGitCommands } from '../harness-activity'
 
 /** One parsed line of the global history.jsonl. */
@@ -363,6 +363,8 @@ export function parseAntigravityTranscriptDetailed(
 
   const lines = String(transcript ?? '').split('\n')
 
+  // Summed in the SAME branch that increments the count beside it — see `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMessages = 0
   let assistantMessages = 0
   let firstPrompt = ''
@@ -431,6 +433,7 @@ export function parseAntigravityTranscriptDetailed(
         if (!firstPrompt) firstPrompt = text.slice(0, 200)
       }
       userMessages++
+      { const n = charCount(text); if (n > 0) { userChars += n; userCharMsgs++ } }
       if (createdAt) userMessageTimestamps.push(createdAt)
       if (!isNaN(ms)) messageHours.push(new Date(ms).getHours())
       continue
@@ -441,6 +444,7 @@ export function parseAntigravityTranscriptDetailed(
       // step is an intermediate action.
       if (typeof step.content === 'string' && step.content.trim()) {
         assistantMessages++
+        { const n = charCount(step.content); if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
         if (!isNaN(ms)) messageHours.push(new Date(ms).getHours())
       }
     }
@@ -580,7 +584,11 @@ export function parseAntigravityTranscriptDetailed(
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMessages,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantMessages,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
     tool_output_tokens: {},
     agent_file_reads: {},

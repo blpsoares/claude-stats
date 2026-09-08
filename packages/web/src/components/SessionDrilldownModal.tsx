@@ -2,11 +2,10 @@ import React, { useEffect, useState } from 'react'
 import { format, parseISO } from 'date-fns'
 import {
   X, Clock, FileCode, GitCommit, Wrench, MessageSquare, Bot, Zap, AlertTriangle,
-  CheckCircle, Circle, XCircle, Globe, Workflow as WorkflowIcon,
-} from 'lucide-react'
+  CheckCircle, Circle, XCircle, Globe, Workflow as WorkflowIcon, Type } from 'lucide-react'
 import type { SessionMeta, Lang, WorkflowRun } from '@agentistics/core'
 import { sessionTime } from '../lib/sessionTime'
-import { formatProjectName, formatModel, getModelColor, sessionLabel, fmtCost, sessionCostUSD } from '@agentistics/core'
+import { formatProjectName, formatModel, getModelColor, sessionLabel, fmtCost, sessionCostUSD, sessionPromptAverages } from '@agentistics/core'
 import {
   TOKEN_COLORS, TOKEN_PARTS, sessionTokens, tokenHelp, tokenLabel, tokenShares,
   totalTokens as totalTokensOf, totalTokensExplained,
@@ -102,6 +101,14 @@ export function SessionDrilldownModal({ session, globalModelUsage, currency, brl
   const totalTokens = totalTokensOf(breakdown)
   const shares = tokenShares(breakdown)
   const totalMessages = (session.user_message_count ?? 0) + (session.assistant_message_count ?? 0)
+  /**
+   * How long a typical message was, each side on its own.
+   *
+   * `null` where it was never measured — a record written before these fields existed, or a harness
+   * whose counted event carries no text (kimi's assistant side; see `promptChars.ts`). Rendered
+   * `N/A`, never `0`, because an average of zero is a claim that every message was empty.
+   */
+  const chars = sessionPromptAverages(session)
   const totalTools = Object.values(session.tool_counts ?? {}).reduce((a, b) => a + b, 0)
   const cost = sessionCost(session, globalModelUsage)
 
@@ -248,6 +255,27 @@ export function SessionDrilldownModal({ session, globalModelUsage, currency, brl
               <Kpi icon={<MessageSquare size={12} />} label={pt ? 'Mensagens' : 'Messages'} value={fmt(totalMessages, fullPrecision)} accent="var(--accent-blue, #3b82f6)" />
               <Kpi icon={<Zap size={12} />} label="Tokens" value={fmt(totalTokens, fullPrecision)} accent="var(--anthropic-orange)" title={totalTokensExplained(breakdown, tokLang)} />
               <Kpi icon={<Wrench size={12} />} label="Tool calls" value={fmt(totalTools, fullPrecision)} accent="var(--accent-green, #22c55e)" />
+              {/* CHARACTERS PER MESSAGE, one tile per side. The denominator is the messages that
+                  actually said something — most of an assistant's records are tool calls with no
+                  text, and dividing by all of them read 4x low. See `promptChars.ts`. */}
+              <Kpi
+                icon={<Type size={12} />}
+                label={pt ? 'Chars/prompt' : 'Chars/prompt'}
+                value={chars.user !== null ? fmt(Math.round(chars.user), fullPrecision) : 'N/A'}
+                accent="var(--accent-blue, #3b82f6)"
+                title={pt
+                  ? 'Média de caracteres por mensagem sua, sobre as que têm texto.'
+                  : 'Mean characters per message you sent, over the ones with text.'}
+              />
+              <Kpi
+                icon={<Type size={12} />}
+                label={pt ? 'Chars/resposta' : 'Chars/reply'}
+                value={chars.assistant !== null ? fmt(Math.round(chars.assistant), fullPrecision) : 'N/A'}
+                accent="var(--accent-green, #22c55e)"
+                title={pt
+                  ? 'Média de caracteres por resposta do assistente, sobre as que têm texto. N/A onde o harness não registra isso.'
+                  : 'Mean characters per assistant reply, over the ones with text. N/A where the harness does not record it.'}
+              />
               <Kpi icon={<GitCommit size={12} />} label="Commits" value={String(session.git_commits ?? 0)} accent="var(--accent-purple, #a855f7)" />
               <Kpi
                 icon={<span style={{ fontSize: 10, fontWeight: 800 }}>$</span>}

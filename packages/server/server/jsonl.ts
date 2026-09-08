@@ -1,6 +1,6 @@
 import { readFile } from 'fs/promises'
 import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
-import { activeMinutesOf } from '@agentistics/core'
+import { activeMinutesOf, charCount } from '@agentistics/core'
 import { getGitFileStats } from './git'
 import { countGitCommands } from './harness-activity'
 import { extractAgentMetrics } from './agent-metrics'
@@ -211,6 +211,24 @@ export function* iterLines(content: string): Generator<string> {
   }
 }
 
+/**
+ * The characters of one message's TEXT, as a person would count them.
+ *
+ * Text parts only: a `tool_use` block's JSON input and a `tool_result`'s payload are not something
+ * anybody wrote, and folding them in would make "characters per prompt" a measure of how much
+ * machinery ran. Code points rather than `String.length`, matching the counter under the composer
+ * (`promptCount.ts`) — two numbers about the same text have to agree.
+ */
+function textChars(content: unknown): number {
+  if (typeof content === 'string') return charCount(content)
+  if (!Array.isArray(content)) return 0
+  let n = 0
+  for (const part of content as Record<string, unknown>[]) {
+    if (part?.type === 'text' && typeof part.text === 'string') n += charCount(part.text)
+  }
+  return n
+}
+
 export async function parseSessionJsonl(
   filePath: string,
   sessionId: string,
@@ -225,6 +243,9 @@ export async function parseSessionJsonl(
   }
 
   let cwd = '', lastCwd = '', startTime = '', lastTime = '', firstPrompt = '', modelId = '', sessionTitle = ''
+  // Summed in the SAME branches that increment `userMsgs` / `assistantMsgs`, so the numerator and
+  // the denominator always describe one set. See `promptChars.ts`.
+  let userChars = 0, userCharMsgs = 0, assistantChars = 0, assistantCharMsgs = 0
   let userMsgs = 0, assistantMsgs = 0, inputTokens = 0, outputTokens = 0
   /**
    * The session's work, SPLIT BY DAY — see `SessionMeta.daily`.
@@ -362,6 +383,7 @@ export async function parseSessionJsonl(
       } else {
         // Real human message (initial prompt or interruption) — this is what opens a turn.
         userMsgs++
+        { const n = textChars(msgContent); if (n > 0) { userChars += n; userCharMsgs++ } }
         if (turnEvent) turnEvent.userPrompt = true
         if (ts) {
           userMessageTimestamps.push(ts)
@@ -387,6 +409,8 @@ export async function parseSessionJsonl(
       }
     } else if (e.type === 'assistant') {
       assistantMsgs++
+      { const n = textChars((e.message as Record<string, unknown> | undefined)?.content)
+        if (n > 0) { assistantChars += n; assistantCharMsgs++ } }
       if (ts) lastAssistantTs = ts
       const msg = e.message as Record<string, unknown> | undefined
       if (!modelId && typeof msg?.model === 'string' && msg.model.startsWith('claude-')) modelId = msg.model
@@ -514,7 +538,11 @@ export async function parseSessionJsonl(
     duration_minutes: durationMinutes,
     active_minutes: activeMinutesOf(turnEvents),
     user_message_count: userMsgs,
+    user_chars: userChars,
+    user_char_messages: userCharMsgs,
     assistant_message_count: assistantMsgs,
+    assistant_chars: assistantChars,
+    assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
     tool_output_tokens: toolOutputTokens,
     agent_file_reads: agentFileReads,
