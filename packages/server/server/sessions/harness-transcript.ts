@@ -35,7 +35,7 @@ import { parseKimiChat } from './kimi-chat'
 import type { ChatTurn } from './chat-turn'
 import { readChatWindow, readRecentChatTurns, resolveChatTranscriptPath } from './chat-tail'
 import { readTailWindow } from './transcript-window'
-import { createTranscriptPathMemo } from './transcript-path-memo'
+import { createTranscriptPathMemo, resolveMemoizedPath } from './transcript-path-memo'
 
 /** Everything a reader is told about the session whose conversation is wanted. */
 export interface TranscriptRef {
@@ -186,18 +186,16 @@ export async function resolveCodexTranscript(
   // Codex's ids are UUIDv7; `UUID_RE` is version-agnostic, so this rejects a path fragment without
   // rejecting the real thing.
   if (!UUID_RE.test(ref.conversationId)) return null
-  const known = codexPathMemo.get(ref.conversationId)
-  if (known !== undefined) return known
-  // A MISS EXPIRES. Codex writes a rollout when the conversation first says something, so a
-  // session agentop has just started has no file — and remembering that answer for the life of the
-  // process made the conversation unreadable for the life of the process. See
-  // `transcript-path-memo.ts`; codex has no cheap direct path, so the scan itself is what the TTL
-  // paces.
-  if (!codexPathMemo.mayScan(ref.conversationId, now)) return null
-  codexPathMemo.missed(ref.conversationId, now)
-  const found = await scanCodexRollout(ref.conversationId, sessionsDir)
-  if (found !== null) codexPathMemo.remember(ref.conversationId, found)
-  return found
+  // A MISS EXPIRES and a HIT IS VERIFIED — both rules live in `resolveMemoizedPath`. Codex writes a
+  // rollout when the conversation first says something, so a session agentop has just started has
+  // no file, and remembering that answer for the life of the process made the conversation
+  // unreadable for the life of the process. Codex has no cheap direct path, so the scan itself is
+  // what the TTL paces.
+  return resolveMemoizedPath(codexPathMemo, ref.conversationId, {
+    exists,
+    scan: () => scanCodexRollout(ref.conversationId, sessionsDir),
+    now,
+  })
 }
 
 const CODEX: HarnessTranscript = {
@@ -310,14 +308,12 @@ export async function resolveKimiTranscript(
   now: number = Date.now(),
 ): Promise<string | null> {
   if (!UUID_RE.test(ref.conversationId)) return null
-  const known = kimiPathMemo.get(ref.conversationId)
-  if (known !== undefined) return known
-  // A MISS EXPIRES — same reason as codex's above.
-  if (!kimiPathMemo.mayScan(ref.conversationId, now)) return null
-  kimiPathMemo.missed(ref.conversationId, now)
-  const found = await findKimiWire(ref.conversationId, sessionsDir)
-  if (found !== null) kimiPathMemo.remember(ref.conversationId, found)
-  return found
+  // A MISS EXPIRES and a HIT IS VERIFIED — same reasons as codex's above.
+  return resolveMemoizedPath(kimiPathMemo, ref.conversationId, {
+    exists,
+    scan: () => findKimiWire(ref.conversationId, sessionsDir),
+    now,
+  })
 }
 
 const KIMI: HarnessTranscript = {

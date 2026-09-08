@@ -2353,9 +2353,26 @@ harness must not break.
   and no reply ever arrived — while the terminal tab, which reads the pane and not the transcript,
   showed the whole conversation. Confirmed by the clock: the chat came back only because the server
   was restarted 13 minutes later, which is the only thing that clears a per-process memo.
-  `transcript-path-memo.ts` (pure) is the one rule now — **a found path is remembered forever** (a
-  transcript does not move), **a miss expires** (`TRANSCRIPT_MISS_TTL_MS`), the same shape and the
-  same reason as `repo-facts.ts`'s negative TTL. And the two costs are separated: Claude's DIRECT
+  `transcript-path-memo.ts` (pure) is the one rule now — **a miss expires**
+  (`TRANSCRIPT_MISS_TTL_MS`), the same shape and the same reason as `repo-facts.ts`'s negative TTL,
+  and **a found path is remembered until it stops being there**. That second half used to read "a
+  found path is remembered forever (a transcript does not move)", and **a transcript moves**: Claude
+  Code files it under the project directory derived from the session's CURRENT cwd, so a session
+  whose cwd changes has its `<id>.jsonl` re-filed elsewhere — measured 2026-09-08 on a live 2.4 MB
+  conversation that left `-home-mithrandir-agentistics/` for `…--claude-worktrees-session-shell/`.
+  The remembered path then failed every read, `chat-web.ts` turned that into `turns: []`, and on a
+  LIVE session that carries no `unavailable` — so the panel drew **"This conversation has no
+  messages yet" over a full transcript** and the user stopped receiving replies entirely, with the
+  terminal tab the only way to read anything. **A cwd change is not the only route and not the
+  common one**: Claude Code deletes transcripts older than `cleanupPeriodDays` (30 by default) on
+  every startup, which fails identically. The scan that finds the file in its new home was already
+  written and already correct; it was never reached, because the memo answered first. So
+  `resolveMemoizedPath` VERIFIES before answering, forgets a path that is gone, and — because
+  `remember` clears any miss — scans on that same call. It is also the ONE place the
+  remembered → direct → scanned shape lives; it was written by hand in all three resolvers, so this
+  was the same bug three times. Beside it, `chat-web.ts` now REFUSES IN WORDS when a transcript
+  resolves and the READ fails, which was the last step at which a blank pane was still possible.
+  And the two costs are separated: Claude's DIRECT
   path is one `stat` and is checked on EVERY call, so a new session is readable the moment its file
   appears, while only the SCAN (a `readdir` plus a `stat` per project — 281 of them on a real
   machine) is paced by the TTL. **claude, codex and kimi** memoized and are fixed; **antigravity,
