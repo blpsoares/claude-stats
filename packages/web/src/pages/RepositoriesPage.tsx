@@ -69,7 +69,7 @@ export default function RepositoriesPage() {
         flashId="repositories"
         title={<><GitBranch size={14} /> <span style={{ whiteSpace: 'nowrap' }}>{(() => { const n = sorted.length; return pt ? `${n} repositório${n === 1 ? '' : 's'}` : `${n} repositor${n === 1 ? 'y' : 'ies'}` })()}</span></>}
         action={
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
             {unlinkedCount > 0 && (
               <button
                 onClick={() => setShowUnlinked(v => !v)}
@@ -108,7 +108,7 @@ export default function RepositoriesPage() {
             />
             {/* The search field is what gives way: it takes the width the chips beside it left over
                 and floors at 120px rather than holding a fixed 130 and pushing the row apart. */}
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: '1 1 130px', minWidth: 120, maxWidth: 220 }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: '1 1 130px', minWidth: 120 }}>
               <Search size={13} color="var(--text-tertiary)" style={{ position: 'absolute', left: 8, pointerEvents: 'none' }} />
               <input
                 value={query}

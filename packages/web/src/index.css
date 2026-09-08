@@ -309,6 +309,13 @@ html.ag-viewport-locked > body {
   }
 }
 
+/* --- .ag-stat-value: the KPI figure's fallback size ------------------------------------------
+   `StatTile` states the figure as `min(18px, N cqi)`, which self-corrects to the tile's real
+   width. A browser that does not know `cqi` drops that whole declaration — this is what it lands
+   on, and it is the same 18px the `min()` caps at. Never remove it in favour of the inline value:
+   an inline style that the browser rejects leaves NO font-size at all. */
+.ag-stat-value { font-size: 18px; }
+
 /* --- .ag-tap / .ag-tap-icon: a 44px touch target that costs the layout no height ---------------
    A chip is small ON PURPOSE: 11px of label inside a `border-radius: 999` pill. Give it
    `min-height: 44px` and it stops being a chip — at ~62px wide it comes out an ELLIPSE, and a row

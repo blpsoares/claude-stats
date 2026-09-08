@@ -16,6 +16,7 @@ import { MetricNote } from '../components/MetricNote'
 import { HARNESS_LABELS } from '../lib/harness'
 import { ConfirmModal, SectionHeader } from './settings/primitives'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { StatTile, STAT_TILE_GRID } from '../components/StatTile'
 
 // GET /api/tags/:id response. Aggregate-only by design (spec rule 2): the server never sends the
 // session rows behind a tag, so every value rendered here is a count or a sum it already computed.
@@ -119,21 +120,6 @@ const iconBtn: React.CSSProperties = {
 }
 
 /** The KPI tile used across the app: big number over an uppercase caption. */
-function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
-  return (
-    <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px', minWidth: 0,
-      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-    }}>
-      <span style={{
-        fontSize: 18, fontWeight: 700, color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>{value}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
-    </div>
-  )
-}
-
 type Metric = 'costUSD' | 'sessions' | 'tokens'
 
 /** Overlay needs three distinguishable series, so it cannot use the tag's single colour. */
@@ -419,15 +405,15 @@ export default function TagDetailPage() {
         {/* Just "Total" — a total is deduplicated by definition. The per-source note below is where
             the overlap is explained, which is the only place it can surprise anyone. */}
         <SectionHeader label={pt ? 'Total' : 'Total'} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10 }}>
           <StatTile label={pt ? 'Custo' : 'Cost'} value={fmtCost(tag.aggregate.costUSD, currency, brlRate)} accent />
           <StatTile label={pt ? 'Sessões' : 'Sessions'} value={tag.aggregate.sessions.toLocaleString()} />
           {/* ONE tokens tile, with the four counters on the line below the strip. It was the total
               plus input and output as three tiles, under a note explaining why two of them did not
               add up to the first — an apology for the missing pair rather than the pair. Adding
               them as tiles was the first fix and the wrong one: this grid is `auto-fit` over
-              `minmax(130px, 1fr)`, so past a certain count the last tile is stranded alone on a
-              second row. */}
+              `minmax(150px, 1fr)` (STAT_TILE_GRID), so past a certain count the last tile is
+              stranded alone on a second row. */}
           <StatTile
             label="Tokens"
             value={fmt(totalTokens)}

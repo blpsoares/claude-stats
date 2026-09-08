@@ -49,7 +49,12 @@ export function Section({ title, children, action, onExpand, flashId, style: ext
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           {title}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flex: '1 1 auto', minWidth: 0 }}>
+        {/* No `justify-content` of its own, and `flex: 0 1 auto` rather than `1 1 auto`: the parent's
+            `space-between` already puts this at the right edge while it shares a line with the
+            title, and applies per LINE — so once it wraps onto a line of its own it starts at the
+            left, where a row of controls belongs. Growing it and pinning it right did the opposite:
+            the Repositories controls sat in the far corner under an empty half-row. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 1 auto', minWidth: 0 }}>
           {action}
           {onExpand && (
             <button

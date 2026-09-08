@@ -23,6 +23,7 @@ import { ModelBreakdown } from '../components/ModelBreakdown'
 import { ActivityChart } from '../components/ActivityChart'
 import { RecentSessions } from '../components/RecentSessions'
 import { ScopedSessions } from '../components/ScopedSessions'
+import { StatTile, STAT_TILE_GRID } from '../components/StatTile'
 import { MetricNote } from '../components/MetricNote'
 
 type Tab = 'overview' | 'members' | 'compare' | 'actions' | 'sessions' | 'workflows'
@@ -143,15 +144,15 @@ export default function RepoDetailPage() {
       </div>
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10 }}>
         <StatTile label={pt ? 'Sessões' : 'Sessions'} value={String(scoped.totalSessions)} />
         <StatTile label={pt ? 'Custo' : 'Cost'} value={fmtCost(scoped.totalCostUSD, currency, brlRate)} accent />
         {/* ONE tokens tile — the total of all four billed counters, where this used to be input
             and output as two tiles (the pair that comes to 0,34 % of the volume). The four
             counters themselves are the line UNDER this strip, not tiles in it: the grid is
-            `repeat(auto-fit, minmax(120px, 1fr))`, which fits `floor((W + gap) / 130)` columns —
-            ten at ~1400px — so taking the strip to eleven tiles stranded the last one alone on a
-            second row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
+            `STAT_TILE_GRID`, an `auto-fit` over `minmax(150px, 1fr)` — about eight columns at
+            ~1400px — so taking the strip past that count strands the last tile alone on a second
+            row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
             is priced from, so the tokens and the money describe the same turns under the repo
             scope. */}
         <StatTile
@@ -234,7 +235,7 @@ export default function RepoDetailPage() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10, marginBottom: 14 }}>
                 <StatTile label={pt ? 'Runs' : 'Runs'} value={String(ciSessions.length)} />
                 <StatTile label={pt ? 'Tokens' : 'Tokens'} value={fmt(ciSessions.reduce((a, s) => a + sessionTokenTotal(s), 0))} />
                 <StatTile label="Commits" value={String(ciSessions.reduce((a, s) => a + (s.git_commits ?? 0), 0))} />
@@ -378,27 +379,6 @@ function MemberComparePanel({ sessions, lang, currency, brlRate }: {
           ))}
         </div>
       </div>
-    </div>
-  )
-}
-
-function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
-  return (
-    <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px', minWidth: 0,
-      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-    }}>
-      {/* No `nowrap`: the Lines tile is two figures ("+517.3K −61.2K") and at a 120px column it was
-          painted straight through the card's right edge — the tile has no `overflow`, so the text
-          simply left the box. Wrapping at the space costs a second line on the widest tile and
-          keeps every digit. `minWidth: 0` is what lets the tile shrink inside its grid track at
-          all; without it the track floors at the value's intrinsic width and the ROW overflows
-          instead of the cell. */}
-      <span style={{
-        fontSize: 18, fontWeight: 700, lineHeight: 1.15, minWidth: 0,
-        color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)',
-      }}>{value}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
     </div>
   )
 }
