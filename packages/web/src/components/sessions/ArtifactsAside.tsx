@@ -258,12 +258,12 @@ function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
           fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase',
           color: 'var(--text-tertiary)',
         }}>{pt ? 'Todas as abas' : 'All tabs'}</span>
-        <button
+        <button className="ag-tap-icon"
           onClick={onClose}
           aria-label={pt ? 'Fechar' : 'Close'}
           style={{
             marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+            width: 22, height: 22, borderRadius: 6, padding: 0,
             border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
           }}
         ><X size={13} /></button>
@@ -741,6 +741,8 @@ export function ArtifactsAside({
   const tabCell = (t: (typeof tabs)[number], forRuler: boolean) => {
     const on = !forRuler && tab === t.id
     return (
+      // NO projected box: the bar this sits in is `overflow: hidden`, which CLIPS the overlay — so
+      // the class would have quietly REDUCED the target it exists to preserve. Painted instead.
       <button
         key={t.id}
         {...(forRuler ? { 'data-tab-id': t.id, tabIndex: -1 } : { role: 'tab', 'aria-selected': on })}
@@ -752,7 +754,7 @@ export function ArtifactsAside({
           background: on ? 'var(--bg-elevated)' : 'transparent',
           color: on ? 'var(--text-primary)' : 'var(--text-tertiary)',
           // 44px is the MOBILE number; applying it on desktop turns the bar into a row of buttons.
-          minHeight: isMobile ? 44 : undefined, flexShrink: 0, whiteSpace: 'nowrap',
+          flexShrink: 0, whiteSpace: 'nowrap',
         }}
       >
         {t.icon}
@@ -781,7 +783,7 @@ export function ArtifactsAside({
       }}>
         {onBar.map(t => tabCell(t, false))}
         {split.overflow && (
-          <button
+          <button className="ag-tap"
             ref={gridBtnRef}
             onClick={() => setGridOpen(v => !v)}
             aria-expanded={gridOpen}
@@ -791,7 +793,6 @@ export function ArtifactsAside({
               display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 'auto',
               padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
               fontSize: 11.5, fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap',
-              minHeight: isMobile ? 44 : undefined,
               // A real control, not a placeholder. It was a dashed outline in the tertiary colour
               // and read as the disabled remains of something — the same thing that made the MCP
               // tab's add button disappear into the cards under it.
@@ -1293,13 +1294,13 @@ export function ArtifactsAside({
                 }}>
                   {([['md', pt ? 'Formatado' : 'Formatted'], ['text', pt ? 'Texto' : 'Text']] as const)
                     .map(([id, label]) => (
-                      <button
+                      <button className="ag-tap"
                         key={id}
                         role="tab"
                         aria-selected={skillFormat === id}
                         onClick={() => chooseSkillFormat(id)}
                         style={{
-                          minHeight: isMobile ? 44 : 24, padding: '0 10px', borderRadius: 6,
+                          minHeight: 24, padding: '0 10px', borderRadius: 6,
                           border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11,
                           background: skillFormat === id ? 'var(--bg-elevated)' : 'transparent',
                           color: skillFormat === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
@@ -1886,13 +1887,13 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
     {/* Take me to the FILE — the other question this row can answer, and only where the file is
         actually in the Files list. */}
     {onOpen && (
-      <button
+      <button className="ag-tap-icon"
         onClick={onOpen}
         title={pt ? 'Abrir o arquivo' : 'Open the file'}
         aria-label={pt ? 'Abrir o arquivo' : 'Open the file'}
         style={{
           flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 44 : 24, height: isMobile ? 44 : 24, margin: '4px 4px 0 0',
+          width: 24, height: 24, margin: '4px 4px 0 0',
           borderRadius: 6, padding: 0,
           // THE TOUCH TARGET GREW AND THE ICON DID NOT. At 44px this was an 11px tertiary glyph in
           // an empty square — present, hit-testable, and invisible on a phone: reported as "só
@@ -2816,12 +2817,12 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
             )}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button
+            <button className="ag-tap"
               type="submit"
               disabled={busy || paste.trim() === ''}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 7,
-                minHeight: isMobile ? 44 : undefined, padding: isMobile ? '0 14px' : '5px 11px',
+                padding: isMobile ? '6px 14px' : '5px 11px',
                 fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600,
                 cursor: busy || paste.trim() === '' ? 'default' : 'pointer',
                 opacity: busy || paste.trim() === '' ? 0.5 : 1,
@@ -2830,11 +2831,11 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
             >
               <Plus size={12} /> {busy ? (pt ? 'Adicionando…' : 'Adding…') : (pt ? 'Adicionar' : 'Add')}
             </button>
-            <button
+            <button className="ag-tap"
               type="button"
               onClick={() => { setAdding(false); setSaid(null) }}
               style={{
-                minHeight: isMobile ? 44 : undefined, padding: isMobile ? '0 14px' : '5px 11px',
+                padding: isMobile ? '6px 14px' : '5px 11px',
                 borderRadius: 7, fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600,
                 cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--bg-card)',
                 color: 'var(--text-secondary)',
@@ -2912,12 +2913,12 @@ function McpEditor({ entry, pt, busy, onCancel, onApply }: {
           : 'Saving removes and re-adds, because that is how `claude mcp` changes a server. If the second step fails, the current version is restored.'}
       </p>
       <div style={{ display: 'flex', gap: 6 }}>
-        <button
+        <button className="ag-tap"
           onClick={() => onApply(draft)}
           disabled={busy || !changed || draft.trim() === ''}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 7,
-            minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '0 12px',
+            minHeight: 30, padding: isMobile ? '6px 14px' : '0 12px',
             fontFamily: 'inherit', fontSize: 11.5, fontWeight: 700,
             cursor: busy || !changed ? 'default' : 'pointer', opacity: busy || !changed ? 0.5 : 1,
             border: '1px solid var(--anthropic-orange)', background: 'var(--anthropic-orange)', color: '#fff',
@@ -2926,11 +2927,11 @@ function McpEditor({ entry, pt, busy, onCancel, onApply }: {
           {busy ? <Spinner size={12} /> : null}
           {busy ? (pt ? 'Salvando…' : 'Saving…') : (pt ? 'Salvar' : 'Save')}
         </button>
-        <button
+        <button className="ag-tap"
           onClick={onCancel}
           disabled={busy}
           style={{
-            minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '0 12px', borderRadius: 7,
+            minHeight: 30, padding: isMobile ? '6px 14px' : '0 12px', borderRadius: 7,
             fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600, cursor: busy ? 'default' : 'pointer',
             border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
           }}
@@ -2978,13 +2979,18 @@ function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, 
               aria-label={pt ? 'Editar' : 'Edit'}
               style={{
                 flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+                width: 22, height: 22, borderRadius: 6, padding: 0,
                 cursor: busy ? 'default' : 'pointer',
                 border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-tertiary)',
               }}
             >
               <Pencil size={11} />
             </button>
+            {/* NO `.ag-tap-icon` on this pair, and the exception is the point: Edit and Remove are
+                22px with a 6px gap, so a 44px box around either reaches ~5px into the other and
+                paints on top of it. On a destructive neighbour that is a mis-tap that runs
+                `claude mcp remove`. Where a control needs 44px and its row has no room, the answer
+                is painted height — the class is not a way to have both. */}
             <button
               onClick={onRemove}
               disabled={busy}
@@ -2992,7 +2998,7 @@ function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, 
               aria-label={pt ? 'Remover' : 'Remove'}
               style={{
                 flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: isMobile ? 44 : 22, height: isMobile ? 44 : 22, borderRadius: 6, padding: 0,
+                width: 22, height: 22, borderRadius: 6, padding: 0,
                 cursor: busy ? 'default' : 'pointer',
                 border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-tertiary)',
               }}
@@ -3009,12 +3015,12 @@ function McpRow({ entry, pt, canWrite, busy, working, check, onCheck, onRemove, 
           This is what tells those two apart, and it is a CHECK, not a connection: agentistics does
           not run MCP servers, Claude Code does, once, when a session starts. */}
       <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-        <button
+        <button className="ag-tap"
           onClick={onCheck}
           disabled={check === 'running'}
           style={{
             flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5,
-            minHeight: isMobile ? 44 : 22, padding: isMobile ? '0 10px' : '0 7px', borderRadius: 6,
+            minHeight: 22, padding: isMobile ? '6px 10px' : '0 7px', borderRadius: 6,
             cursor: check === 'running' ? 'default' : 'pointer',
             border: '1px solid var(--border-subtle)', background: 'transparent',
             color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 10.5,

@@ -206,7 +206,7 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
                 {(r.verbs?.length ?? 0) > 0 && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
                     {r.verbs!.map(v => (
-                      <button
+                      <button className="ag-tap"
                         key={v.action}
                         type="button"
                         // The machine's own sentence for why it is off. A refused verb that
@@ -222,8 +222,8 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
                           void act(r, v.action)
                         }}
                         style={{
-                          minHeight: isMobile ? 44 : 26,
-                          padding: isMobile ? '0 14px' : '0 9px',
+                          minHeight: 26,
+                          padding: isMobile ? '6px 14px' : '0 9px',
                           borderRadius: 6, fontFamily: 'inherit', fontSize: 11,
                           border: '1px solid var(--border)', background: 'transparent',
                           // `kill` is the only destructive one here and wears the fault colour, so
@@ -323,6 +323,8 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
               >
                 {pt ? 'Cancelar' : 'Cancel'}
               </button>
+              {/* A dialog action pays in PAINT — the documented exception — and its Cancel beside
+                  it does too. Converting one of a pair leaves a row of two different heights. */}
               <button
                 type="button"
                 disabled={!draft.trim()}

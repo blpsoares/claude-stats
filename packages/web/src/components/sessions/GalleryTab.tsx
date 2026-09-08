@@ -185,14 +185,14 @@ export function GalleryTab({
               ['user', pt ? 'Você' : 'You', sides.user],
               ['llm', pt ? 'Assistente' : 'Assistant', sides.llm],
             ] as const).map(([id, label, n]) => (
-              <button
+              <button className="ag-tap"
                 key={id}
                 role="tab"
                 aria-selected={shown === id}
                 onClick={() => onScopeChange(id)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 4,
-                  minHeight: isMobile ? 44 : 24, padding: '0 8px', borderRadius: 6,
+                  minHeight: 24, padding: '0 8px', borderRadius: 6,
                   border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11,
                   background: shown === id ? 'var(--bg-elevated)' : 'transparent',
                   color: shown === id ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
@@ -647,13 +647,13 @@ function ViewButton({ on, isMobile, label, icon, onClick }: {
   on: boolean; isMobile: boolean; label: string; icon: React.ReactNode; onClick: () => void
 }) {
   return (
-    <button
+    <button className="ag-tap-icon"
       onClick={onClick}
       aria-pressed={on}
       title={label}
       style={{
         display: 'flex', alignItems: 'center', gap: 5,
-        minHeight: isMobile ? 44 : 26, minWidth: isMobile ? 44 : 0,
+        minHeight: 26, minWidth: 0,
         padding: '4px 9px', borderRadius: 7, border: 'none', cursor: 'pointer',
         fontFamily: 'inherit', fontSize: 11.5, fontWeight: on ? 700 : 500,
         background: on ? 'var(--bg-elevated)' : 'transparent',

@@ -333,26 +333,34 @@ html.ag-viewport-locked > body {
    axes and has to grow on both — use it only where the button has real space around it. Both live
    inside the mobile query: a mouse-driven layout is untouched.
 
-   A row that wraps with a gap under ~14px overlaps by a pixel or two. The later sibling paints on
-   top, so the overlap resolves in favour of the chip LOWER on screen — the one the thumb is
-   travelling towards.
+   THE OVERLAP IS BOUNDED BY THE CONTAINER, not waved away. "A pixel or two" was written here and
+   was wrong: a menu of 26px options with `gap: 2` gets a 7px overlap on each side, so the bottom
+   band of every row selects the row BELOW it — and where the neighbour is destructive (an
+   `Edit`/`Remove` pair 6px apart) that is a mis-tap that deletes something.
+
+   So the growth is `--ag-tap-grow`, and a container that cannot afford it SAYS SO by setting the
+   property — `0` for a tight list, so its rows keep exactly their painted target and steal
+   nothing. The default is deliberately small enough to sit inside an ordinary 12-16px gap. Where a
+   control needs the full 44px and its container has no room, the answer is painted height, not a
+   box over the neighbour: `.ag-tap` is not a way to have both.
 
    Use it for CHIPS, PILLS, TOGGLES and ICON-ONLY buttons: controls whose smallness is their
    meaning. A dialog's "Save", a menu row, a primary action SHOULD be 44px of paint, and keep it.
    Do not put it on anything containing its own interactive child (an input, a nested link): the
    overlay sits above the content and would take that child's clicks. */
 @media (max-width: 767px) {
-  .ag-tap, .ag-tap-icon { position: relative; }
+  /* How far past its own box a tap overlay may reach, per side. A container with a tighter gap
+     than twice this MUST set it lower (`--ag-tap-grow: 0` for a list that is nearly flush), and a
+     container with room may raise it. */
+  .ag-tap, .ag-tap-icon { position: relative; --ag-tap-grow: 7px; }
   .ag-tap::after, .ag-tap-icon::after {
     content: '';
     position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    height: 100%;
-    min-height: 44px;
+    top: calc(0px - var(--ag-tap-grow));
+    bottom: calc(0px - var(--ag-tap-grow));
   }
   .ag-tap::after { left: 0; right: 0; }
-  .ag-tap-icon::after { left: 50%; width: 100%; min-width: 44px; transform: translate(-50%, -50%); }
+  .ag-tap-icon::after { left: calc(0px - var(--ag-tap-grow)); right: calc(0px - var(--ag-tap-grow)); }
 }
 
 /* ── The focus ring ──────────────────────────────────────────────────────────

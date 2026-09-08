@@ -1661,9 +1661,12 @@ function useTerminalZoom(): number {
 function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
   const zoom = useTerminalZoom()
   const isMobile = useIsMobile()
-  // 44px touch targets on mobile (the repo rule); the compact desktop size otherwise.
+  // The 44px mobile target is `.ag-tap-icon`'s invisible box on each consumer, not paint: three
+  // 44x44 squares around a 13px glyph made this row taller than the terminal header it sits in.
   const btn: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    // Three controls inside an ~88px strip with gap 2: a projected box would need 132px between
+    // @touch-intentional they would take each others edges, so this strip pays its target in paint.
     width: isMobile ? 44 : 24, height: isMobile ? 44 : 22,
     borderRadius: 4, border: 'none', background: 'transparent', color: 'var(--text-secondary)',
     cursor: 'pointer', padding: 0,
@@ -1685,10 +1688,14 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
       >
         <ZoomOut size={13} />
       </button>
+      {/* NO projected box on this strip: three controls inside ~88px with `gap: 2` would need
+          132px between them, so each one's box would take its neighbour's edge. They pay in paint. */}
       <button
         onClick={() => setTerminalZoom(1)}
         title={lang === 'pt' ? 'Tamanho padrão' : 'Reset size'}
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: isMobile ? 44 : 32, minHeight: isMobile ? 44 : undefined, padding: 0 }}
+        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+          // @touch-intentional same strip as the two buttons beside it — painted, never projected.
+          minWidth: isMobile ? 44 : 32, minHeight: isMobile ? 44 : undefined, padding: 0 }}
       >
         {Math.round(zoom * 100)}%
       </button>
@@ -1821,13 +1828,13 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
         </span>
         <TerminalZoomControls lang={lang} />
         {onMaximize && (
-          <button
+          <button className="ag-tap-icon"
             onClick={(e) => { e.stopPropagation(); onMaximize() }}
             title={lang === 'pt' ? 'Ampliar o terminal' : 'Enlarge the terminal'}
             aria-label={lang === 'pt' ? 'Ampliar o terminal' : 'Enlarge the terminal'}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: isMobile ? 44 : 26, height: isMobile ? 44 : 22, borderRadius: 6,
+              width: 26, height: 22, borderRadius: 6,
               border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
               color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
             }}
@@ -1873,12 +1880,12 @@ export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, au
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5, flex: 1, minWidth: 0 }}>{status.detail}</div>
         {stalled && (
-          <button
+          <button className="ag-tap"
             onClick={(e) => { e.stopPropagation(); reconnect() }}
             title={lang === 'pt' ? 'Reconectar' : 'Reconnect'}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-              minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 12px', borderRadius: 8,
+              minHeight: 28, padding: isMobile ? '6px 14px' : '4px 12px', borderRadius: 8,
               fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
               border: `1px solid ${TERM_TONE_COLOR.stalled}`, background: 'transparent', color: TERM_TONE_COLOR.stalled,
             }}
@@ -2047,13 +2054,13 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, state: compose
           <Keyboard size={13} style={{ flexShrink: 0 }} />
           <span>{t.typingHere}</span>
         </span>
-        <button
+        <button className="ag-tap"
           type="button"
           onClick={openLine}
           title={t.lineWhy}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-            minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+            minHeight: 28, padding: isMobile ? '6px 14px' : '4px 10px', borderRadius: 8,
             fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
             border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
           }}
@@ -2379,13 +2386,13 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
             <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }} title={title}>
               {title}
             </span>
-            <button
+            <button className="ag-tap-icon"
               onClick={onClose}
               title={lang === 'pt' ? 'Fechar' : 'Close'}
               aria-label={lang === 'pt' ? 'Fechar' : 'Close'}
               style={{
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
+                width: 30, height: 30, borderRadius: 8,
                 border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
               }}
             >

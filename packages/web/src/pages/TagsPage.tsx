@@ -521,8 +521,11 @@ export default function TagsPage() {
                 : 'Saved groupings of this machine’s repositories and projects.')}
           </div>
         </div>
+        {/* Full width on a phone, so it keeps 44px of PAINT — `.ag-tap` is for controls whose
+            smallness is their meaning, which a page's primary action is not. `primaryBtn`'s 34 is
+            the DESKTOP height, which is what carrying 44 in a module object had broken. */}
         {mayWrite && (
-          <button type="button" className="ag-tap" onClick={openCreate} style={{ ...primaryBtn, width: isMobile ? '100%' : undefined }}>
+          <button type="button" onClick={openCreate} style={{ ...primaryBtn, minHeight: isMobile ? 44 : primaryBtn.minHeight, width: isMobile ? '100%' : undefined }}>
             <Plus size={14} /> {pt ? 'Nova tag' : 'New tag'}
           </button>
         )}
@@ -667,7 +670,7 @@ export default function TagsPage() {
         lang={lang}
         dirty={dirty}
         footer={
-          <button type="button" className="ag-tap" style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }} disabled={saving} onClick={() => void save()}>
+          <button type="button" style={{ ...primaryBtn, minHeight: isMobile ? 44 : primaryBtn.minHeight, opacity: saving ? 0.6 : 1 }} disabled={saving} onClick={() => void save()}>
             {saving ? (pt ? 'Salvando…' : 'Saving…') : (pt ? 'Salvar' : 'Save')}
           </button>
         }

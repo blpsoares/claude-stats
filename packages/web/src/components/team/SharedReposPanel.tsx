@@ -554,13 +554,12 @@ function Caveats({ lang, children }: { lang: 'pt' | 'en'; children: React.ReactN
   const isMobile = useIsMobile()
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <button
+      <button className="ag-tap"
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         style={{
           display: 'flex', alignItems: 'center', gap: 5, alignSelf: 'flex-start', padding: 0,
-          minHeight: isMobile ? 44 : undefined,
           border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
           fontSize: 11, color: 'var(--text-tertiary)', textAlign: 'left',
         }}

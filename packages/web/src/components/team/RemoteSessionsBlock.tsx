@@ -268,6 +268,8 @@ function ConfirmShare({ which, lang, isMobile, machineName, account, onCancel, o
         </p>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {/* Paired with the Confirm below, which pays in paint: a dialog action is the documented
+              exception, and converting only one leaves the row two different heights. */}
           <button
             type="button"
             onClick={onCancel}

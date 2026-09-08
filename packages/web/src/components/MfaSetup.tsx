@@ -213,7 +213,7 @@ export function MfaSetup({ lang, onClose, required = false, canDisable = true }:
               <div style={{ display: 'flex', gap: 6 }}>
                 <code style={{ ...codeBlock, flex: 1, margin: 0 }}>{secret.match(/.{1,4}/g)?.join(' ')}</code>
                 <button type="button" onClick={() => { void navigator.clipboard?.writeText(secret); setCopied(true); setTimeout(() => setCopied(false), 1500) }}
-                  title={pt ? 'Copiar a chave' : 'Copy the key'} style={iconBtn}>
+                  title={pt ? 'Copiar a chave' : 'Copy the key'} className="ag-tap-icon" style={iconBtn}>
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                 </button>
               </div>
@@ -304,8 +304,11 @@ const summary: React.CSSProperties = {
   fontSize: 12, color: 'var(--text-secondary)', cursor: 'pointer', padding: '6px 0',
 }
 const dangerBtn: React.CSSProperties ={ ...primaryBtn, borderColor: '#ef4444', background: 'transparent', color: '#ef4444' }
+// A module object cannot read `useIsMobile()`, so the 44 it used to carry was a DESKTOP 44 as
+// well — a copy button three times the height of the field beside it. The finger target is
+// `.ag-tap-icon`'s invisible box on the consumer.
 const iconBtn: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 12px',
-  minWidth: 44, minHeight: 44, borderRadius: 8, border: '1px solid var(--border)',
+  minWidth: 32, minHeight: 32, borderRadius: 8, border: '1px solid var(--border)',
   background: 'var(--bg-elevated)', color: 'var(--text-secondary)', cursor: 'pointer',
 }

@@ -26,12 +26,11 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
   const s = STATUS[value as BoardStatus] ?? STATUS.todo
   return (
     <div style={{ position: 'relative' }}>
-      <button
+      <button className="ag-tap"
         onClick={() => setOpen(v => !v)}
         style={{
           border: `1px solid ${s.color}`, cursor: 'pointer', padding: '3px 9px', borderRadius: 5,
           background: s.dim, color: s.color, fontSize: 10.5, fontWeight: 600, whiteSpace: 'nowrap',
-          minHeight: isMobile ? 44 : undefined,
         }}
       >{s.label}</button>
       {open && (
@@ -46,11 +45,14 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
               const c = STATUS[st]
               return (
                 <button
+                  // A MENU ROW pays its 44px in PAINT. `.ag-tap` is for controls whose smallness
+                  // is their meaning; these sit in a `gap: 2` list, where a projected box covers
+                  // the row above and its bottom band selects the row below.
                   key={st} onClick={() => { setOpen(false); onPick(st) }}
                   style={{
                     border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
-                    borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5, fontWeight: 600,
                     minHeight: isMobile ? 44 : undefined,
+                    borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5, fontWeight: 600,
                   }}
                 >{c.label}</button>
               )

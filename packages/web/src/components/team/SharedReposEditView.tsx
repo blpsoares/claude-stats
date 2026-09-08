@@ -110,7 +110,10 @@ const MOBILE_ROW_CAP = 12
 export function bulkBtnStyle(isMobile: boolean): CSSProperties {
   return {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    padding: isMobile ? '0 12px' : '5px 10px', minHeight: isMobile ? 44 : undefined,
+    // The chip consumers carry `.ag-tap`, which is where the 44px finger target lives; the two
+    // FULL-WIDTH consumers ask for `minHeight: 44` themselves, because a full-width action is the
+    // case that class excludes and should be 44px of paint.
+    padding: isMobile ? '6px 12px' : '5px 10px',
     borderRadius: 7, border: '1px solid var(--border)', background: 'transparent',
     color: 'var(--text-secondary)', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
   }
@@ -165,8 +168,8 @@ export function EditView({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <button type="button" onClick={onShareAll} style={bulkBtnStyle(isMobile)}>{COPY.shareAll[lang]}</button>
-        <button type="button" onClick={onBlockAll} style={bulkBtnStyle(isMobile)}>{COPY.blockAll[lang]}</button>
+        <button type="button" className="ag-tap" onClick={onShareAll} style={bulkBtnStyle(isMobile)}>{COPY.shareAll[lang]}</button>
+        <button type="button" className="ag-tap" onClick={onBlockAll} style={bulkBtnStyle(isMobile)}>{COPY.blockAll[lang]}</button>
         <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginLeft: 'auto' }}>
           {interpolate(plural(PLURAL_COPY.nShared[lang], sharedNow), { n: sharedNow, total: totalNow })}
         </span>
@@ -195,7 +198,7 @@ export function EditView({
       </div>
 
       {isMobile && !showAllMobile && shownCount < totalLiveCount && (
-        <button type="button" onClick={onShowAllMobile} style={{ ...bulkBtnStyle(true), width: '100%' }}>
+        <button type="button" onClick={onShowAllMobile} style={{ ...bulkBtnStyle(true), width: '100%', minHeight: 44 }}>
           {interpolate(COPY.showAllRepos[lang], { n: totalLiveCount })}
         </button>
       )}
@@ -388,8 +391,8 @@ export function ProjectEditView({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <button type="button" onClick={onShareAll} style={bulkBtnStyle(isMobile)}>{COPY.shareAll[lang]}</button>
-        <button type="button" onClick={onBlockAll} style={bulkBtnStyle(isMobile)}>{COPY.blockAll[lang]}</button>
+        <button type="button" className="ag-tap" onClick={onShareAll} style={bulkBtnStyle(isMobile)}>{COPY.shareAll[lang]}</button>
+        <button type="button" className="ag-tap" onClick={onBlockAll} style={bulkBtnStyle(isMobile)}>{COPY.blockAll[lang]}</button>
         <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginLeft: 'auto' }}>
           {interpolate(plural(PLURAL_COPY.nShared[lang], sharedNow), { n: sharedNow, total: totalNow })}
         </span>
@@ -418,7 +421,7 @@ export function ProjectEditView({
       </div>
 
       {isMobile && !showAllMobile && shownCount < totalLiveCount && (
-        <button type="button" onClick={onShowAllMobile} style={{ ...bulkBtnStyle(true), width: '100%' }}>
+        <button type="button" onClick={onShowAllMobile} style={{ ...bulkBtnStyle(true), width: '100%', minHeight: 44 }}>
           {interpolate(COPY.showAllRepos[lang], { n: totalLiveCount })}
         </button>
       )}

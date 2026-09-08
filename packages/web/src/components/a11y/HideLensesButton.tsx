@@ -35,7 +35,7 @@ export function HideLensesButton({ ctx }: { ctx: AppContext }) {
   const label = hidden ? text.showLenses : text.hideLenses
 
   return (
-    <button
+    <button className="ag-tap-icon"
       onClick={() => a11y.toggleLensesHidden()}
       title={label}
       aria-label={label}
@@ -43,7 +43,7 @@ export function HideLensesButton({ ctx }: { ctx: AppContext }) {
       style={{
         // Same sizing rule as MagnifierButton's own trigger — one 44px touch target on mobile,
         // one compact 32px control on desktop.
-        width: isMobile ? 44 : 32, height: isMobile ? 44 : 32,
+        width: 32, height: 32,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         borderRadius: 8, border: '1px solid var(--border)', background: 'transparent',
         color: 'var(--anthropic-orange)', cursor: 'pointer', flexShrink: 0,
