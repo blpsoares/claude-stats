@@ -72,10 +72,29 @@ not a fleet row, and filing it under that prefix would be the first step toward 
 
 ### Backend
 
-A shell is a tmux session named `agentop-shell-<shellId>` running `$SHELL` (falling back to
-`/bin/bash`) with `-c <cwd>`. It is created detached and never attached by us — the browser reads
-it through `capture-pane` and writes through `send-keys`, exactly as the assistant panes are read
-and written today.
+A shell is a tmux session running `$SHELL` (falling back to `/bin/bash`) with `-c <cwd>`, created
+detached and never attached by us — the browser reads it through `capture-pane` and writes through
+`send-keys`, exactly as the assistant panes are read and written today.
+
+**It lives on its OWN tmux socket, `-L agentop-shell`, and that is load-bearing.** The first draft
+of this section put it on the fleet's socket under the name `agentop-shell-<id>`, which would have
+produced the very pollution §3 exists to prevent — and silently:
+
+- `idFromTmuxName` strips the `agentop-` prefix, so `parseTmuxList` would have KEPT that session;
+- `reconcileSessions` then finds a running tmux session with no registry record and calls it
+  `unregistered` — a row `session-adopt.ts` describes as "visible and inert", filed under
+  `GONE_PROJECT_KEY`, that no verb in the cockpit can act on.
+
+A naming convention would have worked and would have been one refactor away from breaking. A
+separate socket cannot break: `list-sessions -L agentop` cannot see a session on another socket at
+all. It is the same argument `tmux-cli.ts` already makes one level up — *"we run on our OWN socket
+(`-L agentop`); the user's sessions are then never listed, never killed and never affected by the
+server options we set, and `list-sessions` needs no trust in a prefix filter to stay out of their
+way"* — applied to keep OUR shells out of OUR fleet.
+
+The cost is that `tmux-cli.ts`'s argv builders currently close over `TMUX_SOCKET`. They take an
+optional socket argument instead, defaulting to today's value, so every existing call is unchanged
+and the module stays pure and fully tested.
 
 Windows without tmux: `SessionBackend` already has no Windows backend and says why (Bun exposes no
 PTY primitive; a native module cannot live in the single compiled binary). The Shell button is
@@ -113,6 +132,7 @@ It would also:
 Consequently, and asserted by tests:
 
 - `shells.json` is a separate file with a separate writer.
+- A shell is on the `agentop-shell` socket, so `parseTmuxList` cannot see it (see §2's Backend).
 - No shell id is ever accepted by a `/api/fleet` route.
 - `buildSessionViews` never sees a shell.
 
