@@ -59,7 +59,7 @@ export function restrictionMiniTable(p: RestrictionMiniTableProps): React.ReactE
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
       {p.onMaximize && (
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button
+          <button className="ag-tap"
             type="button"
             onClick={p.onMaximize}
             aria-label={COPY.tableMaximize[lang]}
@@ -69,7 +69,6 @@ export function restrictionMiniTable(p: RestrictionMiniTableProps): React.ReactE
               border: '1px solid var(--border)', background: 'transparent', borderRadius: 6,
               color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'inherit',
               fontSize: 11, padding: isMobile ? '10px 12px' : '3px 8px',
-              minHeight: isMobile ? 44 : undefined,
             }}
           >
             <Maximize2 size={12} />

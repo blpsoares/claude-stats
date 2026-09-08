@@ -268,11 +268,11 @@ function ConfirmShare({ which, lang, isMobile, machineName, account, onCancel, o
         </p>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          <button
+          <button className="ag-tap"
             type="button"
             onClick={onCancel}
             style={{
-              minHeight: isMobile ? 44 : 32, padding: '0 14px', borderRadius: 7,
+              minHeight: 32, padding: '0 14px', borderRadius: 7,
               border: '1px solid var(--border)', background: 'transparent',
               color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
             }}

@@ -47,13 +47,13 @@ export function PeersSection({ peers, selfFingerprint, lang }: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <button
+      <button className="ag-tap"
         type="button"
         onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         style={{
           display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
-          minHeight: isMobile ? 44 : undefined, padding: 0,
+          padding: 0,
           border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
           fontSize: 11.5, color: 'var(--text-secondary)', textAlign: 'left',
         }}

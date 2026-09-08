@@ -589,8 +589,10 @@ export function HardwareModal({ lang, onClose }: { lang: Lang; onClose: () => vo
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
     border: '1px solid var(--border)', background: 'transparent', borderRadius: 8,
     color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
-    fontWeight: 600, padding: isMobile ? '0 12px' : '0 10px',
-    height: isMobile ? 44 : 32, minWidth: isMobile ? 44 : 32,
+    // The 44px mobile target is `.ag-tap-icon`'s invisible box on each consumer. Painted, it made
+    // a 12px label sit in a box the height of the dialog's own title.
+    fontWeight: 600, padding: isMobile ? '6px 12px' : '0 10px',
+    height: 32, minWidth: 32,
   }
 
   return (
@@ -637,6 +639,7 @@ export function HardwareModal({ lang, onClose }: { lang: Lang; onClose: () => vo
               type="button"
               onClick={() => { setLoading(true); void fetchData() }}
               disabled={loading}
+              className="ag-tap-icon"
               style={btn}
               title={lang === 'pt' ? 'Atualizar' : 'Refresh'}
               aria-label={lang === 'pt' ? 'Atualizar' : 'Refresh'}
@@ -649,6 +652,7 @@ export function HardwareModal({ lang, onClose }: { lang: Lang; onClose: () => vo
               <button
                 type="button"
                 onClick={() => setMaximized(v => !v)}
+                className="ag-tap-icon"
                 style={btn}
                 title={maximized
                   ? (lang === 'pt' ? 'Restaurar' : 'Restore')
@@ -666,6 +670,7 @@ export function HardwareModal({ lang, onClose }: { lang: Lang; onClose: () => vo
               onClick={onClose}
               // First focusable control in the dialog, so a keyboard user lands on the way out.
               autoFocus
+              className="ag-tap-icon"
               style={btn}
               title={lang === 'pt' ? 'Fechar' : 'Close'}
               aria-label={lang === 'pt' ? 'Fechar' : 'Close'}

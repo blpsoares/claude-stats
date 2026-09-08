@@ -187,13 +187,13 @@ export function NoticesModal({
           position: 'sticky', top: 0, background: 'var(--bg-card)', zIndex: 1,
         }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{COPY.noticesTitle[lang]}</span>
-          <button
+          <button className="ag-tap-icon"
             type="button"
             onClick={onClose}
             aria-label={COPY.cancel[lang]}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, marginRight: isMobile ? -8 : 0,
+              width: 30, height: 30, marginRight: isMobile ? -8 : 0,
               border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
             }}
           >

@@ -293,6 +293,8 @@ export function Section({ title, editing, onEdit, onCancel, onSave, canEdit = tr
             display: 'flex', gap: 8, justifyContent: 'flex-end',
             flexDirection: isMobile ? 'column-reverse' : 'row',
           }}>
+            {/* No `.ag-tap` here, deliberately: a full-width form action is the case that class
+                excludes — it SHOULD be 44px of paint, not a thin bar the width of the drawer. */}
             <button type="button" onClick={onCancel} style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               padding: isMobile ? '0 12px' : '7px 12px', minHeight: isMobile ? 44 : undefined,

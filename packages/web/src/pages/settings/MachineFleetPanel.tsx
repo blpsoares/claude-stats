@@ -206,7 +206,7 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
                 {(r.verbs?.length ?? 0) > 0 && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
                     {r.verbs!.map(v => (
-                      <button
+                      <button className="ag-tap"
                         key={v.action}
                         type="button"
                         // The machine's own sentence for why it is off. A refused verb that
@@ -222,8 +222,8 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
                           void act(r, v.action)
                         }}
                         style={{
-                          minHeight: isMobile ? 44 : 26,
-                          padding: isMobile ? '0 14px' : '0 9px',
+                          minHeight: 26,
+                          padding: isMobile ? '6px 14px' : '0 9px',
                           borderRadius: 6, fontFamily: 'inherit', fontSize: 11,
                           border: '1px solid var(--border)', background: 'transparent',
                           // `kill` is the only destructive one here and wears the fault colour, so
@@ -323,12 +323,12 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
               >
                 {pt ? 'Cancelar' : 'Cancel'}
               </button>
-              <button
+              <button className="ag-tap"
                 type="button"
                 disabled={!draft.trim()}
                 onClick={() => { const a = asking; setAsking(null); void act(a.row, a.action, draft.trim()) }}
                 style={{
-                  minHeight: isMobile ? 44 : 30, padding: '0 14px', borderRadius: 7,
+                  minHeight: 30, padding: '0 14px', borderRadius: 7,
                   border: '1px solid var(--anthropic-orange)', background: 'transparent',
                   color: 'var(--anthropic-orange)', fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
                   cursor: draft.trim() ? 'pointer' : 'default', opacity: draft.trim() ? 1 : 0.5,

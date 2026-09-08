@@ -333,14 +333,13 @@ function ChipSelect({ value, options, disabled, onPick }: {
             boxShadow: 'var(--shadow-elevated)',
           }}>
             {options.map(o => (
-              <button
+              <button className="ag-tap"
                 key={o.value}
                 onClick={() => { setOpen(false); if (o.value !== value) onPick(o.value) }}
                 style={{
                   border: 'none', cursor: 'pointer', textAlign: 'left', padding: '6px 9px',
                   borderRadius: 5, background: o.value === value ? o.dim : 'transparent',
                   color: o.color, fontSize: 11.5, fontWeight: 600,
-                  minHeight: isMobile ? 44 : undefined,
                 }}
               >{o.label}</button>
             ))}

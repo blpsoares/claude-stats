@@ -88,11 +88,11 @@ export function NotificationBell({ lang, buttonStyle }: Props) {
               {pt ? 'Notificações' : 'Notifications'}
             </span>
             {notes.length > 0 && (
-              <button
+              <button className="ag-tap"
                 onClick={() => clearNotifications()}
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-                  padding: isMobile ? '0 12px' : '3px 7px', minHeight: isMobile ? 44 : undefined,
+                  padding: isMobile ? '6px 12px' : '3px 7px',
                   borderRadius: 6,
                   border: '1px solid var(--border)', background: 'transparent',
                   color: 'var(--text-tertiary)', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit',
@@ -161,7 +161,7 @@ export function NotificationBell({ lang, buttonStyle }: Props) {
                     {/* Per-item delete. Always visible, never hover-only: the bell is rendered on
                         mobile too, where hover does not exist, and the hit area is a full 44px
                         there (the icon stays small — only the touch target grows). */}
-                    <button
+                    <button className="ag-tap-icon"
                       // The row navigates, so its own controls must not: without this, removing a
                       // notification would also open whatever it linked to.
                       onClick={e => { e.stopPropagation(); dismissNotification(n.id) }}
@@ -169,7 +169,7 @@ export function NotificationBell({ lang, buttonStyle }: Props) {
                       aria-label={pt ? 'Remover notificação' : 'Remove notification'}
                       style={{
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        width: isMobile ? 44 : 22, height: isMobile ? 44 : 22,
+                        width: 22, height: 22,
                         marginRight: isMobile ? -10 : 0,
                         padding: 0, borderRadius: 6, border: 'none', background: 'transparent',
                         color: 'var(--text-tertiary)', cursor: 'pointer',
