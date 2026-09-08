@@ -24,6 +24,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { STATUS, button, field, microLabel, pill, surface, type BoardStatus } from './board'
 import { createTask, useTaskList, type TaskListRow } from '../../lib/tasks'
 import { NewTaskWizard } from './NewTaskWizard'
+import { BetaTag } from '../BetaTag'
 
 export interface TaskPickerProps {
   /** Where to anchor. Absent centres it — which is what a mobile sheet wants anyway. */
@@ -118,6 +119,7 @@ export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: Ta
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={microLabel}>{title ?? 'File under a task'}</span>
+          <BetaTag what="Filing sessions under tasks" />
           <span style={{ flex: 1 }} />
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}>
             <X size={15} />

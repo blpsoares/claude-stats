@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
 import { TaskPicker } from '../tasks/TaskPicker'
+import { BetaTag } from '../BetaTag'
 import { attachSession, detachSession } from '../../lib/tasks'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
 
@@ -49,6 +50,9 @@ const TEXT_VERBS = new Set<string>(['rename', 'note'])
 
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
 const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
+
+/** The verbs that belong to the delivery board rather than to the session itself. */
+const TASK_VERBS = new Set<string>(['task', 'openTask', 'finishTask'])
 
 export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActionsProps) {
   /** Open when the `task` verb was picked — see `TEXT_VERBS`. */
@@ -227,7 +231,14 @@ export function SessionActions({ row, lang, act, onGone, onOpened }: SessionActi
                     onMouseEnter={e => { if (v.enabled) e.currentTarget.style.background = 'var(--bg-elevated)' }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
                   >
-                    <span>{v.label}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      {v.label}
+                      {/* The task verbs are the delivery board reaching into this menu. Marked
+                          here too: a reader who only ever opens this menu never sees the board's
+                          own header, and a caveat shown on four surfaces of six is worse than
+                          none — they conclude the unmarked two are the finished part. */}
+                      {TASK_VERBS.has(v.action) && <BetaTag what={pt ? 'As tarefas' : 'Tasks'} />}
+                    </span>
                     {/* The row's OWN sentence for why it cannot take this verb. A control that
                         refuses silently is indistinguishable from one that is broken. */}
                     {!v.enabled && v.reason && (

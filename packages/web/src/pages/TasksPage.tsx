@@ -45,6 +45,7 @@ import { DatePicker } from '../components/DatePicker'
 import { AgentsView } from '../components/tasks/AgentsView'
 import { BlockedDialog } from '../components/tasks/BlockedDialog'
 import { TaskProgressBar } from '../components/tasks/TaskProgressBar'
+import { BetaTag } from '../components/BetaTag'
 import { TaskFiles } from '../components/tasks/TaskFiles'
 import { BoardOverviewView } from '../components/tasks/BoardOverviewView'
 import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
@@ -493,7 +494,10 @@ function TaskList() {
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
-          <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650 }}>Deliveries</h1>
+          <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650, display: 'flex', alignItems: 'center', gap: 8 }}>
+            Deliveries
+            <BetaTag what="The delivery board" />
+          </h1>
           <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--text-tertiary)' }}>
             What each piece of work cost, in how many rounds and across how many sessions.
           </p>
@@ -1234,7 +1238,12 @@ function TaskDetailView({ id }: { id: string }) {
           <ArrowLeft size={14} />
         </button>
         <div style={{ flex: 1, minWidth: 150, display: 'grid', gap: 6 }}>
-          <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650 }}>{detail.task.title}</h1>
+          <h1 style={{ fontSize: 19, margin: 0, fontWeight: 650, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{detail.task.title}</span>
+            {/* A task page is reachable from a link with no nav on screen — the caveat has to
+                travel with the page, not only with the way in. */}
+            <BetaTag what="The delivery board" />
+          </h1>
           {/* The headline number for a broken-up task: how much of it is closed. Same arithmetic
               and same rounding as the card and the table — one bar, four places. */}
           <div style={{ maxWidth: 320 }}>

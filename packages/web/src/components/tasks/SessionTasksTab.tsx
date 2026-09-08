@@ -21,6 +21,7 @@ import { TaskProgressBar } from './TaskProgressBar'
 import { TaskComposer } from './TaskComposer'
 import { attachSession, detachSession, useTaskList } from '../../lib/tasks'
 import { TaskPicker } from './TaskPicker'
+import { BetaTag } from '../BetaTag'
 
 export interface SessionTasksTabProps {
   session: { id: string; title: string; harness?: string; task?: string }
@@ -69,6 +70,12 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
 
   return (
     <div style={{ display: 'grid', gap: 12, padding: 10, alignContent: 'start' }}>
+      {/* The caveat rides the FEATURE, not the page: this panel is the board reaching into the
+          session workspace, and a reader here never passes the Deliveries header. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+        <span style={microLabel}>{pt ? 'Entregas' : 'Deliveries'}</span>
+        <BetaTag what={pt ? 'A vinculação de tarefas' : 'Filing sessions under tasks'} />
+      </div>
       {p.session.task
         ? (
           <div style={{ ...surface, padding: 12, display: 'grid', gap: 10 }}>

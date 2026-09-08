@@ -16,6 +16,7 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { overlayPadding } from '../../lib/mobileOverlay'
 import { microLabel, surface } from './board'
 import { TaskComposer } from './TaskComposer'
+import { BetaTag } from '../BetaTag'
 
 export interface NewTaskWizardProps {
   onDone: (taskId: string) => void | Promise<void>
@@ -52,6 +53,7 @@ export function NewTaskWizard({ onDone, onClose, onCreateSession, session }: New
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={microLabel}>{session ? 'New task for this session' : 'New task'}</span>
+          <BetaTag what="The delivery board" />
           <span style={{ flex: 1 }} />
           <button
             onClick={onClose}

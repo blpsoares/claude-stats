@@ -181,13 +181,13 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_tasks",
     description:
-      "List every task on the ALM board with its rollup (cost, rounds, sessions used, tokens) plus a board-wide overview: tasks in flight, delivered, average cost per task and per delivery, top models and harnesses. START HERE to see what work exists and what the other assistants are on.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. List every task on the ALM board with its rollup (cost, rounds, sessions used, tokens) plus a board-wide overview: tasks in flight, delivered, average cost per task and per delivery, top models and harnesses. START HERE to see what work exists and what the other assistants are on.",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
     name: "agentistics_task",
     description:
-      "Open ONE task: its attempts (one per configuration tried), the sessions filed under it with their live state, its comments, subtasks, files, links and full metrics (models, harnesses, agent runs, tokens, delivery time). `ref` is the task id or its exact title.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Open ONE task: its attempts (one per configuration tried), the sessions filed under it with their live state, its comments, subtasks, files, links and full metrics (models, harnesses, agent runs, tokens, delivery time). `ref` is the task id or its exact title.",
     inputSchema: {
       type: "object",
       properties: { ref: { type: "string", description: "Task id or exact title." } },
@@ -197,7 +197,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_create",
     description:
-      "Create a task. A title is required; a description is optional. Creating a title that already exists returns the existing task rather than a duplicate, so this is safe to call before filing work under a name you are not sure exists.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Create a task. A title is required; a description is optional. Creating a title that already exists returns the existing task rather than a duplicate, so this is safe to call before filing work under a name you are not sure exists.",
     inputSchema: {
       type: "object",
       properties: { title: { type: "string" }, detail: { type: "string" } },
@@ -207,7 +207,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_status",
     description:
-      "Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report. **`blocked` REQUIRES a `reason` or a `blockedBy` list** and is refused (422) without one: it is the status that names a problem somebody has to go and solve, and a blocked card that does not say what it is waiting on cannot be unblocked by anyone but you. Pass `actor` (who you are) so the move is recorded against you in the activity log.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report. **`blocked` REQUIRES a `reason` or a `blockedBy` list** and is refused (422) without one: it is the status that names a problem somebody has to go and solve, and a blocked card that does not say what it is waiting on cannot be unblocked by anyone but you. Pass `actor` (who you are) so the move is recorded against you in the activity log.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,7 +233,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_comment",
     description:
-      "Leave a comment on a task. Use it to tell the person and the other assistants what you did, what you found, or what you are blocked on. `author` is free text — say who you are (e.g. 'claude:3f5f').",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Leave a comment on a task. Use it to tell the person and the other assistants what you did, what you found, or what you are blocked on. `author` is free text — say who you are (e.g. 'claude:3f5f').",
     inputSchema: {
       type: "object",
       properties: { ref: { type: "string" }, body: { type: "string" }, author: { type: "string" } },
@@ -243,7 +243,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_subtask",
     description:
-      "Add a subtask, or change one. Pass `title` to add; pass `id` with `done`, `status`, `assignee`, `dueDate`, `startDate` or `sessionId` to edit one. A subtask carries the same columns its parent does, but no cost of its own: cost is measured per SESSION and rolls up to the task.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Add a subtask, or change one. Pass `title` to add; pass `id` with `done`, `status`, `assignee`, `dueDate`, `startDate` or `sessionId` to edit one. A subtask carries the same columns its parent does, but no cost of its own: cost is measured per SESSION and rolls up to the task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -266,7 +266,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_link",
     description:
-      "Attach a link to a task — a pull request, an issue, a document. Pass `url` (http/https only) with an optional `label` and `kind` ('pr', 'issue', …). Pass `remove` with a link id to detach one.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Attach a link to a task — a pull request, an issue, a document. Pass `url` (http/https only) with an optional `label` and `kind` ('pr', 'issue', …). Pass `remove` with a link id to detach one.",
     inputSchema: {
       type: "object",
       properties: {
@@ -282,7 +282,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_blocked_by",
     description:
-      "Set which tasks must finish before this one can proceed. Pass the full list of blocker task ids (it replaces, it does not append). A task cannot block itself.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Set which tasks must finish before this one can proceed. Pass the full list of blocker task ids (it replaces, it does not append). A task cannot block itself.",
     inputSchema: {
       type: "object",
       properties: { ref: { type: "string" }, blockedBy: { type: "array", items: { type: "string" } } },
@@ -292,7 +292,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_next",
     description:
-      "THE ORCHESTRATION CALL: what you can pick up right now. Returns the tasks that are open, not blocked by unfinished work, and not in another agent's hands — most urgent first, numbered from 1. It also returns `withheld`, every task that is NOT available with the reason (closed / blocked / claimed / status), because an agent told 'nothing' learns nothing; and `progress`, which separates 'it is all done' from 'everything is in somebody's hands right now'. Pass `actor` (who you are) so a task you already hold comes back as available to you rather than as taken.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. THE ORCHESTRATION CALL: what you can pick up right now. Returns the tasks that are open, not blocked by unfinished work, and not in another agent's hands — most urgent first, numbered from 1. It also returns `withheld`, every task that is NOT available with the reason (closed / blocked / claimed / status), because an agent told 'nothing' learns nothing; and `progress`, which separates 'it is all done' from 'everything is in somebody's hands right now'. Pass `actor` (who you are) so a task you already hold comes back as available to you rather than as taken.",
     inputSchema: {
       type: "object",
       properties: {
@@ -305,7 +305,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_claim",
     description:
-      "TAKE a task before working on it, so two agents cannot do the same one twice. This is a LEASE, not a lock: it expires (default 30 minutes) and the task returns to the board on its own, so an agent that dies does not hold work forever. Re-claiming as the same `by` REFRESHES the lease — do that while you are still working. Pass `release: true` to give it back when you finish or stop. A refusal names who holds it and until when; `takeover` is for a person overriding a live claim on purpose and an agent should not send it.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. TAKE a task before working on it, so two agents cannot do the same one twice. This is a LEASE, not a lock: it expires (default 30 minutes) and the task returns to the board on its own, so an agent that dies does not hold work forever. Re-claiming as the same `by` REFRESHES the lease — do that while you are still working. Pass `release: true` to give it back when you finish or stop. A refusal names who holds it and until when; `takeover` is for a person overriding a live claim on purpose and an agent should not send it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -324,7 +324,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_activity",
     description:
-      "What has been HAPPENING, newest first — status moves, claims, releases, priority and assignee changes, sessions filed. Pass `ref` for one task, or nothing for the whole board. On a board several agents drive this is how you find out what the others did without asking them.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. What has been HAPPENING, newest first — status moves, claims, releases, priority and assignee changes, sessions filed. Pass `ref` for one task, or nothing for the whole board. On a board several agents drive this is how you find out what the others did without asking them.",
     inputSchema: {
       type: "object",
       properties: { ref: { type: "string" }, limit: { type: "number" } },
@@ -334,7 +334,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_edit",
     description:
-      "Set a task's fields: `title`, `detail`, `priority` (urgent | high | medium | low | none), `assignee`, `dueDate` / `startDate` (yyyy-mm-dd), `labels`. An absent field is left alone; an EMPTY STRING clears it. `priority` defaults to `none`, which means 'nobody has said' and is not the same as `low`. Pass `actor` so the change is recorded against you in the activity log.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Set a task's fields: `title`, `detail`, `priority` (urgent | high | medium | low | none), `assignee`, `dueDate` / `startDate` (yyyy-mm-dd), `labels`. An absent field is left alone; an EMPTY STRING clears it. `priority` defaults to `none`, which means 'nobody has said' and is not the same as `low`. Pass `actor` so the change is recorded against you in the activity log.",
     inputSchema: {
       type: "object",
       properties: {
@@ -354,7 +354,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_session",
     description:
-      "File a SESSION under a task, which is what makes the task measurable: its cost, tokens, rounds and harness all come from the sessions filed under it. Pass `sessionId` (a managed session id or conversation id) with `ref`, or `detach` with a session id to unfile one. The task inherits the session's repository when it has none.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. File a SESSION under a task, which is what makes the task measurable: its cost, tokens, rounds and harness all come from the sessions filed under it. Pass `sessionId` (a managed session id or conversation id) with `ref`, or `detach` with a session id to unfile one. The task inherits the session's repository when it has none.",
     inputSchema: {
       type: "object",
       properties: {
@@ -368,7 +368,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_delete",
     description:
-      "Delete a task and its comments, subtasks, files and links. The SESSIONS filed under it are kept — deleting a board entry never deletes work.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Delete a task and its comments, subtasks, files and links. The SESSIONS filed under it are kept — deleting a board entry never deletes work.",
     inputSchema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
   },
   {

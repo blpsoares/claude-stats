@@ -27,7 +27,10 @@ export type TaskCommand =
   | { kind: 'help' }
   | { kind: 'error'; message: string }
 
+// The BETA is in the usage line because that is what a person meets when they get the command
+// wrong — the one moment they are certainly reading it.
 const USAGE = 'Usage: agentop task [ls | show <id|name> | deliver <id|name> | abandon <id|name>]'
+  + '\n(beta — the delivery board is new and still changing)'
 
 export function parseTaskArgs(argv: string[]): TaskCommand {
   const json = argv.includes('--json')
