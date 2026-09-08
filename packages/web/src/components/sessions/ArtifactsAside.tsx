@@ -2635,11 +2635,37 @@ function McpTab({ lang, list, error, cwd, onChanged }: {
             border: '1px solid var(--border-subtle)',
           }}
         >
+          {/* THE THREE SHAPES, SHOWN. This said them in prose — "the whole block, one named entry,
+              or just the config" — and was reported as not knowing which to use, with two of the
+              three pasted side by side to ask which was right. Both were. A JSON shape is something
+              you recognise by SEEING it; a sentence describing one is a sentence you have to
+              translate into the thing before you can compare it with what is on your clipboard.
+              `parseMcpPaste` accepts all three and has since it was written — this is only the
+              screen catching up with what the parser already does. */}
           <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
             {pt
-              ? 'Cole o JSON do servidor — o bloco `mcpServers` inteiro, uma entrada nomeada, ou só a configuração (aí o nome é obrigatório).'
-              : 'Paste the server’s JSON — the whole `mcpServers` block, one named entry, or just the config (then the name is required).'}
+              ? 'Cole o JSON do servidor. Qualquer um destes três funciona:'
+              : 'Paste the server’s JSON. Any of these three works:'}
           </p>
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 5,
+            padding: '6px 8px', borderRadius: 6,
+            background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
+          }}>
+            {([
+              ['{"mcpServers": {"serena": {…}}}', pt ? 'o bloco inteiro, como vem no README' : 'the whole block, as a README gives it'],
+              ['{"serena": {…}}', pt ? 'só a entrada nomeada' : 'just the named entry'],
+              ['{"command": "serena", "args": […]}', pt ? 'só a configuração — aí o Nome abaixo é obrigatório' : 'just the config — then the Name below is required'],
+            ] as const).map(([shape, what]) => (
+              <div key={shape} style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }}>
+                <code style={{
+                  fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 10.5,
+                  color: 'var(--text-secondary)', overflowWrap: 'anywhere',
+                }}>{shape}</code>
+                <span style={{ fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>{what}</span>
+              </div>
+            ))}
+          </div>
           <textarea
             value={paste}
             onChange={e => setPaste(e.target.value)}
