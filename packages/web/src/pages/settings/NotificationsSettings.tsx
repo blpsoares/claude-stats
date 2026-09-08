@@ -29,6 +29,28 @@ export default function NotificationsSettings() {
   // simply absent, so the button below could never do anything and the screen had no way to say
   // why. Read once, in an effect, so a server render never touches `navigator`.
   const [support, setSupport] = useState<NotificationSupport>('ok')
+  /**
+   * WHERE THIS DASHBOARD IS ALREADY SERVED OVER HTTPS, when it is.
+   *
+   * The page cannot work this out: from inside a browser one IP address looks like any other, and
+   * the machine's name on a tailnet is not something the document knows. The SERVER reads a
+   * `tailscale serve` configuration that already exists and reports the origin only when it
+   * provably proxies to this very dashboard — so the row stops being a rule and becomes a link.
+   *
+   * Asked for ONLY when the origin is insecure: that is the one state where the answer changes
+   * anything, and it spawns a process on the machine.
+   */
+  const [secureOrigin, setSecureOrigin] = useState<string | null>(null)
+  useEffect(() => {
+    if (support !== 'insecure') return
+    let alive = true
+    void fetch('/api/secure-origin')
+      .then(r => (r.ok ? r.json() : null))
+      .then((j: { origin?: string } | null) => { if (alive && j?.origin) setSecureOrigin(j.origin) })
+      // A hint that cannot be fetched is simply not shown — the sentence above still stands alone.
+      .catch(() => {})
+    return () => { alive = false }
+  }, [support])
 
   useEffect(() => {
     setPermission(getBrowserNotificationPermission())
@@ -177,9 +199,13 @@ export default function NotificationsSettings() {
                   <ShieldAlert size={12} style={{ color: 'var(--anthropic-orange)' }} />
                   <span>
                     {support === 'insecure'
-                      ? (pt
-                          ? 'Esta página está em http://, e notificações (assim como o service worker e a instalação) só existem em uma origem segura. Se você acessa por Tailscale, use `tailscale serve` para servir em https:// pelo nome da máquina — é o que destrava tudo isto.'
-                          : 'This page is on http://, and notifications — like the service worker and installability — exist only on a secure origin. If you reach it over Tailscale, use `tailscale serve` to serve it over https:// on the machine name; that is what unlocks all of this.')
+                      ? (secureOrigin
+                          ? (pt
+                              ? 'Esta página está em http://, e notificações (assim como o service worker e a instalação) só existem em uma origem segura. Esta máquina JÁ é servida em https — abra o painel pelo endereço abaixo e adicione-o à tela de início a partir dele.'
+                              : 'This page is on http://, and notifications — like the service worker and installability — exist only on a secure origin. This machine is ALREADY served over https — open the dashboard at the address below and add it to your Home Screen from there.')
+                          : (pt
+                              ? 'Esta página está em http://, e notificações (assim como o service worker e a instalação) só existem em uma origem segura. Se você acessa por Tailscale, use `tailscale serve` para servir em https:// pelo nome da máquina — é o que destrava tudo isto.'
+                              : 'This page is on http://, and notifications — like the service worker and installability — exist only on a secure origin. If you reach it over Tailscale, use `tailscale serve` to serve it over https:// on the machine name; that is what unlocks all of this.'))
                       : support === 'needs-safari'
                         ? (pt
                             ? 'Este app foi adicionado à tela de início pelo Chrome, e no iPhone só um app adicionado pelo Safari roda de verdade em modo standalone — que é o único que recebe notificações. Remova este ícone e adicione de novo pelo Safari.'
@@ -191,6 +217,23 @@ export default function NotificationsSettings() {
                           : (pt
                               ? 'Este navegador não oferece notificações. Os alertas sonoros continuam funcionando.'
                               : 'This browser offers no notifications. The sound alerts still work.')}
+                    {/* THE ADDRESS, not the rule. The sentence above can only ever name
+                        `tailscale serve`; this is where this machine is actually served, read from
+                        a configuration that already exists — so the row becomes something to press
+                        rather than something to go and do. Absent unless the server could prove an
+                        https origin proxies to THIS dashboard. */}
+                    {support === 'insecure' && secureOrigin && (
+                      <a
+                        href={secureOrigin}
+                        style={{
+                          display: 'block', marginTop: 8, fontSize: 12, lineHeight: 1.5,
+                          color: 'var(--anthropic-orange)', overflowWrap: 'anywhere',
+                          textDecoration: 'none', fontWeight: 600,
+                        }}
+                      >
+                        {pt ? `Abrir em ${secureOrigin}` : `Open at ${secureOrigin}`}
+                      </a>
+                    )}
                   </span>
                 </>
               ) : permission === 'granted' ? (
