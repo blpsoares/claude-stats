@@ -2280,8 +2280,10 @@ harness must not break.
   same reason as `repo-facts.ts`'s negative TTL. And the two costs are separated: Claude's DIRECT
   path is one `stat` and is checked on EVERY call, so a new session is readable the moment its file
   appears, while only the SCAN (a `readdir` plus a `stat` per project — 281 of them on a real
-  machine) is paced by the TTL. **claude, codex and kimi** memoized and are fixed; **antigravity and
-  copilot** re-check their paths every call and are immune by construction; gemini has no reader.
+  machine) is paced by the TTL. **claude, codex and kimi** memoized and are fixed; **antigravity,
+  copilot and gemini** need no memo — each computes or checks its two candidate paths on every call
+  — and are immune by construction. A new reader that needs a DIRECTORY LISTING to find its file
+  needs this memo, and needs it this way round.
 - **A SESSION'S GIT STATS ARE READ WHERE IT WORKED, NOT WHERE IT IS FILED.** `project_path` is the
   transcript's FIRST cwd — the project the session belongs to — and `current_cwd` is where it ended
   up. They differ exactly in the git-WORKTREE case this file mandates for concurrent work, and a
