@@ -18,9 +18,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { Clock, Pin, PinOff, Plus, RotateCcw, Search, Send, X } from 'lucide-react'
 import type { Filters } from '@agentistics/core'
 import {
-  ACTIVE_STATES, DEFAULT_ORDER, filterSessions, sessionNotify, sortSessions,
-  type ControlSession,
+  ACTIVE_STATES, filterSessions, sessionNotify,
+  type ControlSession, type SessionGroup,
 } from '@agentistics/tui/control/session-fleet'
+import { projectGroups, showsProjectHeadings } from '../../lib/fleetGroups'
 import { rowSelected } from '../../lib/fleetSelection'
 import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
@@ -295,46 +296,122 @@ export function SessionsAside({
    * is running, ranked by what needs you most, and everything else beneath it.
    *
    * `DEFAULT_ORDER` (`state`, via `sessionRank`) is the SAME ranking the terminal cockpit breaks
-   * ties on, so "sorted by status" means one thing in both places.
+   * ties on, so "sorted by status" means one thing in both places — `projectGroups` applies it
+   * inside each project band and orders the bands themselves by their most urgent member.
+   *
+   * Inside a band the rows are grouped BY PROJECT (`lib/fleetGroups.ts`), and a band holding one
+   * project draws no heading at all — see that module's header. On a machine whose whole fleet sits
+   * in one checkout this therefore looks exactly as it did.
    */
-  const bands = useMemo((): { label: string; rows: ControlSession[] }[] => {
+  const bands = useMemo((): { label: string; groups: SessionGroup[] }[] => {
     const rest = matched.filter(r => !pinned.has(pinKeyOf(r)))
     return [
-      { label: pt ? 'Ativas' : 'Active', rows: sortSessions(rest.filter(r => active.has(r.state)), DEFAULT_ORDER) },
+      { label: pt ? 'Ativas' : 'Active', groups: projectGroups(rest.filter(r => active.has(r.state)), lang) },
       // Never computed while activeOnly is on — those rows are the ones the switch is withholding,
       // not a second list to render beside it.
-      { label: pt ? 'Inativas' : 'Inactive', rows: activeOnly ? [] : sortSessions(rest.filter(r => !active.has(r.state)), DEFAULT_ORDER) },
+      { label: pt ? 'Inativas' : 'Inactive', groups: activeOnly ? [] : projectGroups(rest.filter(r => !active.has(r.state)), lang) },
     ]
-  }, [matched, pinned, active, activeOnly, pt])
+  }, [matched, pinned, active, activeOnly, pt, lang])
 
-  const total = bands.reduce((n, b) => n + b.rows.length, 0) + pinnedRows.length
+  const total = bands.reduce(
+    (n, b) => n + b.groups.reduce((m, g) => m + g.sessions.length, 0),
+    0,
+  ) + pinnedRows.length
   const filterCount = (filters.harnesses?.length ?? 0) + filters.projects.length
     + (filters.repos?.length ?? 0) + filters.models.length
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, gap: 10, paddingTop: 4 }}>
-      {!hideNew && (
-      <button
-        onClick={() => setCreating(true)}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-          margin: '0 2px', padding: '9px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
-          border: '1px dashed var(--border)', background: 'transparent',
-          color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12.5, fontWeight: 600,
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
-          e.currentTarget.style.color = 'var(--anthropic-orange)'
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.borderColor = 'var(--border)'
-          e.currentTarget.style.color = 'var(--text-secondary)'
-        }}
-      >
-        <Plus size={14} />
-        {pt ? 'Nova sessão' : 'New session'}
-      </button>
-      )}
+      {/*
+        * ONE ROW: the search, and the two standing verbs as icons beside it.
+        *
+        * Search is what the column is used for on every visit; starting a session and writing to
+        * several are things somebody does occasionally. Two full-width dashed buttons stacked above
+        * the field spent three rows of a 268px column on that ranking inverted — and those rows come
+        * straight out of the list, which is the thing being searched.
+        *
+        * An icon may not carry the meaning alone, so both keep `title` AND `aria-label` with the
+        * words they used to print. `+` is the one solid accent control in the aside because it is
+        * the only one that CREATES something; "send to several" stays quiet beside it. "Reopen what
+        * fell" is deliberately NOT here and keeps its full-width button below: it names a COUNT, and
+        * a count is not something an icon can say.
+        */}
+      <div style={{ display: 'flex', alignItems: 'stretch', gap: 6, padding: '0 2px', minHeight: tap }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0, display: 'flex' }}>
+          <Search
+            size={13}
+            style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }}
+          />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder={pt ? 'Buscar sessão…' : 'Search sessions…'}
+            style={{
+              flex: 1, minWidth: 0, boxSizing: 'border-box',
+              padding: '9px 26px 9px 30px', borderRadius: 9,
+              border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)', fontFamily: 'inherit',
+              // 16px on mobile or iOS Safari zooms the viewport; the global guard in index.css
+              // handles it, so this stays the desktop figure and is not overridden inline.
+              fontSize: 12.5, outline: 'none',
+            }}
+          />
+          {query !== '' && (
+            <button
+              onClick={() => setQuery('')}
+              aria-label={pt ? 'Limpar busca' : 'Clear search'}
+              style={{
+                position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+                display: 'flex', border: 'none', background: 'transparent',
+                color: 'var(--text-tertiary)', cursor: 'pointer', padding: 2,
+              }}
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+        {!hideNew && (
+          <button
+            onClick={() => setCreating(true)}
+            aria-label={pt ? 'Nova sessão' : 'New session'}
+            title={pt ? 'Nova sessão' : 'New session'}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              width: tap ?? 34, padding: 0, borderRadius: 9, cursor: 'pointer',
+              border: '1px solid var(--anthropic-orange)', background: 'var(--anthropic-orange)',
+              color: '#141414', fontFamily: 'inherit',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.filter = 'brightness(1.1)' }}
+            onMouseLeave={e => { e.currentTarget.style.filter = 'none' }}
+          >
+            <Plus size={17} />
+          </button>
+        )}
+        {showSend && (
+          <button
+            onClick={() => setPicking('send')}
+            aria-label={pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
+            title={pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              width: tap ?? 34, padding: 0, borderRadius: 9, cursor: 'pointer',
+              border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+              color: 'var(--text-tertiary)', fontFamily: 'inherit',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
+              e.currentTarget.style.color = 'var(--anthropic-orange)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.borderColor = 'var(--border-subtle)'
+              e.currentTarget.style.color = 'var(--text-tertiary)'
+            }}
+          >
+            <Send size={14} />
+          </button>
+        )}
+      </div>
 
       {/*
         * THE GROUP VERBS, under "New session" because that is where starting work lives.
@@ -358,29 +435,6 @@ export function SessionsAside({
           {pt
             ? (groupRows.fellRows.length === 1 ? 'Reabrir 1 sessão que caiu' : `Reabrir ${groupRows.fellRows.length} sessões que caíram`)
             : (groupRows.fellRows.length === 1 ? 'Reopen 1 session that fell' : `Reopen ${groupRows.fellRows.length} sessions that fell`)}
-        </button>
-      )}
-
-      {showSend && (
-        <button
-          onClick={() => setPicking('send')}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
-            margin: '0 2px', padding: '7px 12px', borderRadius: 9, cursor: 'pointer', minHeight: tap,
-            border: '1px dashed var(--border)', background: 'transparent',
-            color: 'var(--text-tertiary)', fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.borderColor = 'var(--anthropic-orange)'
-            e.currentTarget.style.color = 'var(--anthropic-orange)'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-tertiary)'
-          }}
-        >
-          <Send size={13} />
-          {pt ? 'Enviar prompt em massa' : 'Send a prompt to several'}
         </button>
       )}
 
@@ -425,41 +479,6 @@ export function SessionsAside({
           }}
         />
       )}
-
-      <div style={{ position: 'relative', padding: '0 2px' }}>
-        <Search
-          size={13}
-          style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }}
-        />
-        <input
-          ref={searchRef}
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          placeholder={pt ? 'Buscar sessão…' : 'Search sessions…'}
-          style={{
-            width: '100%', boxSizing: 'border-box',
-            padding: '9px 26px 9px 30px', borderRadius: 9,
-            border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-            color: 'var(--text-primary)', fontFamily: 'inherit',
-            // 16px on mobile or iOS Safari zooms the viewport; the global guard in index.css
-            // handles it, so this stays the desktop figure and is not overridden inline.
-            fontSize: 12.5, outline: 'none',
-          }}
-        />
-        {query !== '' && (
-          <button
-            onClick={() => setQuery('')}
-            aria-label={pt ? 'Limpar busca' : 'Clear search'}
-            style={{
-              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
-              display: 'flex', border: 'none', background: 'transparent',
-              color: 'var(--text-tertiary)', cursor: 'pointer', padding: 2,
-            }}
-          >
-            <X size={12} />
-          </button>
-        )}
-      </div>
 
       {notice && (
         <p role="status" style={{
@@ -574,7 +593,7 @@ export function SessionsAside({
                 // The label is not unique — two dimensions can legitimately produce one word, and
                 // an empty band still holds its place in the order.
                 key={`${i}-${b.label}`}
-                label={b.label} rows={b.rows} pinned={pinned}
+                label={b.label} groups={b.groups} pinned={pinned}
                 sessionId={sessionId} tap={tap} onPin={flip}
                 onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(sessionPath(s.id)))}
                 {...(rowsById ? { rowsById } : {})}
@@ -706,9 +725,10 @@ export function SessionsAside({
 
 /** One band of the two-way (active/inactive) split. Absent when it would be empty — an empty
  *  band with a heading and no rows under it is a label pretending to be information. */
-function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
+function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
   label: string
-  rows: readonly ControlSession[]
+  /** The band's rows, already grouped by project and ordered — see `lib/fleetGroups.ts`. */
+  groups: readonly SessionGroup[]
   pinned: ReadonlySet<string>
   sessionId?: string
   tap?: number
@@ -717,7 +737,11 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsB
   rowsById?: Map<string, { verbs: RowVerb[] }>
   onOpenMenu: (session: ControlSession, x: number, y: number, verbs: RowVerb[]) => void
 }) {
-  if (rows.length === 0) return null
+  const count = groups.reduce((n, g) => n + g.sessions.length, 0)
+  if (count === 0) return null
+  // One project under this band names it twice — the band heading is directly above. See the rule
+  // in `fleetGroups.ts`; it is the same one the cockpit's cascade applies to its own root.
+  const headings = showsProjectHeadings(groups)
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{
@@ -726,23 +750,36 @@ function SessionBand({ label, rows, pinned, sessionId, tap, onPin, onOpen, rowsB
         textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-tertiary)',
       }}>
         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-        <span style={{ marginLeft: 'auto', fontWeight: 600, opacity: 0.75 }}>{rows.length}</span>
+        <span style={{ marginLeft: 'auto', fontWeight: 600, opacity: 0.75 }}>{count}</span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {rows.map(s => (
-          <SessionRow
-            key={s.id}
-            session={s}
-            selected={rowSelected(s, sessionId)}
-            pinned={pinned.has(pinKeyOf(s))}
-            {...(tap ? { tap } : {})}
-            onPin={() => onPin(s)}
-            onOpen={() => onOpen(s)}
-            {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
-            onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
-          />
-        ))}
-      </div>
+      {groups.map(g => (
+        <div key={g.key} style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: headings ? 10 : 0 }}>
+          {headings && (
+            // Deliberately quieter than the band above it — lowercase, no letter-spacing — so the
+            // two headings read as a hierarchy rather than as two lists.
+            <div style={{
+              display: 'flex', alignItems: 'baseline', gap: 6, padding: '4px 9px 2px',
+              fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)',
+            }}>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.label}</span>
+              <span style={{ marginLeft: 'auto', opacity: 0.7 }}>{g.sessions.length}</span>
+            </div>
+          )}
+          {g.sessions.map(s => (
+            <SessionRow
+              key={s.id}
+              session={s}
+              selected={rowSelected(s, sessionId)}
+              pinned={pinned.has(pinKeyOf(s))}
+              {...(tap ? { tap } : {})}
+              onPin={() => onPin(s)}
+              onOpen={() => onOpen(s)}
+              {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
+              onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
+            />
+          ))}
+        </div>
+      ))}
     </div>
   )
 }
