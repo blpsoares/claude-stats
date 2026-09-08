@@ -2050,7 +2050,12 @@ packages/web/src/components/tasks/   board.ts (vocabulary) · TaskTable · TaskB
   — that one is `localShell` in `capability-guard.ts` precisely because the board is a LOCAL
   store), grouped BY MACHINE with a see-all switch, and **read-only**: a machine that shares
   nothing is listed and EMPTY, because "has no deliveries" and "shares none of them" are different
-  facts.
+  facts. It is **scoped to the viewer by the SAME rule `/api/data` uses** (owner sees all; anyone
+  else the teams they MANAGE plus the machines they own) and a machine outside that scope is never
+  BUILT, not merely filtered — a board is the most readable data on a central, and a second
+  visibility model for it would be a second place to get it wrong. **A delivery may only name its
+  OWN machine's sessions**: `sessionIds` comes from the member, so anything else counts as MISSING
+  rather than resolving a neighbour's cost and tokens under this delivery.
 - **New `/api/tasks` sub-routes ride the existing `capability-guard.ts` entries** (`/api/tasks`,
   `/api/task-files` → `localShell`). `GET /api/tasks/next` and `/api/tasks/activity` are matched
   BEFORE the generic `<ref>` GET, or they resolve as task references and 404.

@@ -3,7 +3,7 @@ import type { SessionMeta, SharedTask } from '@agentistics/core'
 import { centralTaskBoard, centralTaskRow, type TeamTaskInput } from './team-task-view'
 
 const meta = (over: Partial<SessionMeta> = {}): SessionMeta => ({
-  session_id: 'c1', project_path: '/repo', start_time: '2026-09-05T10:00:00.000Z',
+  session_id: 'c1', memberId: 'm1', project_path: '/repo', start_time: '2026-09-05T10:00:00.000Z',
   harness: 'claude', git_remote: 'github.com/org/repo',
   input_tokens: 100, output_tokens: 50,
   cache_read_input_tokens: 800, cache_creation_input_tokens: 50,
@@ -109,5 +109,77 @@ describe('centralTaskBoard', () => {
       costOf: () => 1,
     })
     expect(board[0]!.rows.map(r => r.task.id)).toEqual(['new', 'old'])
+  })
+})
+
+/**
+ * The team boundary. A delivery carries a title, a description and comment bodies, so the board is
+ * scoped by the same rule `/api/data` applies to the sessions it is measured from — and these
+ * assert the fail-closed direction, which is the one an authorization bug gets wrong.
+ */
+describe('centralTaskBoard scoping', () => {
+  const laptop = input({ memberId: 'm1', user: 'laptop' })
+  const other = input({ memberId: 'm2', user: 'someone-elses' })
+  const machines = [
+    { memberId: 'm1', user: 'laptop', teamIds: ['team-a'] },
+    { memberId: 'm2', user: 'someone-elses', teamIds: ['team-b'] },
+  ]
+  const board = (scope: Parameters<typeof centralTaskBoard>[0]['scope']) => centralTaskBoard({
+    tasks: [laptop, other], machines, metas: metasOf(meta()), costOf: () => 1, scope,
+  })
+
+  it('shows every machine to an owner (no scope)', () => {
+    expect(board(null).map(b => b.memberId).sort()).toEqual(['m1', 'm2'])
+  })
+
+  it('withholds a machine of a team the viewer does not manage — band and rows alike', () => {
+    const out = board({ teams: new Set(['team-a']), owned: new Set() })
+    expect(out.map(b => b.memberId)).toEqual(['m1'])
+    // Not merely an empty band: the other machine's deliveries are never built, so no title of
+    // theirs can reach this viewer through any field.
+    expect(JSON.stringify(out)).not.toContain('someone-elses')
+  })
+
+  it('shows a machine the viewer OWNS even when it belongs to no team', () => {
+    const loose = [{ memberId: 'm1', user: 'laptop', teamIds: [] }]
+    const out = centralTaskBoard({
+      tasks: [laptop], machines: loose, metas: metasOf(meta()), costOf: () => 1,
+      scope: { teams: new Set(), owned: new Set(['m1']) },
+    })
+    expect(out.map(b => b.memberId)).toEqual(['m1'])
+  })
+
+  it('withholds a delivery from a machine the roster cannot attribute', () => {
+    // A revoked or legacy identity carries no team. An owner still sees it; a scoped viewer must
+    // not, or an unattributable board would be readable by everybody.
+    const out = centralTaskBoard({
+      tasks: [input({ memberId: 'gone', user: 'old' })], machines: [],
+      metas: metasOf(meta()), costOf: () => 1,
+      scope: { teams: new Set(['team-a']), owned: new Set() },
+    })
+    expect(out).toEqual([])
+    expect(centralTaskBoard({
+      tasks: [input({ memberId: 'gone', user: 'old' })], machines: [],
+      metas: metasOf(meta()), costOf: () => 1, scope: null,
+    })).toHaveLength(1)
+  })
+
+  it('gives a principal with no team and no machine nothing at all', () => {
+    expect(board({ teams: new Set(), owned: new Set() })).toEqual([])
+  })
+})
+
+describe('a delivery may only name its own machine\'s sessions', () => {
+  it('treats another machine\'s session as missing, never as its own measurement', () => {
+    // `sessionIds` arrives from the member. Resolving it against every session on the central
+    // would let one machine read a neighbour's cost and tokens back off its own board.
+    const row = centralTaskRow(
+      input({ memberId: 'm1', shared: shared({ sessionIds: ['c1', 'c2'] }) }),
+      metasOf(meta({ session_id: 'c1', memberId: 'm1' }), meta({ session_id: 'c2', memberId: 'm2' })),
+      () => 2,
+    )
+    expect(row.rollup.sessionsLinked).toBe(1)
+    expect(row.sessionsMissing).toBe(1)
+    expect(row.rollup.costUSD).toBe(2)
   })
 })

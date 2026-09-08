@@ -14,30 +14,62 @@
 
 import { loadAllTeamTasks } from './team-tasks'
 import { loadTeamSessionsFromMongo } from './team-source'
-import { getMemberNameMap, listMembers } from './team-tokens'
+import { getMemberNameMap, listMachines } from './team-tokens'
 import { sessionCostUSD } from './member-metrics'
-import { centralTaskBoard, type CentralTaskMachine } from './team-task-view'
+import { dataTeamIdsOf } from './team-scope'
+import { centralTaskBoard, type CentralTaskMachine, type MachineScope } from './team-task-view'
+import type { Principal } from './iam-types'
 import type { SessionMeta } from '@agentistics/core'
 
 export interface CentralTaskReply {
   machines: CentralTaskMachine[]
 }
 
-export async function buildCentralTaskBoard(): Promise<CentralTaskReply> {
-  const [nameMap, sessions, members] = await Promise.all([
+/**
+ * The board, scoped to what this viewer may read.
+ *
+ * A delivery is the most readable data on a central — a title, a description, comment bodies — so
+ * it is scoped by the SAME rule `/api/data` applies to the sessions those deliveries are measured
+ * from, rather than by a new one: an owner sees every machine; anyone else sees the machines of the
+ * teams they MANAGE plus the machines they own. A second visibility model for the same question is
+ * a second place for it to be answered differently.
+ *
+ * A `null` principal is the local, single-user case (this route only exists on a central, where the
+ * auth gate has already refused an anonymous caller) and is scoped like a non-owner with nothing:
+ * fail closed.
+ */
+export async function buildCentralTaskBoard(principal: Principal | null): Promise<CentralTaskReply> {
+  const [nameMap, sessions, machines] = await Promise.all([
     getMemberNameMap().catch(() => ({} as Record<string, string>)),
     loadTeamSessionsFromMongo().catch(() => [] as SessionMeta[]),
-    listMembers().catch(() => []),
+    listMachines().catch(() => []),
   ])
   const tasks = await loadAllTeamTasks(nameMap).catch(() => [])
   const metas = new Map<string, SessionMeta>()
   for (const s of sessions) if (s.session_id) metas.set(s.session_id, s)
+
+  const scope: MachineScope | null = principal?.role === 'owner'
+    ? null
+    : {
+      teams: principal ? dataTeamIdsOf(principal) : new Set<string>(),
+      owned: new Set(
+        principal
+          ? machines.filter(m => m.accountIds.includes(principal.accountId)).map(m => m.id)
+          : [],
+      ),
+    }
+
   return {
     machines: centralTaskBoard({
       tasks,
-      machines: members.map(m => ({ memberId: m.id, user: nameMap[m.id] ?? m.user })),
+      machines: machines.map(m => ({
+        memberId: m.id,
+        user: nameMap[m.id] ?? m.user,
+        teamIds: m.effectiveTeamIds ?? m.teamIds ?? [],
+      })),
       metas,
       costOf: sessionCostUSD,
+      scope,
     }),
   }
 }

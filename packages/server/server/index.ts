@@ -3072,7 +3072,10 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
     if (url.pathname === '/api/team/tasks' && req.method === 'GET') {
       if (!TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
       const { buildCentralTaskBoard } = await import('./team-task-routes')
-      const body = await buildCentralTaskBoard()
+      // Scoped to the VIEWER, exactly as `/api/data` scopes the sessions these deliveries are
+      // measured from: a board carries free text, and handing every signed-in principal every
+      // machine's would cross the team boundary with the most readable data in the product.
+      const body = await buildCentralTaskBoard(await getPrincipal(req))
       return json(body)
     }
 

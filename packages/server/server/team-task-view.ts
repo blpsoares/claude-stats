@@ -67,7 +67,14 @@ export function centralTaskRow(
   let missing = 0
   for (const id of input.shared.sessionIds) {
     const m = metas.get(id)
-    if (m) found.push(m)
+    // A delivery may only ever name ITS OWN MACHINE's sessions. `sessionIds` arrives from the
+    // member, so without this a machine could list a session id belonging to somebody else and
+    // have the central resolve that session's cost, tokens, harness and repository under its own
+    // delivery — reading a neighbour's numbers back off its own board. The ids are UUIDs and so
+    // not guessable, which makes this hard rather than impossible; the check makes it neither.
+    // A session that is not this machine's counts as MISSING, exactly like one that has not
+    // arrived: the row is measured short and says so, rather than quietly borrowing a figure.
+    if (m && m.memberId === input.memberId) found.push(m)
     else missing++
   }
   // A named session the central does not hold is `meta: null` — a session USED that contributed no
@@ -118,21 +125,65 @@ export function centralTaskRow(
  * out. Ordering by name and not by volume: this is a roster, and a roster that reshuffles as work
  * accrues is one nobody can find a row in twice.
  */
+/**
+ * Which machines a viewer may see the board OF.
+ *
+ * A delivery carries a title, a description and comment bodies somebody wrote — free text, and the
+ * whole reason this feature is gated per task. Handing every signed-in principal every machine's
+ * board would cross the team boundary `/api/data` already draws for the SESSIONS those same
+ * deliveries are measured from, and would do it with the most readable data in the product.
+ *
+ * So the rule is the one that already exists, applied unchanged: an OWNER sees everything; anyone
+ * else sees the machines of the teams they MANAGE (`dataTeamIdsOf` — belonging is not reading) plus
+ * the machines they own, so a loose machine with no team is still visible to its owner. Passing
+ * `null` means "no scoping" and is only ever the owner case, decided by the caller.
+ */
+export interface MachineScope {
+  /** Team ids the viewer may read. */
+  teams: ReadonlySet<string>
+  /** Machines the viewer owns outright. */
+  owned: ReadonlySet<string>
+}
+
+export function machineVisible(
+  m: { memberId: string; teamIds?: readonly string[] },
+  scope: MachineScope | null,
+): boolean {
+  if (!scope) return true
+  if (scope.owned.has(m.memberId)) return true
+  return (m.teamIds ?? []).some(t => scope.teams.has(t))
+}
+
 export function centralTaskBoard(o: {
   tasks: readonly TeamTaskInput[]
-  machines: readonly { memberId: string; user: string }[]
+  machines: readonly { memberId: string; user: string; teamIds?: readonly string[] }[]
   metas: ReadonlyMap<string, SessionMeta>
   costOf: (m: SessionMeta) => number
+  /**
+   * Null for an owner. For anyone else, the machines outside it are not filtered from the list —
+   * they are never built at all, tasks included, so a title cannot reach a viewer through a band
+   * they were not meant to see.
+   */
+  scope?: MachineScope | null
 }): CentralTaskMachine[] {
+  const scope = o.scope ?? null
   const byMachine = new Map<string, CentralTaskMachine>()
+  const roster = new Map<string, { memberId: string; user: string; teamIds?: readonly string[] }>()
   for (const m of o.machines) {
+    roster.set(m.memberId, m)
+    if (!machineVisible(m, scope)) continue
     byMachine.set(m.memberId, { memberId: m.memberId, user: m.user, rows: [] })
   }
   for (const t of o.tasks) {
+    const known = roster.get(t.memberId)
+    // A machine the roster does not list — its token was revoked, or it pushed under a legacy
+    // identity — carries no team, so a SCOPED viewer cannot see it. That is the fail-closed
+    // direction: an unattributable board is withheld rather than shown to everybody. An owner
+    // (no scope) still sees it, under the name it arrived with, so revoking a token never hides
+    // work from the person administering the central.
+    if (!machineVisible({ memberId: t.memberId, ...(known?.teamIds ? { teamIds: known.teamIds } : {}) }, scope)) continue
     const row = centralTaskRow(t, o.metas, o.costOf)
     const band = byMachine.get(t.memberId)
-      // A delivery from a machine the roster does not list is still shown, under the name it
-      // arrived with. Dropping it would hide real work because a token was revoked.
       ?? { memberId: t.memberId, user: t.user, rows: [] }
     band.rows.push(row)
     byMachine.set(t.memberId, band)

@@ -270,6 +270,20 @@ card. So it travels under a second, narrower gate than everything else:
   the workflow runs: text shared under a relationship does not outlive it.
 - **The central's board is read-only.** `GET /api/team/tasks` is authenticated like every other
   team route and there is no write path: the record lives on the machine that owns it.
+- **It is scoped to the VIEWER by the rule `/api/data` already applies** — an owner sees every
+  machine; anyone else sees the machines of the teams they MANAGE (`dataTeamIdsOf`; belonging is
+  not reading) plus the machines they own, so a loose machine is still visible to its owner. A
+  machine outside that scope is not filtered out of the answer, it is never built into it, so no
+  title of theirs can reach the viewer through any field. A machine the roster cannot attribute (a
+  revoked or legacy identity carries no team) is withheld from a scoped viewer and shown to an
+  owner — fail closed. This is deliberately not a new visibility model: a second answer to "who may
+  read this" is a second place for it to be answered differently.
+- **A delivery may only ever name its OWN machine's sessions.** `sessionIds` arrives from the
+  member, so the central resolves each id against that machine's sessions and counts anything else
+  as MISSING. Without that check a machine could list a neighbour's session id and have the central
+  resolve that session's cost, tokens, harness and repository under its own delivery — reading a
+  colleague's numbers back off its own board. The ids are UUIDs and so not guessable, which makes
+  it hard rather than impossible; the check makes it neither.
 
 What is NOT guaranteed here is everything §8 already lists — in particular, **a delivery already
 pushed is disclosed by its removal**, exactly as a repository is. Turning sharing off stops future
