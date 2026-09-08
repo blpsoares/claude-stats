@@ -29,7 +29,7 @@ import { commandSummary, hasUnreadableWrite, shellWrites } from './shell-writes'
 import { classifyUserEntry, type UserEntry } from './chat-envelope'
 import type { ChatTurn } from './chat-turn'
 import { MAX_TAIL_BYTES, TAIL_BYTES, readTailBytes, windowLines } from './transcript-window'
-import { createTranscriptPathMemo } from './transcript-path-memo'
+import { createTranscriptPathMemo, resolveMemoizedPath } from './transcript-path-memo'
 
 // The turn shape now lives in `chat-turn.ts` — every harness reader produces it, and this module
 // is only one of them. Re-exported so nothing that already imports it from here has to move.
@@ -93,17 +93,18 @@ export async function resolveChatTranscriptPath(
   now: number = Date.now(),
 ): Promise<string | null> {
   if (!UUID_RE.test(sessionId)) return null
-  const known = pathMemo.get(sessionId)
-  if (known !== undefined) return known
-
-  const direct = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`)
-  if (await exists(direct)) { pathMemo.remember(sessionId, direct); return direct }
-
-  if (!pathMemo.mayScan(sessionId, now)) return null
-  pathMemo.missed(sessionId, now)
-  const scanned = await scanForTranscript(sessionId, projectsDir)
-  if (scanned !== null) pathMemo.remember(sessionId, scanned)
-  return scanned
+  // The remembered path is VERIFIED before it is answered — Claude Code re-files a transcript under
+  // the project directory of the session's CURRENT cwd, and deletes it outright after 30 days. See
+  // `resolveMemoizedPath`, which is where all three resolvers' shared shape lives.
+  return resolveMemoizedPath(pathMemo, sessionId, {
+    exists,
+    direct: async () => {
+      const p = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`)
+      return await exists(p) ? p : null
+    },
+    scan: () => scanForTranscript(sessionId, projectsDir),
+    now,
+  })
 }
 
 interface Cached {
