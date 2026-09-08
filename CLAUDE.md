@@ -1383,9 +1383,14 @@ The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-
 | `costUSD` | `calcCost()` per model of the subagent's own turns |
 | `status` | `toolUseResult.status` (`failed` → `failed`, anything else → `completed`) |
 
-### What is NOT available for Skills and Tasks
+### What is available for Skills, and what is not for Tasks
 
-- **Skills** (`/commit`, `/review-pr`, etc.) are not recorded as individual tool_use events in the JSONL — only a `skill_listing` attachment appears. Skill invocations can only be inferred indirectly from subsequent tool calls.
+- **Skills ARE recorded** — as a `Skill` tool_use whose `input.skill` names the invoked skill
+  (`superpowers:brainstorming`, `artifact-design`, …). Measured 2026-09-08 on one machine: 104
+  invocations of 25 distinct skills across 57 sessions. This entry previously said the opposite —
+  that only a `skill_listing` attachment appeared and invocations could be inferred indirectly — and
+  that was true before the `Skill` tool existed. It is the reason no adapter counts them yet, not a
+  statement that they cannot be counted.
 - **Tasks** (`TaskCreate`/`TaskUpdate`) have subject/description/status but no token or duration data.
 
 ---
