@@ -1,6 +1,7 @@
-import { test, expect } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import {
   PICK_TABS,
+  buildPickRows,
   filterPickRows,
   initialPick,
   pickAllState,
@@ -118,3 +119,58 @@ test('the empty state names what emptied the list', () => {
   expect(pickTabLabel('active', true)).toBe('Ativas')
   expect(pickTabHint('all', true)).not.toBe(pickTabHint('active', true))
 })
+
+describe('buildPickRows — one row per SESSION, whatever the caller iterated', () => {
+  const live = (id: string, conversationId?: string) => ({
+    id,
+    ...(conversationId ? { conversationId } : {}),
+    title: `session ${id}`,
+    project: 'agentistics',
+    verbs: [{ action: 'prompt', enabled: true }],
+  })
+  const dead = (id: string) => ({
+    id, title: `session ${id}`, stateLabel: 'exited', fell: true,
+    verbs: [{ action: 'prompt', enabled: false }],
+  })
+
+  /**
+   * THE REPORTED CASE — the broadcast picker's `Active` tab read **22** on a machine running
+   * **11**, and `All` read 358 against a fleet of 330.
+   *
+   * `fleetIndex` keys every row TWICE on purpose (by its own id AND by its conversation id, so one
+   * map answers a link carrying either), and the picker was built by iterating that map's VALUES.
+   * Every session that knows its conversation was therefore offered twice and counted twice.
+   */
+  it('a row reached under two keys is ONE row', () => {
+    const a = live('agentop-1', 'uuid-1')
+    const index = new Map([['agentop-1', a], ['uuid-1', a], ['agentop-2', live('agentop-2')]])
+    const out = buildPickRows(index.values(), false)
+    expect(out.sendRows).toHaveLength(2)
+    expect(out.sendable).toBe(2)
+  })
+
+  it('counts only what can actually take the prompt', () => {
+    const out = buildPickRows([live('a'), dead('b'), live('c')], false)
+    expect(out.sendable).toBe(2)
+    // The un-takeable row is SHOWN and disabled, never hidden — a missing session reads as lost.
+    expect(out.sendRows).toHaveLength(3)
+    expect(out.sendRows.find(r => r.id === 'b')?.enabled).toBe(false)
+    expect(out.sendRows.find(r => r.id === 'b')?.reason).toBeTruthy()
+  })
+
+  it('a row that fell is offered for reopening, once', () => {
+    const d = dead('gone')
+    const index = new Map([['gone', d], ['uuid-gone', d]])
+    expect(buildPickRows(index.values(), false).fellRows).toHaveLength(1)
+  })
+
+  it('a row with no id is not a row', () => {
+    expect(buildPickRows([{ id: '', title: 'x', verbs: [] }], false).sendRows).toHaveLength(0)
+  })
+
+  it('keeps the order it was given — the order the list drew', () => {
+    const out = buildPickRows([live('b'), live('a')], false)
+    expect(out.sendRows.map(r => r.id)).toEqual(['b', 'a'])
+  })
+})
+

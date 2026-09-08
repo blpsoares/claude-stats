@@ -24,7 +24,8 @@ import {
 import { rowSelected } from '../../lib/fleetSelection'
 import { filterFleet, ignoredDimensions } from '../../lib/fleetFilter'
 import { NewSessionModal } from '../sessions/NewSessionModal'
-import { SessionPickModal, type PickModalRow } from '../sessions/SessionPickModal'
+import { SessionPickModal } from '../sessions/SessionPickModal'
+import { buildPickRows } from '../../lib/sessionPick'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
 import { TaskPicker } from '../tasks/TaskPicker'
@@ -176,40 +177,14 @@ export function SessionsAside({
    * that is not running and for one sitting on an open dialog (where a typed line goes into the
    * dialog's filter and the submit takes the highlighted option).
    */
-  const groupRows = useMemo(() => {
-    const fellRows: PickModalRow[] = []
-    const sendRows: PickModalRow[] = []
-    let sendable = 0
-    if (!rowsById) return { fellRows, sendRows, sendable }
-    for (const r of rowsById.values() as Iterable<any>) {
-      const id: string = r.id ?? ''
-      if (!id) continue
-      const base: PickModalRow = {
-        id,
-        title: r.title || (pt ? 'sem título' : 'untitled'),
-        ...(r.project ? { detail: r.project } : r.cwd ? { detail: r.cwd } : {}),
-      }
-      if (r.fell) fellRows.push(base)
-      /*
-       * THE WHOLE FLEET IS OFFERED, and the ones that cannot take a prompt are DISABLED with the
-       * server's own reason beside them — not hidden. A session missing from the list and a session
-       * that cannot be written to look identical from the outside, and the first reads as "agentop
-       * lost it". The `Active` tab is what narrows it for somebody who only wants the runnable ones.
-       */
-      const verb = (r.verbs as RowVerb[] | undefined)?.find(v => v.action === 'prompt')
-      const enabled = Boolean(verb?.enabled)
-      if (enabled) sendable++
-      // The verb carries no reason of its own — `prompt` is enabled by being LIVE and nothing else
-      // (a session sitting on a dialog is refused later by the host, which re-reads the screen).
-      // So the reason is that fact, said with the state the SERVER already localized rather than a
-      // second vocabulary invented here.
-      const stateWord = typeof r.stateLabel === 'string' ? r.stateLabel : ''
-      const reason = verb?.reason
-        ?? (pt ? 'não está rodando' : 'not running') + (stateWord ? ` · ${stateWord}` : '')
-      sendRows.push({ ...base, enabled, ...(enabled ? {} : { reason }) })
-    }
-    return { fellRows, sendRows, sendable }
-  }, [rowsById, pt])
+  const groupRows = useMemo(
+    // ONE ROW PER SESSION: `rowsById` is keyed TWICE per row on purpose (by its own id and by its
+    // conversation id, so one map answers a link carrying either), and iterating its values offered
+    // and counted every session that knows its conversation twice — reported as `Active 22` on a
+    // machine running 11. `buildPickRows` owns the dedupe and the rest of this arithmetic.
+    () => buildPickRows(rowsById ? rowsById.values() : [], pt),
+    [rowsById, pt],
+  )
 
   const canAct = Boolean(act) && !hideNew
   const showFell = canAct && groupRows.fellRows.length > 0

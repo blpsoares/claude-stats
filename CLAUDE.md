@@ -2264,6 +2264,15 @@ harness must not break.
   21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
   local day would make it disagree with the cost and the messages beside it, and no day-granular
   split can express a local day for a non-UTC zone.
+- **`fleetIndex` IS A LOOKUP, AND ITS `values()` ARE NOT THE FLEET.** It keys every row TWICE on
+  purpose — by its own id and by its conversation id, so one map answers a link carrying either —
+  so a session that knows its conversation is in it twice. The broadcast picker was built by
+  iterating that map and offered `Active 22` on a machine running 11 (8 `waiting` + 3 `working`),
+  over an `All` of 357 against a fleet of 329: every session with a conversation link was listed
+  twice and counted twice, on a button that writes into live assistants. `buildPickRows`
+  (`web/src/lib/sessionPick.ts`, pure) now owns both picker lists and DEDUPES BY ID — deliberately
+  there rather than at the one caller, because the map is correct as a lookup and the next caller to
+  iterate it would hit the same thing.
 - **A COUNT IS WHAT MATCHED, NEVER WHAT A CAP RETURNED.** The new-session wizard's tabs read
   `Repositories 12 · Projects 12 · Folders 12` on a machine holding 237 / 211 / 5.284 — they were
   counting the rows they had been handed, and `PROJECTS_PER_KIND` is 12, so every tab showed the cap

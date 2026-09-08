@@ -177,3 +177,84 @@ export function pickConfirmLabel(
         : (one ? 'Send to 1 session' : `Send to ${count} sessions`)),
   }
 }
+
+/** What `buildPickRows` reads off a fleet row. Structural, so `FleetRow` stays the source. */
+export interface PickSource {
+  id?: string
+  title?: string
+  project?: string
+  cwd?: string
+  /** This row is one of the sessions the machine TOOK — the server's `FleetRow.fell`. */
+  fell?: boolean
+  /** Already localized by the server — the word the fleet list prints for this row's state. */
+  stateLabel?: string
+  verbs?: readonly { action?: string; enabled?: boolean; reason?: string }[]
+}
+
+/** A picker row plus the two fields the modal renders. */
+export interface PickModalSource extends PickRow {}
+
+export interface PickRowsResult {
+  /** Rows for "reopen what fell". */
+  fellRows: PickModalSource[]
+  /** The WHOLE fleet, with the ones that cannot take a prompt disabled and given a reason. */
+  sendRows: PickModalSource[]
+  /** How many of `sendRows` can actually take the prompt — what decides the verb is offered. */
+  sendable: number
+}
+
+/**
+ * The two picker lists, from whatever the caller is holding — and ONE ROW PER SESSION.
+ *
+ * The dedupe is the reason this is a function rather than a loop in the component. `fleetIndex`
+ * keys every row TWICE on purpose — by its own id AND by its conversation id, so one map answers a
+ * link carrying either — and the picker was built by iterating that map's VALUES. Every session
+ * that knows its conversation was offered twice and counted twice: reported as `Active 22` on a
+ * machine running 11, over an `All` of 358 against a fleet of 330. A count on a button that starts
+ * assistants or writes into them is the one number that has to be right.
+ *
+ * Deduping HERE rather than fixing the one caller is deliberate: the map is correct as a lookup and
+ * every future caller iterating it would hit the same thing, and a row is one row whatever
+ * container it arrived in.
+ *
+ * Order is the caller's — the order the list drew — and a row with no id is not a row.
+ */
+export function buildPickRows(rows: Iterable<PickSource>, pt: boolean): PickRowsResult {
+  const fellRows: PickModalSource[] = []
+  const sendRows: PickModalSource[] = []
+  const seen = new Set<string>()
+  let sendable = 0
+
+  for (const r of rows) {
+    const id = r.id ?? ''
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+
+    const base: PickModalSource = {
+      id,
+      title: r.title || (pt ? 'sem título' : 'untitled'),
+      ...(r.project ? { detail: r.project } : r.cwd ? { detail: r.cwd } : {}),
+    }
+    if (r.fell) fellRows.push(base)
+
+    /*
+     * THE WHOLE FLEET IS OFFERED, and the ones that cannot take a prompt are DISABLED with the
+     * server's own reason beside them — not hidden. A session missing from the list and a session
+     * that cannot be written to look identical from the outside, and the first reads as "agentop
+     * lost it". The `Active` tab is what narrows it for somebody who only wants the runnable ones.
+     */
+    const verb = r.verbs?.find(v => v.action === 'prompt')
+    const enabled = Boolean(verb?.enabled)
+    if (enabled) sendable++
+    // The verb carries no reason of its own — `prompt` is enabled by being LIVE and nothing else
+    // (a session sitting on a dialog is refused later by the host, which re-reads the screen). So
+    // the reason is that fact, said with the state the SERVER already localized rather than a
+    // second vocabulary invented here.
+    const stateWord = typeof r.stateLabel === 'string' ? r.stateLabel : ''
+    const reason = verb?.reason
+      ?? (pt ? 'não está rodando' : 'not running') + (stateWord ? ` · ${stateWord}` : '')
+    sendRows.push({ ...base, enabled, ...(enabled ? {} : { reason }) })
+  }
+
+  return { fellRows, sendRows, sendable }
+}
