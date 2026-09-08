@@ -145,13 +145,52 @@ export function systemdUnit(spec: ServiceSpec, callerPath?: string): string {
     lines.push(`Environment=PATH=${path}`)
   }
   if (spec.keepsRunning) {
-    lines.push('Type=simple', `ExecStart=${spec.command}`, 'Restart=on-failure', 'RestartSec=5')
+    lines.push('Type=simple', `ExecStart=${spec.command}`)
+    // THE SESSIONS MUST SURVIVE THE SERVICE. A tmux client started by the server starts the tmux
+    // SERVER as its own child when none is running, so the whole fleet lands in this unit's
+    // cgroup — and systemd's default `KillMode=control-group` kills a cgroup, not a process. Every
+    // stop therefore took the sessions with it: `agentop restart`, and `agentop upgrade`, which
+    // restarts each running service onto the new binary. Measured 2026-09-08 on a real machine —
+    // seven sessions' last heartbeat at 08:53:17, `Stopping agentop server` at 08:53:31, and a
+    // tmux server that had to be born again at 08:59:44 — and reproduced in isolation: a tmux
+    // started under a transient unit dies with `KillMode=control-group` and survives under
+    // `process`. The user reopened the fleet on their laptop, opened the phone and every session
+    // was gone. `process` stops exactly the one process this unit started; a session is not part
+    // of the service, it is what the service is FOR.
+    lines.push('KillMode=process')
+    lines.push('Restart=on-failure', 'RestartSec=5')
   } else {
     // The command RETURNS once the thing it started is up. Without RemainAfterExit the unit is
     // inactive(dead) a second after a perfectly successful start, and every status readout lies.
     lines.push('Type=oneshot', 'RemainAfterExit=yes', `ExecStart=${spec.command}`)
   }
   lines.push('', '[Install]', 'WantedBy=default.target', '')
+  return lines.join('\n')
+}
+
+/**
+ * Bring an ALREADY INSTALLED long-running unit up to the `KillMode=process` rule above.
+ *
+ * The rule is worthless to the people it exists for unless it reaches the unit already on disk:
+ * a machine that hit the bug has the old unit, and nothing rewrites it — `restartAutostart` only
+ * ever bounced the service. So this is a MERGE, not a regeneration: the caller's `ExecStart` and
+ * the `Environment=PATH` that took a measurement to get right are the very things a regenerated
+ * unit could get wrong (the spec cannot always be resolved outside a checkout), so every line the
+ * user has is kept and exactly one is inserted.
+ *
+ * Returns `null` when there is nothing to do — no `[Service]` section, not a `Type=simple` unit
+ * (a oneshot's command has already returned; it owns no children to spare), or a `KillMode` that
+ * is already stated. An explicit `KillMode` is never overwritten even when it is the default:
+ * agentop did not write it, so it is somebody's decision.
+ */
+export function migrateUnitKillMode(text: string): string | null {
+  if (!/^\s*\[Service\]\s*$/m.test(text)) return null
+  if (!/^\s*Type\s*=\s*simple\s*$/m.test(text)) return null
+  if (/^\s*KillMode\s*=/m.test(text)) return null
+  const lines = text.split('\n')
+  const at = lines.findIndex(l => /^\s*ExecStart\s*=/.test(l))
+  if (at < 0) return null
+  lines.splice(at + 1, 0, '# A session is not part of the service — see systemdUnit().', 'KillMode=process')
   return lines.join('\n')
 }
 

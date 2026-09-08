@@ -11,6 +11,7 @@ import {
   pm2StartArgs,
   serviceManagerOptions,
   systemdUnit,
+  migrateUnitKillMode,
   type ServiceManagerFacts,
   type ServiceSpec,
 } from './service-manager'
@@ -115,4 +116,50 @@ test('plist values are XML-escaped', () => {
 test('every manager states what the user must still do for a reboot to bring it back', () => {
   const seen = new Set(SERVICE_MANAGERS.map(bootCaveat))
   expect(seen).toEqual(new Set(['linger', 'login-only', 'pm2-startup']))
+})
+
+// THE SESSIONS MUST SURVIVE THE SERVICE. systemd's default KillMode kills the unit's whole cgroup,
+// and a tmux server started by `agentop server` lives in it — so every `agentop restart`, and every
+// `agentop upgrade` (which restarts each running service onto the new binary), took the whole fleet
+// with it. Measured 2026-09-08: seven sessions' last heartbeat at 08:53:17, `Stopping agentop
+// server` at 08:53:31.
+test('a long-running unit stops only its own process, never the sessions it hosts', () => {
+  const simple = systemdUnit(FOREGROUND)
+  expect(simple).toContain('KillMode=process')
+
+  // A oneshot's command has already returned; it owns no children to spare.
+  expect(systemdUnit(RETURNS)).not.toContain('KillMode')
+})
+
+// The rule reaches nobody it exists for unless it reaches the unit ALREADY on disk: a machine that
+// hit the bug has the old unit, and nothing rewrote it.
+test('an installed unit is migrated in place, keeping every line it already had', () => {
+  const old = [
+    '[Unit]', 'Description=agentop server (agentistics autostart)', '',
+    '[Service]', 'Environment=PATH=/home/u/.local/bin:/usr/bin',
+    'Type=simple', 'ExecStart=/home/u/.local/bin/agentop server',
+    'Restart=on-failure', 'RestartSec=5', '',
+    '[Install]', 'WantedBy=default.target', '',
+  ].join('\n')
+
+  const next = migrateUnitKillMode(old)
+  expect(next).not.toBeNull()
+  expect(next).toContain('KillMode=process')
+  // The PATH took a measurement to get right and the ExecStart names the user's own binary.
+  expect(next).toContain('Environment=PATH=/home/u/.local/bin:/usr/bin')
+  expect(next).toContain('ExecStart=/home/u/.local/bin/agentop server')
+  expect(next).toContain('WantedBy=default.target')
+
+  // Idempotent: running it again changes nothing.
+  expect(migrateUnitKillMode(next!)).toBeNull()
+})
+
+test('migration declines anything it was not asked to decide', () => {
+  // A oneshot owns no children.
+  expect(migrateUnitKillMode(systemdUnit(RETURNS))).toBeNull()
+  // An explicit KillMode is somebody's decision, even when it is the default.
+  expect(migrateUnitKillMode('[Service]\nType=simple\nExecStart=/x\nKillMode=control-group\n')).toBeNull()
+  // Nothing to anchor on.
+  expect(migrateUnitKillMode('[Service]\nType=simple\n')).toBeNull()
+  expect(migrateUnitKillMode('not a unit file at all')).toBeNull()
 })
