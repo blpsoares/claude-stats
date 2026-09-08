@@ -46,6 +46,7 @@ import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
 import { scratchKey, sessionScratch } from '../../lib/sessionScratch'
 import { chatReadAt, firstFrameStale, refreshChat, subscribeChat } from '../../lib/chatFeed'
 import { composerMaxHeight } from '../../lib/composerHeight'
+import { nudgeFleet } from '../../lib/fleet'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
 import { MAX_ATTACHMENTS, attachmentRoom, planPaste } from '../../lib/pastePlan'
@@ -2097,7 +2098,13 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                 {row?.mode && !answeringNow && (
                   <button
                     onClick={() => void act({ id: session.id, action: 'cycleMode' })
-                      .then(out => setNotice(out.message))}
+                      .then(out => {
+                        setNotice(out.message)
+                        // The chip's word comes from the next capture of the pane, not from this
+                        // reply — so without a nudge it kept showing the OLD mode until the 5s
+                        // poll came round, and the button read as broken.
+                        nudgeFleet()
+                      })}
                     disabled={!canPrompt}
                     aria-label={pt ? `Modo: ${row.mode.label}. Trocar para o próximo.` : `Mode: ${row.mode.label}. Switch to the next.`}
                     title={pt
