@@ -1920,6 +1920,15 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     remaining width: asked for a row where the controls "nao fiquem entulhados". A
                     row of touching 34px squares reads as one object with lines in it. */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {/* ANSWERING A QUESTION IS NOT WRITING A PROMPT, so the row is not the same row.
+                    An answer travels a different route — `answerSession` presses the option's
+                    digit, waits for the field to open, then types ONE line and returns — and an
+                    attachment is a PATH on a line of its own, so what would reach the dialog is a
+                    path submitted as the answer. The control is removed rather than disabled: a
+                    greyed button in a mode a person entered on purpose reads as something broken.
+                    Asked for in these words: the prompt input, "removendo alguns botões APENAS PRA
+                    RESPONDER A QUESTAO FEITA PELO LLM". */}
+                {!answeringNow && (
                 <button
                   onClick={() => fileRef.current?.click()}
                   disabled={!canPrompt || uploading}
@@ -1934,6 +1943,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                 >
                   {uploading ? <Loader size={15} className="ag-working-spin" /> : <Paperclip size={15} />}
                 </button>
+                )}
 
                 {/* DICTATION, beside attach — the pair that PREPARES a message, which is what the
                     left of this row is. It was reachable only through the "more" menu, and two
@@ -2111,6 +2121,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     reaches for occasionally — attach and send are the ones used every turn.
                     A menu, not a second row: another row costs height, which is the thing a phone
                     has least of. */}
+                {/* AND THE MENU GOES TOO. What is behind it — the model and the session's mode —
+                    is about the NEXT prompt, not about the answer to a question already on screen;
+                    changing the model does not change what the dialog does with the line it is
+                    waiting for. Dictation stays, because it only puts words in the field, and the
+                    field is the one thing this mode is FOR. */}
+                {!answeringNow && (
                 <div ref={moreMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
                   <button
                     onClick={() => setMoreOpen(v => !v)}
@@ -2268,6 +2284,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     </div>
                   )}
                 </div>
+                )}
 
                 </div>
                 </div>

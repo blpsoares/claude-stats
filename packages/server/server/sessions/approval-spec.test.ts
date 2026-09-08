@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { HARNESS_ORDER } from '@agentistics/core'
-import { APPROVAL_SPECS, approvalFor, choiceKey, isFreeTextOption
+import { APPROVAL_SPECS, approvalFor, choiceKey, fieldIsOpen, isFreeTextOption
 } from './approval-spec'
 import { ATTENTION_RULES } from './attention-rules'
 
@@ -102,5 +102,41 @@ describe('isFreeTextOption', () => {
       expect(isFreeTextOption(h, 'Type something.')).toBe(false)
     }
     expect(isFreeTextOption(undefined, 'Type something.')).toBe(false)
+  })
+})
+
+describe('fieldIsOpen', () => {
+  // Captured by driving claude 2.1.263 on 2026-09-08. The list is IDENTICAL in both frames — that
+  // is the whole point: the old "the field replaced the options" signal cannot tell them apart.
+  const SHUT = [
+    '  4. Type something.',
+    '────────────────────────────────────────',
+    '  5. Chat about this',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  ]
+  const OPEN = [
+    '❯ 4. Type something.',
+    '────────────────────────────────────────',
+    '  5. Chat about this',
+    'Enter to select · ↑/↓ to navigate · ctrl+g to edit in VS Code · Esc to cancel',
+  ]
+
+  it('reads the field as open only when the footer says a text field is focused', () => {
+    expect(fieldIsOpen('claude', OPEN)).toBe(true)
+    expect(fieldIsOpen('claude', SHUT)).toBe(false)
+  })
+
+  it('answers null — never false — for a harness nobody probed', () => {
+    expect(fieldIsOpen('codex', OPEN)).toBeNull()
+    expect(fieldIsOpen(undefined, OPEN)).toBeNull()
+  })
+
+  it('matches the FOOTER, so a transcript quoting the hint is not a field', () => {
+    const quoting = [
+      'the hint reads ctrl+g to edit in VS Code, which is how we detect it',
+      '', '', '',
+      'Enter to select · ↑/↓ to navigate · Esc to cancel',
+    ]
+    expect(fieldIsOpen('claude', quoting)).toBe(false)
   })
 })

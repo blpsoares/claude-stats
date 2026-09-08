@@ -21,6 +21,7 @@
 import { useState } from 'react'
 import { AlertCircle, Check } from 'lucide-react'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
+import { splitApprovalFrame } from '../../lib/approvalQuestion'
 
 export interface ApprovalCardProps {
   row: FleetRow
@@ -42,6 +43,8 @@ export interface ApprovalCardProps {
 
 export function ApprovalCard({ row, lang, act, onWrite, answering = null }: ApprovalCardProps) {
   const pt = lang === 'pt'
+  /** What is being asked, split from the terminal chrome the buttons already repeat. */
+  const { question } = splitApprovalFrame(row.approvalLines ?? [])
   const [busy, setBusy] = useState<number | 'confirm' | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   /**
@@ -112,18 +115,46 @@ export function ApprovalCard({ row, lang, act, onWrite, answering = null }: Appr
         {pt ? 'Esta sessão está perguntando' : 'This session is asking'}
       </div>
 
-      {/* The dialog itself, monospaced and unedited. A person agreeing to something has to be able
-          to read what they are agreeing to, and a label alone does not say what the key will do. */}
-      {(row.approvalLines?.length ?? 0) > 0 && (
-        <pre style={{
+      {/* THE QUESTION, FIRST AND READABLE. Everything above the first option is what is being
+          asked — and on a permission prompt, the command being asked about. It used to be one line
+          among twenty inside the block below, in the smallest and faintest text on the card, with
+          the options repeated underneath as buttons; the one thing the block alone carried was the
+          one thing nobody could find. See `approvalQuestion.ts`. */}
+      {question.length > 0 && (
+        <div style={{
           margin: 0, padding: '10px 12px', borderRadius: 10,
           background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
-          fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
-          fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)',
-          whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 260, overflowY: 'auto',
+          fontSize: 13, lineHeight: 1.55, color: 'var(--text-primary)',
+          whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          maxHeight: 220, overflowY: 'auto',
         }}>
-          {row.approvalLines!.join('\n')}
-        </pre>
+          {question.join('\n')}
+        </div>
+      )}
+
+      {/* NOTHING IS DISCARDED. The captured screen stays, whole and unedited, one click away: a
+          person agreeing to something has to be able to read exactly what they are agreeing to,
+          and this is where the harness's own wording lives. Closed by default because the options
+          in it are already the buttons below — open by default when there was no question to
+          promote, since then this block is all there is. */}
+      {(row.approvalLines?.length ?? 0) > 0 && (
+        <details open={question.length === 0}>
+          <summary style={{
+            cursor: 'pointer', fontSize: 11, color: 'var(--text-tertiary)',
+            padding: '2px 0', userSelect: 'none',
+          }}>
+            {pt ? 'Ver a tela da sessão' : 'Show the session screen'}
+          </summary>
+          <pre style={{
+            margin: '6px 0 0', padding: '10px 12px', borderRadius: 10,
+            background: 'var(--bg-base)', border: '1px solid var(--border-subtle)',
+            fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace",
+            fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)',
+            whiteSpace: 'pre-wrap', overflowX: 'auto', maxHeight: 260, overflowY: 'auto',
+          }}>
+            {row.approvalLines!.join('\n')}
+          </pre>
+        </details>
       )}
 
       {options.length > 0 ? (
