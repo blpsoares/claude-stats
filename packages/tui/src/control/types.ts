@@ -998,11 +998,18 @@ export interface SessionViewPrefs {
    */
   cardAnchor?: string
   /**
-   * Session ids the user has MARKED, so a row can be found again without searching for it.
+   * Session ids the user has PINNED, so a row can be found again without searching for it.
    *
    * Persisted for the same reason the arrangement is: detaching from a session remounts this
-   * screen, and a mark that did not survive that would be gone at exactly the moment it was most
-   * useful — you marked the row because you were about to go into it.
+   * screen, and a pin that did not survive that would be gone at exactly the moment it was most
+   * useful — you pinned the row because you were about to go into it.
+   *
+   * The field keeps its `marked` name, and the WORD on screen is `pinned` / `fixada`: renaming the
+   * key would silently drop every pin already on disk, and the concept was never "marked" to
+   * anybody reading it. That the two are one thing is the whole point — this is the KEEPING state,
+   * and it must never be the set anything destructive reads. The bulk-stop selection
+   * (`BulkStop` in `sessions.ts`) is its opposite number: ephemeral, red on screen, and with no
+   * field here at all.
    */
   marked?: string[]
   /**

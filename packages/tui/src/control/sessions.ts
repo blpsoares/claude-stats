@@ -1120,6 +1120,99 @@ export function scrollBar(o: { offset: number; total: number; rows: number }): s
 // the new-session wizard's last step
 // ---------------------------------------------------------------------------
 
+/**
+ * The bulk-stop selection: a mode flag and the rows picked inside it.
+ *
+ * It exists because PINNING and CHOOSING WHAT TO KILL used to be the same set. `space` pinned a row
+ * — a keeping gesture, persisted across runs, that lifts the row into its own band because you were
+ * about to come back to it — and `x` then offered to stop everything in that set. So the gesture for
+ * keeping armed a mass deletion, and the confirmation asked about "the marked sessions" using the
+ * word for the harmless half.
+ *
+ * They are two states now, and the difference between them is the whole point:
+ *
+ *  - PINNED lives in `SessionFilterState.marked`, is written to `preferences.json` on every change,
+ *    and comes back on the next run.
+ *  - This one is EPHEMERAL. It is held in the component and nowhere else: `storedFilters` has no
+ *    field for it, no host method is handed it, and leaving the mode drops it. A destructive
+ *    selection that survived a restart would be a loaded gun found in a drawer.
+ */
+export interface BulkStop {
+  /** Whether `Ctrl+X` has put the screen in the mode. `space` selects for stopping while it is on. */
+  on: boolean
+  /** Session ids picked to be stopped. Meaningless — and always empty — while `on` is false. */
+  picks: ReadonlySet<string>
+}
+
+/** Not in the mode, nothing picked — how the screen opens, and what it returns to. */
+export const BULK_STOP_OFF: BulkStop = { on: false, picks: new Set<string>() }
+
+/**
+ * `Ctrl+X` — in, or out.
+ *
+ * The SAME chord both ways, rather than `esc` on the way out. `esc` on this screen already means
+ * "drop whatever is narrowing the list", one layer at a time — search, then project, then task — so
+ * making it also leave the mode would put two answers on one key at the exact moment the person is
+ * armed: press it to clear a search and you also silently disarm, or press it to disarm and you also
+ * silently lose the search you spent a minute on. A toggle has neither problem, and it is the one
+ * shape where the key that got you in is the key that gets you out.
+ *
+ * Leaving DROPS the picks — going out and back in never finds an old selection waiting.
+ */
+export function bulkStopToggle(state: BulkStop): BulkStop {
+  return state.on ? BULK_STOP_OFF : { on: true, picks: new Set<string>() }
+}
+
+/** `space` inside the mode: pick this row to be stopped, or take it back off the list. */
+export function bulkStopPick(state: BulkStop, id: string): BulkStop {
+  if (!state.on) return state
+  const picks = new Set(state.picks)
+  if (picks.has(id)) picks.delete(id)
+  else picks.add(id)
+  return { on: true, picks }
+}
+
+/** What `x` is about to act on: exactly one row, or the picked set. */
+export interface StopTargets {
+  /** `one` names the row under the cursor; `many` is the mode's selection. */
+  kind: 'one' | 'many'
+  /** In list order, and every one of them stoppable. Never empty. */
+  ids: readonly string[]
+}
+
+/**
+ * What `x` stops — PURE, and the anti-regression this journey exists for.
+ *
+ * Look at what it is NOT given: the pinned set. There is no parameter for it, so the normal-mode
+ * answer cannot be "everything you pinned" however the caller is wired. Normal mode is the row under
+ * the cursor and nothing else; the plural answer exists only inside the mode a person deliberately
+ * entered.
+ *
+ * `stoppable` is the filter AND the order: the caller passes the ids that can actually be stopped
+ * right now, in the order the list draws them, so a pick on a row that has since closed simply is
+ * not there rather than becoming a call that fails.
+ */
+export function stopTargets(o: {
+  bulk: BulkStop
+  /** The row under the cursor, when a row has it. */
+  cursor?: string
+  /** Every id that can be stopped right now, in the order the list draws them. */
+  stoppable: readonly string[]
+}): StopTargets | null {
+  if (!o.bulk.on) {
+    const id = o.cursor
+    if (!id || !o.stoppable.includes(id)) return null
+    return { kind: 'one', ids: [id] }
+  }
+  const ids = o.stoppable.filter(id => o.bulk.picks.has(id))
+  return ids.length > 0 ? { kind: 'many', ids } : null
+}
+
+
+// ---------------------------------------------------------------------------
+// what every key on this screen does
+// ---------------------------------------------------------------------------
+
 export interface KeyHelp {
   /** The keystroke as a person types it. */
   keys: string
@@ -1141,7 +1234,7 @@ export interface KeyHelp {
 export function sessionKeyHelp(w: {
   move: string; open: string; attach: string; menu: string; section: string
   newSession: string; search: string; clear: string; kill: string; rename: string
-  note: string; task: string; mark: string; onlyActive: string
+  note: string; task: string; mark: string; onlyActive: string; bulkStop: string
   openTask: string; finishTask: string; recent: string; cascade: string
   group: string; layout: string; detail: string; menuFold: string
   reset: string; tabs: string; help: string; quit: string
@@ -1169,6 +1262,9 @@ export function sessionKeyHelp(w: {
     { keys: 'T', what: w.openTask },
     { keys: 'F', what: w.finishTask },
     { keys: 'space', what: w.mark },
+    // The mass-stop mode, listed right under the key that pins — because they are the two gestures
+    // `space` answers, and the whole point of the mode is that they are no longer the same one.
+    { keys: 'ctrl+x', what: w.bulkStop },
     // One row, three keys, ONE question. `c` leads and `l`/`e` are aliases of the same call: they
     // were three controls doing one visible thing, which is a keyboard that lies about how many
     // controls exist.

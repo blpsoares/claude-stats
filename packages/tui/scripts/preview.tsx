@@ -415,6 +415,20 @@ function fakeHost(opts: Options, apiUrl?: string): ControlHost {
 
   const act = opts.task === 'off' ? done : streamed
 
+  /**
+   * Sessions the preview has been asked to STOP.
+   *
+   * The fleet is read through it, so `x` — the single row and the bulk-stop mode alike — visibly
+   * removes rows instead of reporting a success over a list that never changes. A preview that
+   * cannot show what stopping does to the screen cannot be used to check that stopping stops the
+   * right ones, which is the whole question `--keys ctrl-x,space,…,x` is asked to answer.
+   */
+  const stopped = new Set<string>()
+  const alive = (fleet: ControlSessions): ControlSessions => (stopped.size === 0 ? fleet : {
+    ...fleet,
+    sessions: fleet.sessions.filter(sess => !stopped.has(sess.id)),
+  })
+
   return {
     refresh: async () => fakeStatus(opts, apiUrl),
     start: act,
@@ -443,9 +457,13 @@ function fakeHost(opts: Options, apiUrl?: string): ControlHost {
       return () => { watchers.delete(handler) }
     },
     readLog: async (source, maxLines) => (LOG[source] ?? []).slice(-maxLines),
-    sessions: async () => (opts.restore
+    sessions: async () => alive(opts.restore
       ? { ...FAKE_FLEET, restorable: FAKE_RESTORABLE }
       : FAKE_FLEET),
+    killSession: async (id: string) => {
+      stopped.add(id)
+      return { ok: true, message: 'preview — nothing was performed' }
+    },
     restoreSessions: done,
     startableHarnesses: async () => [
       { id: 'claude', label: 'claude', modelSuggestions: ['opus', 'sonnet', 'haiku'], supportsModel: true, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
