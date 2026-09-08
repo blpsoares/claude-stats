@@ -48,7 +48,19 @@ for (const [sessionId, path] of files) {
   const storePath = join(CONSOLIDATED_DIR, 'claude', `${sessionId}.json`)
   let doc: Record<string, unknown>
   try { doc = JSON.parse(readFileSync(storePath, 'utf8')) } catch { skipped++; continue }
-  if (doc.compact_count !== undefined && doc.skill_uses !== undefined) { skipped++; continue }
+  /*
+   * IDEMPOTENCE HANGS ON `skill_uses` ALONE, and that is deliberate.
+   *
+   * The guard used to require `compact_count` too, which a session that never compacted never
+   * gets — `compact_count` is written only when the count is above zero, because a session whose
+   * transcript we could not read and one that genuinely compacted zero times must not look alike.
+   * So every non-compacting session (the overwhelming majority: 18 of 452 here ever compacted)
+   * failed the guard forever and was re-stamped with identical bytes on every run.
+   *
+   * `skill_uses` is written unconditionally — `{}` is a real answer, "this session invoked none" —
+   * so its presence is the exact record of "this script has already been here".
+   */
+  if (doc.skill_uses !== undefined) { skipped++; continue }
 
   const lines = readFileSync(path, 'utf8').split('\n')
   const c = compactsFromClaudeJsonl(lines)

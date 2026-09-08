@@ -14,7 +14,7 @@ Turn what agentistics already measures about a session into two things a person 
    messages"), which doubles as the sessions tab's empty state.
 
 They are one feature, not two, and the reason is the sentence each card has to produce. `2 compacts`
-is a threshold somebody invented. `2 compacts — 6 of your 700 sessions ever reached that` is a
+is a threshold somebody invented. `2 compacts — 8 of your 452 sessions ever reached that` is a
 measurement. The profile is what makes a suggestion earned rather than a nag, so it is built first.
 
 ## Scope
@@ -26,12 +26,16 @@ the profile, and the migrate orchestration.
 three weeks ago is the same class of bug as offering `start` on a running service). They may come
 later and would reuse `session-profile.ts` untouched.
 
-## Ground truth (measured on one machine, 2026-09-08, 700 Claude sessions)
+## Ground truth (measured on one machine, 2026-09-08, 452 Claude sessions)
 
-**Read the whole history, not the live directory.** The first pass of these figures scanned only
-`~/.claude/projects` and under-measured by 40%: Claude deletes transcripts after `cleanupPeriodDays`,
-so that directory holds 420 sessions reaching back to 2026-08-11, while `~/.agentistics/archive`
-holds 284 more. The corrected numbers below are over the union (700 unique transcripts). See
+**Count SESSIONS, and read the whole history.** These figures were wrong twice. The first pass
+scanned only `~/.claude/projects`, which Claude prunes after `cleanupPeriodDays` — it reaches back
+to 2026-08-11 and holds 423 sessions, while `~/.agentistics/archive` holds more. The second pass
+added the archive and counted 284 extra files, but 255 of those are SUBAGENT transcripts
+(`<session>/subagents/agent-*.jsonl`), not sessions: they are one session's agents, and counting
+them split that session's compactions across files while inflating every denominator. The numbers
+below are over the 452 real session transcripts — 423 live plus 29 archive-only, basenames matching
+a session UUID. See
 "The compacts baseline is bounded by surviving transcripts" for why this is a permanent property of
 these particular metrics rather than a one-off mistake.
 
@@ -49,8 +53,8 @@ Everything the profile can report today, and what it costs to add.
 | context level | `context_tokens` / `resolveContextWindow` | ✅ (gated by `contextWindow`) |
 
 `compactMetadata` carries `trigger` (`auto`/`manual`), `preTokens`, `postTokens`,
-`cumulativeDroppedTokens` and `durationMs`. Across those 700 sessions: **46 compacts in 23 sessions,
-83 minutes spent compacting, 19,4M tokens dropped.**
+`cumulativeDroppedTokens` and `durationMs`. Across those 452 sessions: **43 compacts in 18 sessions,
+88 minutes spent compacting, 21,3M tokens dropped.**
 
 `cumulativeDroppedTokens` is cumulative and monotonic — measured across one real five-compact
 session: `954.238 → 1.910.306 → 2.876.708 → 3.829.252 → 4.785.215`. So a session's figure is its
@@ -61,17 +65,17 @@ than zero. `compactsFromClaudeJsonl` encodes both rules and its tests pin the se
 
 ### Two measured facts that decide the design
 
-**Messages are heavily skewed: median 30, mean 92, p90 185, max 3.911.** The mean is 3,1x the
+**Messages are heavily skewed: median 58, mean 134.** The mean is 2,3x the
 median and describes no session anybody has. So the profile reports the **median** by default. The
 mean is used only where the question is literally a rate.
 
-**Compacts are RARE, with a long tail.** Median 0, mean 0,066: 23 of 700 sessions had one at all,
-and only 6 had two or more — but the tail runs 1 (x17), 2, 4 (x2), 5, 6, **8**. This kills the ratio
-framing for that metric: "5x your average" is not a sentence when the average is 0,066, and dividing
+**Compacts are RARE, with a long tail.** Median 0, mean 0,095: 18 of 452 sessions had one at all,
+and 8 had two or more — the tail runs 1 (x10), 2 (x3), 4 (x2), 5, 6, **8**. This kills the ratio
+framing for that metric: "5x your average" is not a sentence when the average is 0,095, and dividing
 by a zero median is not a sentence at all. See "Two ways to state a deviation" below.
 
 The tail is the reason the trigger is worth having at all. A session at 8 compacts has spent real
-time and dropped real context, and it is invisible in every average that includes the 677 sessions
+time and dropped real context, and it is invisible in every average that includes the 434 sessions
 that never compacted once.
 
 ## Architecture
@@ -116,7 +120,7 @@ or subagents. One shared `n` would compute the skills average over sessions that
 had one — a denominator that is quietly wrong in the direction of "you use fewer skills than you
 think".
 
-Measured over the 700: 692 carry messages, 57 carry skills, 50 carry subagents.
+Measured over the 452: 444 carry messages.
 
 ### What it reports
 
@@ -141,10 +145,10 @@ interface Suggestion {
 
 A card may only ever say something true, and which sentence is true depends on the baseline:
 
-- **Ratio** — when the median is meaningfully above zero. *"340 messages — your median is 30 (30d,
-  n=692)."*
-- **Rarity** — when the median is zero or near it, which is the compacts case. *"2 compacts — 6 of
-  your 700 sessions ever reached that."*
+- **Ratio** — when the median is meaningfully above zero. *"340 messages — your median is 58 (30d,
+  n=444)."*
+- **Rarity** — when the median is zero or near it, which is the compacts case. *"2 compacts — 8 of
+  your 452 sessions ever reached that."*
 
 Picking the ratio unconditionally is how a rare event gets reported as a division by almost-zero and
 reads as a fault in the dashboard rather than a fact about the session.
@@ -161,8 +165,8 @@ reads as a fault in the dashboard rather than a fact about the session.
 **Context is the trigger that matters and compacts is the symptom.** After two compacts the session
 is already at ~10k post-compact tokens: the handoff you would migrate has mostly been thrown away.
 The context trigger fires *before* the loss. The compacts trigger stays because it is the most legible
-sentence there is — it names minutes and tokens already spent — but it fires on roughly 0,9% of
-sessions (6 of 700) and must not be mistaken for the load-bearing one.
+sentence there is — it names minutes and tokens already spent — but it fires on roughly 1,8% of
+sessions (8 of 452) and must not be mistaken for the load-bearing one.
 
 ### Anti-nag rules
 
@@ -220,12 +224,14 @@ Measured on this machine, 2026-09-08:
 | | count |
 |---|---|
 | sessions in the consolidate store | 708 |
-| with a surviving transcript (live + archive) | 700 |
-| live only (`~/.claude/projects`, back to 2026-08-11) | 420 |
+| with a surviving SESSION transcript (live + archive) | 452 |
+| subagent transcripts, which are not sessions and were once miscounted as such | 255 |
+| live only (`~/.claude/projects`, back to 2026-08-11) | 423 |
 
-- **Eight sessions are already unrecoverable** for these metrics — the store knows them, no transcript
-  does.
-- **The 284-session archive is frozen.** It exists because `archiveMode` used to be `full`; it is
+- **The store holds more sessions than any transcript can still answer for** — those are already
+  unrecoverable for these metrics.
+- **The archive is frozen.** It holds 29 further session transcripts. It exists because
+  `archiveMode` used to be `full`; it is
   `consolidate` now, so nothing is being added to it. From here on, a transcript that ages past
   `cleanupPeriodDays` is gone.
 - **Therefore the field must be stamped early.** Once `compact_count` is written onto `SessionMeta`
@@ -235,7 +241,7 @@ Measured on this machine, 2026-09-08:
 
 The `n` per metric already carries this honestly: the compacts baseline simply reports the smaller
 denominator it actually had. What it must never do is compute the average over the store's 708 while
-counting compacts from 700.
+counting compacts from the smaller set that still has a transcript.
 
 ## The frontier, asserted in a test
 
