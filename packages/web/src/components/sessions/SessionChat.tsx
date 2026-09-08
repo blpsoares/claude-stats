@@ -37,6 +37,7 @@ import { ChatBubble, type ChatTurn } from './ChatBubble'
 import { WorkingNote } from './WorkingNote'
 import { useTerminalStream } from '../../hooks/useTerminalStream'
 import { isImagePath, openComposerLightbox } from '../../lib/attachmentPreview'
+import { promptCountLabel } from '../../lib/promptCount'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
 import { AttachmentLightbox } from './AttachmentLightbox'
@@ -549,6 +550,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * cannot leave this disagreeing with the strip beside it.
    */
   const composerImages = attached.filter(a => isImagePath(a.path)).map(a => a.path)
+  /** The character count under the caret's own field. `null` while it is empty — see `promptCount.ts`. */
+  const countLabel = promptCountLabel(draft, pt ? 'pt' : 'en')
   /** …and the index that survives an edit made while the overlay is open. See `openComposerLightbox`. */
   const composerLightboxAt = openComposerLightbox(composerLightbox, composerImages.length)
 
@@ -2038,7 +2041,33 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     so they keep their order and their spacing whether or not the conditional two
                     are there — a margin on send alone would push the more button off to the right
                     on its own the moment a turn ended. */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+                {/* THE CHARACTER COUNT, in the gap the row already had.
+                    It sits between attach and the acting group — `marginLeft: auto` on that group
+                    is what pushed the two halves apart, so this costs the composer NO height and
+                    takes no room from the field. Absent on an empty box (`promptCountLabel`
+                    answers null): a counter reading `0` is a control with nothing to say, standing
+                    where the composer's own hints need to be able to appear.
+                    It counts the FIELD, not the message that will be sent — the attachment paths
+                    are prepended at send time and are not something anybody typed, so including
+                    them would make the number disagree with what is on screen, which is the one
+                    thing a counter beside a text box may not do.
+                    `pointerEvents: none` so it can never take a tap meant for a control beside it,
+                    and it gives way before the buttons do when the row runs out of width. */}
+                {countLabel && (
+                  <span
+                    aria-hidden
+                    style={{
+                      marginLeft: 'auto', minWidth: 0, overflow: 'hidden',
+                      textOverflow: 'ellipsis', whiteSpace: 'nowrap', pointerEvents: 'none',
+                      fontSize: 10.5, lineHeight: 1, color: 'var(--text-tertiary)',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {countLabel}
+                  </span>
+                )}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: countLabel ? 6 : 'auto' }}>
                 {/* THE HARNESS MODE, and the one control that changes it.
                     Asked for: "nao consigo alternar entre os modos que os harnesses possuem (auto
                     mode, plan mode etc)", to sit left of the recent-message button.
