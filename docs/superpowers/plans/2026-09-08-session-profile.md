@@ -630,8 +630,8 @@ them over sessions that could never have carried one."
 ### Task 3: Ship the baseline on `/api/fleet`
 
 **Files:**
-- Create: `packages/server/server/sessions/fleet-profile.ts`
-- Create: `packages/server/server/sessions/fleet-profile.test.ts`
+- Create: `packages/server/server/sessions/fleet-baseline.ts`
+- Create: `packages/server/server/sessions/fleet-baseline.test.ts`
 - Modify: `packages/server/server/sessions/fleet-web.ts` (the `FleetPayload` interface at line 44, and `readFleet`'s success return at line 186)
 
 **Interfaces:**
@@ -642,11 +642,11 @@ them over sessions that could never have carried one."
 
 - [ ] **Step 1: Write the failing test**
 
-Create `packages/server/server/sessions/fleet-profile.test.ts`:
+Create `packages/server/server/sessions/fleet-baseline.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'bun:test'
-import { cachedBaseline, resetBaselineCache, BASELINE_TTL_MS } from './fleet-profile'
+import { cachedBaseline, resetBaselineCache, BASELINE_TTL_MS } from './fleet-baseline'
 import type { SessionMeta } from '@agentistics/core'
 
 const NOW = Date.parse('2026-09-08T12:00:00Z')
@@ -702,16 +702,21 @@ describe('cachedBaseline', () => {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `bun test packages/server/server/sessions/fleet-profile.test.ts`
-Expected: FAIL — module `./fleet-profile` not found.
+Run: `bun test packages/server/server/sessions/fleet-baseline.test.ts`
+Expected: FAIL — module `./fleet-baseline` not found.
 
 - [ ] **Step 3: Write the cache**
 
-Create `packages/server/server/sessions/fleet-profile.ts`:
+Create `packages/server/server/sessions/fleet-baseline.ts`:
 
 ```ts
 /**
- * fleet-profile.ts — the behaviour baseline, computed once and cached.
+ * fleet-baseline.ts — the behaviour baseline, computed once and cached.
+ *
+ * NOT `fleet-profile.ts`: that name is taken by the fleet's phase STOPWATCH
+ * (`markFleetPhase` / `timeFleetPhase`), which `readFleet` itself imports. Two unrelated things
+ * called "profile" in one directory is a name collision waiting to be resolved by whoever reads it
+ * second.
  *
  * The arithmetic is pure and lives in `@agentistics/core/session-profile`. This is only the IO
  * boundary: reading the consolidate store is a directory scan, and the fleet poll runs every five
@@ -749,7 +754,7 @@ export async function cachedBaseline(
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `bun test packages/server/server/sessions/fleet-profile.test.ts`
+Run: `bun test packages/server/server/sessions/fleet-baseline.test.ts`
 Expected: PASS — 3 tests.
 
 - [ ] **Step 5: Add `baseline` to the fleet response**
@@ -784,7 +789,7 @@ and add `...(baseline ? { baseline } : {})` to that returned object.
 **`loadConsolidated` returns a `Map<string, SessionMeta>`, not an array** — the arrow above adapts
 it. Do not change `loadConsolidated`'s signature; it has other callers.
 
-Add the imports: `cachedBaseline` from `./fleet-profile`, `loadConsolidated` from `../consolidate`.
+Add the imports: `cachedBaseline` from `./fleet-baseline`, `loadConsolidated` from `../consolidate`.
 
 **Leave the two failure returns alone.** `readFleet` has an early return for a host that cannot read
 sessions (line 182) and a catch-all return (line 202). Those are the "this install has no fleet"
@@ -808,8 +813,8 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/server/server/sessions/fleet-profile.ts \
-        packages/server/server/sessions/fleet-profile.test.ts \
+git add packages/server/server/sessions/fleet-baseline.ts \
+        packages/server/server/sessions/fleet-baseline.test.ts \
         packages/server/server/sessions/fleet-web.ts
 git commit -m "feat(server): ship the behaviour baseline on /api/fleet
 
