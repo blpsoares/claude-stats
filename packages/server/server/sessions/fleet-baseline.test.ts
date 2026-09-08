@@ -36,6 +36,27 @@ describe('cachedBaseline', () => {
     expect(loads).toBe(2)
   })
 
+  it('shares one in-flight load across overlapping calls', async () => {
+    // `/api/fleet` is polled every five seconds by the dashboard, the cockpit and the VS Code
+    // extension — two callers landing on the same expired TTL must share the one scan already
+    // running rather than each starting their own directory walk.
+    resetBaselineCache()
+    let loads = 0
+    let resolveLoad!: (sessions: SessionMeta[]) => void
+    const load = () => {
+      loads++
+      return new Promise<SessionMeta[]>(resolve => { resolveLoad = resolve })
+    }
+
+    const first = cachedBaseline(load, NOW)
+    const second = cachedBaseline(load, NOW)
+    resolveLoad(one())
+    const [a, b] = await Promise.all([first, second])
+
+    expect(loads).toBe(1)
+    expect(b).toEqual(a)
+  })
+
   it('keeps the previous answer when a reload throws', async () => {
     // A failed store read must not blank a profile that was correct a minute ago — the same rule
     // `sessions-host.ts` applies to a failed poll.
