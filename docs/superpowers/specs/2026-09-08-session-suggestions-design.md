@@ -46,9 +46,9 @@ Everything the profile can report today, and what it costs to add.
 | messages | `user_message_count` / `assistant_message_count` | ✅ |
 | active time, cost, tokens | `active_minutes`, `calcCost`, the four counters | ✅ |
 | tool errors by category | `tool_error_categories` | ✅ |
-| MCP servers used | `mcp__*` keys in `tool_counts` | ✅ (10 distinct, 88 sessions) |
-| subagents | `agentMetrics` / `Agent` tool_use | ✅ (585 calls, 50 sessions) |
-| **skills** | `Skill` tool_use, `input.skill` | ✅ (103 invocations, 26 distinct, 57 sessions) — **CLAUDE.md says otherwise and is stale** |
+| MCP servers used | `mcp__*` keys in `tool_counts` | ✅ (10 distinct, 90 sessions) |
+| subagents | `agentMetrics` / `Agent` tool_use | ✅ (586 calls, 43 sessions) |
+| **skills** | `Skill` tool_use, `input.skill` | ✅ (112 invocations, 26 distinct, 61 sessions) — **CLAUDE.md says otherwise and is stale** |
 | **compacts** | `compact_boundary` + `compactMetadata` | ❌ **new field** |
 | context level | `context_tokens` / `resolveContextWindow` | ✅ (gated by `contextWindow`) |
 
@@ -264,7 +264,7 @@ store and the team uploader like any other metric.
 
 `CLAUDE.md` states that Skills "are not recorded as individual tool_use events in the JSONL — only a
 `skill_listing` attachment appears". That is no longer true: there is a `Skill` tool whose
-`input.skill` names the skill, and this machine has 103 such invocations of 26 distinct skills across 57 sessions. The line
+`input.skill` names the skill, and this machine has 112 such invocations of 26 distinct skills across 61 sessions. The line
 is corrected as part of this work, because this is the feature that depends on it.
 
 ## Open questions
