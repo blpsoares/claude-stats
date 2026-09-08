@@ -29,6 +29,20 @@ export interface DayUsage {
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
   messages: number
+  /**
+   * WHEN, on this day, keyed by hour of the LOCAL clock — the same clock `message_hours` is
+   * bucketed on, and the same one the "Usage by hour" chart draws.
+   *
+   * It is here for the same reason the counters are: `message_hours` is a lifetime array carrying
+   * no day, so a conversation open since Tuesday put every hour it had ever run in into today's
+   * chart. Measured with `Today` selected on a real machine: bars across all 24 hours for someone
+   * who had started at 8am.
+   *
+   * OPTIONAL, and absent means "not recorded", never "no activity" — records written before the
+   * field existed have none, and the caller keeps the old rule for those rather than drawing an
+   * empty day over a session that plainly worked.
+   */
+  hours?: Record<string, number>
 }
 
 /** The subset of a session this module reads. Structural, so `SessionMeta` stays the source. */
@@ -85,7 +99,7 @@ export function daysBetween(startMs: number, endMs: number, max = MAX_RANGE_DAYS
 export function sliceSession(s: SliceableSession, days: ReadonlySet<string>): DayUsage | null {
   const daily = s.daily
   if (!daily) return null
-  const out: DayUsage = { ...EMPTY_DAY }
+  const out: DayUsage = { ...EMPTY_DAY, hours: {} }
   for (const key of Object.keys(daily)) {
     if (!days.has(key)) continue
     const d = daily[key]
@@ -95,6 +109,29 @@ export function sliceSession(s: SliceableSession, days: ReadonlySet<string>): Da
     out.cache_read_input_tokens += d.cache_read_input_tokens || 0
     out.cache_creation_input_tokens += d.cache_creation_input_tokens || 0
     out.messages += d.messages || 0
+    for (const [hour, n] of Object.entries(d.hours ?? {})) {
+      out.hours![hour] = (out.hours![hour] ?? 0) + (n || 0)
+    }
+  }
+  return out
+}
+
+/**
+ * An hour map back into the shape `message_hours` has: one entry per message, ascending.
+ *
+ * The projection in `useDerivedStats` replaces a sliced session's `message_hours` with this, so
+ * every consumer of that field — the chart, the PDF export, the drilldown — reads the range's
+ * hours without any of them having to know a range exists.
+ *
+ * A key outside 0..23 is DROPPED rather than drawn: it cannot go on a 24-bar chart, and repeating
+ * one as many times as its count claims is how a single bad record becomes a hang.
+ */
+export function expandHours(hours: Record<string, number> | undefined): number[] {
+  if (!hours) return []
+  const out: number[] = []
+  for (let h = 0; h <= 23; h++) {
+    const n = hours[String(h)] ?? 0
+    for (let i = 0; i < n; i++) out.push(h)
   }
   return out
 }

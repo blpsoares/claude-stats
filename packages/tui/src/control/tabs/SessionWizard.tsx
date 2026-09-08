@@ -463,9 +463,9 @@ function ProjectSearch({ host, strings: s, width, height, isActive, onPick }: {
     const search = host.searchProjects
     if (!search) return
     let alive = true
-    void search.call(host, query).then(list => {
+    void search.call(host, query).then(found => {
       if (!alive) return
-      setOptions(list)
+      setOptions(found.options)
       // A new result set means the old position points at something else entirely.
       setIndex(0)
     })

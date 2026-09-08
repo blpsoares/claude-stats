@@ -588,6 +588,19 @@ input[type="range"],
 input[type="checkbox"],
 input[type="radio"] { accent-color: var(--anthropic-orange); }
 
+/* THE CARET IS THE PRODUCT'S COLOUR TOO.
+ *
+ * The blinking bar in a text field is drawn by the browser in its own foreground colour — white on
+ * this dark theme — and it is the one piece of chrome the eye is looking straight at while typing.
+ * One selector rather than a rule per field, for the same reason the accent block above is one: a
+ * new input is correct by existing, and a caret that is orange in the composer and white in the
+ * search box is the kind of inconsistency nobody can point at and everybody sees.
+ *
+ * `caret-color` only — the text, the selection and the focus ring are untouched. */
+input,
+textarea,
+[contenteditable] { caret-color: var(--anthropic-orange); }
+
 .ag-chat-md a { color: var(--anthropic-orange); text-decoration: none; }
 .ag-chat-md a:hover { text-decoration: underline; }
 

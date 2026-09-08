@@ -71,7 +71,7 @@ export async function webHarnesses(host: StartHost): Promise<WebHarnessOption[]>
 export async function webProjects(host: StartHost, query: string): Promise<WebProjectOption[]> {
   if (!host.searchProjects) return []
   const found = await host.searchProjects(query)
-  return found.map(p => ({
+  return found.options.map(p => ({
     path: p.path,
     label: p.label,
     ...(p.repo ? { repo: p.repo } : {}),

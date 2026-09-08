@@ -500,6 +500,12 @@ export function useFleet(lang: 'pt' | 'en', enabled = true): FleetState {
  * uuid handed to `claude --session-id`), the second is what a `closed` row — one read straight out
  * of the conversation store — is already named by. A managed row's own id is a tmux session name
  * and can never collide with a conversation id, so one map answers both without ambiguity.
+ *
+ * **It is a LOOKUP, and its `values()` are not the fleet.** A row that knows its conversation is in
+ * here TWICE, by design — so iterating this map counts those sessions twice. That shipped: the
+ * broadcast picker was built from `rowsById.values()` and offered `Active 22` on a machine running
+ * 11, over an `All` of 357 against a fleet of 329. Use `fleet.sessions`, or `buildPickRows`, which
+ * dedupes by id for exactly this reason.
  */
 export function fleetIndex(rows: readonly FleetRow[]): Map<string, FleetRow> {
   const map = new Map<string, FleetRow>()

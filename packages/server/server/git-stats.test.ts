@@ -15,7 +15,7 @@ import { promisify } from 'util'
 import { mkdtemp, mkdir, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { getProjectGitStats, clearGitStatsCache, gitStatsWalkCount } from './git'
+import { getProjectGitStats, clearGitStatsCache, gitStatsWalkCount, getGitFileStats, getSessionFileStats, sessionGitPaths } from './git'
 
 const execAsync = promisify(exec)
 
@@ -193,4 +193,109 @@ test('concurrent callers for one repo share a single in-flight walk', async () =
   for (const s of all) expect(s?.commits).toBe(2)
   // Eight callers, one walk: the later ones joined the in-flight promise.
   expect(gitStatsWalkCount()).toBe(1)
+})
+
+/** Commit with an explicit date, so a window can exclude the fixture's own setup commits.
+ *  `run` strips every inherited `GIT_*` variable (see its header) and that is exactly the pair we
+ *  need here, so this one adds them back deliberately. `--after`/`--before` filter on the
+ *  COMMITTER date, which is why both are set. */
+function commitAt(dir: string, message: string, whenIso: string): Promise<{ stdout: string; stderr: string }> {
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))),
+    GIT_AUTHOR_DATE: whenIso,
+    GIT_COMMITTER_DATE: whenIso,
+  }
+  return execAsync(`git add -A && git commit -q -m "${message}"`, { cwd: dir, env })
+}
+
+const HOURS_AGO = (n: number) => new Date(Date.now() - n * 3_600_000).toISOString()
+
+/**
+ * A SESSION'S COMMITS ARE WHERE IT WORKED, and this repository mandates that that is a WORKTREE.
+ *
+ * `getGitFileStats` was asked of `project_path` — the FIRST cwd of the transcript, which is the
+ * project the session belongs to. A session that moved into `.claude/worktrees/<name>` commits on
+ * a branch the main checkout's HEAD has never seen, so the walk found nothing and the session card
+ * read `Commits 2 · Lines +0 / −0 · Files 0`: a count of commits beside a confident zero of what
+ * they changed. Measured on the reporting machine: nothing in the checkout, +688 / −66 over 25
+ * files in the worktree, for the very window that produced the 2 commits.
+ *
+ * Same distinction `sessionAtCwd` already makes for live-session detection, applied to git.
+ */
+test('sessionGitPaths asks where the session ENDED first, then the project', () => {
+  expect(sessionGitPaths('/repo', '/repo/.claude/worktrees/w'))
+    .toEqual(['/repo/.claude/worktrees/w', '/repo'])
+  // A session that never moved has ONE place to ask — asking twice would double the git work for
+  // the ordinary case, which is the storm this file exists to pin.
+  expect(sessionGitPaths('/repo', '/repo')).toEqual(['/repo'])
+  expect(sessionGitPaths('/repo', undefined)).toEqual(['/repo'])
+  expect(sessionGitPaths('', '/repo/w')).toEqual(['/repo/w'])
+})
+
+test('THE REPORTED CASE: a session that committed in a worktree is not reported as 0 lines', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gitsess-'))
+  const repo = join(root, 'repo')
+  // The repository's own history, well before the session's window.
+  await mkdir(repo, { recursive: true })
+  await run('git init -q .', { cwd: repo })
+  await run('git config user.email t@t.t && git config user.name t', { cwd: repo })
+  await writeFile(join(repo, 'a.txt'), 'a\n')
+  await commitAt(repo, 'base', HOURS_AGO(5))
+  const tree = join(root, 'wt')
+  await addWorktree(repo, tree, 'feature')
+
+  const after = HOURS_AGO(1)
+  // The session's work: one commit, on the worktree's own branch, inside the window.
+  await writeFile(join(tree, 'new.txt'), 'one\ntwo\nthree\n')
+  await commitAt(tree, 'work', new Date().toISOString())
+  const before = new Date(Date.now() + 60_000).toISOString()
+
+  // The old reading: the main checkout's HEAD has never seen that commit.
+  const atProject = await getGitFileStats(repo, after, before)
+  expect(atProject.linesAdded).toBe(0)
+  expect(atProject.filesModified).toBe(0)
+
+  // The session's own: asked where it was actually working.
+  const forSession = await getSessionFileStats(repo, tree, after, before)
+  expect(forSession.linesAdded).toBe(3)
+  expect(forSession.filesModified).toBe(1)
+})
+
+test('a session that stayed in the project still reads the project', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'gitsess2-'))
+  const repo = join(root, 'repo')
+  await mkdir(repo, { recursive: true })
+  await run('git init -q .', { cwd: repo })
+  await run('git config user.email t@t.t && git config user.name t', { cwd: repo })
+  await writeFile(join(repo, 'a.txt'), 'a\n')
+  await commitAt(repo, 'base', HOURS_AGO(5))
+
+  const after = HOURS_AGO(1)
+  await writeFile(join(repo, 'b.txt'), 'x\ny\n')
+  await commitAt(repo, 'work', new Date().toISOString())
+  const before = new Date(Date.now() + 60_000).toISOString()
+
+  const forSession = await getSessionFileStats(repo, repo, after, before)
+  expect(forSession.filesModified).toBe(1)
+  expect(forSession.linesAdded).toBe(2)
+})
+
+test('a cwd that is not a repository falls back to the project', async () => {
+  // A session whose last directory is `/tmp/...` — the fallback is what keeps its commits visible.
+  const root = await mkdtemp(join(tmpdir(), 'gitsess3-'))
+  const repo = join(root, 'repo')
+  await mkdir(repo, { recursive: true })
+  await run('git init -q .', { cwd: repo })
+  await run('git config user.email t@t.t && git config user.name t', { cwd: repo })
+  await writeFile(join(repo, 'a.txt'), 'a\n')
+  await commitAt(repo, 'base', HOURS_AGO(5))
+  const elsewhere = await mkdtemp(join(tmpdir(), 'nowhere-'))
+
+  const after = HOURS_AGO(1)
+  await writeFile(join(repo, 'c.txt'), 'x\n')
+  await commitAt(repo, 'work', new Date().toISOString())
+  const before = new Date(Date.now() + 60_000).toISOString()
+
+  const forSession = await getSessionFileStats(repo, elsewhere, after, before)
+  expect(forSession.filesModified).toBe(1)
 })

@@ -81,5 +81,24 @@ export function takePerKind<T>(
   return out
 }
 
+/**
+ * How many of each kind MATCHED — the number the tabs must carry.
+ *
+ * Counted BEFORE `takePerKind`, and that is the whole reason it exists: the wizard's tabs read
+ * `Repositories 12 · Projects 12 · Folders 12` on a machine with twenty repositories, because they
+ * were counting the rows they had been given and the cap is 12. A cap presented as a count is a
+ * number that can never be anything but the cap — it says nothing, and it says it confidently.
+ *
+ * Same `kindOf` the cap is applied with, so a row can never be counted under one kind and budgeted
+ * under another.
+ */
+export function countPerKind<T>(
+  ranked: readonly T[], kindOf: (item: T) => ProjectKind,
+): Record<ProjectKind, number> {
+  const out: Record<ProjectKind, number> = { repo: 0, project: 0, folder: 0 }
+  for (const item of ranked) out[kindOf(item)] += 1
+  return out
+}
+
 /** How many of each kind the wizard offers. Enough to scroll, few enough to read. */
 export const PROJECTS_PER_KIND = 12

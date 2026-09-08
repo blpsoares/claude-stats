@@ -80,3 +80,44 @@ export function kindEmpty(tab: ProjectTab, query: string, anyProjects: boolean, 
 
 /** How long the field runs ahead of the search. Imperceptible, and one request per word. */
 export const SEARCH_DEBOUNCE_MS = 180
+
+/**
+ * The number a tab carries: HOW MANY MATCHED, never how many rows arrived.
+ *
+ * The rows are capped per kind by the server (`PROJECTS_PER_KIND`), so counting them made every
+ * tab read `12` on a machine with twenty repositories — a cap presented as a fact about the
+ * machine, and one that could never move whatever the person typed.
+ *
+ * `totals` absent means the SERVER did not say (an older one). The rows are then the only true
+ * statement available, so they are what is shown — and `kindMore` stays silent, because "there are
+ * more" is exactly the thing that cannot be known without them.
+ */
+export function kindCount(
+  tab: ProjectTab, rows: number, totals: Record<ProjectKind, number> | undefined,
+): number {
+  if (!totals) return rows
+  if (tab === 'all') return totals.repo + totals.project + totals.folder
+  return totals[tab]
+}
+
+/**
+ * "12 of 21" — said only when rows are actually being held back.
+ *
+ * `null` covers all three ways there is nothing to say: nothing known, nothing withheld, or a
+ * total that contradicts the rows (fewer than are on screen). A disagreement is answered with
+ * silence rather than with whichever number happens to be larger.
+ */
+export function kindMore(
+  rows: number, total: number | undefined, hasRows: boolean,
+): { shown: number; total: number } | null {
+  if (!hasRows || total === undefined) return null
+  if (total <= rows) return null
+  return { shown: rows, total }
+}
+
+/** The sentence for `kindMore`, in the user's language. */
+export function kindMoreText(more: { shown: number; total: number }, pt: boolean): string {
+  return pt
+    ? `Mostrando ${more.shown} de ${more.total}. Digite para encontrar os outros.`
+    : `Showing ${more.shown} of ${more.total}. Type to reach the rest.`
+}

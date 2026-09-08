@@ -29,8 +29,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronLeft, ChevronRight, Check, FolderClock, FolderGit2, Folder, Loader, Paperclip, Search, X } from 'lucide-react'
 import { projectKind, type ProjectKind } from '@agentistics/core'
 import {
-  KIND_TABS, SEARCH_DEBOUNCE_MS, kindEmpty, kindHint, kindLabel, type ProjectTab,
+  KIND_TABS, SEARCH_DEBOUNCE_MS, kindCount, kindEmpty, kindHint, kindLabel, kindMore, kindMoreText,
+  type ProjectTab,
 } from '../../lib/projectTabs'
+import { attachmentRoom, MAX_ATTACHMENTS, planPaste } from '../../lib/pastePlan'
 import { Field, Muted, inputStyle } from './formBits'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -95,6 +97,15 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
   const pt = lang === 'pt'
   const [harnesses, setHarnesses] = useState<HarnessOption[] | null>(null)
   const [projects, setProjects] = useState<ProjectOption[]>([])
+  /**
+   * How many places of each kind MATCHED — which is not how many rows came back.
+   *
+   * The server caps its answer per kind so a tab can never be emptied by another kind's budget, and
+   * the tabs then counted the rows: `Repositories 12 · Projects 12 · Folders 12` on a machine with
+   * twenty repositories. `undefined` means this server does not say, and the tabs fall back to
+   * counting rows rather than to a guess.
+   */
+  const [projectTotals, setProjectTotals] = useState<Record<ProjectKind, number> | undefined>(undefined)
   const [tasks, setTasks] = useState<string[]>([])
   const [query, setQuery] = useState('')
   /**
@@ -164,10 +175,12 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
         if (!res.ok || !alive) return
         const json = await res.json() as {
           harnesses: HarnessOption[]; projects: ProjectOption[]; tasks: string[]
+          projectTotals?: Record<ProjectKind, number>
         }
         if (!alive) return
         setHarnesses(json.harnesses)
         setProjects(json.projects)
+        setProjectTotals(json.projectTotals)
         setTasks(json.tasks)
         // Pre-select the only assistant there is. A one-item picker is a question with one answer.
         setHarness(h => h ?? (json.harnesses.length === 1 ? json.harnesses[0]! : null))
@@ -195,6 +208,12 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
 
   /** What the list is showing. `all` keeps the server's ranking, which is the useful default. */
   const shownProjects = kindTab === 'all' ? projects : byKind[kindTab]
+  /** Whether rows are being held back, and how many — `null` whenever that cannot be known. */
+  const shownMore = kindMore(
+    shownProjects.length,
+    projectTotals ? kindCount(kindTab, shownProjects.length, projectTotals) : undefined,
+    shownProjects.length > 0,
+  )
 
   // Reset the answers a DIFFERENT assistant does not accept. Carrying `effort: 'high'` across to a
   // harness whose set does not contain it would send a flag the CLI rejects at spawn.
@@ -318,8 +337,17 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
    * assistant would be told to read a file that is not there — a failure the person cannot see and
    * the session cannot explain.
    */
-  async function pick(list: FileList | null): Promise<void> {
-    const files = Array.from(list ?? [])
+  async function pick(list: FileList | readonly File[] | null): Promise<void> {
+    const picked = Array.from(list ?? [])
+    if (picked.length === 0) return
+    // The same cap the session composer applies, from the same module — a wizard that accepts
+    // fifteen and a composer that accepts ten are two rules for one act.
+    const files = picked.slice(0, attachmentRoom(attachments.length))
+    if (files.length < picked.length) {
+      setNotice(pt
+        ? `No máximo ${MAX_ATTACHMENTS} anexos.`
+        : `At most ${MAX_ATTACHMENTS} attachments.`)
+    }
     if (files.length === 0) return
     setUploading(true)
     for (const file of files) {
@@ -339,6 +367,36 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
     }
     setUploading(false)
     if (fileRef.current) fileRef.current.value = ''
+  }
+
+  /**
+   * PASTE INTO THE MESSAGE, files included — reported as "let me ctrl+V a file here".
+   *
+   * `planPaste` is the session composer's own decision, unchanged and shared: a paste carrying
+   * FILES becomes attachments, ordinary text falls through to the field (which handles the caret
+   * and the undo stack better than any manual insert), and a very large block of text is attached
+   * as a file instead. That last one matters here for the same reason it matters there — several
+   * harnesses take their first prompt by having it TYPED into a pane (see `spawn-spec.ts`), so a
+   * 4.000-line paste is not a message.
+   *
+   * The button stays: a paste is the shortcut, never the only way in.
+   */
+  function onPastePrompt(e: React.ClipboardEvent<HTMLTextAreaElement>): void {
+    const plan = planPaste({
+      files: Array.from(e.clipboardData.files),
+      text: e.clipboardData.getData('text/plain'),
+      existing: attachments.length,
+    })
+    // An ordinary paste is left alone — the textarea does it better than we would.
+    if (plan.kind === 'text') return
+    e.preventDefault()
+    if (plan.kind === 'files') { void pick(plan.files); return }
+    if (plan.kind === 'textFile') {
+      void pick([new File([plan.text], plan.name, { type: 'text/plain' })])
+      setNotice(pt
+        ? 'O texto colado era grande demais para a primeira mensagem, então foi anexado como arquivo.'
+        : 'The pasted text was too large for a first message, so it was attached as a file.')
+    }
   }
 
   /**
@@ -715,7 +773,7 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
             }}>
               {KIND_TABS.map(id => {
                 const on = kindTab === id
-                const n = id === 'all' ? projects.length : byKind[id].length
+                const n = kindCount(id, id === 'all' ? projects.length : byKind[id].length, projectTotals)
                 return (
                   <button
                     key={id}
@@ -746,7 +804,13 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
                 folder and nothing on screen ever said what the difference was. */}
             <p style={{
               margin: '0 0 8px', fontSize: 10.5, lineHeight: 1.45, color: 'var(--text-tertiary)',
-            }}>{kindHint(kindTab, pt)}</p>
+            }}>
+              {kindHint(kindTab, pt)}
+              {/* AND HOW MANY OF THEM ARE ON SCREEN. The tab now carries the true total, so
+                  without this line a tab reading 21 over a list of 12 looks like a broken list
+                  rather than a capped one — and the way to reach the other nine is to type. */}
+              {shownMore && <> {kindMoreText(shownMore, pt)}</>}
+            </p>
 
             <div style={{
               maxHeight: 190, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4,
@@ -813,10 +877,22 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
 
           {/* STEP 3 — WHAT. The first message, and the files it points at. */}
           {step === 'message' && (<>
-          <Field label={pt ? 'Primeira mensagem (opcional)' : 'First message (optional)'}>
+          <Field
+            label={pt ? 'Primeira mensagem (opcional)' : 'First message (optional)'}
+            hint={pt
+              ? 'Cole (Ctrl+V) ou arraste arquivos aqui para anexá-los.'
+              : 'Paste (Ctrl+V) or drop files here to attach them.'}
+          >
             <textarea
               value={prompt}
               onChange={e => setPrompt(e.target.value)}
+              onPaste={onPastePrompt}
+              onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }}
+              onDrop={e => {
+                if (e.dataTransfer.files.length === 0) return
+                e.preventDefault()
+                void pick(e.dataTransfer.files)
+              }}
               rows={3}
               placeholder={pt ? 'O que a sessão deve fazer…' : 'What the session should do…'}
               style={{ ...inputStyle, paddingLeft: 12, resize: 'vertical', minHeight: 68 }}

@@ -29,17 +29,25 @@ import { commandSummary, hasUnreadableWrite, shellWrites } from './shell-writes'
 import { classifyUserEntry, type UserEntry } from './chat-envelope'
 import type { ChatTurn } from './chat-turn'
 import { MAX_TAIL_BYTES, TAIL_BYTES, readTailBytes, windowLines } from './transcript-window'
+import { createTranscriptPathMemo } from './transcript-path-memo'
 
 // The turn shape now lives in `chat-turn.ts` — every harness reader produces it, and this module
 // is only one of them. Re-exported so nothing that already imports it from here has to move.
 export type { ChatTurn } from './chat-turn'
 
-/** Resolved paths and one-time-scan misses, keyed by conversation id. Never re-scanned once known. */
-const pathCache = new Map<string, string | null>()
+/**
+ * Where each conversation's transcript is — POSITIVES forever, misses only briefly.
+ *
+ * A `null` used to be cached here for the life of the process, and a session created from the
+ * wizard has no transcript for the first seconds of its life: the chat view's first poll landed
+ * inside that window and the conversation was unreadable until the server restarted. See
+ * `transcript-path-memo.ts`.
+ */
+const pathMemo = createTranscriptPathMemo()
 
 /** Reset the memo. Tests only. */
 export function forgetChatTailPaths(): void {
-  pathCache.clear()
+  pathMemo.clear()
 }
 
 function encodeProjectDir(cwd: string): string {
@@ -64,8 +72,15 @@ async function scanForTranscript(sessionId: string, projectsDir: string): Promis
 /**
  * The absolute path to a live Claude conversation's transcript, or `null` when it cannot be found.
  *
- * `null` is cached too — a session whose directory encoding is ambiguous costs one scan, not one
- * scan per poll for the rest of its life.
+ * TWO COSTS, and only the expensive one is memoized. The DIRECT path — the session's own cwd,
+ * encoded — is a single `stat`, and it is where a transcript actually is; it is checked on EVERY
+ * call, so a session whose file did not exist a moment ago is readable the moment it does. The
+ * SCAN (a `readdir` plus a `stat` per project directory, 281 of them on a real machine) is the one
+ * a miss must not be allowed to repeat every poll, and `transcript-path-memo.ts` is what bounds it.
+ *
+ * Caching the `null` itself is what broke: a session created from the wizard has no transcript
+ * until it first says something, the chat view's first poll lands inside that window, and the
+ * conversation was then unreadable for the life of the server process.
  *
  * `projectsDir` defaults to the real `PROJECTS_DIR` and is overridable only so tests can point it
  * at a fixture tree without needing a subprocess — `config.ts`'s constants are fixed at import
@@ -75,15 +90,20 @@ export async function resolveChatTranscriptPath(
   cwd: string,
   sessionId: string,
   projectsDir: string = PROJECTS_DIR,
+  now: number = Date.now(),
 ): Promise<string | null> {
   if (!UUID_RE.test(sessionId)) return null
-  const cached = pathCache.get(sessionId)
-  if (cached !== undefined) return cached
+  const known = pathMemo.get(sessionId)
+  if (known !== undefined) return known
 
   const direct = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`)
-  const resolved = (await exists(direct)) ? direct : await scanForTranscript(sessionId, projectsDir)
-  pathCache.set(sessionId, resolved)
-  return resolved
+  if (await exists(direct)) { pathMemo.remember(sessionId, direct); return direct }
+
+  if (!pathMemo.mayScan(sessionId, now)) return null
+  pathMemo.missed(sessionId, now)
+  const scanned = await scanForTranscript(sessionId, projectsDir)
+  if (scanned !== null) pathMemo.remember(sessionId, scanned)
+  return scanned
 }
 
 interface Cached {

@@ -133,6 +133,23 @@ export interface SessionDayUsage {
   cache_creation_input_tokens: number
   /** Messages of BOTH roles, matching `dailyActivity.messageCount`. */
   messages: number
+  /**
+   * WHEN, on this day: hour of the LOCAL clock -> how many of `message_hours`' entries fell in it.
+   *
+   * The same bucket rule and the same population as `message_hours` (every timestamped line, both
+   * roles), which is what lets a sliced session's `message_hours` be REBUILT from these — see
+   * `expandHours`. It is deliberately not derived from `messages`: that counter has its own
+   * population, and a chart built from one field's total split by another field's shape is an
+   * apportionment, not a measurement.
+   *
+   * It exists because `message_hours` carries no day, so under a date filter a conversation open
+   * since Tuesday put every hour it had ever run in into today's chart — measured as bars across
+   * all 24 hours for someone who had started at 8am.
+   *
+   * Optional: records written before the field existed have none, and absent means NOT RECORDED,
+   * never "no activity".
+   */
+  hours?: Record<string, number>
 }
 
 export interface SessionMeta {

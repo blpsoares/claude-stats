@@ -291,3 +291,48 @@ describe('the window says it is a window, on every harness', () => {
     }
   })
 })
+
+/**
+ * EVERY HARNESS WHOSE RESOLVER MEMOIZES: a session's transcript does not exist until the
+ * conversation first says something, so the first poll after a spawn always misses — and a miss
+ * remembered for the life of the process makes that conversation unreadable for the life of the
+ * process. Reported on a claude session started from the wizard; codex and kimi memoize the same
+ * way and would fail the same way. Antigravity and copilot re-check their two paths on every call
+ * and are immune by construction, which is why they are absent here.
+ */
+describe('a transcript that appears AFTER the first miss', () => {
+  const ID = '99999999-8888-4777-8666-555555555555'
+
+  it('codex: is found once the rollout is written', async () => {
+    forgetCodexTranscriptPaths()
+    const root = await mkdtemp(join(tmpdir(), 'codex-late-'))
+    const at = 5_000_000
+    expect(await resolveCodexTranscript({ conversationId: ID }, root, at)).toBeNull()
+
+    const dir = join(root, '2026', '09', '08')
+    await mkdir(dir, { recursive: true })
+    const file = join(dir, `rollout-2026-09-08T10-00-00-${ID}.jsonl`)
+    await writeFile(file, '')
+
+    // Inside the TTL the scan is deliberately not repeated; past it, the file is found.
+    expect(await resolveCodexTranscript({ conversationId: ID }, root, at + 1_000)).toBeNull()
+    expect(await resolveCodexTranscript({ conversationId: ID }, root, at + 31_000)).toBe(file)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  it('kimi: is found once the wire is written', async () => {
+    forgetKimiTranscriptPaths()
+    const root = await mkdtemp(join(tmpdir(), 'kimi-late-'))
+    const at = 5_000_000
+    expect(await resolveKimiTranscript({ conversationId: ID }, root, at)).toBeNull()
+
+    const dir = join(root, 'wd_x', `session_${ID}`, 'agents', 'main')
+    await mkdir(dir, { recursive: true })
+    const wire = join(dir, 'wire.jsonl')
+    await writeFile(wire, '')
+
+    expect(await resolveKimiTranscript({ conversationId: ID }, root, at + 31_000)).toBe(wire)
+    await rm(root, { recursive: true, force: true })
+  })
+})
+
