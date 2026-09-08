@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'bun:test'
-import { agoLabel, isDoc, liveEvents, writeStatus } from './artifactTabs'
+import { agoLabel, isDoc, liveEvents, writeStatus, toolDisplayName } from './artifactTabs'
 
 test('a document is decided by extension or by a known name', () => {
   for (const p of ['docs/spec.md', 'a/b/NOTES.txt', 'README', 'CHANGELOG.md', 'x/plan.mdx']) {
@@ -99,4 +99,46 @@ describe('writeStatus', () => {
   it('anything else the server did not list is gone', () => {
     expect(writeStatus('/repo/deleted.ts', disk)).toBe('gone')
   })
+})
+
+// --- a call that matched no verb is still something that happened -----------
+//
+// MEASURED on a real subagent: 95 tool calls, every one `mcp__playwright__*`, and the panel said
+// "This subagent recorded no actions." The chain ended after Bash/write/read/delegate, so anything
+// else produced no row — and `toolDetail` on the server looks for `command`/`file_path`/`query`/…,
+// none of which an MCP call carries, so there was no text either.
+
+test('an MCP call produces a row, named by its tool', () => {
+  const evs = liveEvents([{ tools: [{ name: 'mcp__playwright__browser_click', ref: 't1' }] }] as never)
+  expect(evs).toHaveLength(1)
+  expect(evs[0]!.kind).toBe('used')
+  expect(evs[0]!.text).toBe('playwright · browser_click')
+  expect(evs[0]!.ref).toBe('t1')
+})
+
+test('the tool name keeps BOTH halves — server and tool', () => {
+  expect(toolDisplayName('mcp__playwright__browser_click')).toBe('playwright · browser_click')
+  expect(toolDisplayName('mcp__MongoDB__find')).toBe('MongoDB · find')
+  // A mapping, never a filter: a name it does not know passes through as itself.
+  expect(toolDisplayName('ToolSearch')).toBe('ToolSearch')
+  expect(toolDisplayName('Bash')).toBe('Bash')
+})
+
+test('a detail is preferred over the tool name when the call carries one', () => {
+  const evs = liveEvents([{ tools: [{ name: 'ToolSearch', detail: 'select:Read,Edit' }] }] as never)
+  expect(evs[0]!.text).toBe('select:Read,Edit')
+})
+
+// The fallback must not double up on calls the chain already spoke for.
+test('a call that already produced a row does not get a second one', () => {
+  expect(liveEvents([{ tools: [{ name: 'Bash', detail: 'ls -la' }] }] as never)).toHaveLength(1)
+  expect(liveEvents([{ tools: [{ name: 'Read', detail: '/a/b.ts' }] }] as never)).toHaveLength(1)
+  expect(liveEvents([{ tools: [{ name: 'Agent', detail: 'sweep' }] }] as never)).toHaveLength(1)
+})
+
+// A Bash call with NO detail said nothing at all before; it is still a shell command that ran.
+test('a Bash call with no detail is still a row', () => {
+  const evs = liveEvents([{ tools: [{ name: 'Bash' }] }] as never)
+  expect(evs).toHaveLength(1)
+  expect(evs[0]!.text).toBe('Bash')
 })
