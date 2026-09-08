@@ -638,16 +638,30 @@ export async function parseSessionJsonl(
     assistant_chars: assistantChars,
     assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
-    ...(compaction.count > 0
+    // `0` and `{}` ARE REAL ANSWERS HERE, and are written as such. This parser has just walked the
+    // whole transcript, so "it compacted zero times" / "it invoked no skill" is a measurement, and
+    // an ABSENT field means only that no transcript was read for this session. Writing them only
+    // above zero made `session-profile.ts`'s `n` identical to its `nonZero` for both metrics: the
+    // panel printed `compacts: 2 (n=23)` beside `messages: 2 (n=479)`, reading as "your typical
+    // session compacts twice" when 23 of 479 sessions ever compacted at all and the typical one
+    // compacts none. `compact_dropped_tokens` stays conditional — no record carrying one is a
+    // different fact from a record carrying zero.
+    //
+    // `source === 'subdir'` is the exception, and it is the one `backfill-compaction.ts` records:
+    // there the file just read is a SUBAGENT's stand-in for a session whose own transcript is gone,
+    // and a subagent runs its own context and compacts on its own (5 of this machine's 255 subagent
+    // transcripts carry a `compact_boundary`). Stamping its count on the session would be a
+    // confident wrong number where the honest answer is that the evidence is gone.
+    ...(source === 'jsonl'
       ? {
           compact_count: compaction.count,
           compact_ms: compaction.ms,
           ...(compaction.droppedTokens !== undefined
             ? { compact_dropped_tokens: compaction.droppedTokens }
             : {}),
+          skill_uses: skillUses,
         }
       : {}),
-    ...(Object.keys(skillUses).length > 0 ? { skill_uses: skillUses } : {}),
     tool_output_tokens: toolOutputTokens,
     agent_file_reads: agentFileReads,
     languages: Array.from(languageSet),

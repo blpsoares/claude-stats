@@ -76,6 +76,26 @@ export interface HarnessCapabilities {
    * than zero.
    */
   compaction: boolean
+  /**
+   * The harness records SKILL invocations by name, so `SessionMeta.skill_uses` can be filled.
+   * Claude Code writes a `Skill` tool_use whose `input.skill` names the skill; no other harness
+   * has the concept at all, so `skills` there is absent rather than an empty map — a `{}` would
+   * enter the profile's denominator as "this session invoked none", which is a measurement nobody
+   * took.
+   */
+  skills: boolean
+  /**
+   * The harness names an MCP tool as `mcp__<server>__<tool>`, so the SERVER can be read back off
+   * `tool_counts` — which is what the profile's `mcpServers` metric counts.
+   *
+   * This is narrower than `tools`, which is `true` everywhere: recording the tool is not the same
+   * as recording whose server it was. Antigravity writes `mcp_` with ONE underscore and
+   * `call_mcp_tool`, and Copilot keeps MCP names in `mcp_tool_names` and never a server; codex and
+   * gemini record no MCP tool at all (`uses_mcp` is hardcoded `false` in both parsers). Counting
+   * `mcp__`-prefixed keys on any of them yields a confident `0` for a question that was never
+   * asked.
+   */
+  mcpServers: boolean
 }
 
 /** Single source of truth for which metrics each harness can produce.
@@ -86,16 +106,16 @@ export const HARNESS_CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
   //   codex   → `task_complete`.duration_ms (measured by Codex itself)
   //   copilot → `assistant.turn_start` → `assistant.turn_end` brackets
   //   gemini / antigravity / kimi → reconstructed from per-message timestamps (no measured field)
-  claude:  { tokens: true,  cost: true,  model: true,  tools: true,  agents: true,  gitLines: true,  dynamicWorkflows: true,  activeTime: true,  contextWindow: true,  compaction: true },
-  codex:   { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true,  contextWindow: true,  compaction: false },
+  claude:  { tokens: true,  cost: true,  model: true,  tools: true,  agents: true,  gitLines: true,  dynamicWorkflows: true,  activeTime: true,  contextWindow: true,  compaction: true,  skills: true,  mcpServers: true },
+  codex:   { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true,  contextWindow: true,  compaction: false, skills: false, mcpServers: false },
   // Gemini's chat files carry `toolCalls: [{ name, args }]` per message, and a shell call puts its
   // command in `args.command` — so tools and commits are real. `gitLines` stays false: the calls
   // name the file they touched but carry no diff counters.
-  gemini:  { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true,  contextWindow: false, compaction: false },
+  gemini:  { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true,  contextWindow: false, compaction: false, skills: false, mcpServers: false },
   // `tools` was false while `tool.execution_start` had been carrying the tool name and its
   // arguments all along — the flag was out of date, not the data missing. Verified against a real
   // events.jsonl before flipping it.
-  copilot: { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: true,  dynamicWorkflows: false, activeTime: true,  contextWindow: false, compaction: false },
+  copilot: { tokens: true,  cost: true,  model: true,  tools: true,  agents: false, gitLines: true,  dynamicWorkflows: false, activeTime: true,  contextWindow: false, compaction: false, skills: false, mcpServers: false },
   // Antigravity (agy): tokens + model come from the `gen_metadata` protobuf blobs in
   // ~/.gemini/antigravity-cli/conversations/<id>.db (decoded by adapters/antigravity-protobuf.ts)
   // and cost is derived from them via calcCost().
@@ -106,7 +126,7 @@ export const HARNESS_CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
   // exactly the misleading-zero this flag exists to prevent, so the UI shows N/A instead. The
   // per-session lines_added / lines_removed fields are still populated (and files_modified, which
   // this flag does NOT gate, stays real).
-  antigravity: { tokens: true, cost: true, model: true, tools: true, agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true, contextWindow: true, compaction: false },
+  antigravity: { tokens: true, cost: true, model: true, tools: true, agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true, contextWindow: true, compaction: false, skills: false, mcpServers: false },
   // Kimi Code CLI. Tokens and model are real (usage.record events in each agent's wire.jsonl).
   // Kimi ROUTES to other providers and stamps the provider's own model on each usage record
   // (`google/gemini-3.5-flash-lite`), so in practice the model is one MODEL_PRICING already knows
@@ -114,9 +134,12 @@ export const HARNESS_CAPABILITIES: Record<HarnessId, HarnessCapabilities> = {
   // any unknown id on any harness they would take the shared fallback price, so add them here when
   // Moonshot publishes verified rates. `gitLines` is false because Kimi records the Edit/Write
   // strings but no diff counters.
+  // `mcpServers` is TRUE here and nowhere but claude: kimi-parse records an MCP call under its own
+  // `mcp__<server>__<tool>` name in `tool_counts` (verified on real data — `mcp__db__query`), which
+  // is the one shape the server can be read back out of.
   // Kimi's wire carries `tool.call` with `args`, and its own tool schema declares Bash's
   // `command` — so tools and commits are both real, read from what it actually ran.
-  kimi: { tokens: true, cost: true, model: true, tools: true, agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true, contextWindow: true, compaction: false },
+  kimi: { tokens: true, cost: true, model: true, tools: true, agents: false, gitLines: false, dynamicWorkflows: false, activeTime: true, contextWindow: true, compaction: false, skills: false, mcpServers: true },
 }
 
 /** Display order for harness lists, and the single source of truth for "every harness".
@@ -249,13 +272,22 @@ export interface SessionMeta {
   /**
    * WHAT COMPACTION COST THIS SESSION. Claude-only — gated by `HARNESS_CAPABILITIES.compaction`.
    *
-   * `compact_dropped_tokens` is the LAST cumulative reading, not a sum of them, and is absent when
-   * no record reported one. See `compactsFromClaudeJsonl`.
+   * **`0` IS A REAL ANSWER AND IS WRITTEN AS ONE.** `parseSessionJsonl` stamps `compact_count` and
+   * `compact_ms` whenever it read THIS session's own transcript, so absent means "no transcript was
+   * read for this session" and nothing else. That distinction is the whole denominator of
+   * `session-profile.ts`: while the producer wrote the field only above zero, `n` could never
+   * exceed `nonZero` and the median of a rare event was always at least 1.
+   *
+   * `compact_dropped_tokens` is the LAST cumulative reading, not a sum of them, and STAYS absent
+   * when no record reported one — a `0` there would claim a session that compacted five times
+   * dropped nothing. See `compactsFromClaudeJsonl`.
    */
   compact_count?: number
   compact_ms?: number
   compact_dropped_tokens?: number
-  /** Skill invocations by name (`superpowers:brainstorming`), from the `Skill` tool_use. */
+  /** Skill invocations by name (`superpowers:brainstorming`), from the `Skill` tool_use.
+   *  Gated by `HARNESS_CAPABILITIES.skills`. `{}` is a real answer ("this session invoked none")
+   *  and is written whenever the session's own transcript was read; absent means it was not. */
   skill_uses?: Record<string, number>
   first_prompt: string
   /** Human-readable session title. Claude writes an `ai-title` (or legacy `summary`) line into

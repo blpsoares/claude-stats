@@ -9,7 +9,7 @@
  * either side of the window without touching the machine's time.
  */
 import { sessionTokens, totalTokens } from './tokens'
-import type { SessionMeta } from './types'
+import { HARNESS_CAPABILITIES, type HarnessCapabilities, type SessionMeta } from './types'
 
 /**
  * `costUSD` is deliberately ABSENT. Cost is not a field on `SessionMeta` — it is computed by
@@ -48,7 +48,11 @@ export const PROFILE_WINDOW_DAYS = 30
  * window depending on the machine reading it.
  */
 function dayMs(s: SessionMeta): number {
-  const day = (s.start_time ?? '').slice(0, 10)
+  // `String(...)` because this is an exported pure function over whatever the store holds, and the
+  // store has historically held a NUMBER here — Kimi persisted `start_time` as an epoch, and every
+  // consumer calling a string method on it threw. `consolidate.ts` repairs it on the way in; this
+  // module is reachable without going through that read.
+  const day = String(s.start_time ?? '').slice(0, 10)
   const t = Date.parse(`${day}T00:00:00Z`)
   return Number.isNaN(t) ? Number.NaN : t
 }
@@ -62,21 +66,52 @@ function dayMs(s: SessionMeta): number {
  * direction of "you use fewer skills than you think".
  *
  * A reader returning `undefined` means "this session cannot answer"; `0` means "it answered zero".
+ *
+ * TWO THINGS make a session unable to answer, and both have to be checked:
+ *
+ * 1. **The HARNESS cannot produce the metric.** `HARNESS_CAPABILITIES` is the single place that
+ *    says so, and it is read here rather than inferred from the field being absent — an adapter
+ *    that starts writing a field with a different meaning would otherwise walk straight into the
+ *    denominator. This is the same N/A-versus-a-confident-0 rule the dashboard applies to a metric.
+ * 2. **No transcript was read for THIS session.** For `compacts` and `skills` the producer records
+ *    that by writing `0` / `{}` when it did read one, so the field's presence IS the record. The
+ *    subagent count has no such field — `agentMetrics` is absent both when nothing was measured and
+ *    when nothing ran — so it keys off `_source`, which `parseSessionJsonl` sets to `'jsonl'`
+ *    exactly when it read the session's own file (`'subdir'` means it read a SUBAGENT's file as a
+ *    stand-in, and `'meta'` that it read no transcript at all).
  */
 type Reader = (s: SessionMeta) => number | undefined
 
+/** What this session's harness can produce. A session with no harness is claude — the store rule. */
+function caps(s: SessionMeta): HarnessCapabilities {
+  return HARNESS_CAPABILITIES[s.harness ?? 'claude'] ?? HARNESS_CAPABILITIES.claude
+}
+
+/** Did the parser read THIS session's own transcript? See rule 2 above. */
+function transcriptRead(s: SessionMeta): boolean {
+  return s._source === 'jsonl'
+}
+
 const READERS: Record<ProfileMetric, Reader> = {
-  compacts: s => s.compact_count,
+  compacts: s => (caps(s).compaction ? s.compact_count : undefined),
   messages: s => s.user_message_count,
   activeMinutes: s => s.active_minutes,
   tokens: s => totalTokens(sessionTokens(s)),
   toolErrors: s => s.tool_errors,
-  skills: s => (s.skill_uses ? Object.keys(s.skill_uses).length : undefined),
+  skills: s => (caps(s).skills && s.skill_uses ? Object.keys(s.skill_uses).length : undefined),
+  // `Object.keys(...).length` can never be `undefined`, so before the capability gate EVERY session
+  // entered `n` — including the harnesses that record an MCP call under a name this filter cannot
+  // match. On a mixed-harness machine the row read `MCP servers: 0 (n=479)`: a confident claim
+  // about a population most of which was never asked the question.
   mcpServers: s => {
+    if (!caps(s).mcpServers) return undefined
     const names = Object.keys(s.tool_counts ?? {}).filter(t => t.startsWith('mcp__'))
     return new Set(names.map(t => t.split('__')[1] ?? t)).size
   },
-  subagents: s => s.agentMetrics?.totalInvocations,
+  subagents: s => {
+    if (!caps(s).agents || !transcriptRead(s)) return undefined
+    return s.agentMetrics?.totalInvocations ?? 0
+  },
 }
 
 function median(sorted: readonly number[]): number {
