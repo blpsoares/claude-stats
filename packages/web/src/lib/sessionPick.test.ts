@@ -1,6 +1,16 @@
 import { test, expect } from 'bun:test'
 import {
-  initialPick, pickAllState, pickConfirmLabel, pickedRows, togglePick, togglePickAll,
+  PICK_TABS,
+  filterPickRows,
+  initialPick,
+  pickAllState,
+  pickConfirmLabel,
+  pickEmpty,
+  pickTabHint,
+  pickTabLabel,
+  pickedRows,
+  togglePick,
+  togglePickAll,
 } from './sessionPick'
 
 const rows = [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }]
@@ -61,4 +71,50 @@ test('nothing picked is not pressable, and says so instead of showing a zero', (
   expect(v.enabled).toBe(false)
   expect(v.label).not.toContain('0')
   expect(pickConfirmLabel(0, 'send', false).enabled).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// Tabs, search, and the rows that cannot take the verb.
+// ---------------------------------------------------------------------------
+
+const FLEET = [
+  { id: 'a', title: 'ALM board', detail: '~/agentistics' },
+  { id: 'b', title: 'Mobile composer', detail: '~/agentistics/.claude/worktrees/mob' },
+  { id: 'c', title: 'Old probe', detail: '~/scratch', enabled: false, reason: 'not running' },
+]
+
+test('the active tab withholds what cannot take the verb; all shows the fleet', () => {
+  expect(filterPickRows(FLEET, 'active', '').map(r => r.id)).toEqual(['a', 'b'])
+  expect(filterPickRows(FLEET, 'all', '').map(r => r.id)).toEqual(['a', 'b', 'c'])
+})
+
+// Two sessions of one repository are told apart by the FOLDER and by nothing else.
+test('search reads the title and the folder, case-folded', () => {
+  expect(filterPickRows(FLEET, 'all', 'ALM').map(r => r.id)).toEqual(['a'])
+  expect(filterPickRows(FLEET, 'all', 'alm').map(r => r.id)).toEqual(['a'])
+  expect(filterPickRows(FLEET, 'all', 'worktrees').map(r => r.id)).toEqual(['b'])
+  expect(filterPickRows(FLEET, 'all', '   ').map(r => r.id)).toEqual(['a', 'b', 'c'])
+  expect(filterPickRows(FLEET, 'all', 'nothing here')).toEqual([])
+})
+
+// A count on the button the server is about to refuse is worse than no button.
+test('an un-takeable row is never ticked, by any route', () => {
+  expect([...initialPick(FLEET, 'all')]).toEqual(['a', 'b'])
+  expect([...togglePickAll(FLEET, new Set())]).toEqual(['a', 'b'])
+  // And "all" reads as all once every takeable row is on, despite `c` sitting there.
+  expect(pickAllState(FLEET, new Set(['a', 'b']))).toBe('all')
+  expect(pickAllState(FLEET, new Set(['a']))).toBe('some')
+})
+
+// Clear the box, or switch tab — two different actions, so two different sentences.
+test('the empty state names what emptied the list', () => {
+  const searched = pickEmpty('all', 'zzz', true, true)
+  const nothingRunning = pickEmpty('active', '', true, true)
+  const nothingAtAll = pickEmpty('all', '', false, true)
+  expect(searched).not.toBe(nothingRunning)
+  expect(nothingRunning).not.toBe(nothingAtAll)
+  expect(nothingRunning).toContain('Todas')
+  expect(PICK_TABS).toEqual(['active', 'all'])
+  expect(pickTabLabel('active', true)).toBe('Ativas')
+  expect(pickTabHint('all', true)).not.toBe(pickTabHint('active', true))
 })

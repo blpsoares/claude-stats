@@ -177,24 +177,39 @@ export function SessionsAside({
   const groupRows = useMemo(() => {
     const fellRows: PickModalRow[] = []
     const sendRows: PickModalRow[] = []
-    if (!rowsById) return { fellRows, sendRows }
-    for (const s of rowsById.values() as Iterable<any>) {
-      const row: PickModalRow = {
-        id: s.id ?? '',
-        title: s.title || (pt ? 'sem título' : 'untitled'),
-        ...(s.project ? { detail: s.project } : {}),
+    let sendable = 0
+    if (!rowsById) return { fellRows, sendRows, sendable }
+    for (const r of rowsById.values() as Iterable<any>) {
+      const id: string = r.id ?? ''
+      if (!id) continue
+      const base: PickModalRow = {
+        id,
+        title: r.title || (pt ? 'sem título' : 'untitled'),
+        ...(r.project ? { detail: r.project } : r.cwd ? { detail: r.cwd } : {}),
       }
-      if (!row.id) continue
-      if (s.fell) fellRows.push(row)
-      if ((s.verbs as RowVerb[] | undefined)?.some(v => v.action === 'prompt' && v.enabled)) sendRows.push(row)
+      if (r.fell) fellRows.push(base)
+      /*
+       * THE WHOLE FLEET IS OFFERED, and the ones that cannot take a prompt are DISABLED with the
+       * server's own reason beside them — not hidden. A session missing from the list and a session
+       * that cannot be written to look identical from the outside, and the first reads as "agentop
+       * lost it". The `Active` tab is what narrows it for somebody who only wants the runnable ones.
+       */
+      const verb = (r.verbs as RowVerb[] | undefined)?.find(v => v.action === 'prompt')
+      const enabled = Boolean(verb?.enabled)
+      if (enabled) sendable++
+      sendRows.push({
+        ...base,
+        enabled,
+        ...(!enabled && verb?.reason ? { reason: verb.reason } : {}),
+      })
     }
-    return { fellRows, sendRows }
+    return { fellRows, sendRows, sendable }
   }, [rowsById, pt])
 
   const canAct = Boolean(act) && !hideNew
   const showFell = canAct && groupRows.fellRows.length > 0
   // One session is not a broadcast — the row's own composer is right there and says so better.
-  const showSend = canAct && groupRows.sendRows.length > 1
+  const showSend = canAct && groupRows.sendable > 1
   /**
    * The pinned set, from the module that already owns it.
    *

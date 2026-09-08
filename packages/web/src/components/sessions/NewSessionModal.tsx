@@ -31,6 +31,7 @@ import { projectKind, type ProjectKind } from '@agentistics/core'
 import {
   KIND_TABS, SEARCH_DEBOUNCE_MS, kindEmpty, kindHint, kindLabel, type ProjectTab,
 } from '../../lib/projectTabs'
+import { Field, Muted, inputStyle } from './formBits'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { effortColor, effortSteps } from '../../lib/effortScale'
@@ -1107,32 +1108,4 @@ function ModelId({ id }: { id: string }) {
   )
 }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', boxSizing: 'border-box',
-  padding: '9px 12px 9px 30px', borderRadius: 9,
-  border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-  color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 13, outline: 'none',
-}
 
-function Field({ label, hint, children }: {
-  label: string; hint?: string; children: React.ReactNode
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-      <span style={{
-        fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-        color: 'var(--text-tertiary)',
-      }}>
-        {label}
-      </span>
-      {children}
-      {hint && (
-        <span style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>{hint}</span>
-      )}
-    </div>
-  )
-}
-
-function Muted({ text }: { text: string }) {
-  return <p style={{ margin: 0, padding: '6px 4px', fontSize: 12, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>{text}</p>
-}
