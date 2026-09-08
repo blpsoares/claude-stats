@@ -1386,8 +1386,8 @@ The numbers moved to `~/.claude/projects/<project>/<session-id>/subagents/agent-
 ### What is available for Skills, and what is not for Tasks
 
 - **Skills ARE recorded** — as a `Skill` tool_use whose `input.skill` names the invoked skill
-  (`superpowers:brainstorming`, `artifact-design`, …). Measured 2026-09-08 on one machine: 104
-  invocations of 25 distinct skills across 57 sessions. This entry previously said the opposite —
+  (`superpowers:brainstorming`, `artifact-design`, …). Measured 2026-09-08 on one machine: 103
+  invocations of 26 distinct skills across 57 sessions. This entry previously said the opposite —
   that only a `skill_listing` attachment appeared and invocations could be inferred indirectly — and
   that was true before the `Skill` tool existed. It is the reason no adapter counts them yet, not a
   statement that they cannot be counted.
