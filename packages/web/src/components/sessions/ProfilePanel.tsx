@@ -1,17 +1,22 @@
 import type { Baseline, ProfileMetric } from '@agentistics/core'
+import { SHOWN, roundProfile } from '@agentistics/tui/control/profile-lines'
 
-const SHOWN: ProfileMetric[] = ['messages', 'activeMinutes', 'compacts', 'skills', 'mcpServers', 'subagents']
-
-const LABEL_EN: Record<string, string> = {
+/**
+ * The labels are `Record<ProfileMetric, string>` with NO `?? key` fallback: a seventh metric added
+ * to `SHOWN` must fail the build here rather than printing `activeMinutes` at a reader. `SHOWN` and
+ * `roundProfile` themselves come from the cockpit's own pure module — this panel used to re-declare
+ * both, so a metric added there reached the terminal and silently not the dashboard.
+ */
+const LABEL_EN: Record<ProfileMetric, string> = {
   messages: 'messages', activeMinutes: 'active minutes', compacts: 'compacts',
   skills: 'skills', mcpServers: 'MCP servers', subagents: 'subagents',
+  tokens: 'tokens', toolErrors: 'tool errors',
 }
-const LABEL_PT: Record<string, string> = {
+const LABEL_PT: Record<ProfileMetric, string> = {
   messages: 'mensagens', activeMinutes: 'minutos ativos', compacts: 'compacts',
   skills: 'skills', mcpServers: 'servidores MCP', subagents: 'subagentes',
+  tokens: 'tokens', toolErrors: 'erros de ferramenta',
 }
-
-const round = (n: number) => (n >= 10 || Number.isInteger(n) ? String(Math.round(n)) : n.toFixed(2))
 
 /**
  * The behaviour profile, shown where the sessions list is empty.
@@ -40,8 +45,8 @@ export function ProfilePanel({ baseline, pt }: { baseline?: Baseline; pt: boolea
             padding: '10px 12px', borderRadius: 10,
             background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', minWidth: 0,
           }}>
-            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{round(m!.median)}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{label[k] ?? k}</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-primary)' }}>{roundProfile(m!.median)}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{label[k]}</div>
             <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>n={m!.n}</div>
           </div>
         ))}
