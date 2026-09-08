@@ -22,6 +22,10 @@ const EXACT: ReadonlyMap<string, keyof Capabilities> = new Map<string, keyof Cap
   // It STARTS the configured MCP command to see whether it answers. Host power, and the reason the
   // route looks the server up in the CONFIG rather than taking a command from the body.
   ['/api/mcp/check', 'localShell'],
+  // Same reason as `/api/mcp/check`, one line up: it starts every configured server's command to
+  // ask `tools/list`, so it rides `localShell` rather than the `mcpAdmin` prefix below — reading
+  // and writing the CONFIGURATION is a different power from RUNNING it.
+  ['/api/mcp/tools', 'localShell'],
   ['/api/chat-tty', 'localChat'],
   ['/api/chat-harnesses', 'localChat'],
   ['/api/projects-list', 'localTranscripts'],

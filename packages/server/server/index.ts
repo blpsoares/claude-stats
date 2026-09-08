@@ -1410,6 +1410,46 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
       }
     }
 
+    /**
+     * WHAT TOOLS DOES EACH CONFIGURED SERVER OFFER? — what the web composer's `@<server>` /
+     * `@<server>:<tool>` references need before either half can be offered.
+     *
+     * Reuses the SAME `initialize` handshake `/api/mcp/check` performs and extends it with
+     * `tools/list` over the same connection — see `mcp-tools.ts`. Answers are CACHED per server for
+     * a few minutes: the composer can open on every keystroke, and spawning a
+     * language-server-backed MCP server that often is its own outage. A server that could not be
+     * reached is reported unreachable with a reason, never as a server with zero tools — the
+     * confident-zero error this repo forbids everywhere.
+     *
+     * Guarded as `localShell`, like `/api/mcp/check`: it starts every configured server's command.
+     */
+    if (url.pathname === '/api/mcp/tools' && req.method === 'GET') {
+      try {
+        const { listMcp } = await import('./mcp-admin')
+        const { peekServerTools, toolsView } = await import('./mcp-tools')
+        const { servers } = await listMcp(url.searchParams.get('projectPath'))
+        /*
+         * NEVER AWAIT THE PROBE HERE. Measured on one machine's five configured servers: the one
+         * running from `bun` answered in 236ms with 19 tools, and the other four — three spawned
+         * through `npx`, one an HTTP/SSE endpoint — did not answer inside three minutes between
+         * them. The composer opens on a keystroke and cannot wait for that.
+         *
+         * It does not need to. `@<server>` only needs the NAMES, which the config knows instantly;
+         * only the tool list behind `:` needs a probe. So each server comes back with whatever is
+         * already known, `peekServerTools` starts the fetch for what is not, and a server that has
+         * not answered yet is reported as NOT ASKED — never as a server with no tools.
+         */
+        const views = servers.map(s => toolsView(s, peekServerTools(s)))
+        return new Response(JSON.stringify({ servers: views }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify(safeError(err, { verbose: PROFILE === 'local' }).body), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     if ((url.pathname === '/api/mcp/install' || url.pathname === '/api/mcp/remove'
       || url.pathname === '/api/mcp/replace') && req.method === 'POST') {
       try {
