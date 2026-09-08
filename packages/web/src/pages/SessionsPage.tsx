@@ -335,7 +335,12 @@ export default function SessionsPage() {
     <button
       // LIVE, not wherever the panel was last left: this control says the harness is running
       // something, so the answer to pressing it is the feed of what it is doing.
-      onClick={() => openArtifacts('live')}
+      // LIVE, and ON THE ACTION IT NAMES. Landing on the top of the feed made the strip a
+      // navigation control rather than an answer: it says "running bun test", and the row saying
+      // so is somewhere in a list the reader then has to search. `hint.ref` is absent for an event
+      // with no step behind it (reasoning carries its own text), and then this opens the feed
+      // exactly as it did before.
+      onClick={() => openArtifacts('live', hint.ref)}
       title={`${HINT_VERB[hint.kind]} · ${hint.text}`}
       style={{
         // THIRD PLACE, and the first two were both wrong for the same reason: it FLOATED.

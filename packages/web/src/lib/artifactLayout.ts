@@ -94,12 +94,21 @@ export interface EdgeHint {
   kind: 'wrote' | 'read' | 'ran' | 'thought' | 'delegated'
   /** The path or command it names. */
   text: string
+  /**
+   * The step this action IS, when the feed can resolve one.
+   *
+   * The strip names what is happening; pressing it should land on THAT row, opened, rather than on
+   * the top of a feed the reader then has to search. Optional because not every event has a step
+   * behind it — reasoning carries its whole text and no `ref` — and a strip without one still opens
+   * the feed, which is what it did before.
+   */
+  ref?: string
 }
 
 export function edgeHint(
   { open, events, isMobile }: {
     open: boolean
-    events: readonly { kind: EdgeHint['kind']; text: string; live?: boolean }[]
+    events: readonly { kind: EdgeHint['kind']; text: string; live?: boolean; ref?: string }[]
     isMobile: boolean
   },
 ): EdgeHint | null {
@@ -108,7 +117,10 @@ export function edgeHint(
   if (open || isMobile) return null
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!
-    if (e.live) return { kind: e.kind, text: e.text }
+    // The `ref` travels with it so the press can open that exact row. Omitted rather than
+    // empty when the event has none: `undefined` is "open the feed", `''` would be a step
+    // that is not there, and the two must not read the same downstream.
+    if (e.live) return { kind: e.kind, text: e.text, ...(e.ref ? { ref: e.ref } : {}) }
   }
   return null
 }
