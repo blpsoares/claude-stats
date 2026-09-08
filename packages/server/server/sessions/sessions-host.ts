@@ -11,6 +11,7 @@
  * the same defect `liveEmptyNotice` exists to prevent on the dashboard.
  */
 
+import type { HarnessId } from '@agentistics/core'
 import { createLimiter } from '../utils'
 import type { HarnessProcess } from '../live-sessions'
 import { rulesFor } from './attention-rules'
@@ -25,6 +26,7 @@ import { readDialog, type DialogOption, type DialogUnreadable } from './dialog-c
 import { planAdoptions } from './session-adopt'
 // The claim for harnesses that cannot be handed a conversation id. See `task-attribution.ts`.
 import { planFirstSightingClaims } from './task-attribution'
+import { HARNESS_PROCESS_LOGS } from './harness-session-file'
 import { loadConversations, type Conversation } from './conversations'
 import { HEARTBEAT_MS, planCrashGroup, type CrashGroup } from './crash-group'
 import { emptyHarnessSessionIndex, type HarnessSessionIndex } from './harness-sessions'
@@ -138,6 +140,13 @@ export function createSessionsPoller(o: {
      */
     link: 'assigned' | 'observed',
   ) => Promise<unknown>
+  /**
+   * The conversation the process behind one of our panes is writing, from the log that process
+   * holds open. `null` whenever nothing can say — see `process-conversation.ts`.
+   *
+   * Injected like every other read here, so the poller stays testable without a `/proc`.
+   */
+  readProcessConversation?: (harness: HarnessId, pid: number) => Promise<string | null>
   /**
    * Persist the name a managed row was given INSIDE the harness (`/rename`), so the title survives
    * the process.
@@ -378,6 +387,37 @@ export function createSessionsPoller(o: {
       }
       markFleetPhase(`poll: recordConversation x${recordConvWrites}`, recordConvStart)
 
+      // The pane pids, read ONCE for the two things below that need them: the per-process
+      // conversation link, and the hardware sample further down. Two `tmux list-panes` calls a poll
+      // for one answer is a second place for them to disagree about which pid is which row.
+      const panePids = await o.backend.listPanePids?.().catch(() => new Map<string, number>())
+
+      // The OTHER exact link: the conversation named in the log the harness's own process holds
+      // OPEN (`HARNESS_PROCESS_LOGS` — antigravity only today; see `agy-conversation.ts` for why
+      // that harness has neither an assign flag nor a session record, and why even the
+      // harness-and-directory fallback is closed for a session agentop started).
+      //
+      // Recorded as `assigned` rather than `observed`: this is the harness's own statement about
+      // the conversation it created, read out of the process WE spawned into WE own's pane — not
+      // the first-sighting claim below, which infers from time and directory and refuses on any
+      // ambiguity. Asked only of a row with NO link yet, and only for a harness that has an entry,
+      // so it costs one `/proc` sweep per unlinked agy session and nothing at all on a fleet
+      // without one.
+      const procLinkStart = performance.now()
+      let procLinkWrites = 0
+      if (o.recordConversation && o.readProcessConversation) {
+        for (const m of registry) {
+          if (m.conversationId || !HARNESS_PROCESS_LOGS[m.harness]) continue
+          const pid = panePids?.get(m.id)
+          if (!pid) continue
+          const found = await o.readProcessConversation(m.harness, pid).catch(() => null)
+          if (!found) continue
+          procLinkWrites++
+          await o.recordConversation(m.id, found, 'assigned').catch(() => undefined)
+        }
+      }
+      markFleetPhase(`poll: processConversation x${procLinkWrites}`, procLinkStart)
+
       // The conversation link for the harnesses no `assignId` can be given (codex, kimi,
       // antigravity, gemini): claimed ONCE, at first sighting, and refused on any ambiguity. Written
       // through the same `recordConversation` as the exact link above, because a second path to one
@@ -436,7 +476,6 @@ export function createSessionsPoller(o: {
       const sessionHardware = new Map<string, { pid?: number; cpuPercent?: number | null; rssBytes?: number | null }>()
       const procStatStart = performance.now()
       if (canReadProc) {
-        const panePids = await o.backend.listPanePids?.().catch(() => new Map<string, number>())
         for (const r of reconciled) {
           const own = harnessSessions.byManagedId.get(r.id)
           const harness = r.managed?.harness

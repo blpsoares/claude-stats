@@ -38,6 +38,7 @@
  */
 
 import type { HarnessId } from '@agentistics/core'
+import { agyLogFromFds, conversationFromAgyLog } from './agy-conversation'
 
 /** One harness session record, reduced to the fields anything here may rely on. */
 export interface HarnessSessionFile {
@@ -263,5 +264,42 @@ export const HARNESS_SESSION_SOURCES: Record<HarnessId, HarnessSessionSource | n
   gemini: null,
   copilot: null,
   antigravity: null,
+  kimi: null,
+}
+
+/**
+ * The OTHER shape a harness can betray its own live conversation in: a log it keeps OPEN.
+ *
+ * `HARNESS_SESSION_SOURCES` above is one shape — a directory of JSON records a harness writes ABOUT
+ * its sessions — and every rule it carries is about that shape. antigravity has nothing of the
+ * kind, and it has no assign flag either (`agy --conversation <fresh-uuid>` answers
+ * `warning: conversation "…" not found` and creates one under an id of its own; measured against
+ * agy 1.1.27 on 2026-09-08). What it DOES have is one log per process, held open for the life of
+ * that process, naming the conversation it created. See `agy-conversation.ts` for why that is the
+ * only exact answer available for this harness.
+ *
+ * Two tables rather than one widened table: "a file per session, keyed by pid, parsed as JSON" and
+ * "the process's own open log, read by regex" share no rule beyond the question they answer, and
+ * folding them together would qualify every sentence in both.
+ *
+ * The functions live with the harness that needs them, so the day a second harness turns out to do
+ * this its reader lands beside its own parser and not in here.
+ */
+export interface HarnessProcessLog {
+  /** Pick this harness's own log out of a process's open fd targets. Refuses on ambiguity. */
+  logFromFds(targets: readonly string[]): string | null
+  /** The conversation that log says the process created, or `null`. */
+  conversationFrom(text: string): string | null
+}
+
+export const HARNESS_PROCESS_LOGS: Record<HarnessId, HarnessProcessLog | null> = {
+  antigravity: { logFromFds: agyLogFromFds, conversationFrom: conversationFromAgyLog },
+  // Nobody has read a per-process log for the other five, and one that has not been read is one
+  // that must not be guessed at. claude is `null` HERE and non-null above: it already has two exact
+  // links and needs no third.
+  claude: null,
+  codex: null,
+  gemini: null,
+  copilot: null,
   kimi: null,
 }

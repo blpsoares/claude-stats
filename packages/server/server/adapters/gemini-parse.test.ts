@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test'
+import { describe, test, test as it, expect } from 'bun:test'
 import { parseGeminiChat } from './gemini-parse'
 
 // ---------------------------------------------------------------------------
@@ -344,4 +344,91 @@ test('gemini tools land in the shared vocabulary, like every other harness', () 
   expect(s.tool_counts['Bash']).toBe(2)
   expect(s.tool_counts['Read']).toBe(1)
   expect(s.tool_counts['run_shell_command']).toBeUndefined()
+})
+
+/**
+ * THE JOURNAL APPENDS EACH MESSAGE AS ITS OWN LINE, and for a while nothing here read those.
+ *
+ * `parseJsonl` collected messages ONLY from `$set.messages` snapshots. Gemini CLI now writes that
+ * snapshot once, at the top of the file — EMPTY for a fresh session — and then appends every turn
+ * as a top-level `{id, timestamp, type, content}` record, with the `$set` lines after it carrying
+ * nothing but `lastUpdated`. So every such file collected zero messages, `hasGenuineContent` stayed
+ * false, and the whole session was dropped as a bootstrap stub.
+ *
+ * Measured on this machine 2026-09-08: of 34 chat files, 7 still carried `$set.messages` and 27 did
+ * not — and the adapter's newest session was from 2026-04-10, months of gemini work missing from
+ * every surface in the product, not only from the chat view.
+ *
+ * The fixture below is the real shape, captured from
+ * `~/.gemini/tmp/agentistics/chats/session-2026-09-08T14-11-2a2b4e9d.jsonl` (gemini 0.55.x).
+ */
+describe('gemini journal — appended message records', () => {
+  const APPENDED = [
+    JSON.stringify({
+      sessionId: '2a2b4e9d-c1ac-4b92-8a23-d2dc9a2158a2',
+      projectHash: 'ce276284a10422f5496a58c38fa491f7891a1bf27',
+      startTime: '2026-09-08T14:11:24.125Z',
+      lastUpdated: '2026-09-08T14:11:24.125Z',
+      kind: 'main',
+    }),
+    JSON.stringify({ $set: { messages: [], lastUpdated: '2026-09-08T14:11:24.125Z' } }),
+    JSON.stringify({
+      id: '5295492b-11e0-43a0-89db-62ab3d4769ef',
+      timestamp: '2026-09-08T14:11:33.230Z',
+      type: 'user',
+      content: [{ text: 'responda apenas: ok' }],
+    }),
+    JSON.stringify({ $set: { lastUpdated: '2026-09-08T14:11:33.230Z' } }),
+    JSON.stringify({
+      id: '9f1ae60b-59d7-46ed-8684-f6d479b2f05a',
+      timestamp: '2026-09-08T14:12:18.661Z',
+      type: 'gemini',
+      content: 'ok',
+      model: 'gemini-3.5-flash',
+    }),
+    JSON.stringify({ $set: { lastUpdated: '2026-09-08T14:12:18.661Z' } }),
+  ].join('\n')
+
+  it('reads a session whose turns are appended, not snapshotted', () => {
+    const s = parseGeminiChat(APPENDED, 'agentistics/session-x', '/home/mithrandir/agentistics')
+    expect(s).not.toBeNull()
+    expect(s!.user_message_count).toBe(1)
+    expect(s!.assistant_message_count).toBe(1)
+    expect(s!.first_prompt).toBe('responda apenas: ok')
+  })
+
+  /**
+   * The two shapes coexist inside one file — the opening snapshot can hold turns a resumed session
+   * already had, and the same message then arrives again as its own line. `seenIds` already existed
+   * for the snapshot case; it has to cover both sources or a resumed session counts every earlier
+   * turn twice.
+   */
+  it('counts a message once when it appears in BOTH the snapshot and its own line', () => {
+    const msg = {
+      id: 'dup-1',
+      timestamp: '2026-09-08T14:11:33.230Z',
+      type: 'user',
+      content: 'responda apenas: ok',
+    }
+    const both = [
+      JSON.stringify({ sessionId: 's', startTime: '2026-09-08T14:11:24.125Z' }),
+      JSON.stringify({ $set: { messages: [msg] } }),
+      JSON.stringify(msg),
+      JSON.stringify({ id: 'a-1', timestamp: '2026-09-08T14:12:18.661Z', type: 'gemini', content: 'ok' }),
+    ].join('\n')
+    const s = parseGeminiChat(both, 'agentistics/session-y', '/home/mithrandir/agentistics')
+    expect(s).not.toBeNull()
+    expect(s!.user_message_count).toBe(1)
+    expect(s!.assistant_message_count).toBe(1)
+  })
+
+  /** A `$set` carrying only `lastUpdated` is not a message and must not become one. */
+  it('does not invent a message out of a bare lastUpdated patch', () => {
+    const onlyPatches = [
+      JSON.stringify({ sessionId: 's', startTime: '2026-09-08T14:11:24.125Z' }),
+      JSON.stringify({ $set: { messages: [] } }),
+      JSON.stringify({ $set: { lastUpdated: '2026-09-08T14:11:33.230Z' } }),
+    ].join('\n')
+    expect(parseGeminiChat(onlyPatches, 'agentistics/session-z', '/p')).toBeNull()
+  })
 })

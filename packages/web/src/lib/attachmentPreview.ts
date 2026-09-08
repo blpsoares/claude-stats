@@ -130,3 +130,22 @@ export function resolveMarkerPaths(input: {
   if (inWindow.length !== input.markers.length) return null
   return inWindow.map(s => s.path)
 }
+
+/**
+ * Which image the composer's lightbox is showing, or `null` for closed.
+ *
+ * The composer's attachment list is editable while the overlay is open, so the index it was opened
+ * at can stop naming anything — and `AttachmentLightbox` renders nothing for a missing path, which
+ * leaves a black overlay with no picture in it. This is the one place that decides, so the rule is
+ * stated once rather than re-derived at the render.
+ *
+ * It CLOSES rather than clamps. Sliding to the last remaining image after the reader removed the
+ * one they were looking at answers a question nobody asked, and it does it silently — the same
+ * reason `parseDialogOptions` refuses a half-read option list instead of offering what it managed
+ * to read.
+ */
+export function openComposerLightbox(open: number | null, count: number): number | null {
+  if (open === null) return null
+  if (!Number.isInteger(open) || open < 0) return null
+  return open < count ? open : null
+}

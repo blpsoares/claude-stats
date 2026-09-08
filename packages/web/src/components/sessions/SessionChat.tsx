@@ -36,9 +36,10 @@ import { ApprovalCard } from './ApprovalCard'
 import { ChatBubble, type ChatTurn } from './ChatBubble'
 import { WorkingNote } from './WorkingNote'
 import { useTerminalStream } from '../../hooks/useTerminalStream'
-import { isImagePath } from '../../lib/attachmentPreview'
+import { isImagePath, openComposerLightbox } from '../../lib/attachmentPreview'
 import { splitImageAttachments } from '../../lib/attachmentPreview'
 import { attachmentUrl } from '../../lib/attachmentUrl'
+import { AttachmentLightbox } from './AttachmentLightbox'
 import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
 import { scratchKey, sessionScratch } from '../../lib/sessionScratch'
 import { chatReadAt, firstFrameStale, refreshChat, subscribeChat } from '../../lib/chatFeed'
@@ -530,6 +531,26 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * pointed at. The chip says the name; the message carries the path.
    */
   const [attached, setAttached] = useState<Attachment[]>(() => sessionScratch.readAttachments(scratchId))
+  /**
+   * Which attached image the composer is showing full-size, or `null`.
+   *
+   * A thumbnail here was a picture you could not open — reported exactly that way — while the very
+   * same square in a SENT message opens `AttachmentLightbox`. The component is reused rather than
+   * copied: what you attached and what you sent are the same picture, so they get the same viewer.
+   * Its scope is what is attached RIGHT NOW, which is the caller's decision to make (see that
+   * component's header) and is the only list this control can honestly step through.
+   */
+  const [composerLightbox, setComposerLightbox] = useState<number | null>(null)
+  /**
+   * The images among what is attached, in the order the strip draws them.
+   *
+   * Only images: a text attachment has no picture to step to, and including it would make
+   * `ArrowRight` land on a blank frame. Derived at the render rather than stored, so removing one
+   * cannot leave this disagreeing with the strip beside it.
+   */
+  const composerImages = attached.filter(a => isImagePath(a.path)).map(a => a.path)
+  /** …and the index that survives an edit made while the overlay is open. See `openComposerLightbox`. */
+  const composerLightboxAt = openComposerLightbox(composerLightbox, composerImages.length)
 
   /**
    * Every change to the attachment list, persisted against the session it belongs to — the same
@@ -1623,10 +1644,25 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                       borderRadius: 8, overflow: 'hidden', flexShrink: 0,
                       border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
                     }}>
-                      <img
-                        src={attachmentUrl(a.path)} alt=""
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                      />
+                      {/* The picture OPENS. It is a button and not a click handler on the `img`,
+                          so it is reachable by keyboard and announced as something that does
+                          something — and it stays a SIBLING of the remove control rather than its
+                          parent, because a button inside a button is invalid and the inner one
+                          stops being clickable in some browsers. */}
+                      <button
+                        type="button"
+                        onClick={() => setComposerLightbox(composerImages.indexOf(a.path))}
+                        aria-label={pt ? `Ver ${a.name}` : `View ${a.name}`}
+                        style={{
+                          display: 'block', width: '100%', height: '100%', padding: 0,
+                          border: 'none', background: 'transparent', cursor: 'zoom-in',
+                        }}
+                      >
+                        <img
+                          src={attachmentUrl(a.path)} alt=""
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        />
+                      </button>
                       <button
                         onClick={() => editAttached(list => list.filter(x => x.path !== a.path))}
                         aria-label={pt ? `Remover ${a.name}` : `Remove ${a.name}`}
@@ -2426,6 +2462,21 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
           </div>
         </div>
       )}
+
+      {/* THE ATTACHED PICTURE, full size. The same component a sent message opens, over the images
+          attached right now — reused rather than reimplemented, so what you attached and what you
+          sent are viewed the same way. `composerLightboxAt` is what keeps it honest when the list
+          is edited underneath it. */}
+      {composerLightboxAt !== null && (
+        <AttachmentLightbox
+          paths={composerImages}
+          index={composerLightboxAt}
+          onIndexChange={setComposerLightbox}
+          onClose={() => setComposerLightbox(null)}
+          lang={lang}
+        />
+      )}
+
     </div>
   )
 }
@@ -2456,6 +2507,8 @@ function Loading({ pt }: { pt: boolean }) {
     }}>
       <Loader size={16} className="ag-working-spin" />
       {pt ? 'Lendo a conversa…' : 'Reading the conversation…'}
+
+
     </div>
   )
 }

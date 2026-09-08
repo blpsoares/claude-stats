@@ -21,18 +21,14 @@ describe('the reader registry', () => {
       .toEqual(['antigravity', 'claude', 'codex', 'copilot', 'gemini', 'kimi'])
   })
 
-  it('GEMINI is the one null, and it is a LINK fact rather than a missing reader', () => {
-    // A reader is only ever offered a conversationId, and gemini has neither `assignId` nor a
-    // `resume` that takes one — so a gemini row can never carry one and an entry here would be
-    // unreachable code. `conversationBlind` already says so on the row.
-    expect(transcriptReaderFor('gemini')).toBeNull()
-  })
-
-  it('every harness that CAN carry an exact conversation id has a reader', () => {
-    // The five with `assignId` or `resume` in `spawn-spec.ts`. If one of these goes null, a row
-    // that knows exactly which conversation it is in stops being readable.
-    for (const h of ['claude', 'codex', 'copilot', 'kimi', 'antigravity'] as const) {
-      expect(transcriptReaderFor(h)).not.toBeNull()
+  it('has no nulls left — gemini was the last, and its reason was the LINK', () => {
+    // It read `expect(transcriptReaderFor('gemini')).toBeNull()` for as long as a gemini row could
+    // not carry a conversation id: no `assignId`, and a `--resume` that takes "latest" or an index.
+    // `planFirstSightingClaims` includes gemini deliberately and claims the SYNTHETIC id the store
+    // is already keyed on, which names the chat file directly — so the entry stopped being
+    // unreachable code and became a reader. A null here is now a gap, not a finding.
+    for (const h of ['claude', 'codex', 'copilot', 'kimi', 'antigravity', 'gemini'] as const) {
+      expect(transcriptReaderFor(h), h).not.toBeNull()
     }
   })
 

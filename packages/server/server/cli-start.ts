@@ -141,6 +141,7 @@ import {
 } from './sessions/broadcast-plan'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions'
 import { loadHarnessSessions } from './sessions/harness-sessions'
+import { readProcessConversation } from './sessions/process-conversation'
 import { idleServers, isServerCommand } from './idle-servers'
 import { planTaskDelete, taskDeleteIsNoop } from './sessions/task-delete'
 import { memoryBudget } from './sessions/memory-budget'
@@ -1462,6 +1463,11 @@ async function ensureSessionsPoller(): Promise<SessionsPoller> {
     // keep apart — see `ManagedSession.conversationLink`.
     recordConversation: (id, conversationId, conversationLink) =>
       patchSession(id, { conversationId, conversationLink }),
+    // The per-process log link — antigravity's only exact answer, and the reason its chat view was
+    // permanently empty while its terminal worked. Wired HERE and deliberately not on
+    // `cli-session.ts`'s poller: that one is a one-shot command and writes nothing, exactly as it
+    // takes no heartbeat.
+    readProcessConversation,
     // The `/rename` name, persisted so the title survives the process — same once-per-change
     // discipline. See `ManagedSession.harnessName` and `pickTitle`.
     recordHarnessName: (id, name, since) =>
@@ -1544,6 +1550,10 @@ async function spawnManaged(req: {
   if (!planned.ok) return { ok: false, message: explainSpawnError(planned.error, s) }
 
   const id = newSessionId()
+  // Stamped BEFORE the launch, for the reason `cli-session.ts` records at its own two spawn sites:
+  // `planFirstSightingClaims` asks whether a conversation began AFTER we spawned, and a timestamp
+  // taken once the call has returned can already be later than the conversation the child opened.
+  const spawnedAt = new Date().toISOString()
   try {
     await backend.spawn({
       id,
@@ -1563,7 +1573,7 @@ async function spawnManaged(req: {
     id,
     harness: req.harness,
     cwd: req.cwd,
-    createdAt: new Date().toISOString(),
+    createdAt: spawnedAt,
     // Stamped at birth, not left to the first heartbeat: a session started and lost inside the same
     // minute would otherwise carry no evidence it was ever alive, and would sit out the very crash
     // it was part of. See `crash-group.ts`.
