@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises'
 import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf } from '@agentistics/core'
-import { getGitFileStats } from './git'
+import { getSessionFileStats } from './git'
 import { countGitCommands } from './harness-activity'
 import { extractAgentMetrics } from './agent-metrics'
 import { enrichFromSubagentTranscripts } from './subagent-metrics'
@@ -503,8 +503,17 @@ export async function parseSessionJsonl(
     : 0
 
   const projectPath = cwd || fallbackPath
+  /**
+   * Asked where the session was WORKING, not where it was filed — see `sessionGitPaths`.
+   *
+   * `projectPath` is the transcript's FIRST cwd; `lastCwd` is where it ended up, and the two
+   * differ exactly when the session moved into a git worktree, which is how this repository
+   * mandates concurrent work is done. The worktree's branch is one the main checkout's HEAD has
+   * never seen, so asking the project answered with nothing and the card read `Commits 2 · Lines
+   * +0 / −0 · Files 0`.
+   */
   const gitFileStats = gitCommits > 0
-    ? await getGitFileStats(projectPath, startTime, lastTime)
+    ? await getSessionFileStats(projectPath, lastCwd, startTime, lastTime)
     : { linesAdded: 0, linesRemoved: 0, filesModified: 0 }
   // Use whichever count is higher: git-tracked files changed or files Claude directly edited
   const filesModifiedCount = Math.max(gitFileStats.filesModified, claudeFilesModified.size)

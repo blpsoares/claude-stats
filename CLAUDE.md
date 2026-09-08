@@ -2264,6 +2264,33 @@ harness must not break.
   21:00-23:59. Every other figure under that filter has the same boundary; giving the chart alone a
   local day would make it disagree with the cost and the messages beside it, and no day-granular
   split can express a local day for a non-UTC zone.
+- **A SESSION'S GIT STATS ARE READ WHERE IT WORKED, NOT WHERE IT IS FILED.** `project_path` is the
+  transcript's FIRST cwd — the project the session belongs to — and `current_cwd` is where it ended
+  up. They differ exactly in the git-WORKTREE case this file mandates for concurrent work, and a
+  worktree sits on a branch the main checkout's HEAD has never seen: `git log` in the project
+  answers with nothing, so the session card read `Commits 2 · Lines +0 / −0 · Files 0` — a count of
+  commits beside a confident zero of what they changed. Measured on the reporting machine: nothing
+  in the checkout, **+688 / −66 over 25 files** in the worktree, for the very window that produced
+  those commits. `sessionGitPaths` (pure) asks where the session ENDED first and keeps the project
+  as the FALLBACK (a session whose last directory is not a repository at all), and holds ONE entry
+  whenever the session never moved — asking twice for the ordinary case is the git work
+  `git-stats.test.ts` exists to bound. `getSessionFileStats` takes the first directory that has
+  anything to say and never a per-field max across two, which could report lines from the worktree
+  beside a file count from the checkout: a pair that never co-existed. Same distinction
+  `sessionAtCwd` already makes for live-session detection.
+- **THE SESSION CARD'S BASIS TOGGLE IS LOCAL, AND IT IS ABSENT WHEN NO PLAN COVERS THE HARNESS.**
+  `SessionStatsMenu` opens on the DASHBOARD's `costBasis` and can be switched to the other basis to
+  read one session — re-seeded from the global on every open, changing nothing global, so closing
+  the card is what puts it back because nothing was ever moved. The factor is
+  `sessionPlanFactor(planBasis.basis, harness)` — **per harness, never the aggregate**: a session is
+  one harness's spend, and rescaling it by a factor that also covers a subscription paying for
+  something else allocates it against a plan it has nothing to do with (same rule
+  `AgentMetricsPanel` follows). A `null` factor removes the TOGGLE rather than leaving a Plan button
+  whose one outcome is "no registered plan". The row's key is `costBasisLabel`, which follows the
+  basis ACTUALLY applied — `viewCost` hands back the API figure flagged when it cannot produce a
+  plan one, and labelling that "plan" would put a real API cost under the user's subscription. Both
+  money figures in the card (the session's and its subagents') move together: two bases in one card
+  is a card that cannot be added up.
 - **`fleetIndex` IS A LOOKUP, AND ITS `values()` ARE NOT THE FLEET.** It keys every row TWICE on
   purpose — by its own id and by its conversation id, so one map answers a link carrying either —
   so a session that knows its conversation is in it twice. The broadcast picker was built by
