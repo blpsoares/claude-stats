@@ -446,6 +446,23 @@ export interface SessionBackend {
   sendChoiceText?(
     id: string, key: string, text: string, opened: (frame: string[]) => boolean,
   ): Promise<'sent' | 'no-field' | 'failed'>
+  /**
+   * Answer a NUMBERLESS dialog: move the cursor onto the row, LOOK, and only then confirm.
+   *
+   * There is no digit to type on claude's trust prompt (`❯ No, exit` / `  Yes, I trust this
+   * folder`), so the only way to reach the other row is to move onto it — and a count of arrow
+   * presses is an assumption about a widget nobody has driven in that exact dialog. `landed` is the
+   * caller's check, run on the frame AFTER the moves and BEFORE the confirm: it answers "is the
+   * highlighted row the one the person picked". `wrong-row` means it was not, and NOTHING was
+   * confirmed — the dialog is left exactly as it was found, which is the one outcome that is always
+   * recoverable.
+   *
+   * One call and not three for the same reason `sendChoiceText` is one: `writeToPane` locks per
+   * pane, and three locked calls leave two gaps another writer can land in.
+   */
+  sendMoveChoice?(
+    id: string, keys: readonly string[], confirmKey: string, landed: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'wrong-row' | 'failed'>
   sendTextRaw(id: string, text: string): Promise<boolean>
   /**
    * Press ONE named key — the backend's own vocabulary (`Enter`, `Escape`).

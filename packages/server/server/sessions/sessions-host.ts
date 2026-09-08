@@ -22,6 +22,7 @@ import type { ChatTurn } from './chat-turn'
 import { transcriptReaderFor } from './harness-transcript'
 import { markFleetPhase } from './fleet-profile'
 import { readDialog, type DialogOption, type DialogUnreadable } from './dialog-choice'
+import { readsMarkerSelect } from './approval-spec'
 // Taking a running session back when its registry record is gone. See `session-adopt.ts`.
 import { planAdoptions } from './session-adopt'
 // The claim for harnesses that cannot be handed a conversation id. See `task-attribution.ts`.
@@ -274,6 +275,7 @@ export function createSessionsPoller(o: {
       /** The harness mode each running session is in — see `mode-spec.ts`. */
       const modes = new Map<string, { id: string; label: string }>()
       const dialogOptions = new Map<string, DialogOption[]>()
+      const dialogSelect = new Map<string, 'numbered' | 'marker'>()
       /*
        * WHY THE REFUSAL IS CARRIED AND NOT JUST THE OPTIONS.
        *
@@ -356,8 +358,11 @@ export function createSessionsPoller(o: {
           // Read from the SAME frame that decided the state, so what is offered and what the state
           // says can never describe different moments. Empty when the screen cannot be parsed with
           // confidence, which the UI reports rather than papering over.
-          const dialog = readDialog(frame)
+          const dialog = readDialog(frame, { marker: readsMarkerSelect(harness) })
           if (dialog.options.length > 0) dialogOptions.set(r.id, dialog.options)
+          // From the SAME read as the options: how they are picked is a fact about this frame, and
+          // deriving it again downstream is how a numberless dialog gets offered a digit.
+          if (dialog.select) dialogSelect.set(r.id, dialog.select)
           if (dialog.kind === 'unreadable') dialogUnreadable.set(r.id, dialog.reason!)
         }
       })))
@@ -523,6 +528,7 @@ export function createSessionsPoller(o: {
         approvals,
         modes,
         dialogOptions,
+        dialogSelect,
         dialogUnreadable,
         processes,
         conversations,

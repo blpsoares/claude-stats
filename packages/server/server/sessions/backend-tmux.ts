@@ -316,6 +316,33 @@ export const tmuxBackend: SessionBackend = {
     })
   },
 
+  /**
+   * Move the cursor, LOOK, then confirm — the numberless dialog's answer.
+   *
+   * The look is the point. Everything else here is an assumption: that the widget wraps or does not,
+   * that one press moves one row, that the list has not been redrawn since the poll. `landed` tests
+   * the only thing that settles it — where the cursor IS, in the frame as it stands a moment before
+   * the confirm — so a miscount costs a refusal instead of the wrong answer to a question about
+   * somebody's folder. Nothing is sent after a failed look.
+   */
+  async sendMoveChoice(
+    id: string, keys: readonly string[], confirmKey: string, landed: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'wrong-row' | 'failed'> {
+    return writeToPane(id, async () => {
+      for (const key of keys) {
+        const before = await captureFrame(id)
+        if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return 'failed'
+        // A moved highlight IS a frame change; waiting for it is waiting for the widget to redraw.
+        // Bounded, exactly like `sendChoiceText`: a pane that will not move must not hold the
+        // request open, and the look below is what decides the outcome either way.
+        await paneMoved(id, before)
+      }
+      await sleep(SUBMIT_SETTLE_MS)
+      if (!landed(await captureFrame(id))) return 'wrong-row'
+      return (await tmux(sendKeysNamedArgs(id, confirmKey))).code === 0 ? 'sent' : 'failed'
+    })
+  },
+
   async sendTextRaw(id: string, text: string) {
     // Literal only, NO Enter — the first half of `sendTextTo`. This is what the browser's key-by-key
     // channel needs: a character appears without submitting a turn. Locked like every other write:

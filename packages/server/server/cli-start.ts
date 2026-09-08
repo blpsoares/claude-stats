@@ -127,11 +127,11 @@ import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey, fieldIsOpen, isFreeTextOption } from './sessions/approval-spec'
+import { approvalFor, choiceKey, fieldIsOpen, isFreeTextOption, readsMarkerSelect } from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
-import { needsChoice, parseDialogOptions } from './sessions/dialog-choice'
+import { needsChoice, parseDialogOptions, readDialog } from './sessions/dialog-choice'
 import { answerFollowUp } from './sessions/answer-followup'
 import { liveTranscriptDeps, runTranscriptSearch } from './sessions/transcript-run'
 import { rulesFor } from './sessions/attention-rules'
@@ -3341,7 +3341,51 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       }
 
       // What is on the screen RIGHT NOW, not what was drawn up to a poll ago.
-      const options = parseDialogOptions(frame)
+      const read = readDialog(frame, { marker: readsMarkerSelect(managed.harness) })
+      const options = read.options
+
+      /*
+       * A NUMBERLESS dialog is answered by MOVING onto the row, and it has its own branch because
+       * every step below assumes a digit exists. claude's trust prompt is the case:
+       *
+       *     ❯ No, exit
+       *       Yes, I trust this folder
+       *
+       * `readDialog` used to answer `none` there — no numbers, no menu — so the caller fell through
+       * to the bare confirm at the bottom of this function, which sends `Enter` and takes the
+       * HIGHLIGHTED row. The highlighted row is `No, exit`. Reported by a user who could only quit
+       * from the web and had to open the terminal to say yes.
+       */
+      if (read.select === 'marker' && needsChoice(options)) {
+        if (choice === undefined) return { ok: false, message: s.sessNeedsChoice(options.length) }
+        const picked = options.find(o => o.number === choice)
+        // The question CHANGED between being shown and being answered — same refusal as the
+        // numbered path, and for the same reason: an answer to a question that has moved on is
+        // wrong and invisible.
+        if (!picked) return { ok: false, message: s.sessChoiceGone }
+        const move = spec.move
+        // Nobody has driven this harness's select. A confirm key here would take the highlighted
+        // row, which is the defect this whole branch exists to remove.
+        if (!move || !backend.sendMoveChoice) {
+          return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+        }
+        const from = options.findIndex(o => o.selected)
+        // No cursor on a list this parser said HAS one: the frame moved under us between the two
+        // reads. Refused rather than guessed from row zero, which would move the wrong distance.
+        if (from < 0) return { ok: false, message: s.sessChoiceGone }
+        const steps = (picked.number - 1) - from
+        const keys = Array.from({ length: Math.abs(steps) }, () => (steps > 0 ? move.down : move.up))
+        const out = await backend.sendMoveChoice(id, keys, spec.key, after => {
+          // The look, and it is deliberately about the LABEL rather than the position: a redraw
+          // that added or removed a row would leave the right index pointing at the wrong option.
+          const now = readDialog(after)
+          return now.select === 'marker' && now.options.find(o => o.selected)?.label === picked.label
+        })
+        if (out === 'wrong-row') return { ok: false, message: s.sessChoiceGone }
+        return out === 'sent'
+          ? { ok: true, message: s.sessAnswered(picked.label) }
+          : { ok: false, message: s.sessSendFailed(id) }
+      }
 
       if (needsChoice(options)) {
         // A numbered dialog is NEVER answered with a bare confirm. `Enter` takes whichever row is
