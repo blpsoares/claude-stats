@@ -5,6 +5,7 @@ import { formatProjectName, repoShortName, sessionLabel, sessionTokenTotal } fro
 import type { SessionActivity } from '../lib/sessionNotifications'
 import type { FleetActionId, FleetRow, FleetVerb } from '../lib/fleet'
 import { primaryAction, isWatchable, type PrimaryAction } from '../lib/sessionActions'
+import { bandRepeats, type CardFact, type SessionGrouping } from '../lib/sessionCard'
 import { SessionActionsMenu, SessionActionsPanel, useSessionActionsController } from './SessionActions'
 import { useTerminalStream } from '../hooks/useTerminalStream'
 import { useTerminalWrite } from '../hooks/useTerminalWrite'
@@ -14,6 +15,8 @@ import {
   canSubmit,
   composerReducer,
   interactionBlock,
+  type ComposerAction,
+  type ComposerState,
 } from '../lib/terminalInput'
 import { operatorId, recordPromptSend, resolveAuthor } from '../lib/promptAudit'
 import { getTerminalZoom, setTerminalZoom, subscribeTerminalZoom, ZOOM_STEP, ZOOM_MIN, ZOOM_MAX } from '../lib/terminalZoom'
@@ -24,6 +27,7 @@ import { encodeProjectDir } from '../lib/sessionTranscript'
 import { resumeCommand } from '../lib/resumeCommand'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../lib/harness'
 import { format, parseISO } from 'date-fns'
+import { OVERLAY_TOP } from '../lib/mobileOverlay'
 import {
   ChevronLeft,
   ChevronRight,
@@ -90,7 +94,7 @@ interface Props {
    */
   fleet?: Map<string, FleetRow>
   onFleetAction?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   /** Dashboard theme — the live terminal's palette follows it. Only the Sessions page needs it. */
   theme?: 'dark' | 'light'
   /** Initial grouping. Defaults to 'project' for the history surfaces; the Sessions page opens on
@@ -108,8 +112,9 @@ interface Props {
 }
 
 /** `task` is deliberately absent: a task is a fact of the agentop session registry, not of a
- *  stored `SessionMeta`, so a "group by task" here could only ever produce one "no task" band. */
-export type SessionGrouping = 'none' | 'status' | 'repo' | 'project' | 'harness' | 'model' | 'marked'
+ *  stored `SessionMeta`, so a "group by task" here could only ever produce one "no task" band.
+ *  The type itself lives in the pure `lib/sessionCard.ts`, beside the rule that reads it. */
+export type { SessionGrouping }
 
 const STATUS_BUCKETS: Record<SessionActivity, { label: string; color: string }> = {
   'waiting-approval': { label: 'Aguardando aprovação', color: '#ef4444' },
@@ -265,6 +270,14 @@ function Chip({
       {label}
     </div>
   )
+}
+
+/** How a harness is NAMED — the one mapping `getSessionBucketKey` bands by and `HarnessBadge`
+ *  prints, so a card can ask whether its band's heading already says this harness. */
+function harnessLabel(harness?: string): string {
+  if (!harness) return ''
+  const h = harness.toLowerCase()
+  return (HARNESS_LABELS as Record<string, string>)[h] ?? harness
 }
 
 function HarnessBadge({ harness }: { harness?: string }) {
@@ -738,8 +751,10 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
           {/* Shortcuts & Sort */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            {/* Status shortcuts */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {/* Status shortcuts. `flexWrap` because these rows do NOT wrap on their own: the sort
+                row in particular ran straight off the right edge of the card on a phone, taking its
+                last key ("Files") with it — the parent wraps, the inner rows did not. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0 }}>
               <Filter size={12} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
               {shortcutOptions.map(opt => (
                 <PillButton key={opt.key} active={statusShortcut === opt.key} onClick={() => { setStatusShortcut(opt.key); setPage(0) }}>
@@ -752,7 +767,7 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
             <div style={{ width: 1, height: 16, background: 'var(--border-subtle)' }} />
 
             {/* Sort keys */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', minWidth: 0 }}>
               <ArrowUpDown size={12} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
               {sortOptions.map(opt => (
                 <PillButton key={opt.key} active={sortKey === opt.key} onClick={() => changeSort(opt.key)}>
@@ -764,8 +779,10 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
           </div>
 
           {/* Search Input & View Mode */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <div style={{ position: 'relative', width: 180 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 auto', justifyContent: 'flex-end', minWidth: 0 }}>
+            {/* The search field gives way before the row does — a fixed 180 beside a
+                `flexShrink: 0` wrapper is what pushed this block past the card's right edge. */}
+            <div style={{ position: 'relative', flex: '1 1 180px', minWidth: 130, maxWidth: 240 }}>
               <Search
                 size={12}
                 style={{
@@ -988,6 +1005,8 @@ export function RecentSessions({ sessions, lang, onSelect, pinnedIds, activities
                           authorName={authorName}
                           viewMode={viewMode}
                           theme={theme}
+                          grouping={groupBy}
+                          bandLabel={g.label}
                         />
                       ))}
                     </div>
@@ -1156,7 +1175,11 @@ function ResumeCommandModal({
     }
   }, [])
 
-  const nativeCmd = resumeCommand(s) || (s.project_path ? `cd '${s.project_path}' && ${s.harness || 'claude'} --resume ${s.session_id}` : `${s.harness || 'claude'} --resume ${s.session_id}`)
+  // `resumeCommand` returns null for a harness with no verified resume-by-id flag, and Gemini is
+  // the reason it is a deliberate null: `gemini --resume` takes "latest" or a list index, not a
+  // session id. The old fallback here invented exactly that command — a plausible line that opens
+  // the WRONG conversation — so there is no fallback: the option says the harness has none.
+  const nativeCmd = resumeCommand(s)
   const agentopCmd = s.project_path
     ? `cd '${s.project_path}' && agentop session attach ${s.session_id}`
     : `agentop session attach ${s.session_id}`
@@ -1306,7 +1329,9 @@ function ResumeCommandModal({
               {lang === 'pt' ? `Opção 2: Via ${HARNESS_LABELS[s.harness ?? 'claude']} Nativo` : `Option 2: Via Native ${HARNESS_LABELS[s.harness ?? 'claude']}`}
             </span>
             <button
+              disabled={!nativeCmd}
               onClick={() => {
+                if (!nativeCmd) return
                 navigator.clipboard.writeText(nativeCmd)
                 setCopiedNative(true)
                 setTimeout(() => setCopiedNative(false), 2000)
@@ -1322,7 +1347,8 @@ function ResumeCommandModal({
                 color: copiedNative ? '#22c55e' : 'var(--text-primary)',
                 fontSize: 11,
                 fontWeight: 600,
-                cursor: 'pointer',
+                cursor: nativeCmd ? 'pointer' : 'not-allowed',
+                opacity: nativeCmd ? 1 : 0.45,
               }}
             >
               {copiedNative ? <Check size={12} color="#22c55e" /> : <Copy size={12} />}
@@ -1336,11 +1362,14 @@ function ResumeCommandModal({
               background: 'var(--bg-base)',
               padding: '8px 12px',
               borderRadius: 6,
-              color: 'var(--text-primary)',
               wordBreak: 'break-all',
+              fontStyle: nativeCmd ? undefined : 'italic',
+              color: nativeCmd ? 'var(--text-primary)' : 'var(--text-tertiary)',
             }}
           >
-            {nativeCmd}
+            {nativeCmd ?? (lang === 'pt'
+              ? `${HARNESS_LABELS[s.harness ?? 'claude']} não tem um comando que reabre uma sessão pelo id — use a Opção 1.`
+              : `${HARNESS_LABELS[s.harness ?? 'claude']} has no command that reopens a session by id — use Option 1.`)}
           </code>
         </div>
       </div>
@@ -1371,11 +1400,15 @@ interface SessionCardProps {
   /** The live fleet row driving this conversation, when one is. Absent = a history row. */
   fleetRow?: FleetRow
   onFleetAction?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   viewMode?: 'list' | 'grid'
   theme?: 'dark' | 'light'
   /** Who a write-channel send is attributed to (threaded to the actions controller for the audit). */
   authorName?: string
+  /** How the list is banded, and this band's own heading — what the card need not repeat. A card
+   *  outside any band (the pinned block, a flat list) passes neither and keeps every fact. */
+  grouping?: SessionGrouping
+  bandLabel?: string
 }
 
 function SessionCard(props: SessionCardProps) {
@@ -1422,26 +1455,37 @@ function StatusPill({ color, label }: { color: string; label: string }) {
 
 /** The recessed second line — WHERE the session lives and WHAT it is on, when the fleet knows: the
  *  project/repo, the model, and (live) the task and note. This is the "who/what" context, kept quiet
- *  under the title so the state and the title stay the loud things. */
-function CardMeta({ s, fleetRow, lang }: { s: SessionMeta; fleetRow?: FleetRow; lang: 'pt' | 'en' }) {
+ *  under the title so the state and the title stay the loud things.
+ *
+ *  A fact the BAND already states is dropped (`bandRepeats`) — five cards under a
+ *  `blpsoares/agentistics` heading each spending a line on `blpsoares/agentistics` is the width
+ *  their titles were cut for. And the bits carry NO `·` separators: they are laid out as wrapping
+ *  flex items, so every separator drawn between them was one wrap away from being left dangling at
+ *  the end of a line with nothing after it. Each bit leads with its own icon; the gap is the
+ *  separator. */
+function CardMeta({ s, fleetRow, lang, grouping, bandLabel }: {
+  s: SessionMeta
+  fleetRow?: FleetRow
+  lang: 'pt' | 'en'
+  /** How the list is banded, and what THIS band is called — together they say what not to repeat. */
+  grouping?: SessionGrouping
+  bandLabel?: string
+}) {
   const bits: React.ReactNode[] = []
+  const g = grouping ?? 'none'
+  const said = (fact: CardFact, value?: string) => bandRepeats(g, fact, value, bandLabel)
   const repo = s.git_remote ? repoShortName(s.git_remote) : ''
   const project = fleetRow?.project || (s.project_path ? formatProjectName(s.project_path) : '')
-  if (project) bits.push(<span key="p" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Folder size={11} style={{ opacity: 0.7 }} />{project}</span>)
-  if (repo) bits.push(<span key="r" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><GitCommit size={11} style={{ opacity: 0.7 }} />{repo}</span>)
+  if (project && !said('project', project)) bits.push(<span key="p" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><Folder size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{project}</span></span>)
+  if (repo && !said('repo', repo)) bits.push(<span key="r" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><GitCommit size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo}</span></span>)
   const model = fleetRow?.model || s.model
-  if (model) bits.push(<span key="m" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Tag size={11} style={{ opacity: 0.7 }} />{model}</span>)
-  if (fleetRow?.task) bits.push(<span key="t" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--anthropic-orange)' }}><Bookmark size={11} />{fleetRow.task}</span>)
-  if (fleetRow?.note) bits.push(<span key="n" style={{ fontStyle: 'italic', opacity: 0.85 }} title={fleetRow.note}>“{truncate(fleetRow.note, 60)}”</span>)
+  if (model && !said('model', model)) bits.push(<span key="m" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0 }}><Tag size={11} style={{ opacity: 0.7, flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model}</span></span>)
+  if (fleetRow?.task) bits.push(<span key="t" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--anthropic-orange)', minWidth: 0 }}><Bookmark size={11} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fleetRow.task}</span></span>)
+  if (fleetRow?.note) bits.push(<span key="n" style={{ fontStyle: 'italic', opacity: 0.85, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={fleetRow.note}>“{truncate(fleetRow.note, 60)}”</span>)
   if (bits.length === 0) return null
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', minWidth: 0 }}>
-      {bits.map((b, i) => (
-        <React.Fragment key={i}>
-          {i > 0 && <span style={{ opacity: 0.4 }}>·</span>}
-          {b}
-        </React.Fragment>
-      ))}
+    <div style={{ display: 'flex', alignItems: 'center', columnGap: 14, rowGap: 4, flexWrap: 'wrap', fontSize: 11, color: 'var(--text-tertiary)', minWidth: 0 }}>
+      {bits}
     </div>
   )
 }
@@ -1464,8 +1508,9 @@ function CardChips({ s, lang }: { s: SessionMeta; lang: 'pt' | 'en' }) {
   )
 }
 
-/** The small buttons that open the metrics modal / the resume-command modal. Grouped so both card
- *  variants render them the same way. */
+/** The footer of a HISTORY card: the metrics modal and the resume-command modal. A LIVE card draws
+ *  neither — its metrics are in the kebab and its resume is the fleet's own verb (see
+ *  `LiveSessionCard`). */
 function CardFooterButtons({ s, lang, onSelect, onResume }: {
   s: SessionMeta; lang: 'pt' | 'en'; onSelect?: (s: SessionMeta) => void; onResume: () => void
 }) {
@@ -1491,11 +1536,23 @@ function CardFooterButtons({ s, lang, onSelect, onResume }: {
 /** The outer card shell + clickable header shared by both variants. `accent` is the state colour
  *  drawn as a left rule so a row that needs you is spotted without reading it. `affordance` is the
  *  trailing icon that says what a click does — a chevron in the list (expands inline) or a maximize
- *  glyph in the grid (opens the modal, so the grid layout never stretches). */
+ *  glyph in the grid (opens the modal, so the grid layout never stretches).
+ *
+ *  There are TWO header shapes, because a grid column is not a short list row.
+ *
+ *  LIST: one wrapping row — state, harness, title, then the actions right-aligned. There is room
+ *  for the identity and the verbs side by side, and at this width that reads as one line.
+ *
+ *  GRID (~320px): a SUMMARY, in the cockpit's order. State and the open-affordance lead; the TITLE
+ *  then gets a full-width line of its own and may take two, because it is the one thing a reader
+ *  cannot do without and the wrapping row cut it to `Sessions card re…`; the meta follows; the
+ *  actions come LAST, on their own row, left-aligned. Under the wrapping row those same actions
+ *  landed right-aligned in the middle of the card, next to nothing, reading as debris. */
 function CardShell({
-  accent, expanded, onToggle, statusPill, harness, title, right, meta, affordance, children,
+  accent, layout, expanded, onToggle, statusPill, harness, title, right, meta, affordance, children,
 }: {
   accent: string
+  layout: 'list' | 'grid'
   expanded: boolean
   onToggle: () => void
   statusPill: React.ReactNode
@@ -1506,6 +1563,16 @@ function CardShell({
   affordance: React.ReactNode
   children?: React.ReactNode
 }) {
+  const isGrid = layout === 'grid'
+  const titleStyle: React.CSSProperties = isGrid
+    ? {
+        fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', minWidth: 0,
+        // Two lines, then an ellipsis — a grid title is worth a second line and never a third.
+        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        wordBreak: 'break-word', lineHeight: 1.3,
+      }
+    : { fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }
+
   return (
     <div
       style={{
@@ -1516,34 +1583,45 @@ function CardShell({
     >
       <div
         onClick={onToggle}
-        style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '12px 16px', cursor: 'pointer', userSelect: 'none', minWidth: 0 }}
+        style={{ display: 'flex', flexDirection: 'column', gap: isGrid ? 8 : 6, padding: '12px 16px', cursor: 'pointer', userSelect: 'none', minWidth: 0 }}
       >
-        {/* The header WRAPS. In a grid column (~360px) the action cluster is `flexShrink:0` and wide
-            (a "Send a prompt" button + pin + kebab + maximize), so on one non-wrapping row it crushed
-            the title to nothing and clipped the harness badge — the fields did not fit the column.
-            With `flexWrap`, when the actions cannot sit beside the identity they drop to their own
-            row and the pill + badge + title keep a full-width line where the title is readable; on a
-            wide card everything stays on one row exactly as before. `marginLeft:auto` right-aligns
-            the actions on the shared row (replacing space-between, which mis-spaces a wrapped line). */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, rowGap: 8, minWidth: 0, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 170px', minWidth: 0 }}>
-            {statusPill}
-            <HarnessBadge harness={harness} />
-            <span
-              style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
-              title={title}
-            >
-              {title}
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
-            {right}
-            <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex' }}>
-              {affordance}
-            </span>
-          </div>
-        </div>
-        {meta}
+        {isGrid ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              {statusPill}
+              <HarnessBadge harness={harness} />
+              <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex', marginLeft: 'auto', flexShrink: 0 }}>
+                {affordance}
+              </span>
+            </div>
+            <span style={titleStyle} title={title}>{title}</span>
+            {meta}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+              {right}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* The header WRAPS. When the action cluster cannot sit beside the identity it drops to
+                its own row and the pill + badge + title keep a full-width line where the title is
+                readable. `marginLeft:auto` right-aligns the actions on the shared row (replacing
+                space-between, which mis-spaces a wrapped line). */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, rowGap: 8, minWidth: 0, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 170px', minWidth: 0 }}>
+                {statusPill}
+                <HarnessBadge harness={harness} />
+                <span style={titleStyle} title={title}>{title}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, marginLeft: 'auto' }}>
+                {right}
+                <span style={{ color: 'var(--text-tertiary)', display: 'inline-flex' }}>
+                  {affordance}
+                </span>
+              </div>
+            </div>
+            {meta}
+          </>
+        )}
       </div>
       {expanded && (
         <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '0 16px 14px', minWidth: 0 }}>
@@ -1586,7 +1664,7 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
   // 44px touch targets on mobile (the repo rule); the compact desktop size otherwise.
   const btn: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: isMobile ? 40 : 24, height: isMobile ? 40 : 22,
+    width: isMobile ? 44 : 24, height: isMobile ? 44 : 22,
     borderRadius: 4, border: 'none', background: 'transparent', color: 'var(--text-secondary)',
     cursor: 'pointer', padding: 0,
   }
@@ -1610,7 +1688,7 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
       <button
         onClick={() => setTerminalZoom(1)}
         title={lang === 'pt' ? 'Tamanho padrão' : 'Reset size'}
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 32, minHeight: isMobile ? 40 : undefined, padding: 0 }}
+        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: isMobile ? 44 : 32, minHeight: isMobile ? 44 : undefined, padding: 0 }}
       >
         {Math.round(zoom * 100)}%
       </button>
@@ -1630,19 +1708,31 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
 const TYPING_T = {
   pt: {
     live: 'Digitando direto na sessão — teclas (incl. Ctrl+C) chegam ao processo.',
+    // "Armado" e "a próxima tecla chega" são coisas diferentes, e um terminal não dá nenhum outro
+    // sinal de qual das duas é a verdadeira.
+    clickToType: 'Pronto para receber teclas — clique no terminal acima para digitar nele.',
+    lineHasKeys: 'Escrevendo uma linha inteira — o terminal não recebe teclas enquanto isso.',
     connecting: 'Conectando o teclado à sessão…',
     unavailable: 'Não foi possível abrir o canal de escrita.',
     notDelivered: 'Não entregue:',
   },
   en: {
     live: 'Typing straight into the session — keys (incl. Ctrl+C) reach the process.',
+    clickToType: 'Ready for keys — click the terminal above to type into it.',
+    lineHasKeys: 'Composing a whole line — the terminal is not taking keys meanwhile.',
     connecting: 'Connecting the keyboard to the session…',
     unavailable: 'The write channel could not be opened.',
     notDelivered: 'Not delivered:',
   },
 } as const
 
-function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorName }: {
+/**
+ * EXPORTED so the sessions workspace's centre pane uses this very component rather than assembling
+ * a second one from `useTerminalStream` + `SessionTerminal` + a composer. Those three have to agree
+ * about reconnects, stall reporting, zoom and the consent gate on typing into a live session, and
+ * two assemblies is two chances for them not to.
+ */
+export function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorName }: {
   id: string; theme: 'dark' | 'light'; lang: 'pt' | 'en'
   /** Fill the available height (in the modal) instead of a fixed card-sized box. */
   fill?: boolean
@@ -1653,7 +1743,7 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
    *  INTERACTIVE — a consent-gated line composer under the screen (see `TerminalComposer`). */
   row?: FleetRow
   act?: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
 }) {
   const isMobile = useIsMobile()
@@ -1666,20 +1756,47 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
   // Phase 2b — DIRECT TYPING. The composer's consent (one opt-in) also opens the terminal's keystroke
   // channel. Direct typing is allowed for any LIVE, managed row — including one on a dialog: a sighted
   // single keystroke answers a prompt, unlike the blind line composer, which alone refuses a dialog.
-  const [typingArmed, setTypingArmed] = useState(false)
+  //
+  // THE STATE MACHINE LIVES HERE, not inside the composer, because the SURFACE it holds decides
+  // whether the emulator takes keys. It was the composer's own state, so the composer armed itself,
+  // focused its own field, and the terminal — the thing the button is named after — never got the
+  // keyboard: "a digitação fica especificamente NO input do type into this session ao invés de me
+  // permitir digitar direto no terminal renderizado". One owner, one surface at a time.
+  const [composer, dispatchComposer] = useReducer(composerReducer, INITIAL_COMPOSER)
   const rowBlock = row ? interactionBlock(row.state) : 'external'
   const canType = !!row && !!act && rowBlock !== 'external' && rowBlock !== 'not-running'
-  const write = useTerminalWrite(id, typingArmed && canType, lang === 'pt' ? 'pt' : 'en')
+  // A row with no live process cannot be typed into either way — revoke rather than leave a consent
+  // standing over a dead session. `awaiting-approval` is NOT such a case: a sighted keystroke answers
+  // the dialog, which is precisely what the blind line send cannot do.
+  const hardBlocked = rowBlock === 'external' || rowBlock === 'not-running'
+  useEffect(() => {
+    if (hardBlocked && composer.armed) dispatchComposer({ type: 'disarm' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hardBlocked])
+  const write = useTerminalWrite(id, composer.armed && canType, lang === 'pt' ? 'pt' : 'en')
   // The emulator accepts keys only once the channel is actually OPEN — so a captured keystroke can
-  // always be delivered (no local echo; a key you can see was typed is a key that landed).
-  const interactive = typingArmed && canType && write.ready
+  // always be delivered (no local echo; a key you can see was typed is a key that landed) — AND only
+  // while the keyboard is the terminal's. Two fields both taking keys is what this replaced.
+  const interactive = composer.armed && canType && write.ready && composer.surface === 'terminal'
+  // A channel that could not open leaves the LINE EDITOR as the only way in, so open it rather than
+  // leave an armed terminal that silently eats every key. Keyed on the phase, so it happens once.
+  const channelDead = composer.armed && canType && write.state.phase === 'closed'
+  useEffect(() => {
+    if (channelDead) dispatchComposer({ type: 'surface', surface: 'line' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelDead])
+  // Does the EMULATOR hold the keyboard right now? Focus events bubble in React, so the box around
+  // xterm's own textarea is enough — and this is the difference between "armed" and "your next
+  // keystroke lands", which is the one thing a person cannot tell by looking at a terminal.
+  const [termFocused, setTermFocused] = useState(false)
   const tw = TYPING_T[lang]
   // The one honest status for the keystroke channel: connecting → live, a drop, or a not-delivered.
   const typingNotice: { tone: 'live' | 'wait' | 'bad'; text: string } | null =
-    !typingArmed || !canType ? null
+    !composer.armed || !canType ? null
     : write.state.undelivered && write.reason ? { tone: 'bad', text: `${tw.notDelivered} ${write.reason}` }
     : write.state.phase === 'closed' ? { tone: 'bad', text: write.reason ?? tw.unavailable }
-    : write.ready ? { tone: 'live', text: tw.live }
+    : composer.surface === 'line' ? { tone: 'wait', text: tw.lineHasKeys }
+    : write.ready ? { tone: 'live', text: termFocused ? tw.live : tw.clickToType }
     : { tone: 'wait', text: tw.connecting }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, height: fill ? '100%' : undefined, flex: fill ? 1 : undefined }}>
@@ -1710,7 +1827,7 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
             aria-label={lang === 'pt' ? 'Ampliar o terminal' : 'Enlarge the terminal'}
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: isMobile ? 40 : 26, height: isMobile ? 40 : 22, borderRadius: 6,
+              width: isMobile ? 44 : 26, height: isMobile ? 44 : 22, borderRadius: 6,
               border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
               color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
             }}
@@ -1720,10 +1837,18 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
         )}
       </div>
       <div
+        onFocus={() => setTermFocused(true)}
+        onBlur={() => setTermFocused(false)}
         style={{
           height: fill ? undefined : fixedHeight, flex: fill ? 1 : undefined, minHeight: fill ? 0 : undefined,
           borderRadius: 8, overflow: 'hidden',
-          border: '1px solid var(--border-subtle)', background: theme === 'light' ? '#ffffff' : '#0e1116',
+          // The one visual difference between "read-only" and "your keys land here". A terminal
+          // gives no other sign, so an armed pane that is not focused looks exactly like one that is.
+          border: interactive && termFocused
+            ? '1px solid var(--anthropic-orange)'
+            : '1px solid var(--border-subtle)',
+          boxShadow: interactive && termFocused ? '0 0 0 2px rgba(232,105,11,0.22)' : undefined,
+          background: theme === 'light' ? '#ffffff' : '#0e1116',
         }}
       >
         <Suspense fallback={<div style={{ padding: 16, fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>{lang === 'pt' ? 'Carregando o emulador…' : 'Loading the emulator…'}</div>}>
@@ -1753,7 +1878,7 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
             title={lang === 'pt' ? 'Reconectar' : 'Reconnect'}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-              minHeight: isMobile ? 40 : 28, padding: isMobile ? '0 14px' : '4px 12px', borderRadius: 8,
+              minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 12px', borderRadius: 8,
               fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
               border: `1px solid ${TERM_TONE_COLOR.stalled}`, background: 'transparent', color: TERM_TONE_COLOR.stalled,
             }}
@@ -1767,7 +1892,11 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
           driving a live fleet row the page can act on. Read-only terminals (history rows, or a page
           with no `act`) render no composer, so a field that does nothing is never shown. */}
       {row && act && (
-        <TerminalComposer row={row} act={act} authorName={authorName} lang={lang} isMobile={isMobile} onArmedChange={setTypingArmed} />
+        <TerminalComposer
+          row={row} act={act} authorName={authorName} lang={lang} isMobile={isMobile}
+          state={composer} dispatch={dispatchComposer}
+          channelDead={write.state.phase === 'closed'}
+        />
       )}
       <style>{`@keyframes ag-term-pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }`}</style>
     </div>
@@ -1785,39 +1914,45 @@ function TerminalRegion({ id, theme, lang, fill, onMaximize, row, act, authorNam
  *    then lost — nothing is delivered per key, and the one line's outcome is always on screen.
  *  - AUDIT: the delivered-or-failed line is recorded through `recordPromptSend`; keystrokes are not.
  */
-function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange }: {
+function TerminalComposer({ row, act, authorName, lang, isMobile, state: composer, dispatch, channelDead }: {
   row: FleetRow
   act: (req: { id: string; action: FleetActionId; text?: string; choice?: number })
-    => Promise<{ ok: boolean; message: string }>
+    => Promise<{ ok: boolean; message: string; id?: string }>
   authorName?: string
   lang: 'pt' | 'en'
   isMobile: boolean
-  /** The SAME consent arms direct terminal typing (Phase 2b) — the parent opens the keystroke
-   *  channel when this turns true. One opt-in, not two. */
-  onArmedChange?: (armed: boolean) => void
+  /**
+   * The composer's state and its dispatch, OWNED BY THE REGION.
+   *
+   * They used to live here, which is how the one button labelled "type into this session" came to
+   * focus the one field that cannot type into the session: the emulator's stdin is decided by
+   * `surface`, and a state this component held privately was a state the emulator could not read.
+   */
+  state: ComposerState
+  dispatch: React.Dispatch<ComposerAction>
+  /** The keystroke channel could not be opened — the line editor is then the only way in, and says so. */
+  channelDead: boolean
 }) {
-  const [composer, dispatch] = useReducer(composerReducer, INITIAL_COMPOSER)
   // A brief "delivered" confirmation; the durable record lives in the audit panel below the card.
   const [flash, setFlash] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const t = COMPOSER_T[lang]
 
-  // Tell the parent whenever consent changes, so the terminal's own keystroke channel opens/closes
-  // in lockstep with the line composer's arming.
-  useEffect(() => { onArmedChange?.(composer.armed) }, [composer.armed, onArmedChange])
-
   // `external` / `not-running` are HARD blocks — no live process, nothing to type into either way, so
-  // the composer is closed entirely. `awaiting-approval` is NOT a hard block for Phase 2b: a sighted
-  // keystroke ANSWERS the dialog (the coordinator's decision), so consent survives it and direct
-  // typing keeps working; only the blind LINE prompt is refused there, by the server, and its refusal
-  // is reported honestly by the delivery banner below.
+  // the composer is closed entirely (the REGION revokes the consent; this only stops drawing).
+  // `awaiting-approval` is NOT a hard block for Phase 2b: a sighted keystroke ANSWERS the dialog, so
+  // consent survives it and direct typing keeps working; only the blind LINE prompt is refused there,
+  // by the server, and its refusal is reported honestly by the delivery banner below.
   const block = interactionBlock(row.state)
   const hardBlock = block === 'awaiting-approval' ? null : block
   const onDialog = block === 'awaiting-approval'
-  useEffect(() => {
-    if (hardBlock && composer.armed) dispatch({ type: 'disarm' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hardBlock])
+  const lining = composer.surface === 'line'
+
+  /** Open the line editor and put the caret in it — the ONE place that field takes focus. */
+  const openLine = () => {
+    dispatch({ type: 'surface', surface: 'line' })
+    setTimeout(() => inputRef.current?.focus(), 0)
+  }
 
   async function send() {
     if (!canSubmit(composer)) return
@@ -1859,7 +1994,9 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button
-          onClick={(e) => { e.stopPropagation(); dispatch({ type: 'arm' }); setFlash(false); setTimeout(() => inputRef.current?.focus(), 0) }}
+          // NO focus grab. Arming hands the keyboard to the TERMINAL — `SessionTerminal` focuses
+          // itself the moment the channel opens, which is the moment a key can actually be delivered.
+          onClick={(e) => { e.stopPropagation(); dispatch({ type: 'arm' }); setFlash(false) }}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
             minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 16px' : '4px 12px', borderRadius: 8,
@@ -1876,6 +2013,58 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
 
   const sending = composer.status === 'sending'
   const failed = composer.status === 'failed'
+
+  /** The verb that revokes consent. Identical on both surfaces, so it is written once. */
+  const stopButton = (
+    <button
+      type="button"
+      onClick={() => dispatch({ type: 'disarm' })}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+        minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+        fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+        border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+      }}
+    >
+      <Hand size={13} /> <span>{t.stop}</span>
+    </button>
+  )
+
+  /**
+   * ARMED, KEYBOARD ON THE TERMINAL — the default, and the whole point of the button that got here.
+   *
+   * No field is drawn, deliberately: an input on screen is where a person types, whatever a sentence
+   * beside it says, and that is exactly how the previous version swallowed every keystroke meant for
+   * the pane. The line editor is one click away and says what it is for.
+   */
+  if (!lining) {
+    return (
+      <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600,
+          color: 'var(--anthropic-orange)', minWidth: 0,
+        }}>
+          <Keyboard size={13} style={{ flexShrink: 0 }} />
+          <span>{t.typingHere}</span>
+        </span>
+        <button
+          type="button"
+          onClick={openLine}
+          title={t.lineWhy}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+            minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+            fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
+            border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+          }}
+        >
+          <Send size={13} /> <span>{t.openLine}</span>
+        </button>
+        {stopButton}
+      </div>
+    )
+  }
+
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -1929,19 +2118,30 @@ function TerminalComposer({ row, act, authorName, lang, isMobile, onArmedChange 
         >
           <Send size={13} /> <span>{sending ? t.sending : t.send}</span>
         </button>
-        <button
-          type="button"
-          onClick={() => dispatch({ type: 'disarm' })}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
-            minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
-            fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
-            border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
-          }}
-        >
-          <Hand size={13} /> <span>{t.stop}</span>
-        </button>
+        {/* Back to the pane. ABSENT when the keystroke channel could not be opened — a control whose
+            only outcome is a terminal that eats keys is worse than no control, and the sentence
+            under the field says why it is not there. */}
+        {!channelDead && (
+          <button
+            type="button"
+            onClick={() => dispatch({ type: 'surface', surface: 'terminal' })}
+            disabled={sending}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0,
+              minHeight: isMobile ? 44 : 28, padding: isMobile ? '0 14px' : '4px 10px', borderRadius: 8,
+              fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit',
+              cursor: sending ? 'default' : 'pointer', opacity: sending ? 0.5 : 1,
+              border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)',
+            }}
+          >
+            <Terminal size={13} /> <span>{t.backToTerminal}</span>
+          </button>
+        )}
+        {stopButton}
       </form>
+      {channelDead && (
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>{t.lineOnly}</div>
+      )}
       {/* HONEST DELIVERY — the one place the line's fate is reported. */}
       {sending && <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t.delivering}</div>}
       {failed && (
@@ -1963,6 +2163,11 @@ const COMPOSER_T = {
     arm: 'Digitar nesta sessão',
     readonly: 'Somente leitura até você começar a digitar. Ao ligar, as teclas (incl. Ctrl+C) vão direto ao processo.',
     stop: 'Parar',
+    typingHere: 'Digite no terminal acima.',
+    openLine: 'Escrever uma linha inteira',
+    lineWhy: 'Um campo local: você escreve a linha toda, corrige, e ela é enviada de uma vez com Enter.',
+    backToTerminal: 'Voltar ao terminal',
+    lineOnly: 'O canal de teclas não abriu, então este campo é o único caminho até a sessão — ele envia a linha inteira de uma vez.',
     onDialogHint: 'Esta sessão está num diálogo — responda digitando direto no terminal acima; enviar uma linha aqui é recusado.',
     writingTo: 'Escrevendo em',
     placeholder: 'Uma linha para enviar a esta sessão…',
@@ -1982,6 +2187,11 @@ const COMPOSER_T = {
     arm: 'Type into this session',
     readonly: 'Read-only until you start typing. Once on, keys (incl. Ctrl+C) go straight to the process.',
     stop: 'Stop',
+    typingHere: 'Type in the terminal above.',
+    openLine: 'Compose a whole line',
+    lineWhy: 'A local field: write the whole line, fix it, and send it in one go with Enter.',
+    backToTerminal: 'Back to the terminal',
+    lineOnly: 'The keystroke channel did not open, so this field is the only way into the session — it sends the whole line at once.',
     onDialogHint: 'This session is on a dialog — answer it by typing directly in the terminal above; sending a line here is refused.',
     writingTo: 'Writing to',
     placeholder: 'One line to send to this session…',
@@ -2043,7 +2253,7 @@ function PrimaryButton({ primary, lang, onExpand, onPick }: {
       title={title ?? label}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap',
-        minHeight: isMobile ? 40 : 30, padding: isMobile ? '0 14px' : '5px 12px', borderRadius: 8,
+        minHeight: isMobile ? 44 : 30, padding: isMobile ? '0 14px' : '5px 12px', borderRadius: 8,
         fontSize: isMobile ? 13 : 12, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
         border: filled ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
         background: filled ? 'var(--anthropic-orange)' : 'var(--bg-surface)',
@@ -2090,9 +2300,12 @@ function PinButton({ sessionId, lang }: { sessionId: string; lang: 'pt' | 'en' }
           : (lang === 'pt' ? `Fixar no topo (até ${MAX_PINNED})` : `Pin to top (up to ${MAX_PINNED})`)}
         aria-label={pinned ? (lang === 'pt' ? 'Desafixar' : 'Unpin') : (lang === 'pt' ? 'Fixar' : 'Pin')}
         aria-pressed={pinned}
+        // `.ag-tap-icon` and not a 44x44 box: on a phone this drew an empty square the height of
+        // three rows of the card it sits on, and the title beside it lost the width to it.
+        className="ag-tap-icon"
         style={{
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: isMobile ? 40 : 30, height: isMobile ? 40 : 30, borderRadius: 8,
+          width: 30, height: 30, borderRadius: 8,
           border: pinned ? '1px solid var(--anthropic-orange)' : '1px solid var(--border-subtle)',
           background: pinned ? 'rgba(232,105,11,0.1)' : 'transparent',
           color: pinned ? 'var(--anthropic-orange)' : 'var(--text-tertiary)',
@@ -2148,7 +2361,7 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 9998, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
-        display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center', padding: isMobile ? 0 : 24,
+        display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center', padding: isMobile ? OVERLAY_TOP : 24,
       }}
     >
       <div
@@ -2172,7 +2385,7 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
               aria-label={lang === 'pt' ? 'Fechar' : 'Close'}
               style={{
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                width: isMobile ? 40 : 30, height: isMobile ? 40 : 30, borderRadius: 8,
+                width: isMobile ? 44 : 30, height: isMobile ? 44 : 30, borderRadius: 8,
                 border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', padding: 0,
               }}
             >
@@ -2191,7 +2404,7 @@ function CardModal({ statusPill, harness, title, meta, lang, onClose, children }
 
 // ---- the two card variants -----------------------------------------------------------------------
 
-function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleetAction, theme, viewMode, authorName }: SessionCardProps & {
+function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleetAction, theme, viewMode, authorName, grouping, bandLabel }: SessionCardProps & {
   fleetRow: FleetRow
   onFleetAction: NonNullable<SessionCardProps['onFleetAction']>
 }) {
@@ -2199,7 +2412,6 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   const [expanded, setExpanded] = useState(false)
   const modalOpen = useOpenModalSession() === s.session_id
   const setModalOpen = (open: boolean) => setOpenModalSession(open ? s.session_id : null)
-  const [showResumeModal, setShowResumeModal] = useState(false)
   const ctrl = useSessionActionsController(fleetRow, lang, onFleetAction, authorName)
   // The state indicator reads the FLEET — the same source the primary action reads — so the pill,
   // the accent and the lead action can never contradict each other.
@@ -2213,7 +2425,10 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   const openCard = () => { if (isGrid) setModalOpen(true); else setExpanded(v => !v) }
 
   const statusPill = <StatusPill color={accent} label={fleetRow.stateLabel} />
-  const meta = <CardMeta s={s} fleetRow={fleetRow} lang={lang} />
+  const meta = <CardMeta s={s} fleetRow={fleetRow} lang={lang} grouping={grouping} bandLabel={bandLabel} />
+  // The badge is dropped when the band's own heading is this harness — the same rule `CardMeta`
+  // applies to the project, the repo and the model.
+  const harnessBadge = bandRepeats(grouping ?? 'none', 'harness', harnessLabel(s.harness), bandLabel) ? undefined : s.harness
 
   // The card is session CONTROL, not a session dossier: only the metric chips stay on it. The first
   // prompt / latest-messages block and the "Session metrics" button moved off — the deep-dive lives
@@ -2224,18 +2439,24 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   // off a torn-down render service — an async, uncatchable throw once per toggle (invisible in dev
   // under StrictMode, real in the production build). The duplicate SSE the modal briefly holds is the
   // lesser cost, and it is bounded by the connecting stall/reconnect above.
+  // RESUME IS ONE CONTROL HERE, and it is the fleet's. A live card used to carry a `Resume` footer
+  // button opening a modal whose first option was `agentop session attach <id>` — the very command
+  // the panel two rows above already hands over — beside a NATIVE `<harness> --resume <id>`, which
+  // on a session agentop hosts starts a SECOND, unmanaged process against the same conversation.
+  // So the button is gone: what reopens this row is the fleet `resume` verb (the row's lead button
+  // when the state is about it, the kebab otherwise — one controller, one path), and what enters it
+  // from a terminal is the attach command in the panel. The command modal stays on HISTORY cards,
+  // where nothing else can reach a stored conversation.
   const body = (large: boolean) => (
     <>
       {watchable && <TerminalRegion id={fleetRow.id} theme={theme ?? 'dark'} lang={lang} fill={large} onMaximize={large ? undefined : () => setModalOpen(true)} row={fleetRow} act={onFleetAction} authorName={authorName} />}
       <SessionActionsPanel ctrl={ctrl} />
       <CardChips s={s} lang={lang} />
-      <CardFooterButtons s={s} lang={lang} onResume={() => setShowResumeModal(true)} />
     </>
   )
 
   return (
     <>
-      {showResumeModal && <ResumeCommandModal s={s} lang={lang} onClose={() => setShowResumeModal(false)} />}
       {modalOpen && (
         <CardModal statusPill={statusPill} harness={s.harness} title={titleOf(s)} meta={meta} lang={lang} onClose={() => setModalOpen(false)}>
           {body(true)}
@@ -2243,10 +2464,11 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
       )}
       <CardShell
         accent={accent}
+        layout={isGrid ? 'grid' : 'list'}
         expanded={isGrid ? false : expanded}
         onToggle={openCard}
         statusPill={statusPill}
-        harness={s.harness}
+        harness={harnessBadge}
         title={titleOf(s)}
         right={
           <>
@@ -2272,7 +2494,7 @@ function LiveSessionCard({ s, lang, onSelect, isPinned, state, fleetRow, onFleet
   )
 }
 
-function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: SessionCardProps) {
+function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode, grouping, bandLabel }: SessionCardProps) {
   const isGrid = viewMode === 'grid'
   const [expanded, setExpanded] = useState(false)
   const modalOpen = useOpenModalSession() === s.session_id
@@ -2283,7 +2505,8 @@ function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: Se
   const openCard = () => { if (isGrid) setModalOpen(true); else setExpanded(v => !v) }
 
   const statusPill = <StatusPill color={status.color} label={lang === 'pt' ? status.labelPt : status.labelEn} />
-  const meta = <CardMeta s={s} lang={lang} />
+  const meta = <CardMeta s={s} lang={lang} grouping={grouping} bandLabel={bandLabel} />
+  const harnessBadge = bandRepeats(grouping ?? 'none', 'harness', harnessLabel(s.harness), bandLabel) ? undefined : s.harness
   // History rows have no fleet controller, so no kebab to move "Session metrics" into — it stays a
   // footer button here (unlike the live card, which routes it through SessionActionsMenu).
   const body = () => (
@@ -2303,10 +2526,11 @@ function HistorySessionCard({ s, lang, onSelect, isPinned, state, viewMode }: Se
       )}
       <CardShell
         accent={status.color}
+        layout={isGrid ? 'grid' : 'list'}
         expanded={isGrid ? false : expanded}
         onToggle={openCard}
         statusPill={statusPill}
-        harness={s.harness}
+        harness={harnessBadge}
         title={titleOf(s)}
         right={
           <>

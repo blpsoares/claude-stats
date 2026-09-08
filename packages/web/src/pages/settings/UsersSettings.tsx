@@ -89,7 +89,10 @@ function TagChip({ label, color, isMobile, onRemove, removeLabel }: {
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
       padding: onRemove ? '5px 4px 5px 10px' : '5px 10px',
-      minHeight: isMobile ? 44 : undefined, boxSizing: 'border-box',
+      boxSizing: 'border-box',
+      // No 44px here and no `.ag-tap`: this is a LABEL, not a control — the only thing to press is
+      // the X inside it, and an overlay on the wrapper would sit on top of that button and take
+      // its clicks. At `borderRadius: 999` the 44px it used to carry also made it an ellipse.
       borderRadius: 999, fontSize: 11.5, background: 'var(--bg-elevated)',
       border: '1px solid var(--border)', color: 'var(--text-secondary)',
     }}>
@@ -103,10 +106,13 @@ function TagChip({ label, color, isMobile, onRemove, removeLabel }: {
           type="button"
           onClick={onRemove}
           aria-label={removeLabel}
+          // The chip's only control, so it is the one that carries the finger target — as an
+          // invisible box, or a 44x44 X turns a 12px chip into a button with a label stuck to it.
+          className="ag-tap-icon"
           style={{
             border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0,
-            width: isMobile ? 44 : 20, height: isMobile ? 44 : 20,
+            width: 20, height: 20,
           }}
         >
           <X size={12} />
@@ -1027,7 +1033,11 @@ export default function UsersSettings() {
                     />
                   </div>
                   <button type="button" onClick={() => removeRow(i)}
-                    style={{ ...trashBtn, minWidth: isMobile ? 44 : undefined, minHeight: isMobile ? 44 : undefined, justifyContent: 'center' }}
+                    // The icon is 14px and the row it sits in is a pair of selects; a 44x44 box
+                    // beside them was the tallest thing in the row. `.ag-tap-icon` keeps the finger
+                    // target and opts the button out of the `.ag-settings button` 44px sweep.
+                    className="ag-tap-icon"
+                    style={{ ...trashBtn, minWidth: 28, minHeight: 28, justifyContent: 'center' }}
                     aria-label={pt ? 'Remover time' : 'Remove team'}>
                     <Trash2 size={14} />
                   </button>
@@ -1315,7 +1325,11 @@ export default function UsersSettings() {
                     />
                   </div>
                   <button type="button" onClick={() => removeERow(i)}
-                    style={{ ...trashBtn, minWidth: isMobile ? 44 : undefined, minHeight: isMobile ? 44 : undefined, justifyContent: 'center' }}
+                    // The icon is 14px and the row it sits in is a pair of selects; a 44x44 box
+                    // beside them was the tallest thing in the row. `.ag-tap-icon` keeps the finger
+                    // target and opts the button out of the `.ag-settings button` 44px sweep.
+                    className="ag-tap-icon"
+                    style={{ ...trashBtn, minWidth: 28, minHeight: 28, justifyContent: 'center' }}
                     aria-label={pt ? 'Remover time' : 'Remove team'}>
                     <Trash2 size={14} />
                   </button>

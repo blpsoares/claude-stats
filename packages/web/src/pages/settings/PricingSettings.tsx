@@ -7,11 +7,18 @@ import type { AppContext } from '../../lib/app-context'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import type { HarnessId } from '@agentistics/core'
+import { createSharedPref } from '../../lib/sharedPref'
 
 type Origin = 'official' | 'community' | 'builtin'
 /** How the table is carved up. Persisted, because it is a viewing habit rather than a one-off. */
 type GroupBy = 'provider' | 'source' | 'harness' | 'none'
-const GROUP_KEY = 'agentistics-pricing-groupby'
+// SHARED: a grouping choice is about how this person reads their own prices, not about the device.
+const groupStore = createSharedPref<GroupBy>({
+  key: 'agentistics-pricing-groupby',
+  prefKey: 'pricingGroupBy',
+  fallback: 'provider',
+  parse: raw => (raw === 'provider' || raw === 'source' || raw === 'harness' || raw === 'none' ? raw : null),
+})
 /** Sort applies WITHIN each group; the groups keep their own order (providers by their canonical
  *  order, sources by trust). Sorting across groups would fight the grouping. */
 type SortKey = 'model' | 'input' | 'output' | 'cache' | 'provider'
@@ -111,7 +118,7 @@ export default function PricingSettings() {
   const [resp, setResp] = useState<PricingResponse | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [groupBy, setGroupBy] = useState<GroupBy>(() => {
-    try { return (localStorage.getItem(GROUP_KEY) as GroupBy) || 'provider' } catch { return 'provider' }
+    return groupStore.get()
   })
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'model', dir: 'asc' })
@@ -124,7 +131,7 @@ export default function PricingSettings() {
 
   const setGroup = (g: GroupBy) => {
     setGroupBy(g)
-    try { localStorage.setItem(GROUP_KEY, g) } catch { /* private mode — the default is fine */ }
+    groupStore.set(g)
   }
 
   useEffect(() => {
@@ -352,9 +359,9 @@ export default function PricingSettings() {
             <button
               key={g}
               onClick={() => setGroup(g)}
+              className="ag-tap"
               style={{
-                padding: isMobile ? '0 12px' : '5px 11px',
-                minHeight: isMobile ? 44 : undefined,
+                padding: isMobile ? '6px 12px' : '5px 11px',
                 borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12,
                 border: `1px solid ${groupBy === g ? 'var(--anthropic-orange)' : 'var(--border)'}`,
                 background: groupBy === g ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',

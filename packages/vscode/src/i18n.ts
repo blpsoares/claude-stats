@@ -41,6 +41,7 @@ const EN: Record<string, string> = {
   linkDown: 'No agentop server is answering at {0}.',
   linkDownAction: 'Start it',
   linkRefused: 'This machine will not answer questions about sessions.',
+  linkSlow: 'The agentop server is taking longer than usual to answer — the fleet will refresh as soon as it does.',
   attentionOne: '1 session is waiting on you',
   attentionMany: '{0} sessions are waiting on you',
 
@@ -153,6 +154,7 @@ const PT: Record<string, string> = {
   linkDown: 'Nenhum agentop server respondendo em {0}.',
   linkDownAction: 'Iniciar',
   linkRefused: 'Esta máquina não responde perguntas sobre sessões.',
+  linkSlow: 'O agentop server está demorando mais que o normal para responder — a frota atualiza assim que ele responder.',
   attentionOne: '1 sessão precisa de você',
   attentionMany: '{0} sessões precisam de você',
 

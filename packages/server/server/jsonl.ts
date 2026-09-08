@@ -1,9 +1,11 @@
 import { readFile } from 'fs/promises'
-import type { SessionMeta, TurnEvent } from '@agentistics/core'
+import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf } from '@agentistics/core'
 import { getGitFileStats } from './git'
 import { countGitCommands } from './harness-activity'
 import { extractAgentMetrics } from './agent-metrics'
+import { enrichFromSubagentTranscripts } from './subagent-metrics'
+import { addDelta, editDelta, type EditDelta } from './edit-lines'
 
 // File extension → language name (used when session-meta is absent)
 export const EXT_TO_LANG: Record<string, string> = {
@@ -180,6 +182,35 @@ export function makeEmptySession(
 }
 
 /** Parse an entire JSONL session file and extract full metrics. */
+/**
+ * Walk a file's lines WITHOUT materialising them as an array.
+ *
+ * `content.split('\n')` allocates a second copy of every byte in the file, plus a string header
+ * per line — and this parser used to do it TWICE on the same content (once for the main loop, once
+ * for `extractAgentMetrics`). On a 25 MB transcript that is ~50 MB of strings for a file already
+ * held whole in memory, and `scanProjects` runs 30 of these concurrently.
+ *
+ * Measured on a real store (862 MB of transcripts across 2.694 files): the boot warm-build peaked
+ * at 1.095 MB RSS. The peak is what matters, not the settled figure — it is what makes a laptop
+ * swap, and several agentop instances plus the assistants they are watching share that machine.
+ *
+ * A generator yields each line as it is found, so the peak holds one line at a time on top of the
+ * file itself. `trim()` stays the caller's job — the two callers already do it, and doing it here
+ * would allocate a second string per line for no gain.
+ */
+export function* iterLines(content: string): Generator<string> {
+  let start = 0
+  for (;;) {
+    const nl = content.indexOf('\n', start)
+    if (nl === -1) {
+      if (start < content.length) yield content.slice(start)
+      return
+    }
+    yield content.slice(start, nl)
+    start = nl + 1
+  }
+}
+
 export async function parseSessionJsonl(
   filePath: string,
   sessionId: string,
@@ -195,6 +226,24 @@ export async function parseSessionJsonl(
 
   let cwd = '', lastCwd = '', startTime = '', lastTime = '', firstPrompt = '', modelId = '', sessionTitle = ''
   let userMsgs = 0, assistantMsgs = 0, inputTokens = 0, outputTokens = 0
+  /**
+   * The session's work, SPLIT BY DAY — see `SessionMeta.daily`.
+   *
+   * Accumulated on the loop that is already reading every line, so it costs one map lookup per
+   * turn. The key is the ISO day of the turn's own `timestamp` (UTC), which is the rule
+   * `tagSessionDay` and `stats-cache.json`'s day series both use.
+   */
+  const daily = new Map<string, SessionDayUsage>()
+  const dayOf = (iso: string | undefined): SessionDayUsage | null => {
+    if (!iso || iso.length < 10) return null
+    const key = iso.slice(0, 10)
+    let d = daily.get(key)
+    if (!d) {
+      d = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, messages: 0 }
+      daily.set(key, d)
+    }
+    return d
+  }
   let cacheReadTokens = 0, cacheCreationTokens = 0
   /**
    * How full the window was on the LAST turn — a gauge, reassigned rather than accumulated.
@@ -210,7 +259,19 @@ export async function parseSessionJsonl(
   let gitCommits = 0, gitPushes = 0
   let toolErrors = 0, userInterruptions = 0
   let hasMcp = false
+  /**
+   * Did any tool result NAME an agent?
+   *
+   * The gate below used to be `toolCounts['Agent']` alone, which is a statement about the tool that
+   * launched an agent rather than about whether one ran. A skill run in the BACKGROUND is a `Skill`
+   * tool_use whose result carries `{status:'forked', background:true, agentId}` — measured
+   * 2026-09-06, two such runs on this machine, and neither reached the reader at all because this
+   * conversation had no `Agent` call in it.
+   */
+  let sawAgentLaunch = false
   const claudeFilesModified = new Set<string>()
+  /** Lines this session's OWN edits changed — see `edit-lines.ts`. */
+  let editLines: EditDelta = { added: 0, removed: 0 }
   const toolCounts: Record<string, number> = {}
   const toolOutputTokens: Record<string, number> = {}
   const agentFileReads: Record<string, number> = {}
@@ -227,7 +288,7 @@ export async function parseSessionJsonl(
   // own `system`/`turn_duration` line closes one with the duration IT measured.
   const turnEvents: TurnEvent[] = []
 
-  for (const raw of content.split('\n')) {
+  for (const raw of iterLines(content)) {
     const line = raw.trim()
     if (!line) continue
     let e: Record<string, unknown>
@@ -277,6 +338,12 @@ export async function parseSessionJsonl(
     }
 
     if (e.type === 'user') {
+      // Counted for BOTH roles, matching `dailyActivity.messageCount`.
+      { const d = dayOf(ts); if (d) d.messages++ }
+      const result = e.toolUseResult as Record<string, unknown> | undefined
+      if (result && typeof result === 'object' && typeof result.agentId === 'string' && result.agentId) {
+        sawAgentLaunch = true
+      }
       const msgContent = (e.message as Record<string, unknown> | undefined)?.content
       const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
 
@@ -324,12 +391,24 @@ export async function parseSessionJsonl(
       const msg = e.message as Record<string, unknown> | undefined
       if (!modelId && typeof msg?.model === 'string' && msg.model.startsWith('claude-')) modelId = msg.model
       const msgOutputTokens = (msg?.usage as Record<string, number> | undefined)?.output_tokens ?? 0
+      { const d = dayOf(ts); if (d) d.messages++ }
       if (msg?.usage) {
         const u = msg.usage as Record<string, number>
         inputTokens         += u.input_tokens ?? 0
         outputTokens        += u.output_tokens ?? 0
         cacheReadTokens     += u.cache_read_input_tokens ?? 0
         cacheCreationTokens += u.cache_creation_input_tokens ?? 0
+        // The SAME four counters, against the day this turn happened on. A turn with no readable
+        // timestamp contributes to the lifetime totals and to no day — it cannot be placed, and
+        // placing it on the session's start day would be inventing the one fact this exists to
+        // stop inventing.
+        const d = dayOf(ts)
+        if (d) {
+          d.input_tokens              += u.input_tokens ?? 0
+          d.output_tokens             += u.output_tokens ?? 0
+          d.cache_read_input_tokens   += u.cache_read_input_tokens ?? 0
+          d.cache_creation_input_tokens += u.cache_creation_input_tokens ?? 0
+        }
         // LAST wins, and only when the record actually carries an input side. A synthetic record of
         // all zeros would otherwise reset a real reading to "context empty" on the final turn.
         const sent = contextOfUsage(u)
@@ -371,6 +450,10 @@ export async function parseSessionJsonl(
                 // Count files Claude directly wrote or edited (not git-based)
                 if (['Edit', 'Write', 'MultiEdit'].includes(toolName)) {
                   claudeFilesModified.add(fp)
+                  // …and the LINES, from the same call. See `edit-lines.ts`: the git-diff figure
+                  // measures uncommitted work, so a session that commits as it goes reported
+                  // `+0 / −0` beside a real file count.
+                  editLines = addDelta(editLines, editDelta(toolName, p.input))
                 }
 
                 // Detect agent instruction file reads (Read tool only — Glob/Grep/Search
@@ -412,9 +495,14 @@ export async function parseSessionJsonl(
   // Use whichever count is higher: git-tracked files changed or files Claude directly edited
   const filesModifiedCount = Math.max(gitFileStats.filesModified, claudeFilesModified.size)
 
-  // Extract agent metrics if this session used the Agent tool
-  const agentMetrics = toolCounts['Agent']
-    ? extractAgentMetrics(content.split('\n'), modelId)
+  // Extract agent metrics if this session used the Agent tool.
+  //
+  // The parse alone can no longer produce the NUMBERS: since Claude Code made the Agent tool
+  // asynchronous the parent transcript names the subagent and nothing else, so the invocations come
+  // back marked `unmeasured` and are filled in from each subagent's own transcript, which sits
+  // beside this file. See `subagent-metrics.ts`.
+  const agentMetrics = (toolCounts['Agent'] || sawAgentLaunch)
+    ? await enrichFromSubagentTranscripts(extractAgentMetrics(iterLines(content), modelId), filePath, sessionId)
     : undefined
 
   return {
@@ -440,18 +528,26 @@ export async function parseSessionJsonl(
     // Absent rather than zero when nothing was measured — a confident "0% of the window" on a
     // session that simply recorded no usage is the same lie `HARNESS_CAPABILITIES` prevents.
     ...(contextTokens > 0 ? { context_tokens: contextTokens } : {}),
+    // Only when there is something to say. An empty map on every session would be a field that
+    // means "no days" on a record that simply has no timestamps — see `SessionMeta.daily`.
+    ...(daily.size > 0 ? { daily: Object.fromEntries(daily) } : {}),
     first_prompt: firstPrompt,
     title: sessionTitle || undefined,
     user_interruptions: userInterruptions,
     user_response_times: userResponseTimes,
     tool_errors: toolErrors,
     tool_error_categories: toolErrorCategories,
-    uses_task_agent: 'Task' in toolCounts || 'Agent' in toolCounts,
+    uses_task_agent: 'Task' in toolCounts || 'Agent' in toolCounts || sawAgentLaunch,
     uses_mcp: hasMcp,
     uses_web_search: 'WebSearch' in toolCounts,
     uses_web_fetch: 'WebFetch' in toolCounts,
-    lines_added: gitFileStats.linesAdded,
-    lines_removed: gitFileStats.linesRemoved,
+    // The session's OWN edits win over the working-tree diff, and fall back to it: the diff is 0
+    // for a session that committed its work, while the edits are what it actually changed. Taking
+    // the larger keeps a session that edited outside git (or through the shell) from reporting less
+    // than git can see — the same `Math.max` shape `filesModifiedCount` already uses, and for the
+    // same reason.
+    lines_added: Math.max(gitFileStats.linesAdded, editLines.added),
+    lines_removed: Math.max(gitFileStats.linesRemoved, editLines.removed),
     files_modified: filesModifiedCount,
     message_hours: messageHours,
     user_message_timestamps: userMessageTimestamps,

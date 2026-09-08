@@ -22,6 +22,8 @@
  * Nothing here touches the filesystem, `process`, or the network — facts in, file contents out.
  */
 
+import { servicePath } from './sessions/service-path'
+
 /** An init system this product can register a mode with. */
 export type ServiceManagerId = 'systemd' | 'launchd' | 'pm2'
 
@@ -122,7 +124,7 @@ export interface ServiceSpec {
  * registry. The one-shot form leaves restarting to Docker's own `restart: unless-stopped`, which
  * is what actually keeps those containers up.
  */
-export function systemdUnit(spec: ServiceSpec): string {
+export function systemdUnit(spec: ServiceSpec, callerPath?: string): string {
   const lines = [
     '[Unit]',
     `Description=${spec.description}`,
@@ -131,6 +133,17 @@ export function systemdUnit(spec: ServiceSpec): string {
     '',
     '[Service]',
   ]
+  // THE PATH THE HARNESSES LIVE ON. A user service inherits systemd's minimal PATH, and every
+  // coding assistant is installed in a per-user bin directory outside it — so without this the
+  // server cannot spawn a single one, and every reopen answers `ok` while its pane dies at once.
+  // See `sessions/service-path.ts` for the measurement, and for why it is the INSTALLING SHELL's
+  // PATH rather than a list of directories guessed here.
+  const path = servicePath(callerPath ?? process.env.PATH)
+  if (path) {
+    lines.push("# systemd's own PATH reaches none of the per-user bin directories the coding")
+    lines.push('# assistants are installed in — see sessions/service-path.ts.')
+    lines.push(`Environment=PATH=${path}`)
+  }
   if (spec.keepsRunning) {
     lines.push('Type=simple', `ExecStart=${spec.command}`, 'Restart=on-failure', 'RestartSec=5')
   } else {

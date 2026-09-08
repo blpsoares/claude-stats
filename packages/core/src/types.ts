@@ -125,6 +125,16 @@ const HARNESS_SORT: Record<HarnessId, number> = {
 export const HARNESS_ORDER: HarnessId[] = (Object.keys(HARNESS_SORT) as HarnessId[])
   .sort((a, b) => HARNESS_SORT[a] - HARNESS_SORT[b])
 
+/** One day's share of a session. The four counters plus what a day series needs to be drawn. */
+export interface SessionDayUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  /** Messages of BOTH roles, matching `dailyActivity.messageCount`. */
+  messages: number
+}
+
 export interface SessionMeta {
   session_id: string
   project_path: string
@@ -167,6 +177,27 @@ export interface SessionMeta {
    * total would report a context far past full on a session that never filled it.
    */
   context_tokens?: number
+  /**
+   * WHAT THIS SESSION DID ON EACH DAY — the one thing a date filter cannot otherwise know.
+   *
+   * A session is a SPAN and its four counters are LIFETIME totals, so a date range could only ever
+   * file the whole of it on one day. Filing it on the day it STARTED makes "today" nearly empty for
+   * anyone whose session has been open since Tuesday; filing it on every day it TOUCHES multiplies
+   * it by the number of those days — measured at 86x on a real machine before this field existed.
+   * Neither is a rounding error, and no third answer is derivable from a lifetime total.
+   *
+   * So the parser keeps the split it is already walking past: every turn carries a `timestamp`, and
+   * summing per day costs one map lookup on a loop that is already reading every line.
+   *
+   * The day key is `timestamp.slice(0, 10)` — UTC, matching `tagSessionDay` and `stats-cache.json`'s
+   * own day series. Two day rules exist in this repo and this is the one the aggregates use; the
+   * local-clock reading would put a 23:00 session on a different day from the bar it is plotted on.
+   *
+   * ABSENT on a session parsed before this existed, and on any harness whose adapter does not
+   * produce it. A consumer that finds it missing must fall back to the whole-session rule rather
+   * than treating the session as empty — the store is full of records written by older builds.
+   */
+  daily?: Record<string, SessionDayUsage>
   /**
    * The window that measurement should be read against, WHEN THE HARNESS ITSELF STATES IT.
    *
@@ -243,9 +274,27 @@ export interface SessionMeta {
 
 export interface AgentInvocation {
   toolUseId: string
+  /**
+   * The subagent's own transcript id, when the harness names one.
+   *
+   * Present since Claude Code made the `Agent` tool asynchronous (2026-08-14): the parent's result
+   * carries no numbers any more, only this id, and the numbers live in
+   * `<project>/<session-id>/subagents/agent-<agentId>.jsonl`. Absent on every record written before
+   * that, and on any harness that names no such file.
+   */
+  agentId?: string
   agentType: string
   description: string
   status: 'completed' | 'failed'
+  /**
+   * `true` when the numbers below could NOT be established for this invocation.
+   *
+   * Read it BEFORE reading any figure here: an unmeasured invocation carries zeros because the type
+   * has no other value to carry, and a zero rendered as a fact is the confident-0 this repository
+   * forbids everywhere else. A surface must render N/A for these, exactly as it does for a metric a
+   * harness cannot produce (`HARNESS_CAPABILITIES`). Absent means measured.
+   */
+  unmeasured?: true
   totalTokens: number
   totalDurationMs: number
   totalToolUseCount: number
@@ -268,6 +317,13 @@ export interface AgentInvocation {
 export interface SessionAgentMetrics {
   invocations: AgentInvocation[]
   totalInvocations: number
+  /**
+   * How many of them carry no established numbers — so a surface can say that the totals beside it
+   * cover fewer invocations than it is showing, instead of implying the rest cost nothing.
+   *
+   * Optional because a record stored before this existed has no such count; absent is not zero.
+   */
+  unmeasuredInvocations?: number
   totalTokens: number
   totalDurationMs: number
   totalCostUSD: number
@@ -276,6 +332,20 @@ export interface SessionAgentMetrics {
 export interface WorkflowAgent {
   label: string
   phase: string
+  /** The id its transcript is named after (`agent-<id>.jsonl`) — what a detail view asks for.
+   *  Optional because a doc written by an older central predates it. */
+  agentId?: string
+  /** Where `label`/`phase` came from. `record` is the run's own `workflowProgress` and is exact;
+   *  `matched` is `workflow-match.ts` pairing by prompt; `none` means neither could say, and the
+   *  label is the file name. A view may say which — a guessed label and a recorded one look
+   *  identical on screen, and only one of them is worth trusting. */
+  labelSource?: 'record' | 'matched' | 'none'
+  /** Every tool call the agent made. Optional for the same backward-compatibility reason. */
+  toolCalls?: number
+  /** Its transcript ends on a tool call nobody answered — the agent is waiting on something. A
+   *  fact about the FILE: only a caller that knows the RUN is live may read it as "running", since
+   *  a killed run leaves the same dangling ask behind. */
+  pending?: boolean
   model: string
   status: 'completed' | 'failed' | 'skipped'
   tokensIn: number
@@ -309,7 +379,9 @@ export interface WorkflowRun {
   sessionId: string
   /** Owning user in team mode (set by the central on ingest). Undefined for local runs. */
   user?: string
-  status: 'completed' | 'failed' | 'partial'
+  /** `running` and `abandoned` exist because absence of a completion report is not evidence of
+   *  completion — see workflow-live.ts. A run in flight used to be published as `completed`. */
+  status: 'completed' | 'failed' | 'partial' | 'running' | 'abandoned' | 'killed'
   startedAt: string        // ISO; '' if unknown
   durationMs: number
   phases: WorkflowPhase[]
@@ -322,6 +394,21 @@ export interface WorkflowRun {
     agentCount: number; tokensIn: number; tokensOut: number; costUSD: number
     durationMs: number; toolUses: number; cacheRead?: number; cacheWrite?: number
   }
+}
+
+/**
+ * One attachment agentop typed into a session's pane, and when.
+ *
+ * The record exists so a `[Image #4]` marker can find its file again: a harness that is mid-turn
+ * queues an arriving message and substitutes markers for its images, so the PATH that normally
+ * survives into the transcript is gone. The file is still on disk — this says which session it went
+ * to. See `sessions/attachment-log.ts` (the record) and `lib/attachmentPreview.ts` (the rule).
+ */
+export interface AttachmentSend {
+  sessionId: string
+  /** When agentop wrote the file, which is within a second of typing its path. */
+  atMs: number
+  path: string
 }
 
 export interface PriceEntry {
@@ -561,7 +648,13 @@ export function mergeStatsCaches(caches: StatsCache[]): StatsCache {
   return out
 }
 
-export type DateRange = '7d' | '30d' | '90d' | 'all'
+/**
+ * `today` is the CURRENT day, in progress, and it is its own preset rather than a custom range of
+ * one day. Asked for: "ao lado do botão all deve ter um botão today pq o today do calendário pode
+ * funcionar tipo, today até dia X. já o today do lado do all significa que só quero ver hoje."
+ * They answer two different questions, so they are two different controls.
+ */
+export type DateRange = 'today' | '7d' | '30d' | '90d' | 'all'
 
 export interface Filters {
   dateRange: DateRange

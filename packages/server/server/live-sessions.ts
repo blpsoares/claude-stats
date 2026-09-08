@@ -128,6 +128,56 @@ export function harnessOfPath(exePath: string): HarnessId | undefined {
 }
 
 /**
+ * SUBCOMMANDS THAT MANAGE THE TOOL RATHER THAN TALK TO IT.
+ *
+ * Reported as "sessões fantasmas que ficam aparecendo como se estivessem ativas quando na real nao
+ * estao abertas e nem existem", with a screenshot of `claude in task-alm`. Caught in the act by
+ * sampling `/proc` twice a second for two minutes — every claude whose argv was not `--resume`:
+ *
+ * ```
+ * claude mcp add -s user agentistics -e AGENTISTICS_API=… -- bun run …/agentistics-mcp.ts
+ * ```
+ *
+ * `claude mcp add` is a CLI command that runs for a second and exits. It is not a conversation, it
+ * cannot be attached to, and nobody opened it — but it is the harness binary running in a project
+ * directory, so it became an `external` row and flickered through the fleet. Every `mcp`, `config`,
+ * `update`, `doctor`, `login` in any wrapper script does the same.
+ *
+ * THE LISTS ARE EACH CLI'S OWN, read from its `--help`, never invented — the same rule
+ * `spawn-spec.ts` keeps for flags.
+ *
+ * **The verbs that CONTINUE a conversation are deliberately excluded**: claude's `attach` ("Open a
+ * background session in this terminal"), codex's `resume` and `fork`. Those open exactly the thing
+ * this list exists to keep. Dropping one of them would hide a real session, which is the expensive
+ * direction — a ghost row is noise, a missing session is a session nobody can find.
+ *
+ * `gemini` and `antigravity` are ABSENT rather than guessed: gemini's help does not print a command
+ * list this can be read from (its parse yields the program name repeated), and agy prints none at
+ * all. Absent means "not known to be management", so they behave exactly as they do today.
+ */
+const MANAGEMENT: Record<'claude' | 'codex' | 'copilot' | 'kimi', readonly string[]> = {
+  // `claude --help`, 2.1.261. `attach` is excluded — it opens a session.
+  claude: [
+    'agents', 'auth', 'auto-mode', 'doctor', 'gateway', 'import', 'install', 'logs', 'mcp',
+    'plugin', 'project', 'respawn', 'rm', 'setup-token', 'stop', 'ultrareview', 'update',
+  ],
+  // `codex --help`, 0.113.0. `resume` and `fork` are excluded — both continue a conversation.
+  codex: [
+    'agents', 'exec', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server',
+    'remote-control', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'queue',
+    'archive', 'delete', 'migrate-rollouts', 'unarchive', 'cloud',
+  ],
+  // `copilot --help`, 1.0.82.
+  copilot: [
+    'app', 'completion', 'help', 'init', 'login', 'mcp', 'plugin', 'plugins', 'skill', 'update',
+    'version', 'billing', 'commands', 'config', 'environment', 'limits', 'logging', 'monitoring',
+    'permissions', 'providers', 'sandbox',
+  ],
+  // `kimi --help`, 0.38.0.
+  kimi: ['export', 'provider', 'acp', 'web', 'server', 'login', 'doctor', 'vis', 'migrate', 'upgrade'],
+}
+
+/**
  * A harness process that is INFRASTRUCTURE rather than a conversation — PURE.
  *
  * Recognising the versioned install path (above) correctly found the session that was invisible,
@@ -151,12 +201,15 @@ export function harnessOfPath(exePath: string): HarnessId | undefined {
  * behaves exactly as it does today rather than being filtered on a guess.
  */
 const NOT_A_SESSION: Record<HarnessId, readonly string[] | null> = {
-  claude: ['daemon', 'bg-pty-host', 'bg-spare'],
-  codex: null,
+  claude: [
+    'daemon', 'bg-pty-host', 'bg-spare',
+    ...MANAGEMENT.claude,
+  ],
+  codex: [...MANAGEMENT.codex],
   gemini: null,
-  copilot: null,
+  copilot: [...MANAGEMENT.copilot],
   antigravity: null,
-  kimi: null,
+  kimi: [...MANAGEMENT.kimi],
 }
 
 /**

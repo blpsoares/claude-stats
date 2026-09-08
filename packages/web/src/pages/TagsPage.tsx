@@ -13,6 +13,15 @@ import { DatePicker } from '../components/DatePicker'
 // /api/tags response shapes. Aggregate-only by design (spec rule 2): the server never sends the
 // session rows behind a tag, so everything rendered here is a number the server already computed.
 import { tagSourceTypes, type TagSourceType } from '../lib/tagSourceTypes'
+import { createSharedPref } from '../lib/sharedPref'
+
+/** SHARED: how a person reads their tags is about the work, not about the screen. */
+const tagsLayoutStore = createSharedPref<'grid' | 'list'>({
+  key: 'agentistics-tags-layout',
+  prefKey: 'tagsLayout',
+  fallback: 'grid',
+  parse: raw => (raw === 'grid' || raw === 'list' ? raw : null),
+})
 interface TagSource { type: TagSourceType; value: string }
 interface TagAggregate {
   sessions: number
@@ -110,16 +119,22 @@ const input: React.CSSProperties = {
   borderRadius: 7, fontSize: 13, color: 'var(--text-primary)', fontFamily: 'inherit',
   outline: 'none', width: '100%', boxSizing: 'border-box',
 }
+// A MODULE-LEVEL style object cannot see `useIsMobile()`, so the 44px it used to carry applied on
+// DESKTOP too — a 12.5px label in a 44px box, which is the "chubby" report for this page. The
+// height is now the control's own and the finger target is `.ag-tap`'s invisible box, which every
+// consumer carries; that class is the one thing here that IS mobile-only.
 const primaryBtn: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-  padding: '0 14px', minHeight: 44, borderRadius: 7, border: '1px solid var(--anthropic-orange)',
+  padding: '0 14px', minHeight: 34, borderRadius: 7, border: '1px solid var(--anthropic-orange)',
   background: 'var(--anthropic-orange-dim)', color: 'var(--anthropic-orange)',
   fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
 }
 const trashBtn: React.CSSProperties = {
   border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer',
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-  width: 44, height: 44, flexShrink: 0,
+  // Same as `primaryBtn`: 44x44 was applied on every screen, so a source row carried a delete
+  // button the height of the row and a half. `.ag-tap-icon` restores the mobile target invisibly.
+  width: 28, height: 28, flexShrink: 0,
 }
 
 /**
@@ -296,7 +311,7 @@ export default function TagsPage() {
   const [editorOpen, setEditorOpen] = useState(false)
   // Grid (compact cards) vs list (dense rows with more metrics). Persisted across reloads.
   const [layout, setLayout] = useState<'grid' | 'list'>(() => {
-    try { return localStorage.getItem('agentistics-tags-layout') === 'list' ? 'list' : 'grid' } catch { return 'grid' }
+    try { return tagsLayoutStore.get() === 'list' ? 'list' : 'grid' } catch { return 'grid' }
   })
   const [editingId, setEditingId] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -507,7 +522,7 @@ export default function TagsPage() {
           </div>
         </div>
         {mayWrite && (
-          <button type="button" onClick={openCreate} style={{ ...primaryBtn, width: isMobile ? '100%' : undefined }}>
+          <button type="button" className="ag-tap" onClick={openCreate} style={{ ...primaryBtn, width: isMobile ? '100%' : undefined }}>
             <Plus size={14} /> {pt ? 'Nova tag' : 'New tag'}
           </button>
         )}
@@ -530,7 +545,7 @@ export default function TagsPage() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
           <TabSelect
             value={layout}
-            onChange={v => { setLayout(v); try { localStorage.setItem('agentistics-tags-layout', v) } catch { /* ignore */ } }}
+            onChange={v => { setLayout(v); try { tagsLayoutStore.set(v) } catch { /* ignore */ } }}
             options={[
               { value: 'grid', label: pt ? 'Grade' : 'Grid' },
               { value: 'list', label: pt ? 'Lista' : 'List' },
@@ -652,7 +667,7 @@ export default function TagsPage() {
         lang={lang}
         dirty={dirty}
         footer={
-          <button type="button" style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }} disabled={saving} onClick={() => void save()}>
+          <button type="button" className="ag-tap" style={{ ...primaryBtn, opacity: saving ? 0.6 : 1 }} disabled={saving} onClick={() => void save()}>
             {saving ? (pt ? 'Salvando…' : 'Saving…') : (pt ? 'Salvar' : 'Save')}
           </button>
         }
@@ -684,8 +699,11 @@ export default function TagsPage() {
                   aria-label={c}
                   aria-pressed={selected}
                   onClick={() => setColor(c)}
+                  className="ag-tap-icon"
                   style={{
-                    width: 44, height: 44, padding: 0, border: 'none', background: 'transparent',
+                    // The swatch inside is 26px; the button was 44 on every screen, so the colour
+                    // row was two thirds air and wrapped a line early on a narrow card.
+                    width: 32, height: 32, padding: 0, border: 'none', background: 'transparent',
                     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}
                 >
@@ -706,8 +724,9 @@ export default function TagsPage() {
                 consistent instead of showing the OS swatch chrome. */}
             <label
               title={pt ? 'Cor personalizada' : 'Custom colour'}
+              className="ag-tap-icon"
               style={{
-                width: 44, height: 44, cursor: 'pointer', position: 'relative',
+                width: 32, height: 32, cursor: 'pointer', position: 'relative',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
               }}
             >
@@ -1034,7 +1053,7 @@ function SourceList({ sources, typeLabel, valueLabel, emptyLabel, onRemove }: {
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
           }}>{valueLabel(s)}</span>
           {onRemove && (
-            <button type="button" style={trashBtn} aria-label="Remove" onClick={() => onRemove(i)}>
+            <button type="button" className="ag-tap-icon" style={trashBtn} aria-label="Remove" onClick={() => onRemove(i)}>
               <Trash2 size={14} />
             </button>
           )}

@@ -21,23 +21,52 @@ import {
 // arm64 box replaces a working binary with one the kernel cannot exec.
 
 test('only the platform/arch pairs the release workflow publishes are self-installable', () => {
-  expect(resolveUpgradeAsset('linux', 'x64')).toEqual({
+  expect(resolveUpgradeAsset('linux', 'x64', '2.5.0')).toEqual({
     asset: 'agentop',
-    url: 'https://github.com/blpsoares/agentistics/releases/latest/download/agentop',
+    url: 'https://github.com/blpsoares/agentistics/releases/download/v2.5.0/agentop',
   })
-  expect(resolveUpgradeAsset('win32', 'x64')).toEqual({
+  expect(resolveUpgradeAsset('win32', 'x64', '2.5.0')).toEqual({
     asset: 'agentop.exe',
-    url: 'https://github.com/blpsoares/agentistics/releases/latest/download/agentop.exe',
+    url: 'https://github.com/blpsoares/agentistics/releases/download/v2.5.0/agentop.exe',
   })
 })
 
+// The whole bug: the command printed "Latest: v2.5.0" and then downloaded through GitHub's rolling
+// "Latest" FLAG, which a later release had taken without publishing the asset. Measured on the real
+// repo (2026-09-02): the flag URL answered 404 while the version-addressed one answered 206.
+test('the URL is addressed by VERSION, never by the rolling latest flag', () => {
+  for (const [platform, arch] of [['linux', 'x64'], ['win32', 'x64']] as const) {
+    const t = resolveUpgradeAsset(platform, arch, '1.23.1')!
+    expect(t.url).toContain('/releases/download/v1.23.1/')
+    expect(t.url).not.toContain('/releases/latest/download')
+  }
+})
+
+test('the URL carries the version it was GIVEN — never a default', () => {
+  // An upgrade that announces one version and fetches another is the failure this signature exists
+  // to make impossible, so `version` is required rather than optional.
+  expect(resolveUpgradeAsset('linux', 'x64', '9.9.9')!.url)
+    .toBe('https://github.com/blpsoares/agentistics/releases/download/v9.9.9/agentop')
+  expect(resolveUpgradeAsset('linux', 'x64', '1.0.0')!.url).toContain('/v1.0.0/')
+})
+
+test('the tag prefix is added once — the API reports a version, the tag is v<version>', () => {
+  expect(resolveUpgradeAsset('linux', 'x64', '2.6.1')!.url).toContain('/v2.6.1/')
+  expect(resolveUpgradeAsset('linux', 'x64', '2.6.1')!.url).not.toContain('/vv2.6.1/')
+})
+
+test('an unsupported platform is still refused whatever the version', () => {
+  // The platform gate runs BEFORE any download; a version can never talk it into one.
+  expect(resolveUpgradeAsset('darwin', 'arm64', '2.5.0')).toBeNull()
+})
+
 test('unsupported platform/arch combinations are refused', () => {
-  expect(resolveUpgradeAsset('linux', 'arm64')).toBeNull()   // Raspberry Pi / Ampere VM
-  expect(resolveUpgradeAsset('linux', 'arm')).toBeNull()
-  expect(resolveUpgradeAsset('darwin', 'arm64')).toBeNull()  // no macOS asset at all
-  expect(resolveUpgradeAsset('darwin', 'x64')).toBeNull()
-  expect(resolveUpgradeAsset('win32', 'arm64')).toBeNull()
-  expect(resolveUpgradeAsset('freebsd', 'x64')).toBeNull()
+  expect(resolveUpgradeAsset('linux', 'arm64', '2.5.0')).toBeNull()   // Raspberry Pi / Ampere VM
+  expect(resolveUpgradeAsset('linux', 'arm', '2.5.0')).toBeNull()
+  expect(resolveUpgradeAsset('darwin', 'arm64', '2.5.0')).toBeNull()  // no macOS asset at all
+  expect(resolveUpgradeAsset('darwin', 'x64', '2.5.0')).toBeNull()
+  expect(resolveUpgradeAsset('win32', 'arm64', '2.5.0')).toBeNull()
+  expect(resolveUpgradeAsset('freebsd', 'x64', '2.5.0')).toBeNull()
 })
 
 // --- download verification --------------------------------------------------

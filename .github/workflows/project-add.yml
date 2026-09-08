@@ -3,8 +3,17 @@ name: Add to project
 on:
   issues:
     types: [opened]
-  pull_request:
+  # pull_request_target, not pull_request: a PR opened from a FORK gets no access to
+  # secrets, so ADD_TO_PROJECT_PAT arrived empty and the action died on its required
+  # input — every fork PR reported a red X for a board entry it could never make.
+  # pull_request_target runs in the context of the BASE repository, where the secret
+  # exists. It carries a write-scoped token, so it is only safe while this job does
+  # not check out the pull request's code: keep it that way — no actions/checkout here.
+  pull_request_target:
     types: [opened]
+
+permissions:
+  contents: read
 
 jobs:
   add-to-project:

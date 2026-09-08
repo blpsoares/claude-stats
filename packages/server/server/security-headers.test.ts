@@ -71,6 +71,12 @@ describe('securityHeaders', () => {
     expect(h['Cross-Origin-Opener-Policy']).toBe('same-origin')
     expect(h['Cross-Origin-Resource-Policy']).toBe('same-origin')
     expect(h['Permissions-Policy']).toContain('camera=()')
+    // The composer's dictation is a first-party feature of this page, and `microphone=()` denies
+    // the page itself — that is why the microphone was dead on `localhost`, where the secure
+    // context dictation requires is satisfied. `(self)` is same-origin only; the browser's own
+    // prompt is still what grants it.
+    expect(h['Permissions-Policy']).toContain('microphone=(self)')
+    expect(h['Permissions-Policy']).not.toContain('microphone=()')
     expect(h['Content-Security-Policy']).toContain("default-src 'self'")
   })
 

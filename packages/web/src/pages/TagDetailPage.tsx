@@ -16,6 +16,7 @@ import { MetricNote } from '../components/MetricNote'
 import { HARNESS_LABELS } from '../lib/harness'
 import { ConfirmModal, SectionHeader } from './settings/primitives'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { StatTile, STAT_TILE_GRID } from '../components/StatTile'
 
 // GET /api/tags/:id response. Aggregate-only by design (spec rule 2): the server never sends the
 // session rows behind a tag, so every value rendered here is a count or a sum it already computed.
@@ -108,29 +109,17 @@ const card: React.CSSProperties = {
   background: 'var(--bg-card)', border: '1px solid var(--border)',
   borderRadius: 'var(--radius-lg)', padding: 16, minWidth: 0,
 }
+// 44px was applied on every screen (a module object cannot read `useIsMobile()`), so the pencil
+// and the trash beside the tag's title were each the height of the title block. The mobile target
+// is `.ag-tap-icon`'s invisible box on both consumers.
 const iconBtn: React.CSSProperties = {
-  width: 44, height: 44, flexShrink: 0, borderRadius: 8,
+  width: 30, height: 30, flexShrink: 0, borderRadius: 8,
   border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)',
   cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
   fontFamily: 'inherit',
 }
 
 /** The KPI tile used across the app: big number over an uppercase caption. */
-function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
-  return (
-    <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px', minWidth: 0,
-      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-    }}>
-      <span style={{
-        fontSize: 18, fontWeight: 700, color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>{value}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
-    </div>
-  )
-}
-
 type Metric = 'costUSD' | 'sessions' | 'tokens'
 
 /** Overlay needs three distinguishable series, so it cannot use the tag's single colour. */
@@ -391,6 +380,7 @@ export default function TagDetailPage() {
               type="button"
               aria-label={pt ? 'Editar tag' : 'Edit tag'}
               title={pt ? 'Editar' : 'Edit'}
+              className="ag-tap-icon"
               style={iconBtn}
               onClick={() => navigate('/tags', { state: { editTagId: tag._id } })}
             >
@@ -400,6 +390,7 @@ export default function TagDetailPage() {
               type="button"
               aria-label={pt ? 'Excluir tag' : 'Delete tag'}
               title={pt ? 'Excluir' : 'Delete'}
+              className="ag-tap-icon"
               style={{ ...iconBtn, color: '#ef4444' }}
               onClick={() => setConfirmDelete(true)}
             >
@@ -414,15 +405,15 @@ export default function TagDetailPage() {
         {/* Just "Total" — a total is deduplicated by definition. The per-source note below is where
             the overlap is explained, which is the only place it can surprise anyone. */}
         <SectionHeader label={pt ? 'Total' : 'Total'} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10 }}>
           <StatTile label={pt ? 'Custo' : 'Cost'} value={fmtCost(tag.aggregate.costUSD, currency, brlRate)} accent />
           <StatTile label={pt ? 'Sessões' : 'Sessions'} value={tag.aggregate.sessions.toLocaleString()} />
           {/* ONE tokens tile, with the four counters on the line below the strip. It was the total
               plus input and output as three tiles, under a note explaining why two of them did not
               add up to the first — an apology for the missing pair rather than the pair. Adding
               them as tiles was the first fix and the wrong one: this grid is `auto-fit` over
-              `minmax(130px, 1fr)`, so past a certain count the last tile is stranded alone on a
-              second row. */}
+              `minmax(150px, 1fr)` (STAT_TILE_GRID), so past a certain count the last tile is
+              stranded alone on a second row. */}
           <StatTile
             label="Tokens"
             value={fmt(totalTokens)}
@@ -461,12 +452,13 @@ export default function TagDetailPage() {
                 type="button"
                 disabled={overlay}
                 onClick={() => setMetric(m)}
+                className="ag-tap"
                 style={{
-                  // 44px is the MOBILE touch target; applying it on desktop too gave these a
-                  // button-sized footprint for a segmented control. Desktop follows the project's
-                  // control density (see TabSelect in settings/primitives).
-                  padding: isMobile ? '0 12px' : '0 10px',
-                  minHeight: isMobile ? 44 : 28,
+                  // The 44px MOBILE touch target is `.ag-tap`'s invisible box, not the pill: a
+                  // segmented control painted at 44px is the "chubby" shape this page was reported
+                  // for. Desktop follows the project's control density (TabSelect, primitives).
+                  padding: isMobile ? '5px 12px' : '0 10px',
+                  minHeight: isMobile ? undefined : 28,
                   borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
                   border: metric === m ? `1px solid ${color}60` : '1px solid var(--border)',
                   background: metric === m ? `${color}18` : 'transparent',
@@ -485,9 +477,10 @@ export default function TagDetailPage() {
               onClick={() => setOverlay(o => !o)}
               aria-pressed={overlay}
               title={pt ? 'Sobrepor as três séries (escala normalizada)' : 'Overlay all three series (normalised scale)'}
+              className="ag-tap"
               style={{
-                padding: isMobile ? '0 12px' : '0 10px',
-                minHeight: isMobile ? 44 : 28,
+                padding: isMobile ? '5px 12px' : '0 10px',
+                minHeight: isMobile ? undefined : 28,
                 borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
                 border: overlay ? `1px solid ${color}60` : '1px solid var(--border)',
                 background: overlay ? `${color}18` : 'transparent',

@@ -14,10 +14,12 @@ const STRINGS: SessionTableStrings = {
   },
   words: dimensionWordBook({
     labels: {
+      day: 'day',
       status: 'state', harness: 'harness', model: 'model', project: 'project', repo: 'repository',
       task: 'task', marked: 'marked',
     },
     unfiled: {
+      day: 'no date',
       status: 'state unrecorded', harness: 'harness unknown', model: 'no model recorded',
       project: 'no directory recorded', repo: 'no repository', task: 'no task',
       marked: 'not marked',

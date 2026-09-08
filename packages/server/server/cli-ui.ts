@@ -131,6 +131,45 @@ export function pause(message = 'Press Enter to go back'): Promise<void> {
   })
 }
 
+/**
+ * Typed text input with the terminal echo suppressed — for secrets (a GitHub PAT, a password).
+ * Falls back to the ordinary (echoed) `input()` when stdin is not a raw-capable TTY, since there
+ * is no way to suppress echo without one and a piped/non-interactive invocation must not hang.
+ */
+export function maskedInput(message: string): Promise<string> {
+  const stdout = process.stdout
+  const stdin = process.stdin
+
+  if (!stdin.isTTY || typeof stdin.setRawMode !== 'function') {
+    return input(message)
+  }
+
+  return new Promise<string>((resolve) => {
+    let value = ''
+    stdout.write(`  ${B}${message}${R}${D} ›${R} `)
+
+    const cleanup = () => {
+      stdin.setRawMode!(false)
+      stdin.pause()
+      stdin.removeListener('data', onData)
+    }
+
+    const onData = (buf: Buffer) => {
+      const s = buf.toString('utf8')
+      for (const ch of s) {
+        if (ch === '\x03') { cleanup(); stdout.write('\n'); process.exit(130) } // Ctrl-C
+        else if (ch === '\r' || ch === '\n') { cleanup(); stdout.write('\n'); resolve(value.trim()); return }
+        else if (ch === '\x7f' || ch === '\b') { value = value.slice(0, -1) } // backspace, no echo either
+        else if (ch >= ' ') { value += ch } // no echo — the whole point of this function
+      }
+    }
+
+    stdin.setRawMode!(true)
+    stdin.resume()
+    stdin.on('data', onData)
+  })
+}
+
 /** Clear the visible screen and home the cursor (keeps scrollback so history isn't lost). */
 export function clearScreen(): void {
   process.stdout.write('\x1b[2J\x1b[H')

@@ -74,6 +74,8 @@ Commands:
   member        Configure this machine as a team member
   session       Start / list / attach assistant sessions (tmux-backed; --bg detaches);
                 'session ls' prints the cockpit's table of what is running
+  task          BETA — the delivery board: what each piece of work cost, in how many rounds
+                and across how many sessions ('task ls | show | deliver | abandon')
   hooks         Teach Claude Code to run work in parallel through agentop
                 (installs a skill + SessionStart/Stop hooks; explicit, reversible)
   events        Be told when a session starts waiting, blocks on a permission prompt or
@@ -436,6 +438,14 @@ if (command === 'session') {
   process.exit(code)
 }
 
+// A TOP-LEVEL command, not `session task`: a task outlives every row filed under it, and
+// `agentop session task <ref> "<name>"` already means something else — it files ONE row.
+if (command === 'task') {
+  const { runTask } = await import('../server/sessions/cli-task.ts')
+  const code = await runTask(args)
+  process.exit(code)
+}
+
 if (command === 'hooks') {
   const { runHooks } = await import('../server/cli-hooks.ts')
   const code = await runHooks(args)
@@ -445,6 +455,18 @@ if (command === 'hooks') {
 if (command === 'events') {
   const { runEvents } = await import('../server/cli-events.ts')
   const code = await runEvents(args)
+  process.exit(code)
+}
+
+if (command === 'backup') {
+  const { runBackupCli } = await import('../server/cli-backup.ts')
+  const code = await runBackupCli(args)
+  process.exit(code)
+}
+
+if (command === 'restore') {
+  const { runRestoreCli } = await import('../server/cli-backup.ts')
+  const code = await runRestoreCli(args)
   process.exit(code)
 }
 

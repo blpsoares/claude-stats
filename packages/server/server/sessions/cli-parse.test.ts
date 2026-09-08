@@ -178,3 +178,33 @@ describe('batch — the form an assistant drives', () => {
     })
   })
 })
+
+describe('batch --attempt', () => {
+  it('applies to the sessions that follow it, until the next one', () => {
+    const cmd = parseSessionArgs([
+      'batch', '--task', 'pizzeria',
+      '--attempt', 'opus, prompt only',
+      '--session', 'claude: build it',
+      '--session', 'claude: keep going',
+      '--attempt', 'agy + flash, sdd',
+      '--session', 'antigravity: build it',
+    ])
+    expect(cmd.kind).toBe('batch')
+    if (cmd.kind !== 'batch') return
+    expect(cmd.specs.map(s => s.attempt)).toEqual([
+      'opus, prompt only', 'opus, prompt only', 'agy + flash, sdd',
+    ])
+  })
+
+  it('leaves attempt unset when none was named, so a plain batch still works', () => {
+    const cmd = parseSessionArgs(['batch', '--task', 'x', '--session', 'claude: go'])
+    expect(cmd.kind).toBe('batch')
+    if (cmd.kind !== 'batch') return
+    expect(cmd.specs[0]!.attempt).toBeUndefined()
+  })
+
+  it('refuses an --attempt with no value rather than swallowing the next flag', () => {
+    const cmd = parseSessionArgs(['batch', '--task', 'x', '--attempt', '--session', 'claude: go'])
+    expect(cmd.kind).toBe('error')
+  })
+})

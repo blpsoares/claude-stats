@@ -59,7 +59,7 @@ describe('Harnesses screen', () => {
           statsCache: { ...emptyStatsCache(), totalSessions: 3, totalMessages: 10 },
           sessions: [session({
             session_id: 'a', harness: 'claude',
-            agentMetrics: { invocations: [], totalInvocations: 7, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0 },
+            agentMetrics: { invocations: [], totalInvocations: 7, totalTokens: 0, totalDurationMs: 0, totalCostUSD: 0 , unmeasuredInvocations: 0},
           })],
           harnesses: ['claude'],
         })}

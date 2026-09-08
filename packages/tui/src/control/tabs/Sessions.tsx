@@ -932,7 +932,10 @@ export function Sessions({
       // A dialog whose options are readable but unpickable is a refusal that NAMES why and points
       // at attaching, which works — so it opens the question rather than swallowing the keypress.
       if ((selected.dialogOptions?.length ?? 0) > 1) return actOn('approve')
-      const why = selected.approveBlind ?? s.sessionsNotAsking
+      // `sessionsNotAsking` is a CLAIM ABOUT THE SESSION and it is false here: a row with a
+      // `dialogBlind` is asking something agentop could not read. Saying "not asking anything"
+      // sends somebody away from a question that is genuinely waiting on them.
+      const why = selected.dialogBlind ?? selected.approveBlind ?? s.sessionsNotAsking
       void run(async () => ({ ok: false, message: why }))
       return
     }
@@ -2976,7 +2979,10 @@ function Question({
                 off at "nobody has verified how to pick an option on ge…" tells nobody anything.
                 Bounded so it cannot grow over the rows the pane was given. */}
             <WrappedText
-              text={session.chooseBlind ?? s.sessionsChooseBlind}
+              // `dialogBlind` FIRST: "nobody verified how to pick an option here" and "the dialog
+              // is taller than agentop can read" are different facts with different remedies, and
+              // the generic string states the wrong one confidently.
+              text={session.dialogBlind ?? session.chooseBlind ?? s.sessionsChooseBlind}
               width={width}
               maxRows={Math.max(1, rows - preview.length - 2)}
             />

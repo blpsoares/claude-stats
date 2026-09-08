@@ -1,8 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { activeInDays, activeInWindow, daysBetween, MAX_RANGE_DAYS, sliceSession, type DayUsage } from '../lib/sessionDaySlice'
 import type { AppData, Filters, DateRange, AgentInvocation, HarnessId, SessionMeta, TokenBreakdown } from '@agentistics/core'
 import { calcStreak, calcCost, sessionModelUsage, sessionCostUSD, getModelPrice, MODEL_PRICING, HARNESS_CAPABILITIES, filterByUsers, filterByHarnesses, filterByTeams, filterByMachines, resolveMachineCacheScope, distinctHarnesses, mergeStatsCaches, repoShortName, HARNESS_ORDER, EMPTY_TOKENS, addTokens, sessionTokens, sessionTokenTotal, sumTokens, totalTokens, usageTokenTotal, usageTokens } from '@agentistics/core'
 import { subDays, isAfter, isBefore, parseISO, format, differenceInCalendarDays, addDays, getDay } from 'date-fns'
 import { makeTagFilter, type TagDef } from '../lib/tagMatch'
+import { subscribeEvent } from '../lib/eventStream'
+import { isUsableDataCache } from '../lib/dataCache'
 
 /**
  * True only for a non-empty string. `start_time`/`end_time`/`date` fields are typed as `string`
@@ -175,12 +178,36 @@ const DATA_CACHE_KEY = 'agentistics-data-cache-v1'
 function readDataCache(): AppData | null {
   try {
     const raw = localStorage.getItem(DATA_CACHE_KEY)
-    return raw ? (JSON.parse(raw) as AppData) : null
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    // VALIDATED, not cast. Seeding from this snapshot also sets `loading: false`, so whatever comes
+    // out of here renders immediately with no loader and no server round-trip in between — a
+    // payload that merely PARSES used to reach `computeDerivedStats` and throw there, and the error
+    // boundary's Reload re-read the same bytes. That is an app bricked for its origin until someone
+    // clears site data by hand. See `isUsableDataCache` for how a bad snapshot gets written.
+    if (!isUsableDataCache(parsed)) {
+      // DROPPED, not repaired: the missing half cannot be invented, and a fabricated `statsCache`
+      // is a confident zero on every KPI. Removing it is what makes the next reload recover on its
+      // own instead of hitting the same wall.
+      clearDataCache()
+      return null
+    }
+    return parsed as AppData
   } catch { return null }
 }
 
 function writeDataCache(data: AppData): void {
+  // Guarded on the way IN as well as out. A 200 that is not an `AppData` (a proxy page, a captive
+  // portal, an ingest-only central) was cached by the same blind cast that read it back, so the
+  // next reopen started from a snapshot no server would ever produce again.
+  if (!isUsableDataCache(data)) return
   try { localStorage.setItem(DATA_CACHE_KEY, JSON.stringify(data)) } catch { /* quota/disabled — skip */ }
+}
+
+/** Forget the persisted snapshot. Exported for the root error boundary: a render crash caused by
+ *  the cache cannot be cleared by reloading, because reloading reads the cache. */
+export function clearDataCache(): void {
+  try { localStorage.removeItem(DATA_CACHE_KEY) } catch { /* disabled — nothing to clear */ }
 }
 
 export const LIVE_INTERVAL_OPTIONS = [
@@ -279,12 +306,12 @@ export function useData() {
   }, [])
 
   // Subscribe to server-sent change events so the dashboard updates automatically
-  // when Claude writes new session data to ~/.claude/.
+  // when Claude writes new session data to ~/.claude/. This shares the ONE `/api/events` socket
+  // (see lib/eventStream.ts) with the notification stream rather than opening a second one — two
+  // sockets to the same URL spent two of the browser's ~6 per-origin slots that live terminals need.
   useEffect(() => {
     if (!liveUpdates) return
-    const es = new EventSource('/api/events')
-    es.addEventListener('change', () => { void fetchData() })
-    return () => { es.close() }
+    return subscribeEvent('change', () => { void fetchData() })
   }, [liveUpdates, fetchData])
 
   // Fallback polling at the selected interval when live updates are enabled.
@@ -329,6 +356,10 @@ function utcDateFromDayStr(dayStr: string): Date {
  */
 export function getDateRangeFilter(dateRange: DateRange, customStart?: string, customEnd?: string) {
   const now = utcEndOfDay(new Date())
+  // TODAY is the current day alone, in progress. It ends at the end of the day rather than at this
+  // instant: a range that stopped at `now` would exclude a session whose only recorded activity is
+  // a few seconds ahead of the browser's clock, and the ranges below already end there.
+  if (dateRange === 'today') return { start: utcStartOfDay(new Date()), end: now }
   if (dateRange === '7d') return { start: utcStartOfDay(subDays(now, 7)), end: now }
   if (dateRange === '30d') return { start: utcStartOfDay(subDays(now, 30)), end: now }
   if (dateRange === '90d') return { start: utcStartOfDay(subDays(now, 90)), end: now }
@@ -338,6 +369,23 @@ export function getDateRangeFilter(dateRange: DateRange, customStart?: string, c
   const start = customStart ? utcStartOfDay(utcDateFromDayStr(customStart)) : new Date(0)
   const end = customEnd ? utcEndOfDay(utcDateFromDayStr(customEnd)) : now
   return { start, end }
+}
+
+/**
+ * A day range's messages, split between the two roles by the session's own lifetime ratio.
+ *
+ * `SessionDayUsage` records the COUNT and not the split, because that is what `dailyActivity` also
+ * records and matching it is what lets the two be compared. The ratio is a proportion of a measured
+ * total, not a guess at behaviour, and it is exact whenever the range is the whole session.
+ */
+function splitMessages(total: number, lifeUser: number, lifeAssistant: number): {
+  user_message_count: number
+  assistant_message_count: number
+} {
+  const life = lifeUser + lifeAssistant
+  if (life <= 0 || total <= 0) return { user_message_count: total, assistant_message_count: 0 }
+  const user = Math.round((lifeUser / life) * total)
+  return { user_message_count: user, assistant_message_count: Math.max(0, total - user) }
 }
 
 function inRange(date: Date, start: Date, end: Date) {
@@ -1012,7 +1060,22 @@ export function resolvePresenceScope(
  * It reads nothing but its arguments; `useDerivedStats` below is the memoized single-scope wrapper
  * every page uses.
  */
-export function computeDerivedStats(data: AppData | null, filters: Filters, tags: TagDef[] = []) {
+export function computeDerivedStats(
+  data: AppData | null,
+  filters: Filters,
+  tags: TagDef[] = [],
+  /**
+   * The fleet's own "only what is running" switch, and — when it is on — the exact conversations
+   * it is running right now. Not part of `Filters` (see `fleetFilter.ts`'s header): it is a
+   * statement about what a session is DOING, which no stored metric has.
+   *
+   * `runningIds` is required whenever `activeOnly` is true rather than defaulted to "everything
+   * running" — a caller that cannot read the fleet must not silently report the unfiltered totals
+   * under a switch that claims to have narrowed them.
+   */
+  activeOnly = false,
+  runningIds: ReadonlySet<string> = new Set(),
+) {
   {
     if (!data) return null
 
@@ -1111,18 +1174,117 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       isDateStr(d.date) && inRange(parseISO(d.date), start, end)
     )
 
-    // Shared date predicate — reused for filteredSessions and nonClaudeInRange
-    const inDateRange = (s: { start_time?: string }) =>
-      isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end)
+    /**
+     * Shared date predicate — reused for filteredSessions and nonClaudeInRange.
+     *
+     * A SESSION IS FILED ON THE DAY IT STARTED, and an OVERLAP rule was tried here and REVERTED.
+     *
+     * The intent was right — a session running across three days is worked on for all three, and
+     * filing it only on the first made "today" nearly empty. The arithmetic is not: a session
+     * carries LIFETIME totals and nothing per-day, so claiming it for every day it touches
+     * attributes all of it to each of them. Measured with `Today` selected on a real machine: the
+     * repository page reported **4.446.955.424 tokens** where Claude's own per-day accounting
+     * (`dailyModelTokens['2026-09-06']`) says **51.465.608** — 86 times too much, from seven
+     * sessions that merely reached into today. The session COUNT went the same way, 8 against the
+     * 1 that actually started.
+     *
+     * Per-session per-day figures do not exist anywhere in this data. `stats-cache.json` has the
+     * true day series and no repository or project granularity (see CLAUDE.md), and a session has
+     * granularity and no days. Neither can be derived from the other, so the aggregate keeps the
+     * only attribution the data supports — and a wrong number stated confidently is worse than a
+     * small one.
+     */
+    /**
+     * THE DAYS THIS FILTER COVERS, as the keys `SessionMeta.daily` is written with.
+     *
+     * Built once per range rather than per session: a 90-day filter over 650 sessions would
+     * otherwise rebuild the same list 650 times.
+     */
+    const rangeDays = new Set(daysBetween(start.getTime(), end.getTime()))
+    /**
+     * IS THE DAY SET AN ANSWER AT ALL?
+     *
+     * `daysBetween` STOPS at `MAX_RANGE_DAYS` instead of refusing, and `all` starts at the EPOCH —
+     * so the set was `1970-01-01 … 1971-02-04`, and every session carrying a per-day split was
+     * tested for membership in a window it could not possibly fall in. They were all dropped.
+     *
+     * Measured on a real machine before the fix: with the default `All` range and any
+     * session-scoped filter on (a project, a repo, a tag, a model, a harness, `active only`), 397
+     * of 662 sessions vanished from `filteredSessions` — silently, because the ones that survived
+     * are exactly the older records that have no `daily` to be judged by. It surfaced as the
+     * sessions workspace's Activity calendar rendering "no activity in the chosen window" over a
+     * fleet that was plainly running, which is how a wrong day rule always shows up: not as an
+     * error, as an emptiness.
+     *
+     * A set at the cap is treated as UNUSABLE rather than complete. It may be either, and nothing
+     * in it says which; the window test below is correct for both, so there is no reason to guess.
+     */
+    const daySetUsable = rangeDays.size > 0 && rangeDays.size < MAX_RANGE_DAYS
+    /**
+     * Is this session IN the range?
+     *
+     * A session that records its per-day split answers exactly — it is in the range if it did
+     * anything on one of these days, which is what makes a conversation open since Tuesday appear
+     * under "today". One that does not is filed on the day it STARTED, the answer this product has
+     * always given: falling back to the whole session would put its lifetime totals into every day
+     * it touches, measured at 86x on a real machine.
+     *
+     * Over a range too long to enumerate, the same question is asked of the SESSION's own days
+     * (`activeInWindow`) — a handful of keys whatever the range — rather than of the range's.
+     */
+    const inDateRange = (s: { start_time?: string; daily?: Record<string, DayUsage> }) =>
+      daySetUsable
+        ? (s.daily
+            ? activeInDays(s, rangeDays)
+            : isDateStr(s.start_time) && inRange(parseISO(s.start_time), start, end))
+        : activeInWindow(s, start.getTime(), end.getTime())
 
-    // Filter sessions (date + projects + model)
-    const filteredSessions = harnessSessions.filter(s => {
+    // Filter sessions (date + projects + model + active-only)
+    const selectedSessions = harnessSessions.filter(s => {
       if (!inDateRange(s)) return false
       if (projectFiltered && !projectSet.has(s.project_path)) return false
       if (repoFiltered && !repoSet.has(s.git_remote || '')) return false
       if (tagMatches && !tagMatches(s)) return false
       if (modelSet && (!s.model || !modelSet.has(s.model))) return false
+      if (activeOnly && !runningIds.has(s.session_id)) return false
       return true
+    })
+
+    /**
+     * EACH SESSION CUT DOWN TO THE RANGE — the projection every total below then inherits.
+     *
+     * Done here, once, rather than at the twenty places that sum these sessions. A session's four
+     * counters are LIFETIME totals, so a filtered list of whole sessions answers "everything those
+     * sessions ever did" under a heading that says "today" — measured at 86x on a real machine.
+     * Replacing the counters at the source is what makes every consumer right without each of them
+     * having to know.
+     *
+     * ONLY WHERE IT IS KNOWN, and only where it is ASKED FOR:
+     *   - a session with no `daily` is passed through untouched, because there is nothing to cut it
+     *     with; it was selected by its start day and its lifetime figure is the only one there is;
+     *   - an unbounded range projects nothing — "all" wants the lifetime totals, and slicing them
+     *     against every day would be arithmetic with no purpose.
+     *
+     * `daily` is dropped from the projection: it has already been spent, and leaving it would let a
+     * consumer slice an already-sliced session.
+     */
+    const rangeBounded = rangeDays.size > 0 && rangeDays.size <= 366
+    const filteredSessions = !rangeBounded ? selectedSessions : selectedSessions.map(s => {
+      const cut = sliceSession(s, rangeDays)
+      if (!cut) return s
+      const { daily: _daily, ...rest } = s
+      return {
+        ...rest,
+        input_tokens: cut.input_tokens,
+        output_tokens: cut.output_tokens,
+        cache_read_input_tokens: cut.cache_read_input_tokens,
+        cache_creation_input_tokens: cut.cache_creation_input_tokens,
+        // The message split is not recorded per day — only the total is — so the range's messages
+        // are apportioned to the two roles by the session's own ratio rather than invented. With no
+        // lifetime messages to take a ratio from, they go to the user side, which is what an
+        // unattributable message already does everywhere else.
+        ...splitMessages(cut.messages, s.user_message_count ?? 0, s.assistant_message_count ?? 0),
+      }
     })
 
     // Non-Claude sessions in the active date range — used to supplement statsCache totals
@@ -1172,6 +1334,11 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       // member's cache may be missing from this viewer's pruned copy. Keying on `hasUserStats`
       // left that case cache-backed and reported the empty merge as a real zero.
       || (userFiltered && !userCacheUsable)
+      // A live-fleet intersection has no cache granularity of any kind: `stats-cache.json` is
+      // keyed by day and model, never by conversation. Treating it as cache-backed would report
+      // the CACHE's totals under a scope the cache cannot express — the same scope reporting a
+      // fraction of itself, which `resolveMachineCacheScope` exists to prevent for team/machine.
+      || activeOnly
 
     let allTimeTotalSessions: number
     if (nonClaudeHarness || cacheBlindScope) {
@@ -1325,7 +1492,44 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
     let heatmapData: { date: string; value: number; sessions: number; tools: number }[]
     if (sessionFiltered) {
       const byDay: Record<string, { value: number; sessions: number; tools: number }> = {}
-      for (const s of filteredSessions) {
+      // A DAY THE SESSION WORKED, NOT THE DAY IT STARTED.
+      //
+      // Reported: "estou há alguns dias trabalhando e dia 4 foi pulado". It was: 20 sessions
+      // touched 2026-09-04 on this machine and 17 of them STARTED on it, while the calendar showed
+      // nothing. The day filter learned to read `SessionMeta.daily` and this did not — it still
+      // filed each session entirely on `start_time`, so a conversation open since Tuesday drew one
+      // cell on Tuesday and left every day it actually worked blank. A calendar of when work
+      // BEGAN is not a calendar of when work happened.
+      //
+      // `selectedSessions` and not `filteredSessions`: the second has already been cut to the
+      // range by `sliceSession`, which spends `daily` and drops it — exactly the field this needs.
+      // A session with no `daily` keeps the start-day rule, as everywhere else: it cannot be split
+      // and inventing a spread for it would be worse than filing it where it began.
+      for (const s of selectedSessions) {
+        const daily = s.daily
+        if (daily) {
+          const lifeMsgs = (s.user_message_count ?? 0) + (s.assistant_message_count ?? 0)
+          const lifeTools = Object.values(s.tool_counts ?? {}).reduce((a, b) => a + b, 0)
+          for (const [day, u] of Object.entries(daily)) {
+            const msgs = u.messages ?? 0
+            // A day the session merely EXISTED through, with no turn on it, is not activity —
+            // the same rule `activeInDays` applies, so the two cannot disagree about which days
+            // a session was alive on.
+            if (msgs <= 0 && (u.input_tokens ?? 0) <= 0 && (u.output_tokens ?? 0) <= 0) continue
+            if (!byDay[day]) byDay[day] = { value: 0, sessions: 0, tools: 0 }
+            byDay[day].value += msgs
+            // ONE PER DAY IT WORKED. "Sessions per day" is how many conversations were alive that
+            // day, which is the question the chart's own title asks — counting each only on its
+            // first day is what made a week of work look like a single spike.
+            byDay[day].sessions += 1
+            // Tool calls are NOT recorded per day, so this is an apportionment by that day's share
+            // of the session's messages — the same treatment `splitMessages` already gives the
+            // user/assistant split for the same reason, and it is stated rather than passed off as
+            // a measurement. It only ever feeds the tooltip.
+            byDay[day].tools += lifeMsgs > 0 ? Math.round((msgs / lifeMsgs) * lifeTools) : 0
+          }
+          continue
+        }
         if (!isDateStr(s.start_time)) continue
         const day = format(parseISO(s.start_time), 'yyyy-MM-dd')
         if (!byDay[day]) byDay[day] = { value: 0, sessions: 0, tools: 0 }
@@ -1350,6 +1554,47 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       heatmapData = Object.entries(heatmapByDay).map(([date, v]) => ({ date, ...v }))
     }
     heatmapData.sort((a, b) => a.date.localeCompare(b.date))
+
+    /**
+     * The same days, split BY HARNESS — one series each, for the trend beside the calendar.
+     *
+     * It follows the two branches above exactly rather than re-deriving anything, and that is the
+     * whole reason it lives here: `stats-cache.json` is Claude-only, so in the unfiltered branch
+     * Claude's days come from its OWN cache (which reaches back past the transcripts Claude
+     * deletes) while every other harness is summed per session — the rule this file already keeps
+     * for the totals. A single session-sum for all six would have drawn a Claude line that stops
+     * 30 days ago beside a calendar that does not.
+     *
+     * A harness with no day in the window gets NO entry, never an all-zero series: a flat line
+     * along the axis reads as a measurement that came back zero.
+     */
+    const heatmapByHarness: Record<string, { date: string; value: number; sessions: number }[]> = {}
+    {
+      const perSession = sessionFiltered ? filteredSessions : nonClaudeInRange
+      const byHarnessDay: Record<string, Record<string, { value: number; sessions: number }>> = {}
+      for (const s of perSession) {
+        if (!isDateStr(s.start_time)) continue
+        const day = format(parseISO(s.start_time), 'yyyy-MM-dd')
+        const h = s.harness ?? 'claude'
+        const days = byHarnessDay[h] ?? (byHarnessDay[h] = {})
+        const cell = days[day] ?? (days[day] = { value: 0, sessions: 0 })
+        cell.value += (s.user_message_count ?? 0) + (s.assistant_message_count ?? 0)
+        cell.sessions += 1
+      }
+      for (const [h, days] of Object.entries(byHarnessDay)) {
+        heatmapByHarness[h] = Object.entries(days)
+          .map(([date, v]) => ({ date, ...v }))
+          .sort((a, b) => a.date.localeCompare(b.date))
+      }
+      if (!sessionFiltered) {
+        // Claude's own history, from the cache. `add` is unused on this path by design — the cache
+        // carries a count per day, not one row per session.
+        const claude = extendedDailyActivity
+          .filter(d => d.sessionCount > 0)
+          .map(d => ({ date: d.date, value: d.messageCount, sessions: d.sessionCount }))
+        if (claude.length > 0) heatmapByHarness.claude = claude
+      }
+    }
 
     // Model usage — respects date + model filters
     const globalModelUsage = effectiveStatsCache.modelUsage ?? {}
@@ -1845,6 +2090,10 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
 
     return {
       presenceScope,
+      /** True when "active only" narrowed this scope to conversations running right now — the
+       *  page must say so, exactly as every other cache-blind scope does (see `fleetFilter.ts`'s
+       *  header and `activeConversations.ts`'s). */
+      activeOnlyScoped: activeOnly,
       totalMessages,
       totalSessions,
       allTimeTotalSessions,
@@ -1858,6 +2107,7 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
       longestStreak,
       streakDayBreakdown,
       heatmapData,
+      heatmapByHarness,
       modelUsage: filteredModelUsage,
       modelTokensByDate,
       toolCounts,
@@ -1902,6 +2152,15 @@ export function computeDerivedStats(data: AppData | null, filters: Filters, tags
   }
 }
 
-export function useDerivedStats(data: AppData | null, filters: Filters, tags: TagDef[] = []) {
-  return useMemo(() => computeDerivedStats(data, filters, tags), [data, filters, tags])
+export function useDerivedStats(
+  data: AppData | null,
+  filters: Filters,
+  tags: TagDef[] = [],
+  activeOnly = false,
+  runningIds: ReadonlySet<string> = new Set(),
+) {
+  return useMemo(
+    () => computeDerivedStats(data, filters, tags, activeOnly, runningIds),
+    [data, filters, tags, activeOnly, runningIds],
+  )
 }

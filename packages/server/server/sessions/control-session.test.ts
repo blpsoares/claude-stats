@@ -105,3 +105,48 @@ describe('which conversation a row continues from', () => {
     }
   })
 })
+
+describe('a dialog agentop can SEE and cannot READ', () => {
+  /*
+   * THE REPORTED BUG, 2026-09-07.
+   *
+   * A claude `AskUserQuestion` with four described options was drawn into an 80x24 pane (the tmux
+   * default the spawner used to accept), so its question and option `1.` were redrawn off the top
+   * and never reached `capture-pane`. `readDialog` correctly refused — and the refusal, being an
+   * empty option list, read downstream as "there is nothing to choose between". The card offered a
+   * bare confirm button, which takes whichever row is HIGHLIGHTED, on a six-option question.
+   *
+   * The user could not answer from the browser and opened the terminal instead. They were right not
+   * to press it.
+   */
+  const asking = (over: Partial<SessionView> = {}) => view({
+    status: 'running',
+    activity: 'waiting-approval',
+    approvalLines: ['  4. [ ] Erros repetidos', '  5. [ ] Type something', 'Esc to cancel'],
+    ...over,
+  })
+
+  it('offers NO confirm button — the empty list was a refusal, not an absence', () => {
+    const c = toControlSession(asking({ dialogUnreadable: 'no-anchor' }), S, LIVE)
+    expect(c.canApprove).toBeUndefined()
+  })
+
+  it('says why, naming what does work, instead of leaving a control silently inert', () => {
+    const c = toControlSession(asking({ dialogUnreadable: 'no-anchor' }), S, LIVE)
+    expect(c.dialogBlind).toBe(S.sessDialogBlind('claude'))
+    expect(c.dialogBlind).toContain('attach')
+  })
+
+  it('still offers the confirm where there is genuinely nothing to choose between', () => {
+    // The codex-shaped `Press enter to continue`: no options AND no refusal. Unchanged.
+    const c = toControlSession(asking(), S, LIVE)
+    expect(c.canApprove).toBe(true)
+    expect(c.dialogBlind).toBeUndefined()
+  })
+
+  it('is silent on a session that is not asking anything', () => {
+    const c = toControlSession(view({ status: 'running', activity: 'working' }), S, LIVE)
+    expect(c.dialogBlind).toBeUndefined()
+    expect(c.canApprove).toBeUndefined()
+  })
+})

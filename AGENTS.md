@@ -37,6 +37,29 @@ implementation detail: those live in `docs/` (canonical) and in each harness's o
 - Fill in the PR template for real — a "Summary" with no "Motivation" or "Test plan" is not a
   filled template.
 
+## Merging: squash a feature, MERGE a release
+
+- **A feature PR into `dev` is SQUASHED.** One concern, one commit, and `dev`'s history stays
+  readable.
+- **A release PR (`dev` → `main`) is merged with a MERGE COMMIT — never squashed.** This is the one
+  place the choice matters, and it is not a matter of taste:
+
+  A squash rewrites every commit of the release into one NEW commit on `main`. Git can no longer see
+  that `main`'s copy and `dev`'s original are the same work, so from the next release onward the same
+  files look independently added on both branches and every one of them conflicts. It has happened
+  once already: release #283 was squashed, and the next release PR (#302) opened with **twelve files
+  in conflict**, most of them `add/add` across `packages/vscode/*`, needing a manual
+  merge-and-resolve before it could go anywhere.
+
+  Worse than the conflicts is what the automatic resolution wanted to do with them: a file `dev` had
+  deliberately DELETED (`view-model.ts`, replaced by the server-side arrangement) came back, because
+  the merge base predated its existence and git read `main` as adding it rather than `dev` as
+  removing it. That resurrection produces no conflict and no warning — it lands silently.
+
+  So: **read the diff of a release merge against `dev` before committing it.** It should contain the
+  version bumps `release.yml` wrote on `main` and NOTHING else. Anything else in that diff is a file
+  coming back from the dead.
+
 ## Documentation
 
 - **Documentation is `docs/*.md`** — real files, versioned with the code, readable by any tool or

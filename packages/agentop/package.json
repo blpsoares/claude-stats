@@ -1,6 +1,6 @@
 {
   "name": "@agentistics/agentop",
-  "version": "2.3.2",
+  "version": "2.15.0",
   "description": "agentop CLI — npm install for the same native binary distributed via install.sh (Linux x86_64 only)",
   "type": "commonjs",
   "bin": {

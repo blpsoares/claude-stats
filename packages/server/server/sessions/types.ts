@@ -33,10 +33,23 @@ export interface SpawnSpec {
    * would reject valid input the day a model ships.
    */
   modelSuggestions: string[]
+  /**
+   * The model this CLI uses when `--model` is not passed — ONLY when the CLI itself publishes it.
+   *
+   * It exists so a picker can say "Default (sonnet)" instead of "the assistant's default", which
+   * names a thing without saying what it is. ABSENT is the honest answer everywhere it cannot be
+   * read out of the tool's own output, and absent is what every entry is today — see the block
+   * above `SPAWN_SPECS` for what was checked, per harness, and how. Never fill this from a vendor
+   * page, a config file, or memory: a wrong default is stated with the same confidence as a right
+   * one and is read at a glance.
+   */
+  defaultModel?: string
   /** Absent when the CLI has no effort flag. Paired with `efforts`; never one without the other. */
   effortFlag?: string
   /** A genuine closed enum, printed by the CLI itself — so this one IS validated. */
   efforts?: string[]
+  /** The effort used when `--effort` is not passed, under exactly `defaultModel`'s rule. */
+  defaultEffort?: string
   /**
    * The argv (after `bin`) that reopens an existing conversation by ID.
    *
@@ -84,6 +97,9 @@ export interface SpawnRequest {
   effort?: string
   label?: string
   task?: string
+  /** See `ManagedSession.taskId`: recorded at spawn, the one moment it is a fact. */
+  taskId?: string
+  attemptId?: string
 }
 
 /**
@@ -220,6 +236,19 @@ export interface ManagedSession {
    */
   task?: string
   /**
+   * The Task and Attempt this session was started under — see `task-model.ts`.
+   *
+   * Stamped at SPAWN, the one moment the association is a fact rather than a guess, and carried by
+   * every path that mints a new managedId for the same work: resume, attach, takeover, openTask,
+   * adoption. The same discipline `conversationId` follows, for the same reason — a session filed
+   * under the wrong task makes every number wrong without looking wrong.
+   *
+   * `task` (the free-text name) stays beside these and keeps working, and a name typed before this
+   * existed resolves through `legacyTaskId`.
+   */
+  taskId?: string
+  attemptId?: string
+  /**
    * The last time this session was OBSERVED ALIVE, epoch ms — stamped at creation, then refreshed by
    * the poller's heartbeat for every session the backend reports as running.
    *
@@ -255,6 +284,15 @@ export interface ManagedSession {
    * the same one, and the fleet came back with a single session listed three times under one name.
    */
   conversationId?: string
+  /**
+   * HOW `conversationId` was established — see `LinkProvenance` in `task-model.ts`.
+   *
+   * `assigned` the CLI was handed the id at spawn; `observed` the poller claimed it at first
+   * sighting. A rollup must be able to tell them apart, and on the record alone they look
+   * identical. A MISSING value reads as `assigned`: every link written before this field existed
+   * was one.
+   */
+  conversationLink?: 'assigned' | 'observed'
   /**
    * The repository this session's directory belonged to WHEN IT STARTED.
    *
@@ -324,6 +362,24 @@ export interface AttentionRules {
    * is the only working signal there is, and claiming otherwise would be a guess.
    */
   working?: RegExp[]
+  /**
+   * The MAIN agent is producing, right now.
+   *
+   * Distinct from `working`, and the distinction is the whole point: claude prints `esc to
+   * interrupt` whenever ANYTHING is interruptible — a background subagent included — so a session
+   * that has already answered you and is waiting still carries it. Reading that as `working` told
+   * a person nothing was needed from them when something was. Measured on a live session:
+   *
+   *   waiting, subagents running   `⏵⏵ auto mode on · esc to interrupt · ← 6 agents`
+   *   the agent actually producing `· Jitterbugging… (37s · ↓ 1.7k tokens · thought for 17s)`
+   *
+   * The whimsical verb changes every frame; what does not is the elapsed time and the token
+   * counter, so that is what is matched.
+   *
+   * Optional, like `working`: a harness that does not draw one is not given a guess. Where it is
+   * absent the old behaviour stands exactly.
+   */
+  mainWorking?: RegExp[]
   /** Provenance — the exact CLI version the frames came from, and the date. */
   probed: string
 }
@@ -332,7 +388,15 @@ export interface SessionBackend {
   readonly id: 'tmux' | 'pty'
   /** Why this backend cannot run here, already localized. Absent when it can. */
   unavailable(): Promise<string | undefined>
-  spawn(req: BackendSpawn): Promise<void>
+  /**
+   * Start the session. Resolves once the session EXISTS — not once its first prompt has landed.
+   *
+   * An `initialPrompt` is delivered as a FOLLOW-UP: the harness has to draw its input box before a
+   * prompt can be typed into it, and waiting for that held every caller for the whole of the CLI's
+   * startup. `delivery` is that follow-up, for the rare caller that must wait; ignoring it is the
+   * normal case and never leaves an unhandled rejection.
+   */
+  spawn(req: BackendSpawn): Promise<{ delivery?: Promise<void> } | void>
   list(): Promise<BackendSession[]>
   /** Newest-last lines of the last rendered frame, trailing blanks removed. */
   capture(id: string, lines: number): Promise<string[]>
@@ -362,7 +426,7 @@ export interface SessionBackend {
    * poll and the keystroke is an ordinary outcome, not an error to crash a caller with.
    */
   sendText(id: string, text: string): Promise<boolean>
-  /**
+    /**
    * Type literal text into the session WITHOUT submitting — the first half of `sendText`, exposed on
    * its own for the browser's key-by-key write channel (`input-web.ts`), where an implicit `Enter`
    * would turn every keystroke into a submitted turn.
@@ -371,6 +435,17 @@ export interface SessionBackend {
    * this exposes an existing path rather than adding a mechanism. `false` when the backend could not
    * deliver it; never a throw, for the same reason as `sendText`.
    */
+  /**
+   * Answer a dialog's FREE-TEXT option: the digit, a look at what it did, then the words.
+   *
+   * One call and not three because `writeToPane` locks per pane — three locked calls leave two gaps
+   * another writer can land in. `opened` is the caller's: whether a field appeared needs the
+   * harness's rules and its dialog parser, and it runs inside the lock. `no-field` means the digit
+   * did not open one, so nothing further was typed.
+   */
+  sendChoiceText?(
+    id: string, key: string, text: string, opened: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'no-field' | 'failed'>
   sendTextRaw(id: string, text: string): Promise<boolean>
   /**
    * Press ONE named key — the backend's own vocabulary (`Enter`, `Escape`).

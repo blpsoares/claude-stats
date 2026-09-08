@@ -121,7 +121,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const client = new AgentopClient(endpoints.api, lang)
     const { link, payload } = await client.fleet()
     if (link.state !== 'ok' || !payload) {
-      void vscode.window.showWarningMessage(words.networkError ?? 'No answer.')
+      // Three facts, three sentences — see `LinkState`. Collapsing them into one generic "no
+      // answer" told someone whose server was merely slow to go start one that was already running.
+      const message = link.state === 'slow'
+        ? words.linkSlow
+        : link.state === 'refused'
+          ? words.linkRefused
+          : words.networkError
+      void vscode.window.showWarningMessage(message ?? 'No answer.')
       return
     }
     const rows = then === 'attach' ? payload.sessions.filter(r => r.actionable) : payload.sessions

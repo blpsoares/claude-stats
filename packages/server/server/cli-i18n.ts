@@ -109,6 +109,12 @@ export interface CliStrings {
     external: string
     closed: string
   }
+  /**
+   * The mark a row wears when the MAIN agent has finished its turn while something it started is
+   * still running — a background subagent. Appended to the state word, never instead of it: the
+   * session needs a person, and the mark only says why the harness still looks busy.
+   */
+  sessBackground: string
   /** Said on a session whose harness has no probed approval markers. */
   sessApprovalBlind: (harness: string) => string
   /**
@@ -152,6 +158,7 @@ export interface CliStrings {
   sessApproveUnknown: (harness: string) => string
   /** Said on a row whose dialog offers OPTIONS and whose harness has no verified way to pick one. */
   sessChooseBlind: (harness: string) => string
+  sessDialogBlind: (harness: string) => string
   /** Refused: the dialog offers N options, so there is nothing to merely "approve". */
   sessNeedsChoice: (n: number) => string
   /** Refused: the question changed between being shown and being answered. */
@@ -160,6 +167,12 @@ export interface CliStrings {
   sessChooseUnknown: (harness: string) => string
   /** The chosen option went in — and the sentence names WHICH, because that is the whole point. */
   sessAnswered: (label: string) => string
+  /** The answer landed and the session immediately asked something ELSE. */
+  sessAnsweredNewQuestion: (label: string) => string
+  /** The keystroke was delivered and the dialog did not react to it. */
+  sessAnswerStuck: (label: string) => string
+  /** The write-your-own row was picked and no text field opened for it. */
+  sessAnswerNoField: (label: string) => string
   /** Nothing fell, or everything that did has already been picked back up. */
   sessNoFell: string
   sessFellOpened: (opened: number, skipped: number, held: number) => string
@@ -187,7 +200,24 @@ export interface CliStrings {
   sessTakeoverRefused: (reason: TakeoverRefusal) => string
   /** The fallback title for a session the user never named. */
   sessUntitled: (harness: string, project: string) => string
+  /**
+   * A session the backend is running that the registry has no record of.
+   *
+   * It has no harness and no directory to be named by, so the generic fallback produced a bare `?`.
+   * This says what it actually is — see `session-adopt.ts` for how a row gets into that state.
+   */
+  sessUnregistered: (handle: string) => string
+  /** Said when a harness's modes have never been driven, so no key is known. */
+  sessModeUnknown: (harness: string) => string
+  /** Said after the cycle key lands. It names the ACT — only the next poll knows the new mode. */
+  sessModeCycled: string
+  /** The free-text option was picked with nothing written. Enter on an empty field DECLINES. */
+  sessAnswerNeedsText: string
   sessKilled: (id: string) => string
+  /** The turn was handed back. Deliberately distinct from `sessKilled` — the session is still up. */
+  sessInterrupted: (id: string) => string
+  /** Refused: Escape into an idle prompt closes whatever the harness has open, which is not "stop". */
+  sessInterruptIdle: (id: string) => string
   sessRestoreNone: string
   sessRestoreDeclined: (n: number) => string
   sessRestored: (opened: number, skipped: number) => string
@@ -414,6 +444,20 @@ export interface CliStrings {
   stateNetUnreachable: string
   stateOk: string
   neverSynced: string
+
+  // `agentop backup` / `agentop restore` — see backup/daemon.ts and cli-backup.ts
+  backupScheduleOff: string
+  backupScheduleNoServer: string
+  backupSecretsOmitted: string
+  backupNoneOnDisk: string
+  /** The cockpit's `s` key and the CLI's `schedule` subcommand share this outcome sentence. */
+  backupScheduleSet: (schedule: string) => string
+  /** The cockpit's layers editor and `agentop backup config --layers` share this outcome sentence. */
+  backupLayersSet: (layers: string) => string
+  /** Same, for the schedule's own layers (`--schedule-layers`). */
+  backupScheduleLayersSet: (layers: string) => string
+  /** The cockpit's `b` key — same shape as the CLI's own report, in one sentence. */
+  backupRunOk: (archiveBytesLabel: string) => string
 }
 
 const EN: CliStrings = {
@@ -486,6 +530,7 @@ const EN: CliStrings = {
     closed: 'off',
     external: 'external',
   },
+  sessBackground: 'subagent',
   sessApprovalBlind: (harness: string) =>
     `agentop has no verified screen markers for ${harness}, so a blocking question here shows as "needs you" like any other pause.`,
   sessDirGone: 'this directory no longer exists — a removed worktree, most likely. Reopening will not work until it is back.',
@@ -505,6 +550,11 @@ const EN: CliStrings = {
     `agentop has not read ${harness}'s dialog, so it will not guess which key answers it.`,
   sessChooseBlind: (harness: string) =>
     `this dialog is a choice, and nobody has verified how to pick an option on ${harness} — attach to answer it there.`,
+  // Deliberately NOT "cannot be answered": it can, on attach. And it says what agentop actually
+  // knows — that the options are there and it could not read them — because a refusal that hides
+  // its reason is indistinguishable from a control that is simply broken.
+  sessDialogBlind: (harness: string) =>
+    `this ${harness} dialog is taller than agentop can read off the screen, so it cannot say what the options are — attach to answer it there.`,
   sessNeedsChoice: (n: number) =>
     `that dialog offers ${n} options, so there is nothing to simply approve — pick one.`,
   sessChoiceGone:
@@ -512,6 +562,17 @@ const EN: CliStrings = {
   sessChooseUnknown: (harness: string) =>
     `agentop has no verified way to pick an option on ${harness}, and will not confirm the highlighted one for you — attach to answer it there.`,
   sessAnswered: (label: string) => `answered: ${label}`,
+  sessAnsweredNewQuestion: (label: string) =>
+    `answered: ${label} — and the session is already asking something else, which is why a question `
+    + 'is still on screen. Nothing was pressed into the new one.',
+  sessAnswerStuck: (label: string) =>
+    `the key for "${label}" was delivered and the dialog did not move. Nothing else was pressed — `
+    + 'answer it in the session itself (attach), because pressing again could act on a row you did '
+    + 'not choose.',
+  sessAnswerNoField: (label: string) =>
+    `"${label}" did not open a field to type into, so nothing was typed — the words would have gone `
+    + 'wherever the session was listening and the return would have submitted whatever was '
+    + 'highlighted. Answer it in the session itself (attach).',
   sessNoFell: 'nothing fell — no session was lost with the machine still on record.',
   sessFellOpened: (opened: number, skipped: number, held: number) =>
     `reopened ${opened} session(s) that fell.`
@@ -534,7 +595,14 @@ const EN: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} in ${project}` : harness),
+  sessUnregistered: (handle: string) => `unregistered session ${handle}`,
+  sessModeUnknown: (harness: string) =>
+    `nobody has driven ${harness}'s modes, so agentop does not know which key changes them — switch it inside the session.`,
+  sessModeCycled: 'moved to the next mode.',
+  sessAnswerNeedsText: 'this option is a field to write in — send it with your answer, because an empty one reads as declining the question.',
   sessKilled: (id: string) => `stopped ${id}.`,
+  sessInterrupted: (id: string) => `asked ${id} to stop what it was doing — the session is still up.`,
+  sessInterruptIdle: (id: string) => `${id} is not working right now, so there is nothing to stop.`,
   sessRestoreNone: 'those sessions are no longer in the registry.',
   sessRestoreDeclined: (n: number) =>
     `left ${n} session${n === 1 ? '' : 's'} closed — still listed, still reopenable.`,
@@ -701,6 +769,15 @@ const EN: CliStrings = {
   stateNetUnreachable: 'central unreachable',
   stateOk: 'ok',
   neverSynced: 'never',
+
+  backupScheduleOff: 'schedule: off',
+  backupScheduleNoServer: 'schedule: inactive — the server is not running, so nothing will fire',
+  backupSecretsOmitted: 'These were NOT in the backup. Re-establish each:',
+  backupNoneOnDisk: 'last backup: none (no recorded backup whose file is still on disk)',
+  backupScheduleSet: schedule => `schedule: ${schedule}`,
+  backupLayersSet: layers => `layers: ${layers}`,
+  backupScheduleLayersSet: layers => `schedule layers: ${layers}`,
+  backupRunOk: bytes => `backup written — ${bytes}`,
 }
 
 const PT: CliStrings = {
@@ -767,6 +844,7 @@ const PT: CliStrings = {
     closed: 'fechada',
     external: 'externa',
   },
+  sessBackground: 'subagente',
   sessApprovalBlind: (harness: string) =>
     `o agentop não tem marcadores de tela verificados para ${harness}, então uma pergunta bloqueante aqui aparece como "precisa de você", como qualquer outra pausa.`,
   sessDirGone: 'este diretório não existe mais — provavelmente uma worktree removida. Reabrir não vai funcionar enquanto ele não voltar.',
@@ -786,6 +864,8 @@ const PT: CliStrings = {
     `o agentop não leu o diálogo do ${harness}, e não vai chutar qual tecla responde.`,
   sessChooseBlind: (harness: string) =>
     `esse diálogo é uma escolha, e ninguém verificou como selecionar uma opção no ${harness} — anexe para responder lá.`,
+  sessDialogBlind: (harness: string) =>
+    `esse diálogo do ${harness} é mais alto do que o agentop consegue ler da tela, então ele não sabe dizer quais são as opções — anexe para responder lá.`,
   sessNeedsChoice: (n: number) =>
     `esse diálogo tem ${n} opções, então não há o que simplesmente aprovar — escolha uma.`,
   sessChoiceGone:
@@ -793,6 +873,17 @@ const PT: CliStrings = {
   sessChooseUnknown: (harness: string) =>
     `o agentop não tem forma verificada de escolher uma opção no ${harness}, e não vai confirmar a destacada por você — anexe para responder lá.`,
   sessAnswered: (label: string) => `respondido: ${label}`,
+  sessAnsweredNewQuestion: (label: string) =>
+    `respondido: ${label} — e a sessão já está perguntando outra coisa, que é por isso que ainda há `
+    + 'uma pergunta na tela. Nada foi enviado para a nova.',
+  sessAnswerStuck: (label: string) =>
+    `a tecla de "${label}" foi entregue e o diálogo não se moveu. Nada mais foi enviado — responda `
+    + 'na própria sessão (attach), porque apertar de novo poderia agir sobre uma opção que você não '
+    + 'escolheu.',
+  sessAnswerNoField: (label: string) =>
+    `"${label}" não abriu um campo para escrever, então nada foi digitado — as palavras iriam para `
+    + 'onde a sessão estivesse ouvindo e o enter submeteria o que estivesse em foco. Responda na '
+    + 'própria sessão (attach).',
   sessNoFell: 'nada caiu — nenhuma sessão foi perdida com registro de que estava viva.',
   sessFellOpened: (opened: number, skipped: number, held: number) =>
     `${opened} sessão(ões) que caíram reabertas.`
@@ -815,7 +906,14 @@ const PT: CliStrings = {
     }
   },
   sessUntitled: (harness: string, project: string) => (project ? `${harness} em ${project}` : harness),
+  sessUnregistered: (handle: string) => `sessão sem registro ${handle}`,
+  sessModeUnknown: (harness: string) =>
+    `ninguém dirigiu os modos do ${harness}, então o agentop não sabe qual tecla os altera — troque dentro da própria sessão.`,
+  sessModeCycled: 'passou para o próximo modo.',
+  sessAnswerNeedsText: 'esta opção é um campo para escrever — envie junto com a sua resposta, porque vazia ela é lida como recusar a pergunta.',
   sessKilled: (id: string) => `${id} encerrada.`,
+  sessInterrupted: (id: string) => `pedi para ${id} parar o que estava fazendo — a sessão continua de pé.`,
+  sessInterruptIdle: (id: string) => `${id} não está trabalhando agora, então não há o que parar.`,
   sessRestoreNone: 'essas sessões não estão mais no registro.',
   sessRestoreDeclined: (n: number) =>
     `${n} ${n === 1 ? 'sessão deixada fechada' : 'sessões deixadas fechadas'} — continuam listadas e reabríveis.`,
@@ -982,6 +1080,15 @@ const PT: CliStrings = {
   stateNetUnreachable: 'central inacessível',
   stateOk: 'ok',
   neverSynced: 'nunca',
+
+  backupScheduleOff: 'agenda: desligada',
+  backupScheduleNoServer: 'agenda: inativa — o servidor não está rodando, então nada vai disparar',
+  backupSecretsOmitted: 'Estes NÃO estavam no backup. Restabeleça cada um:',
+  backupNoneOnDisk: 'último backup: nenhum (nenhum registro cujo arquivo ainda esteja no disco)',
+  backupScheduleSet: schedule => `agenda: ${schedule}`,
+  backupLayersSet: layers => `camadas: ${layers}`,
+  backupScheduleLayersSet: layers => `camadas da agenda: ${layers}`,
+  backupRunOk: bytes => `backup gravado — ${bytes}`,
 }
 
 const TABLE: Record<CliLang, CliStrings> = { en: EN, pt: PT }

@@ -3,7 +3,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'node:url'
 import {
-  readPreferencesFrom, writePreferencesTo, updateTeamConfigAt,
+  readPreferencesFrom, writePreferencesTo, updateTeamConfigAt, legacyPreferencesSource,
   LOCK_STALE_MS, LOCK_ACQUIRE_TIMEOUT_MS, __setTestOnlyDisableLock,
   __setTestOnlyForceLockVanished, __setTestOnlyAcquireTimeoutMs, PreferencesLockTimeoutError,
 } from './preferences'
@@ -14,6 +14,55 @@ import {
 // consent gate + the install prompt. Preferences must live in the writable ~/.agentistics
 // dir, with a one-time migration from the legacy CLAUDE_DIR location so native installs
 // keep their existing choices.
+
+/**
+ * `legacyPreferencesSource` — the PURE decision behind the isolation contract.
+ *
+ * The defect it pins: `~/.claude/agentistics-preferences.json` is derived from CLAUDE_DIR, the one
+ * persisted path that is NOT under `AGENTISTICS_DATA_DIR`, so the legacy migration read it for
+ * EVERY data dir. Starting a server with a brand-new, empty `AGENTISTICS_DIR` wrote a
+ * `preferences.json` into it holding a `mode: 'member'` connection — WITH ITS BEARER TOKEN — to a
+ * central the operator had never configured, and then created that connection's state files. An
+ * isolated instance inherited a credential and would have pushed under it.
+ */
+test('legacyPreferencesSource seeds the DEFAULT data dir and nothing else', () => {
+  const legacy = '/home/u/.claude/agentistics-preferences.json'
+  const def = '/home/u/.agentistics'
+
+  // The default install still migrates — that is what the legacy file is for.
+  expect(legacyPreferencesSource(def, def, legacy)).toBe(legacy)
+  // A trailing separator names the same directory, so it must not read as isolated.
+  expect(legacyPreferencesSource(def + '/', def, legacy)).toBe(legacy)
+
+  // Any other data dir is isolated: no legacy file may seed it, ever.
+  for (const isolated of ['/tmp/agy-iso', '/var/lib/agentistics', '/home/u/.agentistics-2', '/home/other/.agentistics']) {
+    expect(legacyPreferencesSource(isolated, def, legacy)).toBeNull()
+  }
+})
+
+test('a null legacy source is never read — an isolated data dir starts on defaults, not on someone else\'s connection', async () => {
+  const { primary, legacy } = tmpPaths()
+  // Seed the legacy location with exactly the shape that leaked: a member connection + token.
+  await Bun.write(legacy, JSON.stringify({
+    theme: 'dark',
+    team: { mode: 'member', endpoint: 'http://central:48080', token: 'secret-bearer', user: 'Alienware', org: 'siths' },
+  }))
+
+  // Passing the legacy path migrates it (the default-data-dir case)...
+  const migrated = await readPreferencesFrom(primary, legacy)
+  expect(migrated.team?.mode).toBe('member')
+  expect(migrated.team?.connections?.[0]?.token).toBe('secret-bearer')
+
+  // ...but an isolated instance is given `null` and must see none of it.
+  const { primary: isolatedPrimary } = tmpPaths()
+  const isolated = await readPreferencesFrom(isolatedPrimary, null)
+  expect(isolated.team?.mode).toBe('solo')
+  expect(isolated.team?.connections).toEqual([])
+  expect(isolated.theme).toBeUndefined()
+  // And nothing was written into the isolated dir at all: with no legacy source there is no
+  // migration, so a pure read stays a pure read.
+  expect(await Bun.file(isolatedPrimary).exists()).toBe(false)
+})
 
 function tmpPaths() {
   const base = join(tmpdir(), `agentistics-prefs-${crypto.randomUUID()}`)

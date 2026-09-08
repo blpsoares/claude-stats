@@ -48,6 +48,11 @@ export function Drawer({ open, title, onClose, children, footer, dirty = false, 
       style={{
         position: 'fixed', inset: 0, zIndex: 1000, display: 'flex',
         justifyContent: 'flex-end', background: 'rgba(0,0,0,0.5)',
+        // On a phone the panel is the full height, so its title bar and its close button start at
+        // y=0 — under the status bar in an installed PWA, where the taps do not reach them. The
+        // inset goes on the OVERLAY: the dark ground keeps covering the band, and the panel starts
+        // below it. `--safe-top` is 0 in a browser tab.
+        paddingTop: isMobile ? 'var(--safe-top)' : 0,
       }}
     >
       <div

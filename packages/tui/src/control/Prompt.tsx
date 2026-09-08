@@ -47,6 +47,22 @@ export interface TextPromptProps {
   isActive?: boolean
 }
 
+/** One control chord, however this terminal chose to deliver it — the letter, or the raw byte. */
+function isCtrl(input: string, ctrl: boolean, letter: string, byte: string): boolean {
+  return (ctrl && input === letter) || input === byte
+}
+
+/**
+ * Delete the word before the cursor, the way a shell's `ctrl+w` does: the run of spaces first, then
+ * the run of non-spaces. Deleting only the word leaves the trailing space behind, so pressing it
+ * twice in a row appears to do nothing the second time.
+ */
+export function deleteWord(v: string): string {
+  const trimmed = v.replace(/\s+$/, '')
+  const cut = trimmed.lastIndexOf(' ')
+  return cut === -1 ? '' : trimmed.slice(0, cut + 1)
+}
+
 export function TextPrompt({
   label,
   placeholder,
@@ -68,7 +84,14 @@ export function TextPrompt({
   useInput((input, key) => {
     if (key.escape) { onCancel?.(); return }
     if (key.return) { onSubmit(value.trim() || defaultValue || ''); return }
-    if (key.ctrl && input === 'u') { edit(() => ''); return }
+    // The line editor, such as it is: clear-line and delete-word, the two a long paste needs.
+    // Matched on BOTH the letter and the raw control byte — Ink translates `ctrl+u` to `'u'` with
+    // `key.ctrl` set, but a paste or a terminal that sends the byte straight through arrives as
+    // `\x15` with `key.ctrl` unset, and the printable filter below would then silently drop it. A
+    // clear-line that works only sometimes is worse than none: you press it, nothing happens, and
+    // you go back to holding backspace.
+    if (isCtrl(input, key.ctrl, 'u', '\x15')) { edit(() => ''); return }
+    if (isCtrl(input, key.ctrl, 'w', '\x17')) { edit(deleteWord); return }
     if (key.backspace || key.delete) { edit(v => v.slice(0, -1)); return }
     if (key.ctrl || key.meta || key.tab || key.upArrow || key.downArrow) return
 

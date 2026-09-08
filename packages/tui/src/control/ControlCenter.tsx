@@ -36,6 +36,7 @@ import { cheatContent, contributeContent, helpContent } from './content'
 import { StaticTab } from './tabs/Static'
 import { Logs } from './tabs/Logs'
 import { Services } from './tabs/Services'
+import { Backup } from './tabs/Backup'
 import { Sessions } from './tabs/Sessions'
 import { Dashboard } from './tabs/Dashboard'
 import { HardwareTab } from './tabs/HardwareTab'
@@ -404,7 +405,7 @@ export function ControlCenter({ host, lang: initialLang, initial, onExit, mouse 
   // Only the three interactive screens report, and only they clear their own flags again. Scoping
   // every claim to them means a screen that never reports cannot inherit a stale `true` and lock
   // the global keys with no owner left to release them.
-  const reports = tab === 'services' || tab === 'sessions' || tab === 'dashboard'
+  const reports = tab === 'services' || tab === 'sessions' || tab === 'backup' || tab === 'dashboard'
     || tab === 'logs'
   const capturing = chrome.capture && reports
   const arrowsClaimed = Boolean(chrome.claimArrows) && reports
@@ -630,6 +631,25 @@ export function ControlCenter({ host, lang: initialLang, initial, onExit, mouse 
               view={status?.sessionView}
               onView={v => { void host.setSessionView?.(v) }}
             />
+        </Screen>
+
+        {/* A cockpit like Services, for the same reason: the harnesses list and the config pane
+            are the selection, and the detail pane is a fuller view of the same facts or the place
+            a running backup streams into. It is its own tab rather than a corner of Services —
+            an operation over the data, and operations come before the numbers. */}
+        <Screen visible={tab === 'backup'}>
+          <Backup
+            host={host}
+            strings={s}
+            width={width}
+            height={height}
+            isActive={tab === 'backup'}
+            run={run}
+            task={task}
+            onDismissTask={dismissTask}
+            onChrome={reportChrome}
+            nonce={nonce}
+          />
         </Screen>
 
         {/* Framed by the shell like Logs, and for the same reason: it is a viewport with a

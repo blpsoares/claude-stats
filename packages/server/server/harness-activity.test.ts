@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test'
+import { describe, test, it, expect } from 'bun:test'
 import { countGitCommands, canonicalTool } from './harness-activity'
 
 test('counts a plain commit and a plain push', () => {
@@ -46,4 +46,29 @@ test('read and edit tools map onto the shared names too', () => {
 test('an unmapped name passes through unchanged — a mapping, never a filter', () => {
   expect(canonicalTool('codex', 'something_new')).toBe('something_new')
   expect(canonicalTool('claude', 'mcp__foo__bar')).toBe('mcp__foo__bar')
+})
+
+describe('git reached through a wrapper', () => {
+  it('counts a commit made through a proxy, a sudo or a container', () => {
+    // Measured on a real session: 62 commits counted as 2, because the whole machine routes git
+    // through `rtk proxy`. Every wrapper below is a normal way to run git.
+    expect(countGitCommands('rtk proxy git commit -F /tmp/m.txt').commits).toBe(1)
+    expect(countGitCommands('sudo -u ci git push').pushes).toBe(1)
+    expect(countGitCommands('docker exec app git commit -m z').commits).toBe(1)
+    expect(countGitCommands('/usr/bin/git commit -m q').commits).toBe(1)
+  })
+
+  it('still refuses a sentence that merely contains the words', () => {
+    // The wrapper is a few bare tokens, never `.*` — the segment must be a COMMAND running git.
+    expect(countGitCommands('echo "remember to git commit later"').commits).toBe(0)
+    expect(countGitCommands('# git commit is the next step').commits).toBe(0)
+    // A permissive "any few words" wrapper was tried first and counted both of these. A counter
+    // that inflates on prose is worse than one that misses a wrapper.
+    expect(countGitCommands('npm run git commit').commits).toBe(0)
+  })
+
+  it('still refuses a DIFFERENT git subcommand', () => {
+    expect(countGitCommands('git commit-tree abc').commits).toBe(0)
+    expect(countGitCommands('rtk proxy git commit-tree abc').commits).toBe(0)
+  })
 })

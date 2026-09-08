@@ -90,9 +90,39 @@ export function resolveTruecolorTerm(env: { TERM?: string; COLORTERM?: string })
  * it inherits it. The client-side half — tmux actually forwarding RGB on attach — is the
  * `terminal-features` capability in `serverOptionsArgs`.
  */
+/**
+ * THE SIZE A DETACHED PANE IS BORN AT — and the reason it is stated instead of defaulted.
+ *
+ * `tmux new-session -d` with no `-x`/`-y` creates an 80x24 pane (measured on 3.2a). Twenty-four
+ * rows is smaller than the dialogs these harnesses draw: a claude `AskUserQuestion` with four
+ * described options is comfortably past thirty. The top of such a dialog — its question, and
+ * option `1.` — is redrawn off the pane and never reaches `capture-pane`.
+ *
+ * Everything downstream then fails in a way that looks like a parser bug and is not one:
+ * `readDialog` cannot find its anchor, `approvalTail` shows a window that begins mid-sentence, and
+ * the card ends up unable to say what the session is asking. Reported with a screenshot of exactly
+ * that, from a session running in an 80x24 pane this module had created.
+ *
+ * It is invisible from the terminal, which is why it lasted: attaching resizes the pane to the
+ * client, so a person looking at the same dialog on attach sees all of it. Only the surfaces that
+ * never attach — the web dashboard, the VS Code panel, the cockpit — read the 24-row pane.
+ *
+ * Width is generous for the same reason rather than for its own: every column a description does
+ * not wrap into is a row the dialog does not need.
+ *
+ * No compatibility floor is added: `-x`/`-y` on `new-session` is tmux 2.9, older than the `-e` this
+ * same function already passes (3.2).
+ */
+export const PANE_COLS = 120
+export const PANE_ROWS = 50
+
 export function newSessionArgs(o: { id: string; cwd: string; argv: string[]; truecolor?: boolean }): string[] {
   const env = o.truecolor ? ['-e', 'COLORTERM=truecolor'] : []
-  return sock(['new-session', '-d', '-s', tmuxName(o.id), '-c', o.cwd, ...env, '--', ...o.argv])
+  return sock([
+    'new-session', '-d', '-s', tmuxName(o.id),
+    '-x', String(PANE_COLS), '-y', String(PANE_ROWS),
+    '-c', o.cwd, ...env, '--', ...o.argv,
+  ])
 }
 
 export function killSessionArgs(id: string): string[] {
@@ -227,6 +257,11 @@ export function serverOptionsArgs(profile: TerminalProfile): string[][] {
   if (profile.truecolorTerm) {
     opts.push(sock(['set-option', '-ga', 'terminal-features', `,${profile.truecolorTerm}:RGB`]))
   }
+  // `-x`/`-y` sets the size at BIRTH; this is what it goes back to. With `window-size` at its
+  // default (`latest`) a pane follows the newest client, so the first attach resizes it to that
+  // terminal and the detach drops it to `default-size` — 80x24 again, and the dialog is unreadable
+  // from every surface once more. Set on OUR socket only, so no session of the user's is touched.
+  opts.push(sock(['set-option', '-g', 'default-size', `${PANE_COLS}x${PANE_ROWS}`]))
   opts.push(
     // Keeps a finished session listable, with its last frame still capturable — the `exited` state.
     sock(['set-option', '-g', 'remain-on-exit', 'on']),
@@ -286,6 +321,39 @@ export function showPrefixArgs(): string[] {
 /** Includes the binary: this argv is EXECED by the caller, not passed to our own tmux runner. */
 export function attachArgs(id: string): string[] {
   return ['tmux', '-L', TMUX_SOCKET, 'attach-session', '-t', tmuxName(id)]
+}
+
+/**
+ * Is a non-zero `list-sessions` the ORDINARY EMPTY STATE, or a failure?
+ *
+ * tmux exits 1 with no sessions when no server is running, which is what a machine looks like
+ * before anything has been started — a legitimate empty answer. Every OTHER non-zero exit is a
+ * failure, and for one release they were the same thing: `list()` ignored the exit code entirely
+ * and handed whatever came out to `parseTmuxList`, which yields `[]` for anything it cannot parse.
+ *
+ * So a tmux that could not be reached AT ALL reported every managed session as gone, silently and
+ * with confidence. Measured on this machine: `PATH=/nonexistent tmux list-sessions` exits **127**
+ * printing `command not found` — parsed as zero sessions. The cockpit then said "nothing running ·
+ * 326 sessions withheld" while four assistants were live in tmux, and the whole fleet reconciled to
+ * `lost`. Reported exactly that way.
+ *
+ * The distinction is the MESSAGE, because that is the only thing tmux gives us. Both forms it uses
+ * are matched (`error connecting to <socket>` on 3.x, `no server running on <socket>` on older
+ * builds), and anything else is a failure the caller must THROW on — `createSessionsPoller` already
+ * keeps its previous list and says the refresh failed, which is the honest answer and was
+ * unreachable while this returned `[]`.
+ *
+ * **BOTH STREAMS ARE READ, and the first version of this read only stdout — which would have broken
+ * exactly the case the old code got right.** Measured: with no server, `list-sessions` writes
+ * NOTHING to stdout and puts `error connecting to …` on STDERR. Judging on stdout alone, a machine
+ * that has simply never started a session sees `code 1` with an empty string, falls through to
+ * "failure", and every poll throws — turning the ordinary first-run state into a permanent error.
+ * A rule about a message must be given the streams the message can arrive on.
+ */
+export function tmuxListIsEmptyState(code: number, out: string, err = ''): boolean {
+  if (code === 0) return true
+  const text = `${out}\n${err}`.toLowerCase()
+  return text.includes('no server running on') || text.includes('error connecting to')
 }
 
 export function parseTmuxList(stdout: string): BackendSession[] {

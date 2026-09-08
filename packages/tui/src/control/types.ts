@@ -7,7 +7,9 @@
  * lets the whole surface be rewritten without changing a single behaviour.
  */
 
+import type { HarnessId } from '@agentistics/core'
 import type { CliLang } from './lang'
+import type { GithubSection } from './backup'
 import type { SearchFields, SearchScope } from './search-scope'
 // The default ARRANGEMENT is derived from the dimension vocabulary rather than written out beside
 // it. `session-dimensions.ts` imports this file for TYPES only, so this is the one value direction.
@@ -19,6 +21,9 @@ import {
 export type TabId =
   | 'services'
   | 'sessions'
+  /** Configure, run, and watch a backup — see `control/backup.ts`. Between sessions and the
+   *  dashboard: an operation over the data, and operations come before the numbers. */
+  | 'backup'
   /** The metrics dashboard — the whole of what `agentop tui` shows, as a screen of this app. */
   | 'dashboard'
   | 'hardware'
@@ -40,6 +45,7 @@ export type TabId =
 export const TAB_ORDER: readonly TabId[] = [
   'services',
   'sessions',
+  'backup',
   'dashboard',
   'hardware',
   'logs',
@@ -410,6 +416,165 @@ export interface ControlService {
 export type BootState = 'on' | 'off'
 
 // ---------------------------------------------------------------------------
+// the backup tab
+// ---------------------------------------------------------------------------
+
+/**
+ * Redeclared from `server/backup/backup-plan.ts`'s `BackupLayer` — `packages/tui` may not import
+ * from `packages/server` (server -> tui is the only allowed direction). `backup-plan.test.ts`
+ * cross-checks this union against `BACKUP_LAYERS`, member for member, the same guard
+ * `central-runtime.test.ts` runs for `CentralRuntimeId`.
+ */
+export type BackupLayer = 'metrics' | 'repos' | 'archive' | 'raw'
+
+/** Redeclared from `server/backup/schedule.ts`'s `ScheduleId` — same cross-check discipline,
+ *  asserted in `schedule.test.ts`. */
+export type BackupScheduleId = 'off' | 'daily' | 'weekly' | 'custom'
+
+/**
+ * One harness's own coverage — see the backup tab's rule: last-backup is PER HARNESS, never a
+ * single date at the top, or an unticked harness would read as covered.
+ */
+export interface ControlBackupHarness {
+  id: HarnessId
+  /** Whether this harness rides the NEXT backup — `space` toggles it. */
+  enabled: boolean
+  sessions: number
+  /** Already-formatted, e.g. "3.4 MB" — see `backup-size.ts`'s `formatBytes`. */
+  sizeLabel: string
+  /**
+   * ISO of the newest backup that both covered this harness AND whose file is still on disk.
+   *
+   * An INSTANT rather than a formatted age, exactly like `ServiceRuntimeState.startedAt`: the age
+   * is recomputed every repaint against `now` so it does not freeze between polls.
+   *
+   * Absent when there is no such backup — see `lastBackupGone` for the other kind of absence.
+   */
+  lastBackupAt?: string
+  /**
+   * A backup once covered this harness, and that file is gone.
+   *
+   * Rendered as "none (no recorded backup whose file is still on disk)" rather than a reassuring
+   * date — see `backup-store.ts`'s `markPresence`. Absent together with `lastBackupAt` means this
+   * harness has never been backed up at all, which is a different sentence (`never`).
+   */
+  lastBackupGone?: boolean
+}
+
+/** The newest backup on disk, for the config and detail panes — absent when there is none. */
+export interface ControlBackupLast {
+  /** ISO — see `ControlBackupHarness.lastBackupAt` for why this is an instant, not a formatted age. */
+  at: string
+  /** Already-formatted, e.g. "4.1 MB" — the archive's real, measured size. */
+  bytesLabel: string
+  /**
+   * How many paths the walk skipped, `undefined` on a record written before the field existed.
+   *
+   * `undefined` is NOT zero: it reads as "whether anything was skipped is not known", never as a
+   * clean run — the same rule `BackupRecord.skipped` documents.
+   */
+  skipped?: number
+}
+
+/**
+ * A backup once covered this harness or the machine, and its file is no longer on disk —
+ * three-way, not two. See `backup-store.ts`'s `markPresence`, the single source of this
+ * classification: no surface re-derives it.
+ *
+ *  - `present` — the archive is on disk, restorable.
+ *  - `pruned` — WE deleted it, on purpose, by retention (`agentop backup`'s `keep`). Expected,
+ *    routine, and neutral — a week of daily backups puts most of the history here, and rendering
+ *    it the same as a real loss cries wolf on every row past `keep`.
+ *  - `missing` — recorded, not pruned by us, and not on disk. The one state a warning colour
+ *    belongs on.
+ */
+export type BackupPresence = 'present' | 'pruned' | 'missing'
+
+/** One row of the backup history — every recorded run, newest first, however it ended up on this
+ *  machine's disk (or not). See `BackupPresence`. */
+export interface ControlBackupHistoryEntry {
+  /** ISO. */
+  at: string
+  layers: BackupLayer[]
+  harnesses: HarnessId[]
+  /** Already-formatted, e.g. "4.1 MB" — the archive's real, measured size. */
+  bytesLabel: string
+  /** How many paths the walk skipped — see `ControlBackupLast.skipped`. */
+  skipped?: number
+  presence: BackupPresence
+}
+
+export interface ControlBackupConfig {
+  /** The layers the NEXT manual run writes. Deliberately untranslated — `metrics`/`repos`/
+   *  `archive`/`raw` are the CLI's own vocabulary, the same convention as `native`/`docker`. */
+  layers: BackupLayer[]
+  /**
+   * The layers a SCHEDULED run writes — deliberately separate from `layers`. `raw` is gigabytes a
+   * copy, so a daily schedule that inherited a manual run's layers would fill a disk the first
+   * time someone added it to one run. See `server/cli-backup.ts`'s `BackupPrefs.scheduleLayers`.
+   */
+  scheduleLayers: BackupLayer[]
+  destDir: string
+  schedule: BackupScheduleId
+  /**
+   * Whether the schedule can actually fire RIGHT NOW — false while the server is stopped, per
+   * `schedule.ts`'s `inactive-no-server`. The row must say so rather than a "next at…" that will
+   * not arrive — the same N/A-versus-a-confident-answer rule the dashboard applies everywhere else.
+   */
+  scheduleActive: boolean
+  keep: number
+  /** Already-formatted, e.g. "35 MB" — what EVERY retained backup occupies together, visible at
+   *  the moment `keep` or a heavier layer is raised, not after. */
+  retainedLabel: string
+  /** How many secret paths are excluded from every backup. Always > 0 — see `omittedSecrets()`. */
+  secretsCount: number
+  /**
+   * Every layer's measured weight on this machine, already formatted — what the format picker
+   * shows beside each row so the choice is informed. `repos` is `null`: it is produced during a
+   * run, not measurable ahead of one (see `cli-backup.ts`'s `measuredLayerSizes`) — rendered as
+   * "known after running", never as a guessed number or a confident `0`.
+   */
+  layerSizes: Record<BackupLayer, string | null>
+  /**
+   * The SAME measurement as `layerSizes`, in raw bytes rather than a formatted string — what lets
+   * a surface reason about a GitHub Release asset's 2 GB-per-file cap the instant a checkbox is
+   * ticked, with no round trip. `repos` stays `null` for the same reason its label does: its
+   * bundles and patches do not exist anywhere until a backup actually builds them, so a byte count
+   * for it would be a guess wearing a measurement's clothes.
+   */
+  layerBytes: Record<BackupLayer, number | null>
+  /**
+   * This machine's history-preservation mode, when it has been chosen at all — see
+   * `preferences.ts`'s `resolveArchiveMode`. Absent means never chosen (the consent gate has not
+   * run), which reads the same as anything other than `'full'`: the `archive` layer is frozen
+   * either way, and the layers editor says so on that row rather than showing a size that will
+   * never grow as if it were still live.
+   */
+  archiveMode?: ArchiveMode
+  /** The newest backup on disk, or absent when there has never been one. */
+  last?: ControlBackupLast
+}
+
+export interface ControlBackupStatus {
+  /** One row per `HARNESS_ORDER` member the host actually reported — never a literal list. */
+  harnesses: ControlBackupHarness[]
+  config: ControlBackupConfig
+  /** Every recorded backup, newest first — the WHOLE history; a surface pages it, it does not ask
+   *  the host to page it. See `ControlBackupHistoryEntry`. */
+  history: ControlBackupHistoryEntry[]
+  /**
+   * GitHub versioning, as `GET /api/backup/github` reports it — the shape mirrored in
+   * `control/backup.ts` (tui may not import from server). Carries NO token and must never grow one.
+   *
+   * Optional because a host may not be able to read it, and `githubRows` renders an absent section
+   * as "not configured, here is the command that turns it on" — never as blank. The field exists so
+   * a machine that IS configured is not told the opposite: a screen stating the reverse of the
+   * truth is worse than one saying nothing.
+   */
+  github?: GithubSection
+}
+
+// ---------------------------------------------------------------------------
 // the session fleet
 // ---------------------------------------------------------------------------
 
@@ -597,7 +762,7 @@ export interface ControlSession {
    * prod?" with four different answers, in front of a key called `approve` that would have silently
    * taken whichever was highlighted.
    */
-  dialogOptions?: Array<{ number: number; label: string; selected: boolean }>
+  dialogOptions?: Array<{ number: number; label: string; selected: boolean; freeText?: boolean }>
   /**
    * Whether the user may pick one of `dialogOptions` from here.
    *
@@ -622,6 +787,8 @@ export interface ControlSession {
    * quietly picks for them is not.
    */
   chooseBlind?: string
+  /** A dialog agentop can SEE and cannot READ — see `DialogUnreadable`. Never a confirm button. */
+  dialogBlind?: string
   /**
    * This session was taken by the machine along with the others, and comes back with them.
    *
@@ -662,6 +829,32 @@ export interface ControlSession {
   state: SessionState
   /** Already-localized state word, e.g. "needs approval". */
   stateLabel: string
+  /**
+   * Something this session STARTED is still running, while the session itself needs a person.
+   *
+   * claude prints `esc to interrupt` whenever anything is interruptible — a background subagent
+   * included — so a session that had finished its own turn and was waiting for you to type still
+   * carried the marker and read as `working`. The state is now decided by the MAIN agent's own
+   * spinner; this says why the screen still looks busy. Absent on an ordinary row: its presence is
+   * the statement.
+   */
+  background?: boolean
+  /**
+   * The reasoning effort this session was STARTED with, when one was asked for.
+   *
+   * Recorded at spawn, like `model` beside it — it is what agentop passed, not something read back
+   * off the running CLI, and absent means no flag was passed and the harness's own default is in
+   * force. A blank would read as "none", which is a different claim.
+   */
+  effort?: string
+  /**
+   * The MODE the harness is in — its own word for it (`auto mode`, `plan mode`, …).
+   *
+   * Absent for a harness whose modes nobody has driven, and for a session whose footer has not been
+   * read yet. See `mode-spec.ts`: the cycle key is a keystroke, so a guessed one would be a
+   * keypress nobody asked for.
+   */
+  mode?: { id: string; label: string }
   /**
    * Whether this row can be acted on at all.
    *
@@ -1215,6 +1408,47 @@ export interface ControlHost {
   setSessionPollMs(ms: number): Promise<void>
 
   /**
+   * The backup tab's own snapshot — per-harness coverage and the current configuration.
+   *
+   * A SEPARATE read from `refresh()`, exactly like `sessions()`: computing it walks the metrics
+   * layer and the consolidate store, which every OTHER tab needs `refresh()` to stay cheap for.
+   * OPTIONAL, and its absence means the tab renders nothing beyond a sentence saying the host
+   * cannot say — the same treatment `sessions?()` gets.
+   */
+  backupStatus?(): Promise<ControlBackupStatus>
+
+  /**
+   * Toggle whether one harness rides the NEXT backup — `space` on the focused row.
+   *
+   * Best-effort, like `setMouse`: a machine that cannot write its preferences still gets the
+   * toggle for this run.
+   */
+  setBackupHarness?(harness: HarnessId, on: boolean): Promise<void>
+
+  /** Cycle the schedule to the next id and persist it — `s`, from either pane. */
+  setBackupSchedule?(schedule: BackupScheduleId): Promise<ActionResult>
+
+  /**
+   * Set the layers a MANUAL run writes — the layers editor's `enter`, from the `layers` config
+   * row. `metrics` is enforced server-side (`backup-plan.ts`'s `withMetrics`) even if the caller
+   * omitted it, so the editor's own metrics row can stay non-interactive without this ever
+   * silently dropping it.
+   */
+  setBackupLayers?(layers: BackupLayer[]): Promise<ActionResult>
+
+  /** Same as `setBackupLayers`, for the layers a SCHEDULED run writes — deliberately a separate
+   *  call, from the `scheduleLayers` config row, so the two preferences can never be conflated. */
+  setBackupScheduleLayers?(layers: BackupLayer[]): Promise<ActionResult>
+
+  /**
+   * Run a backup now, with the configured layers and harnesses — `b`.
+   *
+   * Streams into `ControlHost.onOutput` exactly like a rebuild: the same channel, the same
+   * detail-region contract, so nothing here needs a wrapper of its own.
+   */
+  runBackup?(): Promise<ActionResult>
+
+  /**
    * Hand a URL to the desktop's browser.
    *
    * OPTIONAL, and the cockpit treats its absence as the feature not existing: the "open in browser"
@@ -1288,6 +1522,29 @@ export interface ControlHost {
   killSession?(id: string): Promise<ActionResult>
 
   /**
+   * Stop the current turn WITHOUT ending the session.
+   *
+   * The opposite of `killSession`: that one destroys the session, this one hands the turn back and
+   * leaves it sitting at its prompt. The keystroke is `Escape`, which is exactly what
+   * `attention-rules.ts` records these CLIs printing while they work (`esc to interrupt`) — read
+   * from the probed rules rather than assumed.
+   *
+   * REFUSED on a session that is not working. Escape into an idle prompt closes whatever the
+   * harness happens to have open, which is not what "stop" means and is not recoverable by
+   * pressing it again.
+   */
+  interruptSession?(id: string): Promise<ActionResult>
+
+  /**
+   * Advance a session's harness to its NEXT mode, without attaching to it.
+   *
+   * One keystroke, and the harness decides which mode comes next — there is no key that picks one
+   * by name, so this is a cycle rather than a chooser. Refused, in words, for a harness whose modes
+   * nobody has driven: a guessed key is a keypress nobody asked for. See `mode-spec.ts`.
+   */
+  cycleSessionMode?(id: string): Promise<ActionResult>
+
+  /**
    * Type one line into a session and submit it, WITHOUT attaching to it.
    *
    * The ordinary case is a session that is working or waiting: the text lands in its prompt and it
@@ -1313,7 +1570,7 @@ export interface ControlHost {
    * asking, or when the options on screen no longer match what the user was shown. A snapshot is up
    * to five seconds old, and an answer to a question that has changed is worse than no answer.
    */
-  answerSession?(id: string, choice?: number): Promise<ActionResult>
+  answerSession?(id: string, choice?: number, text?: string): Promise<ActionResult>
 
   /**
    * Reopen every session of the last fall, in the background.
@@ -1439,8 +1696,17 @@ export interface SessionHarnessOption {
   modelSuggestions: string[]
   /** Absent when the CLI has no model flag at all, which is a different thing from an empty list. */
   supportsModel: boolean
+  /**
+   * What the CLI uses when nothing is passed, ONLY where the CLI itself publishes it — so a
+   * picker can say "Default (sonnet)" rather than naming a default without saying what it is.
+   * Absent is the honest answer, and is what every harness reports today: see the defaults block
+   * in `spawn-spec.ts` for what was checked and how.
+   */
+  defaultModel?: string
   /** A genuine closed enum printed by the CLI itself, so this one IS validated. Empty = none. */
   efforts: string[]
+  /** The effort used when `--effort` is not passed, under exactly `defaultModel`'s rule. */
+  defaultEffort?: string
 }
 
 /** One place a session could start. */

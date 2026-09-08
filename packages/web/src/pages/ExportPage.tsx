@@ -286,7 +286,7 @@ export default function ExportPage() {
             >
               {exporting ? (
                 <>
-                  <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', animation: 'spin 0.7s linear infinite' }} />
+                  <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid var(--ag-tint-strong)', borderTopColor: '#fff', animation: 'spin 0.7s linear infinite' }} />
                   {t('export.generating', lang)}
                 </>
               ) : exportSuccess ? (

@@ -5,9 +5,9 @@ import {
   parseTmuxList, sendKeysEnterArgs, sendKeysLiteralArgs,
   sendKeysNamedArgs, trimCapture,
   tmuxName,
-  serverOptionsArgs, HISTORY_LIMIT,
+  serverOptionsArgs, HISTORY_LIMIT, PANE_COLS, PANE_ROWS,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs,
-  type TerminalProfile,
+  type TerminalProfile, tmuxListIsEmptyState,
 } from './tmux-cli'
 
 /** A colour-neutral profile: neither a 256-colour terminfo entry nor a truecolor invoker. */
@@ -32,8 +32,8 @@ describe('newSessionArgs', () => {
   it('uses our socket, detaches, sets the cwd, and separates the command with --', () => {
     expect(newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude', '--model', 'opus', 'fix it'] }))
       .toEqual([
-        '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-c', '/home/u/p',
-        '--', 'claude', '--model', 'opus', 'fix it',
+        '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-x', '120', '-y', '50',
+        '-c', '/home/u/p', '--', 'claude', '--model', 'opus', 'fix it',
       ])
   })
 
@@ -43,10 +43,27 @@ describe('newSessionArgs', () => {
     // `--`, or tmux reads it as one of the harness's own arguments.
     const args = newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude'], truecolor: true })
     expect(args).toEqual([
-      '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-c', '/home/u/p',
-      '-e', 'COLORTERM=truecolor', '--', 'claude',
+      '-L', 'agentop', 'new-session', '-d', '-s', 'agentop-a1', '-x', '120', '-y', '50',
+      '-c', '/home/u/p', '-e', 'COLORTERM=truecolor', '--', 'claude',
     ])
     expect(args.indexOf('-e')).toBeLessThan(args.indexOf('--'))
+  })
+
+  it('BORNS THE PANE BIG ENOUGH FOR A DIALOG — never at the 80x24 tmux default', () => {
+    /*
+     * The regression this exists for: a detached pane defaults to 80x24, a claude
+     * `AskUserQuestion` with four described options is taller than 24 rows, and its question and
+     * option `1.` are redrawn off the top before `capture-pane` ever reads it. Every surface that
+     * does not attach — the web dashboard, the VS Code panel, the cockpit — then shows a dialog
+     * that begins mid-sentence and cannot say what is being asked.
+     */
+    const args = newSessionArgs({ id: 'a1', cwd: '/home/u/p', argv: ['claude'] })
+    expect(args).toContain('-x')
+    expect(args).toContain('-y')
+    expect(args[args.indexOf('-x') + 1]).toBe(String(PANE_COLS))
+    expect(PANE_ROWS).toBeGreaterThan(24)
+    // The geometry must precede `--`, like every other tmux flag here.
+    expect(args.indexOf('-y')).toBeLessThan(args.indexOf('--'))
   })
 
   it('adds nothing when the invoker is not truecolor', () => {
@@ -311,5 +328,46 @@ describe('the status bar', () => {
     // cockpit already shows all of it.
     const status = serverOptionsArgs(C256).find(a => a.includes('status'))
     expect(status).toEqual(['-L', 'agentop', 'set-option', '-g', 'status', 'off'])
+  })
+})
+
+describe('tmuxListIsEmptyState — an unreachable tmux is not an empty fleet', () => {
+  it('a clean exit is always the answer, whatever it says', () => {
+    expect(tmuxListIsEmptyState(0, '')).toBe(true)
+    expect(tmuxListIsEmptyState(0, 'agentop-x\t1\t0\t0\t1')).toBe(true)
+  })
+
+  it('reads STDERR, which is where tmux actually puts the reason', () => {
+    // Measured: with no server, `list-sessions` writes NOTHING to stdout and `error connecting to
+    // …` to stderr. A stdout-only rule turns the ordinary first-run state — a machine that has
+    // never started a session — into a permanent polling error. The first version of this fix had
+    // exactly that bug.
+    expect(tmuxListIsEmptyState(1, '', 'error connecting to /tmp/tmux-1000/agentop (No such file or directory)')).toBe(true)
+    expect(tmuxListIsEmptyState(1, '', 'no server running on /tmp/tmux-1000/agentop')).toBe(true)
+    // And an empty stderr with a non-zero exit is still a failure.
+    expect(tmuxListIsEmptyState(1, '', '')).toBe(false)
+  })
+
+  it('NO SERVER is the ordinary empty state, in both wordings tmux uses', () => {
+    // Measured on this machine (tmux 3.2a): a socket that does not exist exits 1 with
+    // `error connecting to /tmp/tmux-1000/<name> (No such file or directory)`. Older builds print
+    // `no server running on <socket>`; both mean the same thing and both are legitimate.
+    expect(tmuxListIsEmptyState(1, 'error connecting to /tmp/tmux-1000/agentop (No such file or directory)')).toBe(true)
+    expect(tmuxListIsEmptyState(1, 'no server running on /tmp/tmux-1000/agentop')).toBe(true)
+  })
+
+  it('EVERY OTHER failure is a failure — the bug this exists to fix', () => {
+    // `PATH=/nonexistent tmux list-sessions` exits 127 printing `command not found`, which the old
+    // reader parsed as zero sessions: the cockpit said "nothing running · 326 sessions withheld"
+    // while four assistants were live, and the whole fleet reconciled to `lost`.
+    expect(tmuxListIsEmptyState(127, 'bash: line 1: tmux: command not found')).toBe(false)
+    expect(tmuxListIsEmptyState(1, 'lost server')).toBe(false)
+    expect(tmuxListIsEmptyState(1, '')).toBe(false)
+    expect(tmuxListIsEmptyState(2, 'usage: tmux ...')).toBe(false)
+    expect(tmuxListIsEmptyState(1, 'server exited unexpectedly')).toBe(false)
+  })
+
+  it('is case-insensitive — the message is the only signal there is', () => {
+    expect(tmuxListIsEmptyState(1, 'No server running on /tmp/x')).toBe(true)
   })
 })

@@ -1,10 +1,8 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { GripVertical, RotateCcw, Save, Volume2, VolumeX, Zap, Bot } from 'lucide-react'
+import { GripVertical, RotateCcw, Save } from 'lucide-react'
 import type { Lang, Theme } from '@agentistics/core'
 import type { AppContext, PrefsDraft } from '../../lib/app-context'
-import { CHAT_MODELS, DEFAULT_CHAT_MODEL } from '../../lib/chatModels'
-import { CHAT_SOUNDS, DEFAULT_CHAT_SOUND_ID, findChatSound } from '../../lib/chatSounds'
 import { SectionHeader, Divider, TabSelect, PrefRow, Toggle } from './primitives'
 import { DEFAULT_CARD_ORDER, type CardId } from '../../lib/cardOrder'
 
@@ -27,12 +25,6 @@ const CARD_LABELS: Record<CardId, { en: string; pt: string }> = {
 // member missing still compiles.
 const METRIC_IDS = ['kpi.messages', 'kpi.sessions', 'kpi.tool-calls', 'kpi.tokens']
 
-const BADGE_COLORS: Record<string, string> = {
-  Fast:     'var(--accent-green)',
-  Balanced: 'var(--anthropic-orange)',
-  Powerful: 'var(--accent-purple)',
-}
-
 function seedDraft(ctx: AppContext): PrefsDraft {
   return {
     lang: ctx.lang,
@@ -40,9 +32,6 @@ function seedDraft(ctx: AppContext): PrefsDraft {
     currency: ctx.currency,
     cardOrder: [...ctx.cardOrder],
     cardPrecision: { ...ctx.cardPrecision },
-    chatModel: ctx.chatModel ?? null,
-    chatSoundEnabled: ctx.chatSoundEnabled ?? true,
-    chatSoundId: ctx.chatSoundId ?? DEFAULT_CHAT_SOUND_ID,
   }
 }
 
@@ -106,14 +95,6 @@ export default function PreferencesSettings() {
   }
   const [draft, setDraft] = useState<PrefsDraft>(() => seedDraft(ctx))
   const pt = draft.lang === 'pt'
-
-  const previewCtxRef = useRef<AudioContext | null>(null)
-  const previewSound = useCallback((id: string) => {
-    if (!previewCtxRef.current) {
-      try { previewCtxRef.current = new AudioContext() } catch { return }
-    }
-    findChatSound(id).play(previewCtxRef.current)
-  }, [])
 
   function set<K extends keyof PrefsDraft>(k: K, v: PrefsDraft[K]) {
     setDraft(d => ({ ...d, [k]: v }))
@@ -260,89 +241,6 @@ export default function PreferencesSettings() {
             <span style={{ fontSize: 12, color: 'var(--text-primary)' }}>{CARD_LABELS[id as CardId]?.[draft.lang] ?? id}</span>
           </div>
         ))}
-      </div>
-
-      <Divider />
-
-      {/*  Chat  */}
-      <SectionHeader label="Chat" />
-      <PrefRow
-        label={pt ? 'Som de notificação' : 'Notification sound'}
-        sub={pt ? 'Toca quando uma resposta chega com o chat minimizado' : 'Plays when a reply arrives while chat is minimized'}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {draft.chatSoundEnabled ? <Volume2 size={14} color="var(--anthropic-orange)" /> : <VolumeX size={14} color="var(--text-tertiary)" />}
-          <Toggle
-            on={draft.chatSoundEnabled}
-            onToggle={() => {
-              const next = !draft.chatSoundEnabled
-              set('chatSoundEnabled', next)
-              if (next) previewSound(draft.chatSoundId)
-            }}
-          />
-        </div>
-      </PrefRow>
-
-      {/* Sound picker — only visible when sound is enabled */}
-      {draft.chatSoundEnabled && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-          {CHAT_SOUNDS.map(s => {
-            const active = draft.chatSoundId === s.id
-            return (
-              <button
-                key={s.id}
-                onClick={() => { set('chatSoundId', s.id); previewSound(s.id) }}
-                style={{
-                  padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: active ? 700 : 500,
-                  border: active ? '1.5px solid var(--anthropic-orange)' : '1px solid var(--border)',
-                  background: active ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',
-                  color: active ? 'var(--anthropic-orange)' : 'var(--text-secondary)',
-                  cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
-                }}
-              >
-                {s.label[pt ? 'pt' : 'en']}
-              </button>
-            )
-          })}
-        </div>
-      )}
-      <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500, marginBottom: 8 }}>
-        {pt ? 'Modelo do chat' : 'Chat model'}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-        {CHAT_MODELS.map(m => {
-          const active = (draft.chatModel ?? DEFAULT_CHAT_MODEL) === m.id
-          const badgeColor = BADGE_COLORS[m.badge] ?? 'var(--text-tertiary)'
-          return (
-            <button key={m.id} onClick={() => set('chatModel', m.id)} style={{
-              display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 7,
-              border: active ? '1.5px solid var(--anthropic-orange)' : '1px solid var(--border)',
-              background: active ? 'var(--anthropic-orange-dim)' : 'var(--bg-elevated)',
-              cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s', fontFamily: 'inherit',
-            }}>
-              <Bot size={14} color={active ? 'var(--anthropic-orange)' : 'var(--text-tertiary)'} style={{ flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: active ? 'var(--anthropic-orange)' : 'var(--text-primary)' }}>{m.label}</span>
-                  <span style={{
-                    fontSize: 10, fontWeight: 700, color: badgeColor,
-                    background: `color-mix(in srgb, ${badgeColor} 12%, transparent)`,
-                    border: `1px solid color-mix(in srgb, ${badgeColor} 30%, transparent)`,
-                    padding: '1px 5px', borderRadius: 4,
-                  }}>{m.badge}</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 1 }}>{m.desc}</div>
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', textAlign: 'right', flexShrink: 0, lineHeight: 1.6 }}>
-                <div>${m.inputPer1M}</div><div>${m.outputPer1M}</div>
-              </div>
-              {active && <Zap size={12} color="var(--anthropic-orange)" style={{ flexShrink: 0 }} />}
-            </button>
-          )
-        })}
-      </div>
-      <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 6 }}>
-        {pt ? 'USD por 1M tokens (entrada / saída)' : 'USD per 1M tokens (input / output)'}
       </div>
 
       {/*  Save / Reset row  */}

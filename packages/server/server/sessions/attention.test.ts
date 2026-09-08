@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import { QUIET_MS, approvalTail, attentionOf, digestFrame, frameTail } from './attention'
+import { QUIET_MS, approvalTail, attentionOf, digestFrame, frameTail, backgroundWork, dialogHeight
+} from './attention'
+import { rulesFor } from './attention-rules'
 import type { AttentionRules } from './types'
 
 const NOW = 1_786_600_000_000
@@ -304,5 +306,170 @@ describe('a footer is the BOTTOM of the screen, not any line on it', () => {
       '   2. No',
       ' Esc to cancel · Tab to amend',
     ])).toBe('waiting-approval')
+  })
+})
+
+describe('background work', () => {
+  const rules = { approval: [], working: [/esc to interrupt/], mainWorking: [/\(\d+[hms][^)]*·\s*↓/], probed: 'test' }
+
+  it('a session that ANSWERED and has subagents running needs a person', () => {
+    // Measured on a live claude: `esc to interrupt` is printed whenever anything is interruptible,
+    // background subagents included. Reading that as `working` told a person nothing was needed
+    // from them when something was.
+    const frame = ['❯ ', '  ⏵⏵ auto mode on · esc to interrupt · ← 6 agents']
+    // Quiet for longer than `QUIET_MS`: a session that JUST moved reads as working whatever the
+    // markers say, which is a separate and correct rule.
+    expect(attentionOf({
+      alive: true, lastActivityMs: 0, nowMs: QUIET_MS + 1000, frame,
+      frameDigest: 'd', prevDigest: 'd', rules,
+    })).toBe('waiting')
+    expect(backgroundWork({ frame, rules })).toBe(true)
+  })
+
+  it('the main agent producing is WORKING, and is not background', () => {
+    const frame = ['· Jitterbugging… (37s · ↓ 1.7k tokens)', '  ⏵⏵ esc to interrupt']
+    expect(attentionOf({
+      alive: true, lastActivityMs: 0, nowMs: 1000, frame,
+      frameDigest: 'd', prevDigest: 'd', rules,
+    })).toBe('working')
+    expect(backgroundWork({ frame, rules })).toBe(false)
+  })
+
+  it('a harness with no main marker is not given a guess', () => {
+    // Without a way to tell the main turn apart, every interruptible frame would be reported as
+    // background work — a confident claim made out of an absence.
+    const bare = { approval: [], working: [/esc to interrupt/], probed: 'test' }
+    const frame = ['❯ ', 'esc to interrupt']
+    expect(backgroundWork({ frame, rules: bare })).toBe(false)
+    expect(attentionOf({
+      alive: true, lastActivityMs: 0, nowMs: 1000, frame,
+      frameDigest: 'd', prevDigest: 'd', rules: bare,
+    })).toBe('working')
+  })
+})
+
+describe('approvalTail carries the QUESTION, not just the answers', () => {
+  /** An `AskUserQuestion` as claude 2.1.261 draws it — the shape from the report's screenshot. */
+  const ASK = [
+    'Some earlier assistant text that is NOT part of the dialog.',
+    'More conversation, further up.',
+    '',
+    'Devo abrir a issue retroativamente para o PR #368?',
+    '',
+    '  1. Não abrir (recomendado)',
+    '     O que importa está no corpo do PR, que é onde a revisão as pega.',
+    '  2. Abrir retroativamente',
+    '     Registro formal em Ideas apontando o PR #368, para o histórico do processo',
+    '     ficar completo.',
+    '❯ 3. Escrever a minha',
+    '  4. Chat about this',
+    '',
+    'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+  ]
+
+  it('THE REPORTED CASE: the question survives a tall dialog', () => {
+    // With a flat ten-line window the card began mid-sentence, inside option 1's second line, and
+    // showed a list of answers with nothing saying what was being asked.
+    const out = approvalTail(ASK, 10)
+    expect(out.join('\n')).toContain('Devo abrir a issue retroativamente')
+    expect(out.join('\n')).toContain('Enter to select')
+  })
+
+  it('does NOT reach into the conversation above the dialog', () => {
+    // The failure `approvalTail`'s own header calls the worst possible way to be wrong: prose from
+    // before the dialog, printed under "you are about to confirm this".
+    const out = approvalTail(ASK, 10).join('\n')
+    expect(out).not.toContain('NOT part of the dialog')
+    expect(out).not.toContain('further up')
+  })
+
+  it('a SHORT permission prompt is unchanged — the window only ever grows', () => {
+    const prompt = [
+      'irrelevant scrollback',
+      'Do you want to proceed?',
+      '❯ 1. Yes',
+      '  2. Yes, and don\'t ask again',
+      '  3. No',
+      'Esc to cancel',
+    ]
+    expect(approvalTail(prompt, 10).join('\n')).toContain('Do you want to proceed?')
+  })
+
+  it('a frame with no readable options falls back to the flat window', () => {
+    // Reaching further up on a shape this cannot read is exactly what must not happen.
+    const noOptions = Array.from({ length: 40 }, (_, i) => `line ${i}`)
+    expect(approvalTail(noOptions, 10)).toHaveLength(10)
+    expect(dialogHeight(noOptions, 10)).toBe(10)
+  })
+
+  it('the room above option 1 is bounded', () => {
+    const tall = [
+      ...Array.from({ length: 60 }, (_, i) => `scrollback ${i}`),
+      '  1. one',
+      '  2. two',
+    ]
+    // Never the whole frame: a question is a sentence or two, not a screen.
+    expect(approvalTail(tall, 10).length).toBeLessThanOrEqual(22)
+  })
+})
+
+describe('a QUEUED message pushes the dialog footer off the bottom', () => {
+  const NOW2 = 1_700_000_000_000
+  const rules2 = rulesFor('claude')
+  const read2 = (frame: string[]) => attentionOf({
+    alive: true,
+    lastActivityMs: NOW2 - 30_000,
+    nowMs: NOW2,
+    frame,
+    frameDigest: 'same',
+    prevDigest: 'same',
+    rules: rules2,
+  })
+
+  /**
+   * VERBATIM in shape from the report of 2026-09-07 — an `AskUserQuestion` (the previews variant,
+   * whose footer carries `n to add notes`) with TWO messages queued underneath it.
+   *
+   * The harness draws the input box below the dialog, one row per queued line, so the dialog's
+   * footer sat five rows above the bottom and fell outside `FOOTER_LINES`. The session stopped
+   * reading as blocked, the composer unblocked, and both messages were accepted and marked
+   * `delivered to the session` — into the dialog's own filter. The user sat waiting on a question
+   * that had already been asked.
+   */
+  const QUEUED_UNDER_A_DIALOG = [
+    'Contra o que a sessão atual é comparada?',
+    '',
+    '❯ 1. Últimos 30 dias, todas as sessões (recomendado)',
+    '  2. Do projeto, com fallback global',
+    '  3. Por harness, últimos 30 dias',
+    '────────────────────────────────────────',
+    '  Chat about this',
+    '',
+    'Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel',
+    '',
+    '❯ /context',
+    '❯ /home/mithrandir/.agentistics/attachments/d3a25822-image.png',
+    '  nao consegui responder por aqui, tive que abrir o terminal.',
+    '  A resposta interativa ainda ta bem bugada, aproveita e corrige isso tbm',
+  ]
+
+  it('is STILL blocked — the footer sank, the question did not go away', () => {
+    expect(read2(QUEUED_UNDER_A_DIALOG)).toBe('waiting-approval')
+  })
+
+  it('reads the same dialog with nothing queued, exactly as before', () => {
+    expect(read2(QUEUED_UNDER_A_DIALOG.slice(0, 9))).toBe('waiting-approval')
+  })
+
+  it('does NOT extend that trust to a quoted footer with no menu above it', () => {
+    // The window only widens over a real `1..n` block. Source code keeps the narrow footer rule,
+    // which is what stops a session editing these very patterns being called blocked.
+    expect(read2([
+      '● Editing attention-rules.ts',
+      '     /Enter to select · ↑\\/↓ to navigate/,',
+      '✻ Leavening… (18m · ↓ 23.0k tokens)',
+      '❯ ',
+      '⏵⏵ auto mode on · esc to interrupt',
+    ])).toBe('working')
   })
 })

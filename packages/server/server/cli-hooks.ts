@@ -23,7 +23,7 @@
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { HARNESS_ORDER, type HarnessId } from '@agentistics/core'
+import type { HarnessId } from '@agentistics/core'
 import { HOME_DIR } from './config'
 import {
   HOOK_SPECS,
@@ -135,10 +135,8 @@ async function pruneEmpty(dir: string): Promise<void> {
  * rather than writing a skill that says nothing can be started.
  */
 async function startableHarnesses(): Promise<HarnessId[]> {
-  const { SPAWN_SPECS } = await import('./sessions/spawn-spec')
-  const startable = HARNESS_ORDER.filter(h => SPAWN_SPECS[h] !== null)
-  const installed = startable.filter(h => !!Bun.which(SPAWN_SPECS[h]!.bin))
-  return installed.length > 0 ? installed : startable
+  const { availableHarnesses } = await import('./sessions/harness-available')
+  return availableHarnesses().ids
 }
 
 // ---------------------------------------------------------------------------
@@ -405,8 +403,14 @@ async function readFleet(): Promise<ContextSession[] | null> {
     ])
     const backend = await resolveBackend()
     if (await backend.unavailable()) return null
-    const poller = createSessionsPoller({ backend, readRegistry, scanProcesses })
-    const snap = await poller.poll()
+    // The running server's poller first — it is the one with movement memory, and a hook that
+    // reports a producing session as waiting injects a wrong fact into every new conversation. See
+    // `shared-snapshot.ts`; `null` simply means there is no server and the local poll answers.
+    const { isServerProcess, readServerSnapshot } = await import('./sessions/shared-snapshot')
+    const shared = isServerProcess()
+      ? null
+      : await readServerSnapshot<Awaited<ReturnType<ReturnType<typeof createSessionsPoller>['poll']>>>('en')
+    const snap = shared ?? await createSessionsPoller({ backend, readRegistry, scanProcesses }).poll()
     return snap.sessions.map(v => ({
       id: v.id,
       status: v.status,

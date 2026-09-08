@@ -76,6 +76,24 @@ async function getPrefs() {
   return apiGet("/api/preferences");
 }
 
+async function apiSend(method: string, path: string, body?: unknown) {
+  const res = await fetch(`${API}${path}`, {
+    method,
+    ...(body === undefined ? {} : {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  });
+  if (!res.ok) {
+    // The BODY, not just the status. A refusal here is usually actionable — "this move needs a
+    // reason", "somebody else holds this claim" — and a bare `HTTP 422` teaches the caller nothing
+    // it can act on, which turns one refusal into a retry loop.
+    const detail = await res.text().catch(() => "");
+    throw new Error(`${method} ${path} → HTTP ${res.status}${detail ? ` ${detail.slice(0, 400)}` : ""}`);
+  }
+  return res.json().catch(() => ({}));
+}
+
 async function putPrefs(patch: Record<string, unknown>) {
   const res = await fetch(`${API}/api/preferences`, {
     method: "PUT",
@@ -154,6 +172,205 @@ const server = new Server(
 );
 
 const TOOLS: Tool[] = [
+  // ---------------------------------------------------------------- the ALM (task board)
+  //
+  // These let an assistant read and drive the board the way a person does: see what everyone is
+  // working on, file its own work under a task, leave a note for the next one, attach the spec it
+  // just wrote. Every one of them is a thin call to `/api/tasks` — the arithmetic and the rules
+  // live on the server, so the MCP, the CLI and the dashboard can never disagree about a delivery.
+  {
+    name: "agentistics_tasks",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. List every task on the ALM board with its rollup (cost, rounds, sessions used, tokens) plus a board-wide overview: tasks in flight, delivered, average cost per task and per delivery, top models and harnesses. START HERE to see what work exists and what the other assistants are on.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "agentistics_task",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Open ONE task: its attempts (one per configuration tried), the sessions filed under it with their live state, its comments, subtasks, files, links and full metrics (models, harnesses, agent runs, tokens, delivery time). `ref` is the task id or its exact title.",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string", description: "Task id or exact title." } },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_create",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Create a task. A title is required; a description is optional. Creating a title that already exists returns the existing task rather than a duplicate, so this is safe to call before filing work under a name you are not sure exists.",
+    inputSchema: {
+      type: "object",
+      properties: { title: { type: "string" }, detail: { type: "string" } },
+      required: ["title"],
+    },
+  },
+  {
+    name: "agentistics_task_status",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Move a task: backlog | todo | in_progress | blocked | in_review | done | abandoned. Only `done` stamps a delivery and closes rounds-to-delivery; `abandoned` records that the work was given up on, which is a real outcome and not a failure to report. **`blocked` REQUIRES a `reason` or a `blockedBy` list** and is refused (422) without one: it is the status that names a problem somebody has to go and solve, and a blocked card that does not say what it is waiting on cannot be unblocked by anyone but you. Pass `actor` (who you are) so the move is recorded against you in the activity log.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        status: {
+          type: "string",
+          enum: ["backlog", "todo", "in_progress", "blocked", "in_review", "done", "abandoned"],
+        },
+        actor: { type: "string" },
+        reason: {
+          type: "string",
+          description: "Why it is blocked, in your own words. Required by `blocked` unless you pass `blockedBy`.",
+        },
+        blockedBy: {
+          type: "array",
+          items: { type: "string" },
+          description: "Task ids that must finish first — the other way to answer 'blocked on what'.",
+        },
+      },
+      required: ["ref", "status"],
+    },
+  },
+  {
+    name: "agentistics_task_comment",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Leave a comment on a task. Use it to tell the person and the other assistants what you did, what you found, or what you are blocked on. `author` is free text — say who you are (e.g. 'claude:3f5f').",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string" }, body: { type: "string" }, author: { type: "string" } },
+      required: ["ref", "body"],
+    },
+  },
+  {
+    name: "agentistics_task_subtask",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Add a subtask, or change one. Pass `title` to add; pass `id` with `done`, `status`, `assignee`, `dueDate`, `startDate` or `sessionId` to edit one. A subtask carries the same columns its parent does, but no cost of its own: cost is measured per SESSION and rolls up to the task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        title: { type: "string" },
+        id: { type: "string" },
+        done: { type: "boolean" },
+        status: {
+          type: "string",
+          enum: ["backlog", "todo", "in_progress", "blocked", "in_review", "done", "abandoned"],
+        },
+        assignee: { type: "string" },
+        dueDate: { type: "string" },
+        startDate: { type: "string" },
+        sessionId: { type: "string" },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_link",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Attach a link to a task — a pull request, an issue, a document. Pass `url` (http/https only) with an optional `label` and `kind` ('pr', 'issue', …). Pass `remove` with a link id to detach one.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        url: { type: "string" },
+        label: { type: "string" },
+        kind: { type: "string" },
+        remove: { type: "string", description: "Link id to remove instead of adding." },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_blocked_by",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Set which tasks must finish before this one can proceed. Pass the full list of blocker task ids (it replaces, it does not append). A task cannot block itself.",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string" }, blockedBy: { type: "array", items: { type: "string" } } },
+      required: ["ref", "blockedBy"],
+    },
+  },
+  {
+    name: "agentistics_task_next",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. THE ORCHESTRATION CALL: what you can pick up right now. Returns the tasks that are open, not blocked by unfinished work, and not in another agent's hands — most urgent first, numbered from 1. It also returns `withheld`, every task that is NOT available with the reason (closed / blocked / claimed / status), because an agent told 'nothing' learns nothing; and `progress`, which separates 'it is all done' from 'everything is in somebody's hands right now'. Pass `actor` (who you are) so a task you already hold comes back as available to you rather than as taken.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actor: { type: "string", description: "Who is asking, e.g. 'claude:3f5f'." },
+        limit: { type: "number" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "agentistics_task_claim",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. TAKE a task before working on it, so two agents cannot do the same one twice. This is a LEASE, not a lock: it expires (default 30 minutes) and the task returns to the board on its own, so an agent that dies does not hold work forever. Re-claiming as the same `by` REFRESHES the lease — do that while you are still working. Pass `release: true` to give it back when you finish or stop. A refusal names who holds it and until when; `takeover` is for a person overriding a live claim on purpose and an agent should not send it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        by: { type: "string", description: "Who you are. Free text, e.g. 'claude:3f5f'." },
+        release: { type: "boolean" },
+        leaseMs: { type: "number", description: "How long the claim lasts. Default 30 minutes." },
+        sessionId: { type: "string", description: "The managed session doing the work, if any." },
+        note: { type: "string" },
+        takeover: { type: "boolean" },
+        force: { type: "boolean", description: "Release a claim you do not hold." },
+      },
+      required: ["ref", "by"],
+    },
+  },
+  {
+    name: "agentistics_task_activity",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. What has been HAPPENING, newest first — status moves, claims, releases, priority and assignee changes, sessions filed. Pass `ref` for one task, or nothing for the whole board. On a board several agents drive this is how you find out what the others did without asking them.",
+    inputSchema: {
+      type: "object",
+      properties: { ref: { type: "string" }, limit: { type: "number" } },
+      required: [],
+    },
+  },
+  {
+    name: "agentistics_task_edit",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Set a task's fields: `title`, `detail`, `priority` (urgent | high | medium | low | none), `assignee`, `dueDate` / `startDate` (yyyy-mm-dd), `labels`. An absent field is left alone; an EMPTY STRING clears it. `priority` defaults to `none`, which means 'nobody has said' and is not the same as `low`. Pass `actor` so the change is recorded against you in the activity log.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        title: { type: "string" },
+        detail: { type: "string" },
+        priority: { type: "string", enum: ["urgent", "high", "medium", "low", "none"] },
+        assignee: { type: "string" },
+        dueDate: { type: "string" },
+        startDate: { type: "string" },
+        labels: { type: "array", items: { type: "string" } },
+        actor: { type: "string" },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "agentistics_task_session",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. File a SESSION under a task, which is what makes the task measurable: its cost, tokens, rounds and harness all come from the sessions filed under it. Pass `sessionId` (a managed session id or conversation id) with `ref`, or `detach` with a session id to unfile one. The task inherits the session's repository when it has none.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string" },
+        sessionId: { type: "string" },
+        detach: { type: "string" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "agentistics_task_delete",
+    description:
+      "BETA — the task board is new and still changing; its shapes may move between releases. Delete a task and its comments, subtasks, files and links. The SESSIONS filed under it are kept — deleting a board entry never deletes work.",
+    inputSchema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] },
+  },
   {
     name: "agentistics_summary",
     description:
@@ -385,6 +602,125 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
   try {
     switch (name) {
+      // ------------------------------------------------------------ the ALM (task board)
+      case "agentistics_tasks": {
+        const body = await apiGet("/api/tasks");
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task": {
+        const ref = String((args as any)?.ref ?? "");
+        const body = await apiGet(`/api/tasks/${encodeURIComponent(ref)}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_create": {
+        const a = args as any;
+        const body = await apiSend("POST", "/api/tasks", { title: a?.title, detail: a?.detail });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_status": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}`, {
+          status: a?.status,
+          ...(typeof a?.actor === "string" ? { actor: a.actor } : {}),
+          ...(typeof a?.reason === "string" ? { reason: a.reason } : {}),
+          ...(Array.isArray(a?.blockedBy) ? { blockedBy: a.blockedBy } : {}),
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_comment": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/comments`, {
+          body: a?.body, author: a?.author ?? "assistant",
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_subtask": {
+        const a = args as any;
+        // A bare `{id, done}` is the tick; naming any column makes it an edit. The route keeps
+        // `done` and `status` in step, so a caller may send either.
+        const cols = ["status", "assignee", "dueDate", "startDate", "sessionId", "title"] as const;
+        const named = cols.filter(c => typeof a?.[c] === "string");
+        const payload = a?.id !== undefined
+          ? (named.length > 0
+            ? { id: a.id, ...Object.fromEntries(named.map(c => [c, a[c]])) }
+            : { id: a.id, done: a?.done === true })
+          : { title: a?.title };
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/subtasks`, payload);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_link": {
+        const a = args as any;
+        const payload = a?.remove
+          ? { remove: a.remove }
+          : { url: a?.url, label: a?.label, kind: a?.kind };
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}/links`, payload);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_blocked_by": {
+        const a = args as any;
+        const body = await apiSend("POST", `/api/tasks/${encodeURIComponent(String(a?.ref))}`, {
+          blockedBy: a?.blockedBy ?? [],
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_next": {
+        const a = args as any;
+        const q = new URLSearchParams();
+        if (a?.actor) q.set("actor", String(a.actor));
+        if (a?.limit) q.set("limit", String(a.limit));
+        const body = await apiGet(`/api/tasks/next${q.toString() ? `?${q}` : ""}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_claim": {
+        const a = args as any;
+        const ref = encodeURIComponent(String(a?.ref ?? ""));
+        const body = await apiSend("POST", `/api/tasks/${ref}/claim`, {
+          by: a?.by,
+          ...(a?.release === true ? { release: true } : {}),
+          ...(a?.leaseMs !== undefined ? { leaseMs: a.leaseMs } : {}),
+          ...(a?.sessionId ? { sessionId: a.sessionId } : {}),
+          ...(a?.note ? { note: a.note } : {}),
+          ...(a?.takeover === true ? { takeover: true } : {}),
+          ...(a?.force === true ? { force: true } : {}),
+        });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_activity": {
+        const a = args as any;
+        const q = new URLSearchParams();
+        if (a?.ref) q.set("task", String(a.ref));
+        if (a?.limit) q.set("limit", String(a.limit));
+        const body = await apiGet(`/api/tasks/activity${q.toString() ? `?${q}` : ""}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_edit": {
+        const a = args as any;
+        const ref = encodeURIComponent(String(a?.ref ?? ""));
+        const patch: Record<string, unknown> = {};
+        for (const f of ["title", "detail", "priority", "assignee", "dueDate", "startDate", "actor"]) {
+          if (typeof a?.[f] === "string") patch[f] = a[f];
+        }
+        if (Array.isArray(a?.labels)) patch.labels = a.labels;
+        const body = await apiSend("POST", `/api/tasks/${ref}`, patch);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_session": {
+        const a = args as any;
+        if (a?.detach) {
+          // The ref is irrelevant on a detach — a session belongs to at most one task, so naming
+          // the session is naming the attribution. `x` is a placeholder the route ignores.
+          const body = await apiSend("POST", "/api/tasks/x/sessions", { detach: a.detach });
+          return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+        }
+        const ref = encodeURIComponent(String(a?.ref ?? ""));
+        const body = await apiSend("POST", `/api/tasks/${ref}/sessions`, { sessionId: a?.sessionId });
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
+      case "agentistics_task_delete": {
+        const ref = String((args as any)?.ref ?? "");
+        const body = await apiSend("DELETE", `/api/tasks/${encodeURIComponent(ref)}`);
+        return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
+      }
       case "agentistics_summary": {
         const harness = (args as any)?.harness as string | undefined;
         const unified = !harness || harness === "all";

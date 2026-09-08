@@ -4,6 +4,7 @@ import type { HarnessId } from '@agentistics/core'
 import { HARNESS_LABELS, HARNESS_COLORS } from '../lib/harness'
 import { HarnessChat } from './HarnessChat'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { OVERLAY_TOP } from '../lib/mobileOverlay'
 
 interface TranscriptTarget {
   harness: HarnessId
@@ -42,7 +43,7 @@ export function TranscriptModal({ lang }: { lang: 'pt' | 'en' }) {
         position: 'fixed', inset: 0, zIndex: 600,
         background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: isMobile ? 0 : 24,
+        padding: isMobile ? OVERLAY_TOP : 24,
         animation: 'ttyChatFadeIn 0.15s ease-out',
       }}
       onClick={(e) => { if (!isMobile && e.target === e.currentTarget) setTarget(null) }}

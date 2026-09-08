@@ -12,6 +12,7 @@
 
 import type { HarnessId, SessionMeta } from '@agentistics/core'
 import { sessionAtCwd } from '../live-sessions'
+import { pickTitle } from './harness-session-file'
 import type { ManagedSession } from './types'
 
 /**
@@ -78,8 +79,19 @@ export function linkManagedSessions(
   return out
 }
 
-/** Stamp the user's own label and note onto the sessions they belong to. Mutates in place, like the
- *  rest of the enrichment pipeline, and touches nothing it cannot attribute. */
+/**
+ * Stamp the user's own label and note onto the sessions they belong to. Mutates in place, like the
+ * rest of the enrichment pipeline, and touches nothing it cannot attribute.
+ *
+ * The label is resolved through `pickTitle` — the SAME contest the terminal cockpit settles between
+ * the name typed into agentop (`m.label`) and the one typed with `/rename` inside the harness
+ * (`m.harnessName`, the poller's persisted mirror of the live session file). Before this it was
+ * `m.label` unconditionally, so a `/rename` made inside Claude was invisible on the web dashboard
+ * even though `agentop session ls` already showed it — two implementations of "what is this session
+ * called" answering differently, which is the defect `pickTitle` exists to remove. `sessionLabel`
+ * (`core/format.ts`) is untouched: it still just reads `user_label` first, and `user_label` now
+ * already holds whichever name won.
+ */
 export function applySessionLabels(
   sessions: SessionMeta[],
   links: ReadonlyMap<string, ManagedSession>,
@@ -87,7 +99,24 @@ export function applySessionLabels(
   for (const s of sessions) {
     const m = links.get(s.session_id)
     if (!m) continue
-    if (m.label) s.user_label = m.label
     if (m.note) s.user_note = m.note
+    const picked = pickTitle({
+      ...(m.label ? { label: m.label } : {}),
+      ...(m.labelSince !== undefined ? { labelSince: m.labelSince } : {}),
+      ...(m.harnessName
+        ? {
+            file: {
+              name: m.harnessName,
+              ...(m.harnessNameSince !== undefined ? { nameSince: m.harnessNameSince } : {}),
+            },
+          }
+        : {}),
+      // Empty fallback rather than the historic `title`/`first_prompt` chain: those are read by
+      // `sessionLabel` itself once `user_label` is absent, and re-deriving them here would be a
+      // second copy of that fallback. `pickTitle` returning `derived` (title === '') means neither
+      // side named this session, which is exactly when `user_label` must stay unset.
+      fallback: '',
+    })
+    if (picked.source !== 'derived') s.user_label = picked.title
   }
 }

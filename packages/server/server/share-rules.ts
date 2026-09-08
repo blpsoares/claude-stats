@@ -334,47 +334,95 @@ export function filterShared<T extends Pick<SessionMeta, 'git_remote' | 'project
  * name and activity you broadcast is not a privacy control. Every outbound path applies the
  * same rule, so this one runs through `sessionShared` like the uploader does.
  *
- * Fail-closed on BOTH halves, which is stricter than `filterShared` and deliberately so:
+ * Fail-closed on ALL THREE halves, which is stricter than `filterShared` and deliberately so:
  *
  * - A live id whose session we cannot find is dropped. It cannot be attributed to a repo, and
  *   the central could not render it anyway (it resolves live ids against the sessions it was
  *   pushed), so keeping it only ever leaked an identifier for a row nobody could see.
+ * - An ACTIVITY is keyed by `session_id` and is judged by that same predicate, key by key. It
+ *   used to be sent unfiltered beside the two filtered fields, so a withheld repo's session
+ *   announced its id AND its state (`working` / `waiting` / `waiting-approval` / `exited`) every
+ *   8 seconds — enough to count a hidden project's sessions and watch them work. That the
+ *   central most likely has no document to render it against is a statement about today's
+ *   rendering, not about the boundary.
  * - A process is reported only when its `cwd` resolves POSITIVELY to a repo that is not denied.
  *   A process has no session to attribute, and `cwd` is the sensitive field here — a path is
  *   often the repo name. Under restrictions an unrecognized directory is withheld rather than
  *   assumed innocent.
  *
+ * ONE function decides the whole `live-sessions` FRAME. The caller must never assemble a field of
+ * that message beside this result — that is exactly how the activities came to be sent unfiltered
+ * — so anything added to the live message is added here, where the rule already lives.
+ *
+ * **It is not, and never was, a statement about the SOCKET.** `live-sessions` was the only
+ * member→central send when this was written; the machine-fleet relay now sends three more
+ * (`sessions/machine-fleet.ts`), and they carry their own application of `cwdShared` — the read
+ * half filtering rows, the act half refusing a verb aimed at a row this connection cannot see. Both
+ * halves of that relay must keep going through `cwdShared`; the act half once did not, and a
+ * central could drive `kill` / `rename` / `resume` against a withheld session.
+ *
  * With no restrictions the snapshot passes through untouched — the common case pays nothing.
  */
+/**
+ * May something known only by its DIRECTORY be shown to this central?
+ *
+ * The rule for anything that has a `cwd` and no session to attribute it to: a live process, and a
+ * row of the session fleet relayed to a machine's owning account. It is deliberately stricter than
+ * `sessionShared`, and the reason is worth keeping: **positive resolution only**. `repoKeyOf` falls
+ * back to `NO_REPO_KEY` for an unknown path, which under a denylist reads as "shared" unless the
+ * user also denied the no-repo bucket — and `cwd` is the sensitive field here, because a path is
+ * usually the repository's name. So an unrecognized directory is withheld in BOTH modes.
+ *
+ * Extracted from `filterLiveShared`, which now calls it, so the relayed fleet and the live-session
+ * snapshot cannot drift into two different answers about the same directory.
+ */
+export function cwdShared(cwd: string, rules: ShareRules, index?: PathRepoIndex): boolean {
+  // An unrestricted denylist shares everything; an allowlist NEVER takes this shortcut, because an
+  // empty one is the strictest rule there is rather than the absence of one.
+  if (rules.mode === 'denylist' && rules.sources.size === 0) return true
+  const key = index?.resolved.get(cwd)
+  if (!key) return false
+  const matched = rules.sources.has(repoSourceKey(key)) || rules.sources.has(projectSourceKey(cwd))
+  return rules.mode === 'allowlist' ? matched : !matched
+}
+
 export function filterLiveShared<
   P extends { cwd: string },
+  A extends string = 'working' | 'waiting' | 'waiting-approval' | 'exited',
 >(
-  snapshot: { liveSessionIds: readonly string[]; liveProcesses: readonly P[] },
+  snapshot: {
+    liveSessionIds: readonly string[]
+    liveProcesses: readonly P[]
+    liveSessionActivities?: Readonly<Record<string, A>> | null
+  },
   sessions: readonly Pick<SessionMeta, 'session_id' | 'git_remote' | 'project_path'>[],
   rules: ShareRules,
   index?: PathRepoIndex,
-): { liveSessionIds: string[]; liveProcesses: P[] } {
+): { liveSessionIds: string[]; liveProcesses: P[]; liveSessionActivities: Record<string, A> } {
   // Only an unrestricted DENYLIST passes the snapshot through. An allowlist is always a
   // restriction — an empty one shares nothing — so it must never take this shortcut.
   if (rules.mode === 'denylist' && rules.sources.size === 0) {
-    return { liveSessionIds: [...snapshot.liveSessionIds], liveProcesses: [...snapshot.liveProcesses] }
+    return {
+      liveSessionIds: [...snapshot.liveSessionIds],
+      liveProcesses: [...snapshot.liveProcesses],
+      liveSessionActivities: { ...(snapshot.liveSessionActivities ?? {}) },
+    }
   }
   const byId = new Map(sessions.map(s => [s.session_id, s]))
-  const liveSessionIds = snapshot.liveSessionIds.filter(id => {
+  const idShared = (id: string): boolean => {
     const s = byId.get(id)
     return !!s && sessionShared(s, rules, index)
-  })
-  const liveProcesses = snapshot.liveProcesses.filter(p => {
-    // Positive resolution only: `repoKeyOf` falls back to NO_REPO_KEY for an unknown path, which
-    // under a denylist would read as "shared" whenever the user has not also denied the no-repo
-    // bucket. A process has no session to attribute and `cwd` is the sensitive field — a path is
-    // usually the repository's name — so an unrecognized directory is withheld in BOTH modes.
-    const key = index?.resolved.get(p.cwd)
-    if (!key) return false
-    const matched = rules.sources.has(repoSourceKey(key)) || rules.sources.has(projectSourceKey(p.cwd))
-    return rules.mode === 'allowlist' ? matched : !matched
-  })
-  return { liveSessionIds, liveProcesses }
+  }
+  const liveSessionIds = snapshot.liveSessionIds.filter(idShared)
+  // Judged key by key against the rule, never by intersecting with `liveSessionIds` above: that
+  // would inherit whatever that list happens to hold rather than asking the question, and an
+  // activity for an id the snapshot did not list would then pass on a technicality.
+  const liveSessionActivities: Record<string, A> = {}
+  for (const [id, activity] of Object.entries(snapshot.liveSessionActivities ?? {})) {
+    if (idShared(id)) liveSessionActivities[id] = activity as A
+  }
+  const liveProcesses = snapshot.liveProcesses.filter(p => cwdShared(p.cwd, rules, index))
+  return { liveSessionIds, liveProcesses, liveSessionActivities }
 }
 
 /**

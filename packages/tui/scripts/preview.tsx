@@ -35,6 +35,8 @@ import { render } from 'ink-testing-library'
 import { ControlCenter } from '../src/control/ControlCenter'
 import {
   TAB_ORDER,
+  type BackupLayer,
+  type ControlBackupStatus,
   type ControlHost,
   type ControlSession,
   type ControlSessions,
@@ -46,6 +48,7 @@ import {
   type TabId,
   DEFAULT_SESSION_VIEW,
 } from '../src/control/types'
+import type { HarnessId } from '@agentistics/core'
 import { GROUPINGS, type SessionGroupingId } from '../src/control/sessions'
 import type { CliLang } from '../src/control/lang'
 // The real string table, not a copy of it. Every label on this screen arrives from the host already
@@ -480,7 +483,70 @@ function fakeHost(opts: Options, apiUrl?: string): ControlHost {
     promptSession: done,
     answerSession: done,
     reopenFell: done,
+    backupStatus: async () => FAKE_BACKUP,
+    setBackupHarness: async () => {},
+    setBackupSchedule: async () => ({ ok: true, message: 'preview — nothing was performed' }),
+    runBackup: act,
   }
+}
+
+/**
+ * A backup worth looking at: the numbers from the design's own measured table — a harness with
+ * everything present, one riding the next backup with no size worth naming yet, one UNTICKED (so
+ * it must read as unprotected, not merely dimmer), and one whose last record points at a file
+ * that is gone.
+ */
+const FAKE_BACKUP: ControlBackupStatus = {
+  harnesses: [
+    { id: 'claude', enabled: true, sessions: 552, sizeLabel: '3.4 MB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    { id: 'codex', enabled: true, sessions: 14, sizeLabel: '60 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    { id: 'gemini', enabled: true, sessions: 15, sizeLabel: '64 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+    // Unticked, and NEVER backed up — the row this whole tab exists to make unmissable.
+    { id: 'copilot', enabled: false, sessions: 11, sizeLabel: '48 KB' },
+    { id: 'antigravity', enabled: true, sessions: 34, sizeLabel: '140 KB', lastBackupGone: true },
+    { id: 'kimi', enabled: true, sessions: 12, sizeLabel: '52 KB', lastBackupAt: new Date(Date.now() - 6 * 60 * 60_000).toISOString() },
+  ],
+  config: {
+    layers: ['metrics', 'repos'],
+    scheduleLayers: ['metrics'],
+    destDir: '/home/dev/backups',
+    schedule: 'daily',
+    scheduleActive: true,
+    keep: 7,
+    retainedLabel: '35 MB',
+    secretsCount: 5,
+    layerSizes: { metrics: '3.4 MB', repos: null, archive: '12 MB', raw: '953 MB' },
+    layerBytes: { metrics: 3_400_000, repos: null, archive: 12_000_000, raw: 953_000_000 },
+    archiveMode: 'consolidate',
+    last: { at: new Date(Date.now() - 6 * 60 * 60_000).toISOString(), bytesLabel: '4.1 MB', skipped: 0 },
+  },
+  // A real mix: several PRESENT, several PRUNED by retention (neutral — expected after a week of
+  // daily backups), and one genuinely MISSING (the one row that should read as a warning). This is
+  // the fixture the history-viewer fix is checked against.
+  history: Array.from({ length: 14 }, (_, i) => {
+    const at = new Date(Date.now() - i * 24 * 60 * 60_000).toISOString()
+    const presence = i === 3 ? 'missing' as const : i < 7 ? 'present' as const : 'pruned' as const
+    return {
+      at,
+      layers: (i % 2 === 0 ? ['metrics', 'repos'] : ['metrics']) as BackupLayer[],
+      harnesses: ['claude', 'codex', 'gemini'] as HarnessId[],
+      bytesLabel: i % 2 === 0 ? '4.1 MB' : '3.6 MB',
+      skipped: i === 5 ? 2 : 0,
+      presence,
+    }
+  }),
+  // CONFIGURED, because that is the state with rows to fit. An unconfigured section is one short
+  // line and would never catch a row that overflows; the preview exists to catch exactly that.
+  github: {
+    configured: true,
+    url: 'https://github.com/you/agentistics-backups',
+    repo: 'you/agentistics-backups',
+    label: 'notebook',
+    keepRemote: 5,
+    deleteLocalAfterUpload: true,
+    auth: 'token',
+    suggestedLabel: null,
+  },
 }
 
 /**

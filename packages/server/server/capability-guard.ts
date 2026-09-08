@@ -16,10 +16,14 @@ import { CAPS, type Capabilities } from './exposure'
 /** Exact path → capability. Detail sub-paths are handled by the prefix table below. */
 const EXACT: ReadonlyMap<string, keyof Capabilities> = new Map<string, keyof Capabilities>([
   ['/api/exec', 'localShell'],
+  // It SPAWNS `tailscale` to read what this machine is already serving — a process, so it is host
+  // power and belongs here. It configures nothing; see `secure-origin.ts`.
+  ['/api/secure-origin', 'localShell'],
+  // It STARTS the configured MCP command to see whether it answers. Host power, and the reason the
+  // route looks the server up in the CONFIG rather than taking a command from the body.
+  ['/api/mcp/check', 'localShell'],
   ['/api/chat-tty', 'localChat'],
   ['/api/chat-harnesses', 'localChat'],
-  ['/api/mcp-list', 'mcpAdmin'],
-  ['/api/mcp-action', 'mcpAdmin'],
   ['/api/projects-list', 'localTranscripts'],
   // Returns this machine's decrypted sibling messages — a peer's FULL source list, plus its own
   // key fingerprints. Strictly more sensitive than /api/team/status, which deliberately exposes
@@ -54,6 +58,30 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   // next fleet route someone adds must be guarded by having been added AT ALL, never by having
   // remembered a second table.
   ['/api/fleet', 'localShell'],
+  // The task board reads the session registry and the local store, and its DELIVER verb runs git in
+  // the directories those sessions ran in. That is host power, so it rides the same capability as
+  // the fleet — and a prefix for the same reason: the next task route must be guarded by having
+  // been added at all, never by having remembered a second table.
+  ['/api/tasks', 'localShell'],
+  // The file store is addressed by file id rather than under `/api/tasks/`, so it needs its own
+  // entry: a route that is not registered here is assumed harmless.
+  ['/api/task-files', 'localShell'],
+  // The web dashboard's read of the backup engine and its "run now" button. `status` walks the
+  // metrics layer and the backup history; `run` spawns `git bundle`/`git diff` across every known
+  // repository and, depending on the configured layers, copies the raw harness directories
+  // (`~/.claude`, `~/.codex`, …) into an archive on disk — the same shell-and-filesystem power
+  // `/api/exec` carries, so it rides the same capability rather than a softer one.
+  ['/api/backup', 'localShell'],
+  // Reading and WRITING this machine's MCP server configuration. `/api/mcp/servers` reports what is
+  // configured and what is running; `/api/mcp/install` and `/api/mcp/remove` run `claude mcp` to
+  // change it. A PREFIX for the same reason `/api/fleet` is one: the next route here is guarded by
+  // having been added at all, never by having remembered a second table. It cannot collide with the
+  // older `/api/mcp-list` / `/api/mcp-action`, which are exact entries above — a prefix matches
+  // `<prefix>` and `<prefix>/…` only.
+  // It replaced `/api/mcp-list` + `/api/mcp-action`, which had no client and read two files that
+  // hold no MCP servers at all (`~/.claude/settings.json` and `<project>/.claude/settings.json`) —
+  // a second lister giving a different, wrong answer is the drift this codebase is built against.
+  ['/api/mcp', 'mcpAdmin'],
 ]
 
 export function routeCapability(pathname: string): keyof Capabilities | null {

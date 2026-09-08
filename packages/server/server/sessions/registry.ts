@@ -22,11 +22,15 @@
  *  - a mutation that changes nothing (`remove` of an id that was never there) does not write at all.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { MANAGED_SESSIONS_FILE } from '../config'
 import type { ManagedSession } from './types'
+import { withFileLock } from './file-lock'
+
+/** Distinguishes two writes from the SAME process; the pid distinguishes the processes. */
+let writeSeq = 0
 
 /**
  * A short, lowercase id that is safe as a tmux session name.
@@ -51,8 +55,13 @@ export interface SessionPatch {
   labelSince?: number
   note?: string
   task?: string
+  /** See `ManagedSession.taskId` — stamped at spawn, patched only when a row is re-attributed. */
+  taskId?: string
+  attemptId?: string
   endedAt?: string
   conversationId?: string
+  /** See `ManagedSession.conversationLink`. Written beside `conversationId`, never on its own. */
+  conversationLink?: 'assigned' | 'observed'
   /** The harness's own `/rename` name, persisted so the title survives the process — see
    *  `ManagedSession.harnessName`. Written by the poller only when it CHANGES, one write per rename. */
   harnessName?: string
@@ -107,12 +116,19 @@ function sanitize(raw: unknown): ManagedSession | null {
       : {}),
     ...(typeof s.note === 'string' ? { note: s.note } : {}),
     ...(typeof s.task === 'string' ? { task: s.task } : {}),
+    ...(typeof s.taskId === 'string' ? { taskId: s.taskId } : {}),
+    ...(typeof s.attemptId === 'string' ? { attemptId: s.attemptId } : {}),
     ...(typeof s.endedAt === 'string' ? { endedAt: s.endedAt } : {}),
     // Written by `resumeSession` and `openTask` and, until this line existed, dropped on the way back
     // in — so the exact conversation a reopened session drives was recorded and then never read, and
     // the next reopen fell back to the harness+directory guess that cannot tell two sessions of one
     // repository apart. `SessionPatch` has carried the field all along.
     ...(typeof s.conversationId === 'string' ? { conversationId: s.conversationId } : {}),
+    // Only the two words this field can hold. An unknown one would flow into the rollup's sentence
+    // about whether a cost came from an assigned id or a claimed one, as though it meant something.
+    ...(s.conversationLink === 'assigned' || s.conversationLink === 'observed'
+      ? { conversationLink: s.conversationLink }
+      : {}),
     // A number, and finite: this is a hand-editable file, and `lastSeenMs: "yesterday"` reaching
     // `crash-group.ts` would put a NaN comparison in charge of which sessions get reopened.
     ...(typeof s.lastSeenMs === 'number' && Number.isFinite(s.lastSeenMs)
@@ -204,16 +220,45 @@ export function createSessionRegistry(file: string): SessionRegistry {
     await mkdir(dirname(file), { recursive: true })
     // tmp-then-rename: a crash or a concurrent reader mid-write sees either the old file or the
     // complete new one, never a truncated one `read()` would parse-fail on.
-    const tmp = `${file}.tmp`
-    await writeFile(tmp, `${JSON.stringify(list, null, 2)}\n`, 'utf-8')
-    await rename(tmp, file)
+    //
+    // THE TEMP PATH IS UNIQUE PER WRITE, and that is the whole point of it. It used to be the
+    // constant `${file}.tmp`, shared by every writer — and `file-lock.ts` deliberately does not
+    // exclude them all: a blocked acquirer proceeds after `WAIT_MS` and a lock older than
+    // `STALE_MS` is stolen, both so that a lock can never wedge the product. Two writers therefore
+    // reach here at once by design, and with one temp path they interleave INSIDE it: the rename
+    // then publishes a document that is half one list and half the other, `read()` cannot parse
+    // it, and the whole registry is quarantined — every managed session losing its record at once,
+    // which is what "the sessions stopped by themselves" looks like from outside.
+    //
+    // Measured on one machine: 19 `managed-sessions.json.corrupt-*` files between 29 Aug and
+    // 6 Sep. With a unique path each writer publishes a COMPLETE list by an atomic rename, so the
+    // worst case degrades from a destroyed registry to one lost update — which the lock already
+    // makes rare, and which the next poll repairs.
+    const tmp = `${file}.tmp.${process.pid}.${(writeSeq += 1)}`
+    try {
+      await writeFile(tmp, `${JSON.stringify(list, null, 2)}\n`, 'utf-8')
+      await rename(tmp, file)
+    } catch (err) {
+      // Never leave the scratch file behind: it is named after this process and nothing would ever
+      // come back for it.
+      await rm(tmp, { force: true }).catch(() => {})
+      throw err
+    }
   }
 
   // Chains `fn` behind whatever is already queued, so its read and write run as one atomic step
   // relative to every other call made through this same function. Kept alive across a rejection —
   // otherwise one failed mutation would wedge every mutation queued after it.
+  //
+  // AND ACROSS PROCESSES. The chain is per process, and agentop runs as several: the systemd
+  // server, the cockpit, and every one-shot `agentop session …`. Two of them read the same list,
+  // each adds its own record, each writes the whole thing back — and one record is gone. Measured:
+  // two sessions started minutes apart came back with an identical `createdAt` and no label,
+  // because both records had been erased and re-created by adoption, which cannot know a name.
+  // That is the one bug behind "the title I typed was ignored" and "rename does not rename".
+  // See `file-lock.ts` for why the lock can never wedge the product.
   function enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const next = queue.then(fn)
+    const next = queue.then(() => withFileLock(file, fn))
     queue = next.catch(() => undefined)
     return next
   }

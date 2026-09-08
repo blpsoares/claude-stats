@@ -14,6 +14,12 @@
 }
 
 :root {
+  /* How much the fixed top strip occupies RIGHT NOW — the control row plus the active-filter band
+     under it, measured in App.tsx and written here. Everything positioned below the strip reads
+     this instead of a constant, so the header growing can never leave the body sliding under it.
+     The 44px here is the control row alone: the value a first paint uses before the measurement. */
+  --ag-topbar-h: 44px;
+
   --bg-base: #0a0a0f;
   --bg-surface: #111118;
   --bg-card: #16161f;
@@ -94,33 +100,14 @@
 }
 
 /* Header and footer are always dark in both themes */
-[data-theme="light"] footer {
-  --bg-surface: #111118;
-  --bg-card: #16161f;
-  --bg-elevated: #1e1e2e;
-  --bg-secondary: rgba(255, 255, 255, 0.04);
-  --border: rgba(255, 255, 255, 0.06);
-  --border-subtle: rgba(255, 255, 255, 0.03);
-  --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.5);
-  --text-tertiary: rgba(255, 255, 255, 0.28);
-  --anthropic-orange: #f59e0b;
-  --anthropic-orange-light: #fbbf24;
-  --anthropic-orange-dim: rgba(245, 158, 11, 0.15);
-}
+/* The header and the footer used to be pinned DARK in the light theme — an explicit re-declaration
+   of the dark palette scoped to those two elements, so a light page carried two dark ribbons. It
+   was a deliberate design choice and it is being removed on the owner's instruction: switching to
+   the light theme is expected to light the whole application, and two elements that ignore it read
+   as a bug rather than as a decision. They now inherit `[data-theme="light"]` like everything else.
 
-[data-theme="light"] header {
-  --bg-surface: #111118;
-  --bg-elevated: #1e1e2e;
-  --bg-secondary: rgba(255, 255, 255, 0.04);
-  --border: rgba(255, 255, 255, 0.07);
-  --text-primary: rgba(255, 255, 255, 0.92);
-  --text-secondary: rgba(255, 255, 255, 0.5);
-  --text-tertiary: rgba(255, 255, 255, 0.28);
-  --anthropic-orange: #f59e0b;
-  --anthropic-orange-light: #fbbf24;
-  --anthropic-orange-dim: rgba(245, 158, 11, 0.15);
-}
+   To bring it back, restore a block of the same shape — nothing else depends on those overrides. */
+
 
 [data-theme="light"] ::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.15);
@@ -130,6 +117,19 @@
 }
 [data-theme="light"] * {
   scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+/*
+ * Form controls do NOT inherit `font-family` from `body` — the UA stylesheet gives them the system
+ * font. Without this line every `button`, `input`, `select` and `table` in the app renders in a
+ * different typeface from the text beside it, which is what makes a screen look assembled rather
+ * than designed. Found on the task board, but it was never scoped to it.
+ *
+ * `font-size` is deliberately NOT inherited here: the mobile 16px guard below depends on inputs
+ * carrying their own size, and several controls are intentionally smaller than body text.
+ */
+button, input, textarea, select, table {
+  font-family: inherit;
 }
 
 html, body {
@@ -225,6 +225,30 @@ html, body {
      which is what actually sits over it. Padding #root too double-counted the inset. */
 }
 
+/* ── The sessions workspace: no page bounce, no stranded scroll ──────────────
+   Two reports, one cause: on a phone that workspace is a fixed-height column whose conversation,
+   list and aside each scroll inside themselves, so it has nothing to scroll — yet the DOCUMENT
+   moved, two ways. A flick that ran off the end of an inner scroller chained out and rubber-banded
+   the whole page (the header dragged out from under the status bar), and iOS scrolled the page to
+   reveal the caret and did not always undo it, leaving the composer and the bar a little higher
+   than they went.
+
+   `overscroll-behavior: none` answers the first and is PAINT-ONLY — it changes no box, no
+   containing block and no unit. That distinction is the whole lesson here: this rule was first
+   written as `position: fixed` on the body, which is the usual iOS scroll-lock recipe and which
+   ALSO moves the initial containing block onto the small viewport. Three separate position reports
+   came out of it — a bar floating off the floor, a composer below the visible edge — because every
+   viewport unit and every `position: fixed` descendant in the tree then measured against a
+   different box than before. A layout that was correct must not be re-anchored to fix a scroll.
+
+   The second is answered in App.tsx, by putting the scroll back where it was when the keyboard
+   closes. iOS is left free to scroll the page for the caret in the first place — that is the part
+   that WORKED, and the composer riding up with the keyboard is it. */
+html.ag-viewport-locked,
+html.ag-viewport-locked > body {
+  overscroll-behavior: none;
+}
+
 /* Bottom nav safe-area padding.
    `box-sizing: border-box` is global, so this padding EATS the nav's height instead of adding to
    it: installed as a PWA (standalone, no browser toolbar) the inset is ~34-48px, which crushed a
@@ -235,6 +259,17 @@ html, body {
 :root {
   --mobile-nav-inset: env(safe-area-inset-bottom, 0px);
   --mobile-nav-h: calc(56px + var(--mobile-nav-inset));
+  /* The STATUS-BAR inset, and the twin of the one above.
+     Installed as a PWA the page owns the whole screen, so the topmost bar of every layout was
+     drawn UNDERNEATH the clock, the signal bars and the battery — ~47px on an iPhone 14 Pro. The
+     row was not merely ugly: the status bar takes the taps in that band, so the back arrow, the
+     chat/terminal tabs and the date presets could be seen and not pressed. In a browser tab the
+     inset is 0, which is why it only ever looked broken from the home screen — exactly how the
+     bottom inset hid for a release.
+     It is applied per topmost bar rather than to #root: a band on the root would push every
+     `position: sticky` offset down by the same amount and leave the bar's own background above it
+     transparent, which is the status bar showing the page's ground instead of the bar's. */
+  --safe-top: env(safe-area-inset-top, 0px);
 }
 
 .mobile-bottom-nav {
@@ -266,6 +301,91 @@ html, body {
   .ag-settings button.ag-switch {
     min-height: 0;
   }
+  /* A chip on a settings page opts out of the sweep above the same way, and takes its target from
+     `.ag-tap` below instead. */
+  .ag-settings button.ag-tap,
+  .ag-settings button.ag-tap-icon {
+    min-height: 0;
+  }
+}
+
+/* --- .ag-stat-value: the KPI figure's fallback size ------------------------------------------
+   `StatTile` states the figure as `min(18px, N cqi)`, which self-corrects to the tile's real
+   width. A browser that does not know `cqi` drops that whole declaration — this is what it lands
+   on, and it is the same 18px the `min()` caps at. Never remove it in favour of the inline value:
+   an inline style that the browser rejects leaves NO font-size at all. */
+.ag-stat-value { font-size: 18px; }
+
+/* --- .ag-tap / .ag-tap-icon: a 44px touch target that costs the layout no height ---------------
+   A chip is small ON PURPOSE: 11px of label inside a `border-radius: 999` pill. Give it
+   `min-height: 44px` and it stops being a chip — at ~62px wide it comes out an ELLIPSE, and a row
+   of them reads as a row of eggs rather than as a filter. That is the whole of the "the UI is
+   chubby" report: the rule was right (a finger needs 44px) and the way it was paid was wrong — the
+   PAINTED control grew.
+
+   So the paint and the target are separated. The control keeps its natural height and the class
+   projects an invisible 44px box centred on it, which is what the finger actually hits. `::after`
+   is a child of the control, so the press lands on the control's own handler; there is no listener
+   and no wrapper element of our own.
+
+   `.ag-tap` expands VERTICALLY ONLY (`left: 0; right: 0`), so a chip can never steal the tap of the
+   chip beside it in its row. `.ag-tap-icon` is for an icon-only button, which is narrow on both
+   axes and has to grow on both — use it only where the button has real space around it. Both live
+   inside the mobile query: a mouse-driven layout is untouched.
+
+   A row that wraps with a gap under ~14px overlaps by a pixel or two. The later sibling paints on
+   top, so the overlap resolves in favour of the chip LOWER on screen — the one the thumb is
+   travelling towards.
+
+   Use it for CHIPS, PILLS, TOGGLES and ICON-ONLY buttons: controls whose smallness is their
+   meaning. A dialog's "Save", a menu row, a primary action SHOULD be 44px of paint, and keep it.
+   Do not put it on anything containing its own interactive child (an input, a nested link): the
+   overlay sits above the content and would take that child's clicks. */
+@media (max-width: 767px) {
+  .ag-tap, .ag-tap-icon { position: relative; }
+  .ag-tap::after, .ag-tap-icon::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 100%;
+    min-height: 44px;
+  }
+  .ag-tap::after { left: 0; right: 0; }
+  .ag-tap-icon::after { left: 50%; width: 100%; min-width: 44px; transform: translate(-50%, -50%); }
+}
+
+/* ── The focus ring ──────────────────────────────────────────────────────────
+   NOTHING IN THIS APP FOCUSES WHITE. Asked for directly, and the browser is what does it: with no
+   `outline` of our own the UA default applies, and Chrome's `outline: auto` on a dark surface draws
+   a WHITE ring — the one colour this product uses nowhere else, on every button, input, link and
+   tab stop in the application.
+
+   `:focus-visible` and not `:focus`, so a MOUSE click never draws a ring while a keyboard tab
+   always does — which is the whole reason the pseudo-class exists, and why replacing the outline
+   outright (`outline: none`) is not an option: it would leave a keyboard user with no idea where
+   they are, which is worse than the wrong colour.
+
+   The ring is drawn with `outline` rather than `box-shadow` on purpose: an outline follows
+   `border-radius`, costs no layout, and cannot be clipped by an ancestor's `overflow` the way a
+   shadow is — and several of these controls live inside scrolling boxes.
+
+   `outline-offset` keeps it off the control's own border so a bordered input does not read as
+   having two borders. Anything wanting a different ring overrides it AFTER this rule; nothing here
+   sets a colour on `:focus` alone, so nothing is competing with it. */
+:focus-visible {
+  outline: 2px solid var(--anthropic-orange);
+  outline-offset: 2px;
+  /* Removes the UA's own ring where a browser draws BOTH (Safari keeps its default alongside a
+     custom outline on some form controls). */
+  -webkit-focus-ring-color: var(--anthropic-orange);
+}
+
+/* An element that is already ORANGE gets the ring in the text colour instead: an orange ring two
+   pixels off an orange button is invisible, which is the same failure as the white one seen from
+   the other side. */
+.ag-focus-invert:focus-visible {
+  outline-color: var(--text-primary);
 }
 
 /* iOS zoom guard.
@@ -404,5 +524,330 @@ html, body {
     /* Narrower than the desktop floor, because at 390px 26ch is most of the screen already. */
     min-width: 0;
     max-width: calc(100vw - 48px);
+  }
+}
+
+/* The sidebar's resize grip. Dim until the handle around it is pointed at or focused — an edge
+   that is always lit competes with the content beside it, and one that is never lit is an
+   affordance nobody finds. */
+[role="separator"]:hover .ag-aside-grip,
+[role="separator"]:focus-visible .ag-aside-grip {
+  background: var(--anthropic-orange);
+}
+
+/* ---------------------------------------------------------------------------
+   Chat markdown.
+
+   `ReactMarkdown` emits plain semantic HTML and inherits whatever the page gives it — which in a
+   bubble is nothing, so headings, lists, code and tables all rendered as undifferentiated text.
+   These are the styles that were missing.
+
+   Everything wide is clipped and scrolled INSIDE the bubble: a code fence or a table is routinely
+   wider than the column, and letting it set the width is how a message ends up outside its card.
+   --------------------------------------------------------------------------- */
+.ag-chat-md { min-width: 0; font-size: 13.5px; line-height: 1.65; color: var(--text-primary); }
+
+.ag-chat-md > :first-child { margin-top: 0; }
+.ag-chat-md > :last-child { margin-bottom: 0; }
+
+.ag-chat-md p { margin: 0 0 10px; }
+.ag-chat-md h1, .ag-chat-md h2, .ag-chat-md h3,
+.ag-chat-md h4, .ag-chat-md h5, .ag-chat-md h6 {
+  margin: 16px 0 8px; line-height: 1.3; font-weight: 700; color: var(--text-primary);
+}
+.ag-chat-md h1 { font-size: 17px; }
+.ag-chat-md h2 { font-size: 15.5px; }
+.ag-chat-md h3 { font-size: 14px; }
+.ag-chat-md h4, .ag-chat-md h5, .ag-chat-md h6 { font-size: 13px; }
+
+.ag-chat-md ul, .ag-chat-md ol { margin: 0 0 10px; padding-left: 22px; }
+.ag-chat-md li { margin: 3px 0; }
+.ag-chat-md li > p { margin: 0; }
+.ag-chat-md li::marker { color: var(--text-tertiary); }
+
+/* A task list is a list of states, not of bullets. */
+.ag-chat-md li:has(> input[type="checkbox"]) { list-style: none; margin-left: -18px; }
+.ag-chat-md input[type="checkbox"] { margin-right: 7px; accent-color: var(--anthropic-orange); }
+
+/*
+ * THE APP'S ACCENT, ON EVERY NATIVE CONTROL THAT HAS ONE.
+ *
+ * A range, a checkbox and a radio each paint themselves with the user agent's own accent unless
+ * told otherwise, and on a dark theme that is a violet which belongs to no part of this product.
+ * Reported on the accessibility lens, whose five sliders sat purple beside its own orange buttons.
+ *
+ * Measured before writing this: 10 range inputs in the app and ONE of them set the colour, inline.
+ * Nine were the browser's. A rule per control is a rule nine people have to remember, which is why
+ * this is one selector instead — a new slider is correct by existing.
+ *
+ * `accent-color` and nothing else: it is the one property that recolours a native control without
+ * replacing it, so the thumb, the track and the focus ring stay the platform's — which is what an
+ * ACCESSIBILITY surface most needs to keep.
+ */
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] { accent-color: var(--anthropic-orange); }
+
+.ag-chat-md a { color: var(--anthropic-orange); text-decoration: none; }
+.ag-chat-md a:hover { text-decoration: underline; }
+
+.ag-chat-md strong { font-weight: 700; color: var(--text-primary); }
+.ag-chat-md em { font-style: italic; }
+.ag-chat-md del { opacity: 0.6; }
+
+.ag-chat-md blockquote {
+  margin: 0 0 10px; padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--border); color: var(--text-secondary);
+}
+
+.ag-chat-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+/* Inline code sits INSIDE a sentence and must not break the line box; a fence is a block that
+   scrolls. Distinguished by the parent, because ReactMarkdown uses <code> for both. */
+.ag-chat-md code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+.ag-chat-md :not(pre) > code {
+  padding: 1.5px 5px; border-radius: 5px;
+  background: var(--bg-base); border: 1px solid var(--border-subtle);
+  color: var(--text-primary); overflow-wrap: anywhere;
+}
+.ag-chat-md pre {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 9px;
+  background: var(--bg-base); border: 1px solid var(--border-subtle);
+  max-width: 100%; overflow-x: auto; white-space: pre;
+}
+.ag-chat-md pre code {
+  padding: 0; border: none; background: transparent;
+  color: var(--text-secondary); white-space: pre; line-height: 1.55;
+}
+
+/* The table scrolls in its own box rather than widening the bubble. */
+.ag-chat-md table {
+  display: block; max-width: 100%; overflow-x: auto;
+  border-collapse: collapse; margin: 0 0 10px; font-size: 12.5px;
+}
+.ag-chat-md th, .ag-chat-md td {
+  border: 1px solid var(--border-subtle); padding: 5px 9px; text-align: left; white-space: nowrap;
+}
+.ag-chat-md th { background: var(--bg-elevated); font-weight: 700; }
+
+.ag-chat-md img { max-width: 100%; height: auto; border-radius: 8px; }
+
+/* The maximum effort level, when chosen. A brief emphatic pulse rather than a standing animation:
+   it marks the moment of the choice — the slowest and most expensive setting — and then stops. */
+@keyframes ag-effort-peak {
+  0%   { transform: scale(1);    box-shadow: 0 0 0 0 currentColor; }
+  50%  { transform: scale(1.05); box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 22%, transparent); }
+  100% { transform: scale(1);    box-shadow: 0 0 0 0 transparent; }
+}
+/* LOOPS for as long as the peak step stays selected — the point is "this is the maximum, and it is
+   doing more work for it", which a single pulse at the moment of selection does not keep saying.
+   Slower and eased both ways so a continuous loop reads as a heartbeat, not a jitter. */
+.ag-effort-peak { animation: ag-effort-peak 1400ms ease-in-out infinite; }
+
+/* Motion is decoration here; the colour and the label carry the meaning on their own. */
+@media (prefers-reduced-motion: reduce) {
+  .ag-effort-peak { animation: none; }
+}
+
+/* The working spinner. `lucide` ships a static glyph; the rotation is ours. */
+@keyframes ag-working-spin { to { transform: rotate(360deg); } }
+.ag-working-spin { animation: ag-working-spin 900ms linear infinite; }
+
+/* The microphone, while it is listening. A ring that breathes rather than a level meter: the Web
+   Speech API gives no audio level, and opening a SECOND `getUserMedia` stream just to draw one
+   would compete with the recogniser for the device. This says "it is on", which is the fact that
+   was missing; the interim words beside the field say what it is hearing. */
+@keyframes ag-mic-pulse {
+  0%   { transform: scale(0.94); opacity: 0.85; }
+  70%  { transform: scale(1.12); opacity: 0; }
+  100% { transform: scale(1.12); opacity: 0; }
+}
+.ag-mic-pulse { animation: ag-mic-pulse 1.3s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  /* Still visible, no longer moving — the state must survive the preference. */
+  .ag-mic-pulse { animation: none; opacity: 0.8; }
+}
+
+/* The live marker's dot. It reports something happening NOW, and a static dot beside a static
+   line is a label. Opacity only — a scaling dot moves the text beside it. */
+@keyframes ag-hint-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.ag-hint-pulse { animation: ag-hint-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ag-hint-pulse { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .ag-working-spin { animation: none; } }
+
+/* The row's pin. Hidden until the row is hovered or something in it has focus — a column of pin
+   glyphs down an unpinned list is noise beside the titles they sit next to — but always visible
+   once set, and always reachable by keyboard. */
+button:hover .ag-row-pin,
+button:focus-within .ag-row-pin,
+.ag-row-pin:focus-visible { opacity: 1 !important; }
+
+/* ---------------------------------------------------------------------------
+   Elevation and scrim, per theme.
+
+   A shadow is not theme-neutral. The dark values were tuned against near-black and read as a grey
+   smear over #fafafc; the light theme needs a lighter, tighter one. Same for the modal scrim: 55%
+   black over a light page is a blackout, not a scrim.
+   --------------------------------------------------------------------------- */
+:root {
+  --ag-shadow-seg: 0 1px 3px rgba(0, 0, 0, 0.18);
+  --ag-shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.32);
+  --ag-shadow-menu: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --ag-scrim: rgba(0, 0, 0, 0.55);
+}
+[data-theme="light"] {
+  --ag-shadow-seg: 0 1px 2px rgba(16, 24, 40, 0.08);
+  --ag-shadow-pop: 0 4px 14px rgba(16, 24, 40, 0.12);
+  --ag-shadow-menu: 0 10px 28px rgba(16, 24, 40, 0.16);
+  --ag-scrim: rgba(16, 24, 40, 0.38);
+}
+
+/* ---------------------------------------------------------------------------
+   Theme-flipping tints.
+
+   `rgba(255,255,255,0.05)` as a surface or a hairline is a DARK-THEME assumption: it lightens what
+   is under it, which over `#fafafc` is invisible or, at higher alphas, a white block on white.
+   Components across the app used it directly. These tokens carry the same intent — "a little
+   lighter than the ground" — and flip to "a little darker" in the light theme.
+   --------------------------------------------------------------------------- */
+:root {
+  --ag-tint-1: rgba(255, 255, 255, 0.03);
+  --ag-tint-2: rgba(255, 255, 255, 0.05);
+  --ag-tint-3: rgba(255, 255, 255, 0.07);
+  --ag-tint-4: rgba(255, 255, 255, 0.10);
+  --ag-tint-5: rgba(255, 255, 255, 0.15);
+  --ag-tint-strong: rgba(255, 255, 255, 0.30);
+  --ag-text-on-scrim: rgba(255, 255, 255, 0.92);
+  --ag-text-on-scrim-dim: rgba(255, 255, 255, 0.55);
+}
+[data-theme="light"] {
+  --ag-tint-1: rgba(16, 24, 40, 0.02);
+  --ag-tint-2: rgba(16, 24, 40, 0.04);
+  --ag-tint-3: rgba(16, 24, 40, 0.05);
+  --ag-tint-4: rgba(16, 24, 40, 0.08);
+  --ag-tint-5: rgba(16, 24, 40, 0.12);
+  --ag-tint-strong: rgba(16, 24, 40, 0.26);
+  /* Still white: these sit on the modal scrim, which is dark in BOTH themes. */
+  --ag-text-on-scrim: rgba(255, 255, 255, 0.92);
+  --ag-text-on-scrim-dim: rgba(255, 255, 255, 0.55);
+}
+
+/*
+ * "Go to message" landed here.
+ *
+ * A scroll on its own answers "did it move, and to what?" with nothing — on a conversation of
+ * similar-looking bubbles the reader has to guess which one was meant. The flash names it and then
+ * gets out of the way; it is removed after it runs, so nothing on the page stays marked.
+ */
+@keyframes ag-turn-flash {
+  0%, 100% { background: transparent; }
+  15%, 55% { background: color-mix(in srgb, var(--anthropic-orange) 22%, transparent); }
+}
+.ag-turn-flash {
+  animation: ag-turn-flash 1.6s ease-in-out;
+  border-radius: 14px;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No pulse, but the message is still MARKED — dropping the highlight entirely would leave the
+     control with no visible effect at all for anyone who asked for less motion. */
+  .ag-turn-flash {
+    animation: none;
+    background: color-mix(in srgb, var(--anthropic-orange) 18%, transparent);
+  }
+}
+
+/* The bubble's reply control. Revealed with the bubble — a column of controls down a conversation
+   competes with the words — and always reachable by keyboard.
+
+   ITS WHOLE APPEARANCE IS HERE, not on the element. It used to carry `opacity: 0` as an inline
+   style, which beats any stylesheet rule without `!important` — so the reveal below could never
+   fire and the control was invisible on every message, at every width, while still being clickable
+   by anyone who happened to guess where it was. */
+.ag-bubble-reply {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.ag-bubble:hover .ag-bubble-reply,
+.ag-bubble:focus-within .ag-bubble-reply { opacity: 1; }
+
+/* A touch screen has no hover and no right-click, so on a phone this is the ONLY way to reply and
+   it is always visible. The BOX stays 24px — a 44px square parked on the corner of every message
+   would sit on top of the words — while the pseudo-element gives the finger the 44px target the
+   box does not have. */
+@media (hover: none) {
+  .ag-bubble-reply { opacity: 1; }
+  .ag-bubble-reply::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * The composer's ground.
+ *
+ * A conversation should pass UNDER the place you type and fade out, not be cut by a solid band.
+ * Two layers do that: a blur over whatever is behind, and a gradient from transparent at the top to
+ * the page's own colour at the bottom, so the text dissolves instead of ending at an edge.
+ *
+ * `mask-image` on the blur layer is what keeps the TOP edge soft: a uniform backdrop-filter has a
+ * hard boundary of its own, which is the very edge this exists to remove.
+ *
+ * The layer is the pseudo-element at `z-index: -1`, NOT a wrapper around the composer's children.
+ * `position: sticky` creates a stacking context, so a negative-z child paints above the element's
+ * own background and below everything in it — which is exactly the ground — and it costs no DOM
+ * change. A wrapper would have moved the "jump to the latest message" button, which is positioned
+ * against the composer's own padding box.
+ */
+.ag-composer-ground {
+  position: relative;
+}
+.ag-composer-ground::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  /* Plain first, so a browser without `color-mix` still gets the fade rather than no ground. */
+  background: linear-gradient(to bottom, transparent 0%, var(--bg-base) 100%);
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--bg-base) 72%, transparent) 45%,
+    var(--bg-base) 100%
+  );
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 40%);
+}
+
+/*
+ * Where the effect cannot run, it degrades to TODAY'S behaviour — a solid ground — and never to
+ * unreadable text over a live conversation.
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ag-composer-ground::before {
+    background: var(--bg-base);
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }

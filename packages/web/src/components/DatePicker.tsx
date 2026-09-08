@@ -69,9 +69,23 @@ export function DatePicker({
     return !isBefore(date, rangeStartDate) && !isAfter(date, rangeEndDate)
   }
 
+  /**
+   * A BOUND ON A CALENDAR IS A DAY, NOT AN INSTANT — and this compared a day against one.
+   *
+   * `maxDate` defaults to `new Date()`, the current moment, while each cell was built at 12:00. So
+   * before noon, TODAY's cell was `isAfter` the bound and today could not be picked: the calendar's
+   * own "Today" shortcut did nothing, and the newest selectable day was yesterday. Reported as
+   * "today continua nao funcionando".
+   *
+   * Both sides are now taken to the END of their day, so the comparison asks the only question a
+   * calendar can answer: is this day after the last allowed day?
+   */
+  const endOfDayLocal = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999)
+
   const isDisabled = (date: Date) => {
-    const d = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12)
-    if (isAfter(d, maxDate)) return true
+    const d = endOfDayLocal(date)
+    if (isAfter(d, endOfDayLocal(maxDate))) return true
     if (minDate) {
       const md = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate(), 0)
       if (isBefore(d, md)) return true
@@ -110,7 +124,7 @@ export function DatePicker({
           background: open
             ? 'rgba(217,119,6,0.1)'
             : triggerHovered
-            ? 'rgba(255,255,255,0.05)'
+            ? 'var(--ag-tint-2)'
             : 'transparent',
           transition: 'background 0.12s ease',
         }}
@@ -143,7 +157,7 @@ export function DatePicker({
           border: '1px solid var(--border)',
           borderRadius: 14,
           padding: '14px 16px 16px',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.45), 0 6px 20px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05)',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.45), 0 6px 20px rgba(0,0,0,0.25), inset 0 1px 0 var(--ag-tint-2)',
           width: 256,
           userSelect: 'none',
         }}>

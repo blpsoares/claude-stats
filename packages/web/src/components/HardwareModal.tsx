@@ -33,6 +33,7 @@ import {
 import type { HarnessId, Lang } from '@agentistics/core'
 import { HARNESS_LABELS } from '../lib/harness'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { OVERLAY_TOP } from '../lib/mobileOverlay'
 import {
   metricsReasonText,
   serviceBadge,
@@ -601,7 +602,7 @@ export function HardwareModal({ lang, onClose }: { lang: Lang; onClose: () => vo
       style={{
         position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.55)',
         display: 'flex', alignItems: isMobile ? 'stretch' : 'center', justifyContent: 'center',
-        padding: isMobile ? 0 : (maximized ? 0 : 24),
+        padding: isMobile ? OVERLAY_TOP : (maximized ? 0 : 24),
       }}
     >
       <div

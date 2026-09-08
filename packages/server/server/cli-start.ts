@@ -30,7 +30,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeSync } from 'node:fs'
+import { existsSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, platform } from 'node:os'
 import {
@@ -41,7 +41,12 @@ import type {
   ActionResult,
   ActionTarget,
   AttachTicket,
+  BackupLayer,
+  BackupScheduleId,
   BootState,
+  ControlBackupConfig,
+  ControlBackupHarness,
+  ControlBackupStatus,
   ControlHost,
   ControlService,
   ControlSessions,
@@ -68,11 +73,21 @@ import type {
   RestoreCandidate,
 } from '@agentistics/tui/control'
 import { DEFAULT_SESSION_VIEW } from '@agentistics/tui/control'
-import { PORT, WEB_PORT } from './config'
+import { AGENTISTICS_DATA_DIR, PORT, WEB_PORT } from './config'
 import {
   readPreferences, writePreferences, resolveArchiveMode, type ArchiveMode,
   clampSessionPollMs, sessionPollMsOrDefault, SESSION_POLL_DEFAULT_MS,
 } from './preferences'
+import {
+  performBackup, readBackupPrefs, layerSizesNow,
+  writeBackupLayers, writeBackupScheduleLayers, writeBackupSchedule,
+} from './cli-backup'
+import { readGithubSection } from './backup-routes'
+import { omittedSecrets } from './backup/backup-plan'
+import { formatBytes, layerTotal, retainedTotal } from './backup/backup-size'
+import { lastBackup, lastPerHarness, lastBackupRun, loadBackupHistory } from './backup/backup-store'
+import { scheduleStatus } from './backup/schedule'
+import { loadConsolidated } from './consolidate'
 import { centralRuntimeChoices, centralStartPlan, runCentral, type CentralStartPlan } from './cli-central'
 import { flagFor, type CentralRuntimeId, type CentralRuntimeOption } from './central-runtime'
 import { onOutputLine, publishLines, streamCommand } from './cli-stream'
@@ -101,19 +116,22 @@ import { resolveLang } from './cli-lang'
 import { scanProcesses } from './live-sessions'
 import { resolveBackend } from './sessions'
 import { SPAWN_SPECS, planSpawn } from './sessions/spawn-spec'
+import { availableHarnesses } from './sessions/harness-available'
 import { planTakeover } from './sessions/takeover'
 import { findProjects } from './sessions/project-source'
 import { candidatePath } from './sessions/project-search'
 import { recordedRepo, repoFacts } from './sessions/repo-facts'
+import { markFleetPhase, timeFleetPhase } from './sessions/fleet-profile'
 // The `SessionView` -> `ControlSession` mapping, extracted so `agentop session ls` draws the same
 // rows from the same decision rather than mapping the fleet a second time.
 import { toControlSession } from './sessions/control-session'
 import { planTaskReopen, taskReopenSucceeded, type TaskReopenPlan } from './sessions/task-reopen'
-import { approvalFor, choiceKey } from './sessions/approval-spec'
+import { approvalFor, choiceKey, fieldIsOpen, isFreeTextOption } from './sessions/approval-spec'
 // Carrying a rename through to the harness. Shared with `agentop session rename` — one gesture, one
 // implementation, for the reason `task-reopen.ts` exists.
 import { renameInHarness, renameMessage } from './sessions/rename'
 import { needsChoice, parseDialogOptions } from './sessions/dialog-choice'
+import { answerFollowUp } from './sessions/answer-followup'
 import { liveTranscriptDeps, runTranscriptSearch } from './sessions/transcript-run'
 import { rulesFor } from './sessions/attention-rules'
 import { planCrashGroup, planFellOffer } from './sessions/crash-group'
@@ -130,7 +148,9 @@ import type { ManagedSession, SpawnPlanError } from './sessions/types'
 import {
   addSession, newSessionId, patchSession, readRegistry, removeSession, retireFallenSessions, touchSessions,
 } from './sessions/registry'
-import { createSessionsPoller, type SessionsPoller } from './sessions/sessions-host'
+import { createSessionsPoller, type SessionsPoller, type SessionSnapshot } from './sessions/sessions-host'
+import { modeSpecFor } from './sessions/mode-spec'
+import { isServerProcess, readServerSnapshot } from './sessions/shared-snapshot'
 import { conversationForProcess, forgetConversations, loadConversations } from './sessions/conversations'
 
 export type StartResult = number | 'foreground'
@@ -144,6 +164,14 @@ export type StartResult = number | 'foreground'
  * an open menu.
  */
 const SEND_CAPTURE_LINES = 60
+/**
+ * How long to let a pane react to a typed digit before reading it back.
+ *
+ * The same figure `backend-tmux.ts` uses between its own keystrokes (`SUBMIT_SETTLE_MS`), doubled:
+ * this read has to be right rather than quick, and reading a frame mid-repaint is how a dialog that
+ * did move gets reported as stuck.
+ */
+const ANSWER_SETTLE_MS = 240
 
 
 // ANSI, for the output this module still writes to the REAL terminal: the suspended commands,
@@ -1424,7 +1452,11 @@ async function ensureSessionsPoller(): Promise<SessionsPoller> {
     loadHarnessSessions,
     // Written once per session, not once per poll — the poller only calls this when the harness's
     // own record disagrees with the registry.
-    recordConversation: (id, conversationId) => patchSession(id, { conversationId }),
+    // The link kind travels WITH the id. Dropping it here would persist a first-sighting claim as
+    // though the CLI had been handed that conversation, which is the one thing the field exists to
+    // keep apart — see `ManagedSession.conversationLink`.
+    recordConversation: (id, conversationId, conversationLink) =>
+      patchSession(id, { conversationId, conversationLink }),
     // The `/rename` name, persisted so the title survives the process — same once-per-change
     // discipline. See `ManagedSession.harnessName` and `pickTitle`.
     recordHarnessName: (id, name, since) =>
@@ -1485,6 +1517,9 @@ async function spawnManaged(req: {
   effort?: string
   label?: string
   task?: string
+  /** See `ManagedSession.taskId`: recorded at spawn, the one moment it is a fact. */
+  taskId?: string
+  attemptId?: string
 }, s: CliStrings): Promise<SpawnSessionResult> {
   const backend = await resolveBackend()
   const blocked = await backend.unavailable()
@@ -1532,11 +1567,16 @@ async function spawnManaged(req: {
     ...(req.effort ? { effort: req.effort } : {}),
     ...(req.label ? { label: req.label } : {}),
     ...(req.task ? { task: req.task } : {}),
+    // Stamped at SPAWN — the one moment the association is a fact. See `ManagedSession.taskId`.
+    ...(req.taskId ? { taskId: req.taskId } : {}),
+    ...(req.attemptId ? { attemptId: req.attemptId } : {}),
     // Recorded at the one moment it is certain — the harness was just handed this id, or we asked
     // it to reopen this conversation. Without it a fresh session's link exists only while the
     // harness's own record does (`harness-sessions.ts`, claude alone), so a session started with
     // the cockpit closed had nothing to fall back on but the harness-and-directory guess.
-    ...(planned.plan.conversationId ? { conversationId: planned.plan.conversationId } : {}),
+    ...(planned.plan.conversationId
+      ? { conversationId: planned.plan.conversationId, conversationLink: 'assigned' as const }
+      : {}),
     // Which repository this directory is in, while the directory is provably there. See
     // `ManagedSession.repo`: a worktree removed later leaves a path that names nothing, and the
     // grouping fell through to its last path segment as though it were a project.
@@ -2481,6 +2521,166 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
     },
 
     /**
+     * The `backup` tab's own snapshot — see `ControlHost.backupStatus`.
+     *
+     * A SEPARATE read from `refresh()`, never folded into it: `refresh()` runs on every action and
+     * on every `r` press, and this walks the metrics layer (a few MB) plus the whole consolidate
+     * store to count sessions per harness, which every OTHER tab needs `refresh()` to stay cheap
+     * for. The RAW layer (gigabytes) is never walked here — the harness list's `size` column is the
+     * metrics-only weight, the same figure `agentop backup --plan` would report for that layer.
+     */
+    async backupStatus(): Promise<ControlBackupStatus> {
+      const p = await readPreferences()
+      const prefs = readBackupPrefs(p)
+      const [measured, consolidated, entries, github] = await Promise.all([
+        Promise.resolve(layerSizesNow()),
+        loadConsolidated().catch(() => new Map()),
+        loadBackupHistory().catch(() => []),
+        // Undefined on a read failure, never `{configured:false}`: "we could not look" and "it is
+        // off" are different facts, and `githubRows` says the same honest sentence for both without
+        // this one having to pretend it knows which.
+        readGithubSection().catch(() => undefined),
+      ])
+
+      const sessionCounts: Partial<Record<HarnessId, number>> = {}
+      for (const sess of consolidated.values()) {
+        const h = (sess.harness ?? 'claude') as HarnessId
+        sessionCounts[h] = (sessionCounts[h] ?? 0) + 1
+      }
+      const byHarness = measured?.sizes.metrics.byHarness ?? {}
+      const emptyLayerLabels: ControlBackupConfig['layerSizes'] =
+        { metrics: null, repos: null, archive: null, raw: null }
+      const layerSizes = measured?.labels ?? emptyLayerLabels
+      // The same measurement, in raw bytes — see `ControlBackupConfig.layerBytes`. `repos` stays
+      // null for the same reason its label does: unmeasurable ahead of a run.
+      const layerBytes: ControlBackupConfig['layerBytes'] = measured
+        ? {
+            metrics: layerTotal(measured.sizes, 'metrics'),
+            repos: null,
+            archive: layerTotal(measured.sizes, 'archive'),
+            raw: layerTotal(measured.sizes, 'raw'),
+          }
+        : { metrics: null, repos: null, archive: null, raw: null }
+      const perHarnessLast = lastPerHarness(entries)
+
+      const harnesses: ControlBackupHarness[] = HARNESS_ORDER.map(id => {
+        const at = perHarnessLast[id]
+        // A recorded backup once covered this harness, and its file is gone — see
+        // `backup-store.ts`'s `markPresence`. Checked only when there is no PRESENT one, so a
+        // harness with several records never has to look past the newest that still exists.
+        const gone = !at && entries.some(e => e.harnesses.includes(id))
+        return {
+          id,
+          enabled: prefs.harnesses.includes(id),
+          sessions: sessionCounts[id] ?? 0,
+          sizeLabel: formatBytes(byHarness[id] ?? 0),
+          ...(at ? { lastBackupAt: at } : {}),
+          ...(gone ? { lastBackupGone: true } : {}),
+        }
+      })
+
+      // What you can RESTORE from. Unchanged — see the same note in `backup-routes.ts`.
+      const last = lastBackup(entries)
+      // The SCHEDULE asks when one last RAN, which a pruned file still answers — see `lastBackupRun`.
+      const st = scheduleStatus({
+        schedule: prefs.schedule, customHours: prefs.customHours,
+        atHour: prefs.atHour, tzOffsetMinutes: new Date().getTimezoneOffset(),
+        lastAt: lastBackupRun(entries)?.at ?? null, nowMs: Date.now(),
+        serverRunning: existsSync(join(AGENTISTICS_DATA_DIR, 'events-producer.json')),
+      })
+
+      return {
+        harnesses,
+        config: {
+          layers: prefs.layers,
+          scheduleLayers: prefs.scheduleLayers,
+          destDir: prefs.destDir,
+          schedule: prefs.schedule,
+          scheduleActive: st.kind === 'next',
+          keep: prefs.keep,
+          retainedLabel: formatBytes(retainedTotal(entries.filter(e => e.present))),
+          secretsCount: omittedSecrets().length,
+          layerSizes,
+          layerBytes,
+          ...(resolveArchiveMode(p) ? { archiveMode: resolveArchiveMode(p) } : {}),
+          ...(last
+            ? { last: { at: last.at, bytesLabel: formatBytes(last.archiveBytes), skipped: last.skipped } }
+            : {}),
+        },
+        // Newest first already — see `loadBackupHistory`.
+        history: entries.map(e => ({
+          at: e.at,
+          layers: e.layers,
+          harnesses: e.harnesses,
+          bytesLabel: formatBytes(e.archiveBytes),
+          skipped: e.skipped,
+          presence: e.presence,
+        })),
+        github,
+      }
+    },
+
+    // Best-effort, exactly like `setMouse`: a machine that cannot write its preferences still gets
+    // the toggle for this run.
+    async setBackupHarness(harness: HarnessId, on: boolean): Promise<void> {
+      try {
+        const p = await readPreferences()
+        const prefs = readBackupPrefs(p)
+        const set = new Set(prefs.harnesses)
+        if (on) set.add(harness); else set.delete(harness)
+        await writePreferences({
+          ...p,
+          // HARNESS_ORDER, never the Set's own iteration order — the same discipline `readBackupPrefs`
+          // itself follows, so a preference written here reads back in the order every other surface
+          // already expects.
+          backup: { ...(p.backup ?? {}), harnesses: HARNESS_ORDER.filter(h => set.has(h)) },
+        })
+      } catch { /* best-effort — see above */ }
+    },
+
+    // Delegates to the same writer `agentop backup schedule` calls (`cli-backup.ts`'s
+    // `writeBackupSchedule`) — one implementation of the read-modify-write, not three.
+    async setBackupSchedule(schedule: BackupScheduleId): Promise<ActionResult> {
+      await writeBackupSchedule(schedule)
+      return { ok: true, message: S().backupScheduleSet(schedule) }
+    },
+
+    /**
+     * The layers editor's `enter` — set the layers a MANUAL run writes. Delegates to
+     * `writeBackupLayers`, the same writer `agentop backup config --layers` and the web's format
+     * picker call, which is what enforces `metrics` staying in the set even if this were ever
+     * called with a draft that dropped it.
+     */
+    async setBackupLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupLayers(layers)
+      return { ok: true, message: S().backupLayersSet(written.join(', ')) }
+    },
+
+    /** Same, for the layers a SCHEDULED run writes. */
+    async setBackupScheduleLayers(layers: BackupLayer[]): Promise<ActionResult> {
+      const written = await writeBackupScheduleLayers(layers)
+      return { ok: true, message: S().backupScheduleLayersSet(written.join(', ')) }
+    },
+
+    /**
+     * Run a backup now, streaming into `onOutput` — the same channel a rebuild uses.
+     *
+     * Calls `performBackup`, the ONE implementation `agentop backup` itself calls (`cli-backup.ts`):
+     * the cockpit decides nothing about what a backup carries, it only presses the button.
+     */
+    async runBackup(): Promise<ActionResult> {
+      const prefs = readBackupPrefs(await readPreferences())
+      const result = await performBackup(
+        prefs,
+        { layers: prefs.layers, harnesses: prefs.harnesses, destDir: prefs.destDir },
+        line => publishLines([line]),
+      )
+      return result.ok
+        ? { ok: true, message: S().backupRunOk(formatBytes(result.record.archiveBytes)) }
+        : { ok: false, message: result.reason }
+    },
+
+    /**
      * The output channel, straight from `cli-stream.ts`.
      *
      * A pass-through rather than a second registry: the streaming helpers are module-level (one
@@ -2533,21 +2733,54 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       // `S()` rather than `this.lang`: the language is a closure variable `setLang` reassigns, and
       // reading it through `this` would break the moment a caller detached the method.
       const s = S()
-      const poller = await ensureSessionsPoller()
-      const snap = await poller.poll()
+      // See `fleet-profile.ts`: this breakdown exists because the cold `/api/fleet` cost (~29s,
+      // measured after `chat-tail.ts`'s fix) has NOT been traced past `readRegistry`/`scanProcesses`/
+      // `loadConversations`/`loadHarnessSessions`/`backend.list` (individually measured and ruled
+      // out — they run inside `poller.poll()`'s own `Promise.all`). Every phase below is a candidate
+      // that has not yet been measured; run with `AGENTISTICS_PROFILE_FLEET=1` on the slow machine.
+      /*
+       * ASK THE SERVER'S POLLER BEFORE BUILDING A SECOND ONE.
+       *
+       * `working` is MOVEMENT — the frame changed since the LAST poll of that poller — and a state
+       * must additionally be seen twice before it is believed. Both live in the poller's own
+       * memory, so a poller that has just started reads a producing session as `waiting`, and a
+       * `running only` filter then hides it. Measured at one instant: the long-lived server said
+       * all four sessions were `working` while a freshly built host said all four were `waiting`.
+       * That is "aqui aparecem 4 e no agentop só 3".
+       *
+       * `null` means there is no server to ask — an ordinary answer, since the cockpit's whole
+       * purpose includes a machine whose server is stopped — and the local poller answers as it
+       * always did. The server never asks itself. See `shared-snapshot.ts`.
+       */
+      const shared = isServerProcess()
+        ? null
+        : await timeFleetPhase(
+          'sessions: readServerSnapshot',
+          () => readServerSnapshot<SessionSnapshot>(lang),
+        )
+      const poller = shared
+        ? null
+        : await timeFleetPhase('sessions: ensureSessionsPoller', ensureSessionsPoller)
+      const snap = shared
+        ?? await timeFleetPhase('sessions: poller.poll', () => poller!.poll())
       // Carried on every snapshot so the cockpit can state it permanently: a user who cannot get
       // out of a session is stranded in a buffer that hides their shell, and a line printed once
       // before the handover scrolls away the moment anything else happens.
-      const detachHint = await (await resolveBackend()).detachHint().catch(() => '')
+      const detachHint = await timeFleetPhase(
+        'sessions: detachHint',
+        async () => (await resolveBackend()).detachHint().catch(() => ''),
+      )
       // Read on every snapshot rather than cached: the toggle and the verb both write it, and a
       // stale copy would leave a task the user just finished still heading a live section.
-      const finishedTasks = (await readPreferences()).finishedTasks ?? []
+      const finishedTasks = (await timeFleetPhase('sessions: readPreferences', readPreferences)).finishedTasks ?? []
       // Resolved per session and MEMOIZED by directory: a directory does not change repository, and
       // this poll runs every five seconds over the whole fleet — asking git three times per session
       // per tick would be a hundred processes a minute to learn the same thing. What the registry
       // recorded at spawn is handed over with it, so a worktree somebody has since removed keeps
       // the project it belongs to instead of becoming one.
+      const repoFactsStart = performance.now()
       const facts = await Promise.all(snap.sessions.map(v => repoFacts(v.cwd, v.recordedRepo)))
+      markFleetPhase(`sessions: repoFacts x${snap.sessions.length}`, repoFactsStart)
       // What the machine LOST and could start again — named row by row for the offer, from the
       // SAME selection the count below reports. Read off the snapshot the poll already produced
       // rather than recomputed, so the screen cannot be shown two answers to one question while a
@@ -2559,7 +2792,9 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       // the offer is a statement about the QUESTION, not about the event.
       const fellAt = snap.fell?.atMs
       const answered = fellAt !== undefined && dismissedFallMs !== null && fellAt <= dismissedFallMs
-      const restorable = answered ? [] : await restorableSessions(snap.fell?.entries ?? [])
+      const restorable = answered
+        ? []
+        : await timeFleetPhase('sessions: restorableSessions', () => restorableSessions(snap.fell?.entries ?? []))
       return {
         ...(restorable.length > 0 ? { restorable } : {}),
         sessions: snap.sessions.map((v, i) => toControlSession(v, s, facts[i])),
@@ -2596,6 +2831,64 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * The same rule `agentop session kill` follows, and for the same reason: clearing the entry on an
      * unconfirmed kill turns a still-running session into one nothing can name again.
      */
+    /**
+     * Stop the current turn without ending the session.
+     *
+     * `Escape` is the key, taken from what `attention-rules.ts` already records these CLIs printing
+     * while they work — `esc to interrupt` — rather than assumed. It is REFUSED unless the session
+     * is measurably working: Escape into an idle prompt closes whatever the harness has open (a
+     * picker, a dialog, its own transcript view), which is not what "stop" means and is not undone
+     * by pressing it again.
+     */
+    /**
+     * Advance a session's harness to its next mode — see `mode-spec.ts`.
+     *
+     * The liveness is re-read from the BACKEND rather than from a poll snapshot, exactly as
+     * `interruptSession` and `answerSession` do: this sends a keystroke into a real terminal, and a
+     * five-second-old view of what is running is what would send it into a session that has ended.
+     *
+     * A harness with no probed spec is refused BY NAME. There is no safe fallback key: shift+tab
+     * means something else in most terminals, and sending it blind into an assistant is a keypress
+     * nobody asked for — the same refusal `choiceKey` makes for a numbered dialog.
+     */
+    async cycleSessionMode(id: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      const managed = (await readRegistry()).find(m => m.id === id)
+      if (!managed) return { ok: false, message: s.sessNoRegistryEntry }
+      const spec = modeSpecFor(managed.harness)
+      if (!spec) return { ok: false, message: s.sessModeUnknown(managed.harness) }
+
+      const live = (await backend.list().catch(() => [])).find(b => b.id === id)
+      if (!live?.alive) return { ok: false, message: s.sessNotRunning }
+
+      // The mode AFTER the key is whatever the harness moved to, and only the next poll can say —
+      // so the answer names the act rather than claiming an outcome it has not read.
+      return (await backend.sendKey(id, spec.cycleKey))
+        ? { ok: true, message: s.sessModeCycled }
+        : { ok: false, message: s.sessSendFailed(id) }
+    },
+
+    async interruptSession(id: string): Promise<ActionResult> {
+      const s = S()
+      const backend = await resolveBackend()
+      const blocked = await backend.unavailable()
+      if (blocked) return { ok: false, message: blocked }
+
+      // Read the pane's LIVENESS the same way `answerSession` does, rather than trusting a poll
+      // snapshot: this sends a keystroke into a real terminal, and a five-second-old view of what is
+      // running is exactly what would send it into a session that has since ended.
+      const live = (await backend.list().catch(() => [])).find(b => b.id === id)
+      if (!live?.alive) return { ok: false, message: s.sessNotRunning }
+
+      return (await backend.sendKey(id, 'Escape'))
+        ? { ok: true, message: s.sessInterrupted(id) }
+        : { ok: false, message: s.sessSendFailed(id) }
+    },
+
     async killSession(id: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
@@ -2947,7 +3240,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * a verified way to select the one they picked. A snapshot is up to five seconds old, and an
      * answer sent to a question that has changed underneath it is both wrong and silent.
      */
-    async answerSession(id: string, choice?: number): Promise<ActionResult> {
+    async answerSession(id: string, choice?: number, text?: string): Promise<ActionResult> {
       const s = S()
       const backend = await resolveBackend()
       const blocked = await backend.unavailable()
@@ -2983,7 +3276,99 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         if (!picked) return { ok: false, message: s.sessChoiceGone }
         const key = choiceKey(spec, choice)
         if (!key) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
-        return (await backend.sendKey(id, key))
+
+        /*
+         * THE FREE-TEXT OPTION IS NOT ANSWERED BY PICKING IT.
+         *
+         * Measured on a live dialog: the digit moves the cursor onto `Type something.` and turns
+         * the row into a FIELD — it does not submit. Every further digit is then typed INTO that
+         * field, which is how a card that kept being pressed produced `33333333333333333`.
+         *
+         * So the three steps the person would take by hand are taken here: the digit, the words,
+         * the return. Reproduced exactly before it was written — `3`, then the literal `capivara`,
+         * then Enter, and the session answered "você respondeu capivara".
+         *
+         * WITH NO TEXT it is refused rather than confirmed. Pressing Enter on an empty field reads
+         * as declining the question outright — measured, the session logged "User declined to
+         * answer questions" — which is a different answer from the one anybody meant to give.
+         */
+        if (isFreeTextOption(managed.harness, picked.label)) {
+          const answer = (text ?? '').trim()
+          if (!answer) return { ok: false, message: s.sessAnswerNeedsText }
+          if (!backend.sendChoiceText) return { ok: false, message: s.sessChooseUnknown(managed.harness) }
+          /**
+           * DID THE FIELD ACTUALLY OPEN? The three steps used to run with nothing checked between
+           * them — digit, words, return — on the reasoning that the digit turns that row into a
+           * field, which is true of the dialog it was verified against.
+           *
+           * Where the digit only moves the HIGHLIGHT, that sequence is worse than the plain one it
+           * replaced: the words go wherever the session is listening and the Enter then submits the
+           * row that happens to be highlighted. So the frame is read back, and the signal is the
+           * option LIST — a field that has opened replaces it, while a highlight that merely moved
+           * leaves it exactly as it was (`submit`).
+           *
+           * The check is passed INTO the backend rather than run between three calls of our own,
+           * because `writeToPane` locks per pane: three locked calls leave two gaps another writer
+           * can land in, which is the collision `pane-writer.ts` exists to prevent — and its own
+           * note names this path as the harder version of it.
+           */
+          const out = await backend.sendChoiceText(id, key, answer, frame => {
+            const step = answerFollowUp({
+              stillAsking: rules.approval.some(re => re.test(frame.join('\n'))),
+              before: options, after: parseDialogOptions(frame), choice,
+            })
+            // TWO SIGNALS, and either one is positive evidence that a field is taking keys.
+            //
+            // The option list going away is one: a field that REPLACES the dialog leaves nothing
+            // for `parseDialogOptions` to recognise. That was the only signal, and on claude
+            // 2.1.263 it is never true — the field opens IN PLACE, the row keeps its label until
+            // something is typed, and the whole list stays put. Measured 2026-09-08; the result was
+            // that a field which HAD opened was reported as one that had not, and the answer was
+            // refused in words describing the opposite of what happened.
+            //
+            // The footer is the other, and it is the one that fires here (`approval-spec.ts`'s
+            // `fieldOpen`). `null` from it means nobody probed this harness — NOT that the field is
+            // shut — so it only ever adds evidence and never withdraws the list signal.
+            return step.kind === 'changed' || fieldIsOpen(managed.harness, frame) === true
+          })
+          if (out === 'no-field') return { ok: false, message: s.sessAnswerNoField(picked.label) }
+          return out === 'sent'
+            ? { ok: true, message: s.sessAnswered(answer) }
+            : { ok: false, message: s.sessSendFailed(id) }
+        }
+        /**
+         * THE DIGIT IS NOT ALWAYS THE WHOLE ANSWER, and this reads the screen rather than assuming.
+         *
+         * On claude's PERMISSION PROMPT — `1. Yes / 2. Yes, always / 3. No`, the dialog this path
+         * was verified against — the digit selects AND submits. On a dialog where it only MOVES THE
+         * HIGHLIGHT nothing is submitted, tmux still reports the key delivered, and the question
+         * stays on screen forever while the card says it was answered. Reported as exactly that.
+         *
+         * A table saying "this dialog submits on the digit" is what must not be written: nobody has
+         * probed every dialog the harness draws (CLAUDE.md records three for claude and warns there
+         * is probably another), and a wrong entry sends a second keystroke into a dialog that has
+         * ALREADY CLOSED — landing on whatever the session put up next. That is the only error here
+         * that does damage.
+         *
+         * So the frame is READ BACK and `answerFollowUp` decides, with the option list as the
+         * guard: Enter is sent only when the SAME dialog is still up and the row we picked is the
+         * highlighted one. Everything else is reported in words.
+         */
+        if (!await backend.sendKey(id, key)) return { ok: false, message: s.sessSendFailed(id) }
+        await new Promise(r => setTimeout(r, ANSWER_SETTLE_MS))
+        const after = await backend.capture(id, SEND_CAPTURE_LINES).catch(() => [] as string[])
+        const stillAsking = rules.approval.some(re => re.test(after.join('\n')))
+        const next = answerFollowUp({
+          stillAsking, before: options, after: parseDialogOptions(after), choice,
+        })
+        if (next.kind === 'done') return { ok: true, message: s.sessAnswered(picked.label) }
+        if (next.kind === 'changed') {
+          return { ok: true, message: s.sessAnsweredNewQuestion(picked.label) }
+        }
+        if (next.kind === 'stuck') return { ok: false, message: s.sessAnswerStuck(picked.label) }
+        // `submit`: the same dialog, our row highlighted. Enter finishes what the digit began, and
+        // it can only act on the option that was chosen.
+        return (await backend.sendKey(id, 'Enter'))
           ? { ok: true, message: s.sessAnswered(picked.label) }
           : { ok: false, message: s.sessSendFailed(id) }
       }
@@ -3004,15 +3389,25 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
      * rule `agentop session`'s `STARTABLE` already follows, and the reason the two can never drift.
      */
     async startableHarnesses(): Promise<SessionHarnessOption[]> {
-      return HARNESS_ORDER.flatMap(id => {
+      // Narrowed to the CLIs actually ON THIS MACHINE, through the one helper `cli-hooks.ts` also
+      // asks — a spec says how to run `codex`, not that codex exists here, and offering the other
+      // five started a tmux session that died on `command not found` behind a screen nobody was
+      // watching. `availableHarnesses` answers with ALL of them when it cannot tell, because an
+      // empty wizard is indistinguishable from a broken one.
+      const { ids } = availableHarnesses()
+      return ids.flatMap(id => {
         const spec = SPAWN_SPECS[id]
         if (!spec) return []
         return [{
           id,
           label: id,
           modelSuggestions: spec.modelSuggestions,
+          // Spread only when the spec HAS one: an explicit `undefined` and an absent key read the
+          // same in TypeScript and differently once JSON.stringify has been over them.
+          ...(spec.defaultModel ? { defaultModel: spec.defaultModel } : {}),
           supportsModel: spec.modelFlag !== undefined,
           efforts: spec.efforts ?? [],
+          ...(spec.defaultEffort ? { defaultEffort: spec.defaultEffort } : {}),
         }]
       })
     },
@@ -3059,6 +3454,22 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
  * Without an interactive stdin nothing is drawn at all: the caller runs the server, exactly as a
  * systemd unit or a pipe has always done.
  */
+/**
+ * The poller's RAW snapshot, for `/api/fleet/snapshot`.
+ *
+ * `createControlHost().sessions()` answers `ControlSessions` — already mapped, already localized,
+ * shaped for drawing a row. The other agentop processes need what came BEFORE that mapping, because
+ * each of them maps it its own way (`toControlSession` for the cockpit, `fleetJson` for
+ * `session ls`, a hand-built summary for the hook). Serving the mapped shape and typing it as the
+ * raw one is a silent field mismatch: it was written that way first, and `session ls --json` came
+ * back with `activity: null` on every row.
+ *
+ * It is the SAME poller `sessions()` uses, so the server still holds exactly one.
+ */
+export async function readRawFleetSnapshot(): Promise<SessionSnapshot> {
+  return (await ensureSessionsPoller()).poll()
+}
+
 export async function runStart(): Promise<StartResult> {
   if (!process.stdin.isTTY) return 'foreground'
 

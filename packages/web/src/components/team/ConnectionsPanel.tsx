@@ -268,6 +268,20 @@ export function ConnectionsPanel({ sessions, projects, modelUsage, lang, onConne
     )
   }
 
+  /** The remote-session consent switches. A plain PATCH plus a reload — unlike the rules apply it
+   *  starts no forget/push sequence, so there is no phase for the card to wait out. */
+  async function handleSetRemoteConsent(
+    id: string,
+    body: { allowRemoteSessions: boolean; allowRemoteScreens: boolean },
+  ): Promise<void> {
+    await fetch(`/api/team/connections/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => { /* the block re-reads the committed state from the next status poll */ })
+    await reloadAfterWrite()
+  }
+
   async function handleSyncNow(id: string) {
     await fetch('/api/team/push-now', {
       method: 'POST',
@@ -366,6 +380,7 @@ export function ConnectionsPanel({ sessions, projects, modelUsage, lang, onConne
               onDisconnect={handleDisconnect}
               onSyncNow={handleSyncNow}
               onApplyRules={handleApplyRules}
+              onSetRemoteConsent={handleSetRemoteConsent}
               proposals={inboxById[conn.id]?.proposals ?? []}
               keyWarnings={inboxById[conn.id]?.keyWarnings ?? []}
               peers={inboxById[conn.id]?.peers ?? []}

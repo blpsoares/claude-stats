@@ -1,9 +1,10 @@
+import { runStatusText } from '../lib/workflows'
 import React, { useMemo, useState } from 'react'
 import { useOutletContext, useParams, useNavigate } from 'react-router-dom'
 import {
   GitBranch, ArrowLeft, ExternalLink, Link2Off, Users, Zap, Workflow as WorkflowIcon, GitCompare,
   Clock, GitCommit, ChevronDown, DollarSign, Cpu, Wrench, Bot, FileCode, MessageSquare, Database, AlertTriangle,
-  EyeOff,
+  EyeOff, ClipboardList,
 } from 'lucide-react'
 import type { AppContext, } from '../lib/app-context'
 import type { SessionMeta, MemberPresence, HarnessId, WorkflowRun, WorkflowAgent } from '@agentistics/core'
@@ -21,9 +22,15 @@ import { Section } from '../components/Section'
 import { ModelBreakdown } from '../components/ModelBreakdown'
 import { ActivityChart } from '../components/ActivityChart'
 import { RecentSessions } from '../components/RecentSessions'
+import { ScopedSessions } from '../components/ScopedSessions'
+import { StatTile, STAT_TILE_GRID } from '../components/StatTile'
 import { MetricNote } from '../components/MetricNote'
+import { BetaTag } from '../components/BetaTag'
+import { RepoTasksTab } from '../components/tasks/RepoTasksTab'
+import { repoTaskTotals, tasksOfRepo } from '../lib/repoTasks'
+import { useTaskList } from '../lib/tasks'
 
-type Tab = 'overview' | 'members' | 'compare' | 'actions' | 'sessions' | 'workflows'
+type Tab = 'overview' | 'members' | 'compare' | 'actions' | 'sessions' | 'tasks' | 'workflows'
 
 export default function RepoDetailPage() {
   const ctx = useOutletContext<AppContext>()
@@ -58,6 +65,17 @@ export default function RepoDetailPage() {
     () => new Map((data.sessions ?? []).map(s => [s.session_id, s] as [string, SessionMeta])),
     [data.sessions],
   )
+  // The board, scoped by the SAME filters as every other tab — `/api/tasks` already takes `repos`
+  // and `projects`, so nothing here re-derives a scope. A central (or a profile with no host power)
+  // answers `refused`, which arrives as an empty list and simply leaves the tab out.
+  const { rows: taskRows } = useTaskList(scopedFilters)
+  // A task belongs to a repository through its SESSIONS' `git_remote` — `''` on a `folder:` route
+  // is the "no linked repository" bucket, and the rows there arrived scoped by project.
+  const repoTasks = useMemo(
+    () => tasksOfRepo(taskRows ?? [], isFolder ? '' : remote),
+    [taskRows, isFolder, remote],
+  )
+  const taskTotals = useMemo(() => repoTaskTotals(repoTasks), [repoTasks])
 
   if (!scoped) return null
 
@@ -74,12 +92,13 @@ export default function RepoDetailPage() {
   const hiddenKey = linked ? canonicalRepoKey(remote) : NO_REPO_KEY
   const hiddenLabels = deniedRepoLabels?.get(hiddenKey)
 
-  const tabs: { id: Tab; label: string; icon: React.ReactNode; show: boolean; badge?: number }[] = [
+  const tabs: { id: Tab; label: string; icon: React.ReactNode; show: boolean; badge?: number; beta?: boolean }[] = [
     { id: 'overview', label: pt ? 'Visão geral' : 'Overview', icon: <GitBranch size={13} />, show: true },
     { id: 'members', label: pt ? 'Membros' : 'Members', icon: <Users size={13} />, show: isCentral, badge: scoped.repoStats[0]?.members.length },
     { id: 'compare', label: pt ? 'Comparar' : 'Compare', icon: <GitCompare size={13} />, show: isCentral && (scoped.repoStats[0]?.members.length ?? 0) > 1 },
     { id: 'actions', label: 'Actions', icon: <Zap size={13} />, show: ciSessions.length > 0, badge: ciSessions.length || undefined },
     { id: 'sessions', label: pt ? 'Sessões' : 'Sessions', icon: <Clock size={13} />, show: true },
+    { id: 'tasks', label: pt ? 'Entregas' : 'Tasks', icon: <ClipboardList size={13} />, show: repoTasks.length > 0, badge: repoTasks.length || undefined, beta: true },
     { id: 'workflows', label: 'Dynamic Workflows', icon: <WorkflowIcon size={13} />, show: workflows.length > 0 && workflows.some(w => capable(harnessOf(w), 'dynamicWorkflows')), badge: workflows.length },
   ]
 
@@ -141,15 +160,15 @@ export default function RepoDetailPage() {
       </div>
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10 }}>
         <StatTile label={pt ? 'Sessões' : 'Sessions'} value={String(scoped.totalSessions)} />
         <StatTile label={pt ? 'Custo' : 'Cost'} value={fmtCost(scoped.totalCostUSD, currency, brlRate)} accent />
         {/* ONE tokens tile — the total of all four billed counters, where this used to be input
             and output as two tiles (the pair that comes to 0,34 % of the volume). The four
             counters themselves are the line UNDER this strip, not tiles in it: the grid is
-            `repeat(auto-fit, minmax(120px, 1fr))`, which fits `floor((W + gap) / 130)` columns —
-            ten at ~1400px — so taking the strip to eleven tiles stranded the last one alone on a
-            second row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
+            `STAT_TILE_GRID`, an `auto-fit` over `minmax(150px, 1fr)` — about eight columns at
+            ~1400px — so taking the strip past that count strands the last tile alone on a second
+            row. `scoped.tokenTotals` is the same filtered model usage `totalCostUSD` above
             is priced from, so the tokens and the money describe the same turns under the repo
             scope. */}
         <StatTile
@@ -187,6 +206,9 @@ export default function RepoDetailPage() {
               {t.badge != null && t.badge > 0 && (
                 <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-tertiary)', background: 'var(--bg-elevated)', borderRadius: 8, padding: '1px 6px' }}>{t.badge}</span>
               )}
+              {/* Every ALM surface carries the mark — one that appears on five of six reads as the
+                  unmarked one being the finished part. */}
+              {t.beta && <BetaTag what={t.label} compact />}
             </button>
           )
         })}
@@ -232,7 +254,7 @@ export default function RepoDetailPage() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: STAT_TILE_GRID, gap: 10, marginBottom: 14 }}>
                 <StatTile label={pt ? 'Runs' : 'Runs'} value={String(ciSessions.length)} />
                 <StatTile label={pt ? 'Tokens' : 'Tokens'} value={fmt(ciSessions.reduce((a, s) => a + sessionTokenTotal(s), 0))} />
                 <StatTile label="Commits" value={String(ciSessions.reduce((a, s) => a + (s.git_commits ?? 0), 0))} />
@@ -249,9 +271,51 @@ export default function RepoDetailPage() {
       )}
 
       {tab === 'sessions' && (
-        <Section title={<><Clock size={14} /> {pt ? 'Sessões recentes' : 'Recent sessions'}</>}>
-          {/* RecentSessions has its own built-in sort (date/tokens/messages/tools/files). */}
-          <RecentSessions sessions={sessions} lang={lang} onSelect={setSelectedSession} />
+        <Section title={<><Clock size={14} /> {pt ? 'Sessões' : 'Sessions'}</>}>
+          {/* `ScopedSessions`, not `RecentSessions`: this tab is already scoped to ONE repository,
+              so the browser's group-by, status filter, six-key sort, search and grid toggle re-ask
+              questions the page has answered — and cost the first screen of a phone before a single
+              session appeared. What is left is what the tab is for: each session's metrics, and the
+              way into it. See the module comment on ScopedSessions for the rest.
+              The Actions tab above keeps `RecentSessions` on purpose: a CI runner's session was
+              never on this machine's fleet, so it has no /sessions row to link to. */}
+          <ScopedSessions sessions={sessions} lang={lang} currency={currency} brlRate={brlRate} />
+        </Section>
+      )}
+
+      {tab === 'tasks' && (
+        <Section title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><ClipboardList size={14} /> {pt ? 'Entregas neste repositório' : 'Tasks in this repository'} <BetaTag what={pt ? 'O board de entregas' : 'The delivery board'} /></span>}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
+            <StatTile label={pt ? 'Entregas' : 'Tasks'} value={String(taskTotals.tasks)} />
+            <StatTile label={pt ? 'Em andamento' : 'In flight'} value={String(taskTotals.inFlight)} />
+            <StatTile label={pt ? 'Entregues' : 'Delivered'} value={String(taskTotals.delivered)} />
+            {taskTotals.abandoned > 0 && (
+              <StatTile label={pt ? 'Abandonadas' : 'Abandoned'} value={String(taskTotals.abandoned)} />
+            )}
+            <StatTile label={pt ? 'Sessões' : 'Sessions'} value={String(taskTotals.sessions)} />
+            {/* `N/A`, never a `0`: a repository whose deliveries nobody could price has not
+                delivered for free. */}
+            <StatTile label={pt ? 'Custo' : 'Cost'} value={taskTotals.costUSD === null ? 'N/A' : fmtCost(taskTotals.costUSD, currency, brlRate)} accent />
+          </div>
+          <MetricNote style={{ marginTop: 0, marginBottom: 12 }}>
+            {pt
+              ? 'Uma entrega pertence a este repositório pelo `git_remote` das sessões filiadas a ela — nunca por um campo digitado —, então uma que atravessa dois repositórios aparece nos dois, e aqui conta só o que gastou neste. Só as sessões que este repositório viu são contadas: uma sessão sem conversa vinculada não entra em nenhum número. Os filtros do topo da página valem aqui.'
+              : 'A delivery belongs to this repository through its sessions\u2019 `git_remote` \u2014 never through a field somebody typed \u2014 so one spanning two repositories appears under both, and counts here only what it spent in this one. Only the sessions this repository could see are counted: one with no linked conversation contributes to no figure. The filters at the top of the page apply here too.'}
+          </MetricNote>
+          {taskTotals.creditTasks > 0 && (
+            <MetricNote style={{ marginTop: 0, marginBottom: 12 }}>
+              {pt
+                ? `${taskTotals.creditTasks} ${taskTotals.creditTasks === 1 ? 'entrega também gastou' : 'entregas também gastaram'} créditos do Copilot. Créditos não são dólares e não entram no custo acima.`
+                : `${taskTotals.creditTasks} ${taskTotals.creditTasks === 1 ? 'delivery also spent' : 'deliveries also spent'} Copilot credits. Credits are not dollars and are not in the cost above.`}
+            </MetricNote>
+          )}
+          <RepoTasksTab
+            rows={repoTasks}
+            lang={pt ? 'pt' : 'en'}
+            currency={currency}
+            brlRate={brlRate}
+            onOpen={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
+          />
         </Section>
       )}
 
@@ -370,18 +434,6 @@ function MemberComparePanel({ sessions, lang, currency, brlRate }: {
           ))}
         </div>
       </div>
-    </div>
-  )
-}
-
-function StatTile({ label, value, accent, title }: { label: string; value: string; accent?: boolean; title?: string }) {
-  return (
-    <div title={title} style={{
-      display: 'flex', flexDirection: 'column', gap: 3, padding: '12px 14px',
-      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
-    }}>
-      <span style={{ fontSize: 18, fontWeight: 700, color: accent ? 'var(--anthropic-orange)' : 'var(--text-primary)', whiteSpace: 'nowrap' }}>{value}</span>
-      <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
     </div>
   )
 }
@@ -607,8 +659,12 @@ function MetricCard({ icon, label, value, hint, accent }: { icon: React.ReactNod
   )
 }
 
+/** One palette for a run's state, shared with the sessions aside — `lib/workflows.ts`.
+ *  It used to be `completed ? green : partial ? yellow : RED`, which painted every other state as
+ *  a failure. Now that a run can be `running`, `killed` or `abandoned`, that expression would have
+ *  shown a workflow in flight as a red dot. */
 function statusColor(status: WorkflowRun['status']): string {
-  return status === 'completed' ? '#22c55e' : status === 'partial' ? '#eab308' : '#ef4444'
+  return runStatusText(status, false).color
 }
 
 /** Seconds-aware run duration (fmtDuration floors to whole minutes, so a 12s run
@@ -738,7 +794,8 @@ function WorkflowRunCard({ run, pt, currency, brlRate, sessionById }: {
         style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '10px 12px', cursor: 'pointer' }}
       >
         <ChevronDown size={14} style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform 0.2s', color: 'var(--text-tertiary)', flexShrink: 0 }} />
-        <span style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(run.status), flexShrink: 0 }} />
+        {/* A colour alone cannot carry five states — the word rides the title. */}
+        <span title={runStatusText(run.status, pt).text} style={{ width: 8, height: 8, borderRadius: '50%', background: statusColor(run.status), flexShrink: 0 }} />
         <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{run.name}</span>
         <span style={{
           fontSize: 10.5, fontWeight: 600, color: HARNESS_COLORS[harness], flexShrink: 0,

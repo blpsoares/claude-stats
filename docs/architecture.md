@@ -259,6 +259,49 @@ The central-side delete is a **scoped delete of named sessions**, never a purge 
 
 See [security.md](security.md) for the precise guarantee this gives a user, and its five explicit non-guarantees.
 
+### Managing a machine's sessions from a central
+
+A person signed in to a central can see and act on the sessions of a machine **their own account
+owns**. It is off until the machine turns it on, and it is the machine — never the central — that
+decides what it will answer.
+
+**Two switches, not one** (`remoteSessions.ts`, `@agentistics/core`). The first grants the session
+LIST and the verbs that need no screen; the second additionally lets the session's TERMINAL travel.
+They are separate because they are different questions: "let me rename a session from my phone" is
+not consent to "stream my terminal to the central", and on-demand chat retrieval was removed from
+this channel on purpose (`team-agent.ts`; `GET /api/team/session-chat` is a 410). Absent reads as
+OFF, and withdrawing the first clears the second rather than leaving it stored and inert — a grant
+left behind comes back the moment the first is switched on again, which is a grant nobody re-made.
+
+**The machine announces; the central never asks.** Consent travels as an unsolicited
+`remote-consent` frame on the existing reverse WebSocket, on connect and the instant a switch moves,
+and the central holds it in memory for the socket's lifetime only (`machine-consent.ts`). A machine
+that is gone is not making a statement, so "has not said" and "says no" stay different answers —
+one sends the owner to check whether the machine is running, the other to the switch.
+
+**The relayed row is built by an allowlist** (`reduceMachineFleetRow`, `@agentistics/core`), not by
+deleting the fields known to be dangerous today: a spread-and-delete leaks the next field somebody
+adds to `ControlSession`. The screen, the conversation and the permission dialog cannot cross. The
+member applies its own sharing rules FIRST, so a session in a withheld repository never becomes a
+row, and what was withheld is reported as a count rather than silently subtracted.
+
+**Verbs are decided and worded by the machine.** `machineActions.ts` is a closed allowlist — an
+action it does not know is refused — and it deliberately excludes `approve` and `prompt`, which
+cannot be offered honestly without the screen. The member re-checks consent and the verb on every
+request: a central is the party whose behaviour a machine cannot verify, so a check that runs only
+there is not a check. Every relayed action is audited on the central (`machine.session_action`) and
+announced on the machine itself.
+
+Three routes, and none of them touches the host: `GET /api/team/machine-fleet`,
+`POST /api/team/machine-fleet/act`, plus the `fleet-request`/`fleet-reply` correlation over the
+reverse channel (`machine-fleet-relay.ts`). The `TEAM_CENTRAL` block on `/api/fleet*` and its
+`localShell` entry in `capability-guard.ts` are untouched — a central answering `/api/fleet` from
+its own box would serve its own processes under a member's name.
+
+See [security.md](security.md) and
+`docs/superpowers/specs/2026-09-02-central-session-management-design.md` for the design and its
+stated limits.
+
 ## Repository dimension (group by git remote)
 
 Metrics can be grouped **by repository** — the git remote — independently of the local checkout path or which machine produced the session. So a repo's usage aggregates across every dev's laptop *and* its CI runs, even though those live on different machines with different paths.

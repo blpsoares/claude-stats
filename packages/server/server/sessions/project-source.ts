@@ -17,6 +17,7 @@
  */
 
 import { homedir } from 'node:os'
+import { PROJECTS_PER_KIND, projectKind, takePerKind } from '@agentistics/core'
 import { loadConsolidated } from '../consolidate'
 import { isDirectory, scanDirectories } from './dir-scan'
 import {
@@ -73,7 +74,9 @@ export function forgetProjects(): void {
  * `cwd` is always a candidate, with or without history — starting where you already are is the
  * single most common thing anyone wants, and routing that through a search would bury it.
  */
-export async function findProjects(query: string, cwd: string, limit = 20): Promise<ProjectCandidate[]> {
+export async function findProjects(
+  query: string, cwd: string, perKind = PROJECTS_PER_KIND,
+): Promise<ProjectCandidate[]> {
   const known = await allCandidates()
 
   const fixed: ProjectCandidate[] = [{
@@ -95,7 +98,16 @@ export async function findProjects(query: string, cwd: string, limit = 20): Prom
     }
   }
 
-  return searchCandidates(withFixedCandidates(known, fixed), query, limit)
+  /**
+   * RANKED IN FULL, then capped PER KIND — never a global cap after ranking.
+   *
+   * Measured on a real machine: `portif` ranked twenty rows of which fifteen were plain folders
+   * with no git and no history, and the three repositories the person was looking for were what
+   * the cap was spending its budget on. A directory named like the one you want must not be able
+   * to push the one you want off the list. See `takePerKind`.
+   */
+  const ranked = searchCandidates(withFixedCandidates(known, fixed), query, Number.MAX_SAFE_INTEGER)
+  return takePerKind(ranked, c => projectKind(c), perKind)
 }
 
 function baseName(path: string): string {

@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { Plus, Copy, Check, RotateCw, Trash2, Pencil, X, Loader2 } from 'lucide-react'
+import { Plus, Copy, Check, RotateCw, Trash2, Pencil, X, Loader2, MonitorSmartphone } from 'lucide-react'
 import type { AppContext } from '../../lib/app-context'
 import { ConnectionsPanel } from '../../components/team/ConnectionsPanel'
 import { SectionHeader, Section, Select, Checkbox, ConfirmModal, RecordCard, RecordCardAction, SaveBar, runSaveSteps } from './primitives'
 import { Drawer } from './Drawer'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { machineConsentView } from './machineConsentView'
+import { MachineFleetDrawer } from './MachineFleetDrawer'
+import { ToggleSwitch } from '../../components/ToggleSwitch'
+import { OVERLAY_TOP } from '../../lib/mobileOverlay'
 
 // interfaces
 interface MachineInfo {
@@ -16,6 +20,14 @@ interface MachineInfo {
   teamIds?: string[]
   accountId?: string
   accountIds?: string[]
+  /**
+   * The accounts allowed to reach this machine's SESSIONS.
+   *
+   * The server sends it ONLY to a principal who may change it (the machine's owner), so its
+   * PRESENCE is the permission signal — absent means "you may not grant here", and the switches
+   * are withheld rather than drawn disabled. See `@agentistics/core/machineSessions`.
+   */
+  sessionAccountIds?: string[]
   accountName?: string
   accountEmail?: string
   owners?: { id: string; name: string; email: string }[]
@@ -23,6 +35,15 @@ interface MachineInfo {
   lastSeenAt: string | null
   online?: boolean
   latencyMs?: number | null
+  /**
+   * What this machine has announced about session management from here — present ONLY when the
+   * viewer is one of the machine's own accounts (`machineOwnedBy` server-side), which is narrower
+   * than the `canManageMachine` that decided the row is visible at all.
+   *
+   * `undefined` (may not ask) and `null` (has not said) are DIFFERENT and both meaningful; see
+   * `machineConsentView`.
+   */
+  remoteConsent?: { sessions: boolean; screens: boolean; atMs: number } | null
 }
 
 interface PublicAccount {
@@ -145,6 +166,10 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
   const [editName, setEditName] = useState('')
   const [editTeamIds, setEditTeamIds] = useState<string[]>([])
   const [editOwnerRows, setEditOwnerRows] = useState<string[]>([])
+  /** Which linked accounts may manage sessions. Seeded from the machine when the drawer opens. */
+  const [editSessionGrant, setEditSessionGrant] = useState<string[]>([])
+  /** The account a confirmation is currently being asked about. Only ever for turning one ON. */
+  const [grantAsking, setGrantAsking] = useState<string | null>(null)
   const [editErr, setEditErr] = useState<string | null>(null)
   // Per-section edit toggle inside the (read-first) edit drawer. Only one section edits at a time.
   // The WHOLE edit drawer is one form: it used to hold a per-section value ('details' | 'owners'),
@@ -405,6 +430,8 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
     // Prefill owners from accountIds, or use accountId as fallback, or start with one empty row
     const ids = m.accountIds ?? (m.accountId ? [m.accountId] : [])
     setEditOwnerRows(ids.length > 0 ? ids : [''])
+    setEditSessionGrant(m.sessionAccountIds ?? [])
+    setGrantAsking(null)
     setEditErr(null)
     // Always open read-first, with any previous partial-save report cleared.
     setEditingAll(false)
@@ -451,14 +478,29 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
    *  an untouched form cannot fire a single request. */
   function editDiff() {
     const m = editingMachine
-    if (!m) return { name: false, teams: false, owners: false, any: false, newTeamIds: [] as string[], newOwners: [] as string[] }
+    if (!m) {
+      return {
+        name: false, teams: false, owners: false, grant: false, any: false,
+        newTeamIds: [] as string[], newOwners: [] as string[],
+        newGrant: undefined as string[] | undefined,
+      }
+    }
     const newTeamIds = [...new Set(editTeamIds.filter(id => id.trim()))]
     const newOwners = [...new Set(editOwnerRows.filter(id => id.trim()))]
     const sameSet = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort())
     const name = editName.trim() !== m.machineName
     const teams = !sameSet(machineTeamIds(m), newTeamIds)
     const owners = !sameSet(m.accountIds ?? (m.accountId ? [m.accountId] : []), newOwners)
-    return { name, teams, owners, any: name || teams || owners, newTeamIds, newOwners }
+    // Only meaningful when the server told us the current grant — i.e. when we may change it.
+    const newGrant = m.sessionAccountIds === undefined
+      ? undefined
+      : editSessionGrant.filter(id => newOwners.includes(id))
+    const grant = newGrant !== undefined && !sameSet(m.sessionAccountIds ?? [], newGrant)
+    return {
+      name, teams, owners, grant,
+      any: name || teams || owners || grant,
+      newTeamIds, newOwners, newGrant,
+    }
   }
 
   /**
@@ -483,7 +525,17 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
     const { failed } = await runSaveSteps([
       { label: pt ? 'nome' : 'name', dirty: d.name, run: () => postMachine({ renameId: editingMachine.id, name: editName.trim() }) },
       { label: pt ? 'times' : 'teams', dirty: d.teams, run: () => postMachine({ reassignId: editingMachine.id, teamIds: d.newTeamIds }) },
-      { label: pt ? 'contas' : 'owners', dirty: d.owners, run: () => postMachine({ ownerId: editingMachine.id, accountIds: d.newOwners }) },
+      // The grant rides WITH the account list: they are one document and one request, so a link
+      // added in the same edit cannot land without the decision that was made about it.
+      {
+        label: pt ? 'contas' : 'owners',
+        dirty: d.owners || d.grant,
+        run: () => postMachine({
+          ownerId: editingMachine.id,
+          accountIds: d.newOwners,
+          ...(d.newGrant !== undefined ? { sessionAccountIds: d.newGrant } : {}),
+        }),
+      },
     ])
     setSaveBusy(false)
     setSaveFailed(failed)
@@ -498,6 +550,8 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
     setEditTeamIds(editMachine ? machineTeamIds(editMachine) : [])
     const ids = editMachine?.accountIds ?? (editMachine?.accountId ? [editMachine.accountId] : [])
     setEditOwnerRows(ids.length > 0 ? ids : [''])
+    setEditSessionGrant(editMachine?.sessionAccountIds ?? [])
+    setGrantAsking(null)
   }
 
   function toggleSelectAll() {
@@ -565,16 +619,28 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
 
   // Per-machine display values shared by the desktop row and the mobile card, so the two
   // renderings cannot drift apart.
+  // Which machine's relayed fleet is open. Only ever set for a machine whose row carries a
+  // consent, which the server sends only to the machine's OWN accounts.
+  const [fleetMachine, setFleetMachine] = useState<MachineInfo | null>(null)
+
   const machineView = (m: MachineInfo) => {
     const ownerIds = m.accountIds ?? (m.accountId ? [m.accountId] : [])
     const owners = m.owners ?? []
+    // The SAME test the server runs (`machineOwnedBy`): is the viewer one of the machine's own
+    // accounts? It is deliberately narrower than `canManage` — an instance owner administers every
+    // machine and owns only the ones linked to their account — and it is what turns the absent
+    // consent field from silence into a sentence.
+    const viewerOwnsMachine = ownerIds.includes(me?.id ?? '')
     return {
-      canManage: canManageFleet || ownerIds.includes(me?.id ?? ''),
+      canManage: canManageFleet || viewerOwnsMachine,
       ownerDisplay: owners.length === 0 ? '—' : (owners[0]?.name ?? '') + (owners.length > 1 ? ` +${owners.length - 1}` : ''),
       ownerEmailDisplay: owners.length > 0 ? (owners[0]?.email ?? '') : (pt ? 'sem conta' : 'no account'),
       teamNames: machineTeamIds(m).map(id => teamNameById.get(id) ?? id),
       statusColor: m.online ? '#10b981' : '#6b7280',
       statusLabel: m.online ? 'online' : 'offline',
+      // Resolved HERE so the desktop row and the mobile card cannot say different things about
+      // the same machine — the same reason every other value on this object is shared.
+      consent: machineConsentView(m.remoteConsent, m.online ?? false, pt ? 'pt' : 'en', viewerOwnsMachine),
     }
   }
 
@@ -765,9 +831,18 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
                     // instead of the desktop's truncated chip + "+N" pill.
                     { label: pt ? 'Time' : 'Team', value: v.teamNames.length === 0 ? '—' : v.teamNames.join(', ') },
                     { label: pt ? 'Último acesso' : 'Last seen', value: m.lastSeenAt ? new Date(m.lastSeenAt).toLocaleString() : (pt ? 'nunca' : 'never') },
+                    // The card has the room the table cell does not, so it prints the SENTENCE.
+                    // The desktop row's chip carries it as a title, which a touch device cannot
+                    // reach at all — a fact only reachable by hovering is not on a phone.
+                    ...(v.consent ? [{ label: pt ? 'Sessões' : 'Sessions', value: v.consent.text }] : []),
                   ]}
                   actions={
                     <>
+                      {v.consent?.tone === 'granted' && (
+                        <RecordCardAction label="View sessions" onClick={() => setFleetMachine(m)}>
+                          <MonitorSmartphone size={14} /> {pt ? 'Sessões' : 'Sessions'}
+                        </RecordCardAction>
+                      )}
                       {v.canManage && (
                         <RecordCardAction label="Edit machine" onClick={() => openEditMachine(m)}>
                           <Pencil size={14} /> {pt ? 'Editar' : 'Edit'}
@@ -814,7 +889,7 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
             </thead>
             <tbody>
               {machines.map(m => {
-                const { statusColor, statusLabel, canManage, ownerDisplay, ownerEmailDisplay } = machineView(m)
+                const { statusColor, statusLabel, canManage, ownerDisplay, ownerEmailDisplay, consent } = machineView(m)
                 return (
                   <tr key={m.id}
                     onClick={canManage ? () => openEditMachine(m) : undefined}
@@ -860,10 +935,28 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
                       })()}
                     </td>
                     <td style={td}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                         <div style={{ width: 6, height: 6, borderRadius: '50%', background: statusColor }} />
                         <span>{statusLabel}</span>
                         {m.latencyMs != null && <span style={{ color: 'var(--text-tertiary)' }}>· {m.latencyMs}ms</span>}
+                        {/* Only ever drawn for the machine's OWN accounts — the server omits the
+                            field for everyone else, so there is nothing here to gate again. It
+                            rides the status cell rather than taking a column: the column would be
+                            empty on every row for most viewers, and a header naming a fact the
+                            table never shows is worse than no header. */}
+                        {consent && (
+                          <span
+                            title={consent.text}
+                            style={{
+                              padding: '1px 7px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              border: `1px solid ${consent.tone === 'granted' ? 'var(--accent-green)' : 'var(--border)'}`,
+                              color: consent.tone === 'granted' ? 'var(--accent-green)' : 'var(--text-tertiary)',
+                            }}
+                          >
+                            {consent.short}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td style={td}>
@@ -871,6 +964,19 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
                     </td>
                     <td style={td} onClick={e => e.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 6 }}>
+                        {/* Only for a machine that has AGREED. A row that has not said, or that
+                            says no, gets no button — the state is already spelled out in the
+                            status cell, and a control whose only outcome is a refusal is a
+                            control that reads as broken. */}
+                        {consent?.tone === 'granted' && (
+                          <button
+                            style={{ ...ghostBtn, padding: '4px 8px' }}
+                            onClick={e => { e.stopPropagation(); setFleetMachine(m) }}
+                            title={pt ? 'Ver sessões' : 'View sessions'}
+                          >
+                            <MonitorSmartphone size={12} />
+                          </button>
+                        )}
                         {canManage && (
                           <button
                             style={{ ...ghostBtn, padding: '4px 8px' }}
@@ -911,6 +1017,72 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* One machine's relayed session fleet — a READ, for its owning account only. Mounted only
+          while a machine is selected, so no request travels behind a closed panel. */}
+      {/* Granting session access NAMES what is being handed over. It is the one direction that
+          needs it: withdrawing is safe, and a confirmation people meet in both directions is one
+          they clear without reading. */}
+      {grantAsking && (() => {
+        const acct = accounts.find(a => a.id === grantAsking)
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={() => setGrantAsking(null)}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 4000, background: 'rgba(0,0,0,0.6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: isMobile ? OVERLAY_TOP : 24,
+            }}
+          >
+            <div onClick={e => e.stopPropagation()} style={{
+              width: '100%', maxWidth: 460, background: 'var(--bg-card)',
+              border: '1px solid var(--border)', borderRadius: 12, padding: 20,
+              display: 'flex', flexDirection: 'column', gap: 12,
+            }}>
+              <strong style={{ fontSize: 14 }}>
+                {pt ? 'Dar acesso às sessões desta máquina?' : 'Grant access to this machine’s sessions?'}
+              </strong>
+              <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+                {pt
+                  ? `${acct ? `${acct.name} (${acct.email})` : 'Esta conta'} vai poder ver a lista de sessões desta máquina e agir sobre elas: renomear, anotar, marcar tarefa, interromper, encerrar e reabrir.`
+                  : `${acct ? `${acct.name} (${acct.email})` : 'This account'} will be able to see this machine’s session list and act on it: rename, note, task, interrupt, kill and reopen.`}
+              </p>
+              <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.6, color: 'var(--text-tertiary)' }}>
+                {pt
+                  ? 'A tela e a conversa das sessões continuam sem sair da máquina, e a própria máquina segue podendo recusar tudo isso no switch dela.'
+                  : 'A session’s screen and conversation still never leave the machine, and the machine itself can still refuse all of this at its own switch.'}
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                <button type="button" style={ghostBtn} onClick={() => setGrantAsking(null)}>
+                  {pt ? 'Cancelar' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  style={primaryBtn}
+                  onClick={() => {
+                    setEditSessionGrant(g => (g.includes(grantAsking) ? g : [...g, grantAsking]))
+                    setGrantAsking(null)
+                  }}
+                >
+                  {pt ? 'Dar acesso' : 'Grant access'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {fleetMachine && (
+        <MachineFleetDrawer
+          open
+          machineId={fleetMachine.id}
+          machineName={fleetMachine.machineName}
+          lang={pt ? 'pt' : 'en'}
+          onClose={() => setFleetMachine(null)}
+        />
       )}
 
       {/* Add machine drawer */}
@@ -1311,7 +1483,8 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
                 </button>
               </div>
               {editOwnerRows.map((accountId, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                   <div style={{ flex: 1 }}>
                     <Select
                       value={accountId}
@@ -1336,6 +1509,44 @@ function CentralMachinesView({ pt }: { pt: boolean }) {
                   >
                     <Trash2 size={14} />
                   </button>
+                </div>
+
+                {/* THE SESSION GRANT, per linked account.
+                    Withheld entirely — not drawn disabled — when the server did not send the
+                    current grant, which is exactly when this viewer may not change it: a control
+                    that explains nothing is indistinguishable from a broken one. Absent too for
+                    the machine's OWNER, whose access comes with the machine and cannot be revoked
+                    by an edit, and for an empty row that names no account yet. */}
+                {editMachine?.sessionAccountIds !== undefined && accountId.trim() !== '' && (
+                  editOwnerRows[0] === accountId ? (
+                    <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', paddingLeft: 2 }}>
+                      {pt
+                        ? 'Dona da máquina — gerencia as sessões por definição.'
+                        : 'The machine’s owner — manages its sessions by definition.'}
+                    </span>
+                  ) : (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 2, cursor: 'pointer' }}>
+                      <ToggleSwitch
+                        on={editSessionGrant.includes(accountId)}
+                        label={pt ? 'Permitir gerenciar sessões' : 'Allow session management'}
+                        onToggle={() => {
+                          // Turning it OFF needs no confirmation: withdrawing access is not the
+                          // dangerous direction. Turning it ON names what is handed over first.
+                          if (editSessionGrant.includes(accountId)) {
+                            setEditSessionGrant(g => g.filter(id => id !== accountId))
+                          } else {
+                            setGrantAsking(accountId)
+                          }
+                        }}
+                      />
+                      <span style={{ fontSize: 11, lineHeight: 1.4, color: 'var(--text-secondary)' }}>
+                        {pt
+                          ? 'Permitir que esta conta gerencie e interaja com as sessões desta máquina'
+                          : 'Allow this account to manage and interact with this machine’s sessions'}
+                      </span>
+                    </label>
+                  )
+                )}
                 </div>
               ))}
             </div>

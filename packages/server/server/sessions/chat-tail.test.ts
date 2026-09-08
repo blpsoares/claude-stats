@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises'
 import {
-  forgetChatTailContent, forgetChatTailPaths, readRecentChatTurns, resolveChatTranscriptPath,
+  forgetChatTailContent, forgetChatTailPaths, readChatWindow, readRecentChatTurns,
+  resolveChatTranscriptPath,
 } from './chat-tail'
 
 const SESSION_ID = 'a1b2c3d4-e5f6-4789-a0b1-c2d3e4f56789'
@@ -19,6 +20,13 @@ const assistantTurn = (text: string) => line({
 const toolResultTurn = () => line({
   type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] },
 })
+/** A `queued_command` attachment — how a message typed while the assistant was busy is recorded,
+ *  and also how the harness's own `<task-notification>` reaches the transcript. */
+const queuedTurn = (prompt: string) => line({
+  type: 'attachment',
+  attachment: { type: 'queued_command', prompt, commandMode: 'prompt' },
+})
+
 const toolUseTurn = (...names: string[]) => line({
   type: 'assistant',
   message: { content: names.map(name => ({ type: 'tool_use', name, input: {} })) },
@@ -101,6 +109,45 @@ describe('readRecentChatTurns', () => {
       { role: 'user', text: 'what does this do' },
       { role: 'assistant', text: 'it does the thing' },
     ])
+  })
+
+  // The reader takes the END of the file, not the whole of it — a live session's transcript is
+  // re-read on every poll, and reading megabytes to show six lines is what made /api/fleet take
+  // seconds. These two pin the part that can go wrong silently: the window must never COST turns.
+  test('reads the last turns out of a transcript far larger than the tail window', async () => {
+    // ~2 MB of history in front of them, so the read starts mid-file and mid-line.
+    const filler: string[] = []
+    for (let i = 0; i < 200; i++) filler.push(assistantTurn('x'.repeat(10_000)))
+    await writeFile(file, [
+      ...filler,
+      userTurn('the last question'),
+      assistantTurn('the last answer'),
+    ].join('\n') + '\n')
+
+    const turns = await readRecentChatTurns(file, 2)
+    expect(turns).toEqual([
+      { role: 'user', text: 'the last question' },
+      { role: 'assistant', text: 'the last answer' },
+    ])
+  })
+
+  test('widens the window rather than returning fewer turns than were asked for', async () => {
+    // One enormous newest entry: the first window lands entirely INSIDE it, so the partial-line rule
+    // discards everything and the pass finds nothing. Truncating there would silently drop five real
+    // turns; the reader must read further back instead.
+    await writeFile(file, [
+      userTurn('one'),
+      assistantTurn('two'),
+      userTurn('three'),
+      assistantTurn('four'),
+      userTurn('five'),
+      assistantTurn('y'.repeat(400_000)),
+    ].join('\n') + '\n')
+
+    const turns = await readRecentChatTurns(file, 6)
+    expect(turns.map(t => t.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    expect(turns[0]).toEqual({ role: 'user', text: 'one' })
+    expect(turns[5]!.text.length).toBe(400_000)
   })
 
   test('filters out tool-result-only user entries', async () => {
@@ -198,5 +245,208 @@ describe('readRecentChatTurns', () => {
       { role: 'user', text: 'first' },
       { role: 'assistant', text: 'second' },
     ])
+  })
+})
+
+/**
+ * A watcher is the one tool call worth a line in a conversation. Its END was already reported (the
+ * `<task-notification>` that comes back as a system note); only the START was missing, so a task
+ * appeared to finish having never begun.
+ */
+describe('background tasks', () => {
+  let root: string
+  let file: string
+
+  const bgStart = (id: string, description: string) => line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'x', description, run_in_background: true } }] },
+  })
+  const bgDone = (id: string) => line({
+    type: 'user',
+    message: { content: `<task-notification>\n<tool-use-id>${id}</tool-use-id>\n<status>completed</status>\n</task-notification>` },
+  })
+  const foreground = () => line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'tu_fg', name: 'Bash', input: { command: 'ls', description: 'List files' } }] },
+  })
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-tail-bg-'))
+    const dir = join(root, '-p')
+    await mkdir(dir, { recursive: true })
+    file = join(dir, `${SESSION_ID}.jsonl`)
+    forgetChatTailPaths(); forgetChatTailContent()
+  })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  test('a started task is a RUNNING line, by the label the assistant gave it', async () => {
+    await writeFile(file, [bgStart('tu_1', 'Ship the grant')].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file, 20)
+    const task = turns.find(t => t.task)
+    expect(task?.task).toEqual({ label: 'Ship the grant', running: true })
+  })
+
+  test('its notification settles it, paired by tool-use-id', async () => {
+    // The exact pairing: the notification carries the id of the very tool_use that launched it.
+    await writeFile(file, [bgStart('tu_1', 'Ship the grant'), bgDone('tu_1')].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file, 20)
+    expect(turns.find(t => t.task)?.task).toEqual({ label: 'Ship the grant', running: false })
+  })
+
+  test("someone else's notification does not settle it", async () => {
+    await writeFile(file, [bgStart('tu_1', 'Watch the release'), bgDone('tu_other')].join('\n') + '\n')
+    expect(turns2(await readRecentChatTurns(file, 20)).running).toBe(true)
+  })
+
+  test('a FOREGROUND tool call draws no line at all', async () => {
+    // Rendering every tool call would turn a conversation into a command log — the discriminator is
+    // the tool's own `run_in_background`, never a guess about how long something might take.
+    await writeFile(file, [foreground()].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file, 20)
+    expect(turns.some(t => t.task)).toBe(false)
+  })
+
+  test('two tasks are settled independently', async () => {
+    await writeFile(file, [
+      bgStart('tu_1', 'First'), bgStart('tu_2', 'Second'), bgDone('tu_2'),
+    ].join('\n') + '\n')
+    const byLabel = new Map(
+      (await readRecentChatTurns(file, 20)).filter(t => t.task).map(t => [t.task!.label, t.task!.running]),
+    )
+    expect(byLabel.get('First')).toBe(true)
+    expect(byLabel.get('Second')).toBe(false)
+  })
+})
+
+function turns2(turns: { task?: { label: string; running: boolean } }[]): { label: string; running: boolean } {
+  const t = turns.find(x => x.task)?.task
+  if (!t) throw new Error('no task line')
+  return t
+}
+
+describe('a queued_command carries envelopes too', () => {
+  let root: string
+  let file: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-tail-queued-'))
+    file = join(root, 'transcript.jsonl')
+    forgetChatTailContent()
+  })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  test('a task notification queued by the harness is not shown as the user\'s message', async () => {
+    // Measured on a real transcript: a background task's completion reaches the file as an
+    // `attachment` / `queued_command`, not as a `user` entry — so the envelope filter, which only
+    // ever ran on the `user` path, never saw it. Seven of them were drawn in the reader's own
+    // bubble, and they were reported exactly as the skill body was: "that message wasn't me".
+    await writeFile(file, [
+      userTurn('go ahead'),
+      queuedTurn('<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => (t.text ?? '').includes('<task-notification>'))).toBe(false)
+    expect(turns.some(t => (t.text ?? '').includes('<task-id>'))).toBe(false)
+  })
+
+  test('a real message queued while the assistant was busy still appears', async () => {
+    // The whole point of reading this entry type. Filtering must not cost the feature it serves.
+    await writeFile(file, [
+      userTurn('go ahead'),
+      queuedTurn('also fix the header while you are there'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => t.role === 'user' && t.text === 'also fix the header while you are there')).toBe(true)
+  })
+
+  test('a slash command queued by the user is unwrapped, not hidden', async () => {
+    // `<command-name>` is the person ACTING — dropping it would erase a turn that happened.
+    await writeFile(file, [
+      queuedTurn('<command-name>/login</command-name>'),
+    ].join('\n') + '\n')
+    const turns = await readRecentChatTurns(file)
+    expect(turns.some(t => t.role === 'user' && (t.text ?? '').includes('/login'))).toBe(true)
+    expect(turns.some(t => (t.text ?? '').includes('<command-name>'))).toBe(false)
+  })
+})
+
+describe('readChatWindow — the cap is a fact about the READ, and it says so', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'chat-window-')) })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  const userLine = (text: string): string =>
+    JSON.stringify({ type: 'user', message: { role: 'user', content: text } })
+
+  test('a conversation SHORTER than the cap reports nothing older', async () => {
+    const path = join(root, 'short.jsonl')
+    await writeFile(path, `${[userLine('one'), userLine('two')].join('\n')}\n`)
+    const out = await readChatWindow(path, 10)
+    expect(out.turns.length).toBe(2)
+    expect(out.older).toBe(false)
+  })
+
+  test('a walk that stops ON the cap with transcript above it reports older', async () => {
+    // The reported bug: a long session's gallery emptied itself and nothing on screen said why.
+    // The gallery lists the files of the turns it was given, so the cap has to be visible here or
+    // it is invisible everywhere.
+    const path = join(root, 'long.jsonl')
+    const lines = Array.from({ length: 20 }, (_, i) => userLine(`m${i}`))
+    await writeFile(path, `${lines.join('\n')}\n`)
+    const out = await readChatWindow(path, 5)
+    expect(out.turns.length).toBe(5)
+    expect(out.older).toBe(true)
+    // The window is the END of the conversation, not its start.
+    expect(out.turns[out.turns.length - 1]!.text).toContain('m19')
+  })
+
+  test('the trailing newline every transcript ends with is not "there is more"', async () => {
+    const path = join(root, 'exact.jsonl')
+    await writeFile(path, `${[userLine('a'), userLine('b')].join('\n')}\n`)
+    expect((await readChatWindow(path, 2)).older).toBe(false)
+  })
+})
+
+describe('the tool call carries the id its step is opened with', () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'chat-tail-ref-'))
+    forgetChatTailContent()
+  })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  const withId = (id: string) => line({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: 'bun test' } }] },
+  })
+
+  /**
+   * THIS TEST EXISTS BECAUSE THE FIELD WAS DROPPED ONCE, SILENTLY.
+   *
+   * `ref` shipped with the expanding Live feed in #368. A later merge took the restructured
+   * `chat-tail.ts` wholesale, which removed it — while `/api/fleet/step`, the pure `step-detail.ts`
+   * and the whole UI all survived. So the feature was in production, complete, and unreachable:
+   * every row drew no chevron, because a row with no `ref` deliberately does not open. Nothing
+   * failed, nothing was logged, and it was found by somebody asking why clicking did nothing.
+   * Measured on the live session that reported it: 257 tool calls, zero with a ref.
+   */
+  test('a tool_use id reaches the turn as `ref`', async () => {
+    const file = join(root, 'conv.jsonl')
+    await writeFile(file, `${withId('toolu_01ABC')}\n`)
+    const { turns } = await readChatWindow(file)
+    const call = turns.flatMap(t => t.tools ?? [])[0]
+    expect(call?.ref).toBe('toolu_01ABC')
+  })
+
+  test('a transcript that carries no id yields no ref, rather than an empty one', async () => {
+    // A row with no `ref` draws no chevron — the honest half of the same rule. An empty string
+    // would pass every truthiness check downstream and open onto nothing.
+    const file = join(root, 'conv.jsonl')
+    await writeFile(file, `${toolUseTurn('Bash')}\n`)
+    const { turns } = await readChatWindow(file)
+    const call = turns.flatMap(t => t.tools ?? [])[0]
+    expect(call?.name).toBe('Bash')
+    expect(call?.ref).toBeUndefined()
   })
 })

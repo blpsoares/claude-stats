@@ -249,3 +249,100 @@ describe('retireFallenSessions', () => {
     expect(current.find(s => s.id === 's3')?.endedAt).toBeUndefined()
   })
 })
+
+describe('task attribution on the record', () => {
+  it('round-trips taskId, attemptId and conversationLink', async () => {
+    const r = createSessionRegistry(file)
+    await r.add({
+      ...session('a1'),
+      taskId: 't-1',
+      attemptId: 'a-1',
+      conversationId: 'c-1',
+      conversationLink: 'assigned',
+    })
+    const [row] = await r.read()
+    expect(row!.taskId).toBe('t-1')
+    expect(row!.attemptId).toBe('a-1')
+    expect(row!.conversationLink).toBe('assigned')
+  })
+
+  it('drops a non-string attribution rather than carrying it into the grouping', async () => {
+    // The file is hand-editable. A number reaching the fleet's task grouping would key a band on
+    // something that is not an id, and the row would file itself under a task nobody can name.
+    await writeFile(file, JSON.stringify([{
+      ...session('a1'), taskId: 7, attemptId: null,
+    }]), 'utf-8')
+    const [row] = await createSessionRegistry(file).read()
+    expect(row!.id).toBe('a1')
+    expect(row!.taskId).toBeUndefined()
+    expect(row!.attemptId).toBeUndefined()
+  })
+
+  it('drops a conversationLink that is not one of the two words', async () => {
+    // A rollup reads this to say whether a cost came from an assigned id or a claimed one. An
+    // unknown word would flow into that sentence as though it meant something.
+    await writeFile(file, JSON.stringify([{
+      ...session('a1'), conversationId: 'c-1', conversationLink: 'guessed',
+    }]), 'utf-8')
+    const [row] = await createSessionRegistry(file).read()
+    expect(row!.conversationId).toBe('c-1')
+    expect(row!.conversationLink).toBeUndefined()
+  })
+
+  it('patches the attribution onto an existing row', async () => {
+    const r = createSessionRegistry(file)
+    await r.add(session('a1'))
+    expect(await r.patch('a1', { taskId: 't-9', attemptId: 'a-9' })).toBe(true)
+    const [row] = await r.read()
+    expect([row!.taskId, row!.attemptId]).toEqual(['t-9', 'a-9'])
+  })
+})
+
+// The write's temp path is unique per writer — see `registry.ts`.
+//
+// THE RACE ITSELF IS NOT UNIT-TESTED, and saying so is more useful than a test that passes either
+// way. It needs both writers on the UNLOCKED path (`file-lock.ts` lets a blocked acquirer proceed
+// after WAIT_MS), and holding the lock to force that makes every write pay 5 s, so a run long
+// enough to show the loss takes minutes. An in-process test WITHOUT holding the lock passes with
+// the old shared path too: the lock does its job, and the test discriminates nothing.
+//
+// It was measured instead, with two real processes doing 60 adds each against one file while the
+// lock was held from outside — the records that survived, of 120:
+//
+//     shared `<file>.tmp`   68 · 120 · 62
+//     unique per writer    119 · 120 · 118
+//
+// With one path they overwrite each other INSIDE the temp file: A writes its list, B replaces the
+// bytes with its own, A renames and publishes B's — a third of the registry gone in one step,
+// which is what "the sessions stopped by themselves" looks like from outside. What IS asserted
+// here is the property that makes it impossible: nothing shared is left behind to collide on.
+describe('the registry write', () => {
+  let dir = ''
+  let file = ''
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'agentistics-reg-tmp-'))
+    file = join(dir, 'managed-sessions.json')
+  })
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  const session = (id: string) => ({
+    id, harness: 'claude' as const, cwd: '/x', createdAt: new Date().toISOString(),
+    label: `s-${id}`, lastSeenMs: Date.now(),
+  })
+
+  it('leaves no scratch file behind for another writer to collide on', async () => {
+    const reg = createSessionRegistry(file)
+    await reg.add(session('one') as never)
+    await reg.add(session('two') as never)
+    const left = await readdir(dir)
+    expect(left.filter(f => f.includes('.tmp'))).toEqual([])
+    expect(left).toContain('managed-sessions.json')
+  })
+
+  it('publishes a complete list, never a partial one', async () => {
+    const reg = createSessionRegistry(file)
+    await Promise.all(Array.from({ length: 12 }, (_, i) => reg.add(session(`id${i}`) as never)))
+    const list = JSON.parse(await readFile(file, 'utf-8')) as unknown[]
+    expect(list.length).toBe(12)
+  })
+})
