@@ -836,7 +836,20 @@ export default function SessionsPage() {
     if ((artLayout.layout === 'closed' && !asideAlive) || !artifactsPane) {
       // The panel is shut. The marker rides the right edge of the session, which is where the panel
       // it opens will appear — so the control and its result are in the same place.
-      return edgeMarker === null ? panel : (
+      // THE WRAPPER IS UNCONDITIONAL, and that is a focus bug rather than a style.
+      //
+      // It used to be `edgeMarker === null ? panel : <div>{edgeMarker}{panel}</div>`. React
+      // reconciles by POSITION: swapping the root between `panel` and a div CONTAINING it changes
+      // the shape of the tree, so the whole panel is unmounted and a new one mounted — every DOM
+      // node recreated, the composer's textarea among them. Typing while a session worked lost the
+      // caret the moment the strip appeared, and lost it AGAIN when it went away, which is exactly
+      // how it was reported: "quando essa barra aparece ele desfoca e quando ela some o input
+      // tambem desfoca".
+      //
+      // Rendering the wrapper always keeps `panel` at the same position under the same parent, so it
+      // survives the strip coming and going. `{null}` occupies the slot without drawing anything,
+      // which is what makes the two cases the same SHAPE.
+      return (
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
           {edgeMarker}
           {panel}
