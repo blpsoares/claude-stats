@@ -11,6 +11,8 @@
  * the name and is left alone; a bare attachment line never does, because that is how it was built.
  */
 
+import type { AttachmentSend } from '@agentistics/core'
+
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif'])
 
 export function isImagePath(path: string): boolean {
@@ -84,4 +86,47 @@ export function splitImageMarkers(text: string): SplitMarkers {
     rest = rest.slice(m[0].length)
   }
   return { markers, text: markers.length > 0 ? rest.trim() : text }
+}
+
+
+// --- a marker that CAN find its file ----------------------------------------
+
+/**
+ * How far back a turn may look for its own sends.
+ *
+ * Generous, because the whole point is the QUEUED case: the harness holds a message until its
+ * current turn ends, which is minutes on a working session and occasionally much longer. Being
+ * generous costs nothing — a window that catches a neighbouring message makes the count disagree,
+ * and a disagreeing count resolves to nothing.
+ */
+export const SEND_WINDOW_MS = 60 * 60_000
+
+/**
+ * The files behind a turn's markers, in order — or `null` when it cannot be said.
+ *
+ * The comment above says a marker has no file behind it. That was WRONG, and this is the
+ * correction: agentop wrote those files itself (185 of them on the machine this was measured on)
+ * and knew the session it was typing them into. What was missing was never the file — it was the
+ * record that we sent it, which `attachment-log`/`attachment-web.ts` now keeps.
+ *
+ * ALL-OR-NOTHING, deliberately. Drawing the WRONG image under a message is worse than drawing a
+ * chip: a chip says "an image was here", which is true and useless, while a wrong thumbnail is
+ * false and convincing. So markers resolve only when the sends in the window account for them
+ * EXACTLY — same count, one file per marker. A second message in the window, a file since deleted,
+ * a marker the harness numbered from elsewhere: each makes the count disagree, and the chip stays.
+ *
+ * The ordinals are the harness's numbering across its WHOLE conversation, so they are a count here
+ * and never an index into anything of ours.
+ */
+export function resolveMarkerPaths(input: {
+  markers: readonly number[]
+  turnAtMs: number
+  sends: readonly AttachmentSend[]
+}): string[] | null {
+  if (input.markers.length === 0) return null
+  const inWindow = input.sends
+    .filter(s => s.atMs <= input.turnAtMs && input.turnAtMs - s.atMs <= SEND_WINDOW_MS)
+    .sort((a, b) => a.atMs - b.atMs)
+  if (inWindow.length !== input.markers.length) return null
+  return inWindow.map(s => s.path)
 }

@@ -28,7 +28,8 @@ import remarkBreaks from 'remark-breaks'
 import { Check, Clock, Copy, CornerUpLeft, Image as ImageIcon, Loader, User } from 'lucide-react'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { splitSlashLine } from '../../lib/slashLine'
-import { splitImageAttachments, splitImageMarkers } from '../../lib/attachmentPreview'
+import { resolveMarkerPaths, splitImageAttachments, splitImageMarkers } from '../../lib/attachmentPreview'
+import type { AttachmentSend } from '@agentistics/core'
 import { copyText } from '../../lib/clipboard'
 import { echoStatus } from '../../lib/echoStatus'
 import { messageTime } from '../../lib/messageTime'
@@ -72,6 +73,8 @@ export interface ChatTurn {
 
 export interface ChatBubbleProps {
   turn: ChatTurn
+  /** What agentop typed into this session's pane, so a `[Image #N]` marker can find its file. */
+  attachmentSends?: readonly AttachmentSend[]
   lang: 'pt' | 'en'
   /** Which assistant said it, for the mark beside an assistant turn. */
   harness: string
@@ -174,7 +177,7 @@ const SYSTEM_NOTE_PT: Record<string, string> = {
   'injected by the assistant': 'injetado pelo assistente',
 }
 
-export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId }: ChatBubbleProps) {
+export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provisional, awaiting, awaitingWorking, awaitingSinceMs, onReply, onReplyExcerpt, anchorId, attachmentSends }: ChatBubbleProps) {
   const pt = lang === 'pt'
   const mine = turn.role === 'user'
   /**
@@ -282,9 +285,19 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
   const { images, text: prose } = splitImageAttachments(turn.text)
 
   // And `[Image #4]` — the same question asked of what the HARNESS substituted rather than what the
-  // composer typed. It carries no file, so it becomes a chip naming which image it was and never a
-  // thumbnail; without this it ran into the first word of the prose (see `splitImageMarkers`).
+  // composer typed; without this it ran into the first word of the prose (see `splitImageMarkers`).
   const { markers, text } = splitImageMarkers(prose)
+
+  // A marker DOES have a file behind it when agentop is the one that sent it: it wrote the image to
+  // this machine and recorded which session it typed the path into. `resolveMarkerPaths` hands back
+  // the files only when the record accounts for the markers EXACTLY — otherwise null, and the chip
+  // stays, because a wrong thumbnail is false and convincing where a chip is merely useless.
+  const markerImages = resolveMarkerPaths({
+    markers,
+    turnAtMs: turn.at ? Date.parse(turn.at) || 0 : 0,
+    sends: attachmentSends ?? [],
+  })
+  const shownImages = markerImages ? [...images, ...markerImages] : images
 
   // A turn that said nothing AND attached nothing is not a message. Tool calls and reasoning are
   // the work between messages, and the row's state already reports that the session is working.
@@ -551,9 +564,9 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
             path nobody can read at a glance. Absent rows carry no rule of their own: an image that
             fails to load (moved, or outside `ATTACHMENT_DIR`) falls back to a plain chip with its
             name, never a broken-image icon with nothing to click. */}
-        {images.length > 0 && (
+        {shownImages.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {images.map((path, i) => (
+            {shownImages.map((path, i) => (
               <AttachmentThumb key={path} path={path} onOpen={() => setLightboxIndex(i)} />
             ))}
           </div>
@@ -561,7 +574,7 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
 
         {/* The harness's own markers, as chips. There is no file behind an ordinal, so the chip says
             exactly what is known — which image of the turn this was — and offers nothing to click. */}
-        {markers.length > 0 && (
+        {markers.length > 0 && markerImages === null && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {markers.map(n => (
               <span

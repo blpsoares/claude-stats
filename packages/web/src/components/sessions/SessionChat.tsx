@@ -65,6 +65,8 @@ import { overlayPadding } from '../../lib/mobileOverlay'
 import { HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
 
+import type { AttachmentSend } from '@agentistics/core'
+
 interface ChatPayload {
   turns: ChatTurn[]
   unavailable?: string
@@ -73,6 +75,11 @@ interface ChatPayload {
   older?: string
   /** Messages the SERVER is holding for this conversation — see `pending-prompts.ts`. */
   pending?: { text: string; at: number }[]
+  /**
+   * What agentop typed into this session's pane, and when — so a `[Image #N]` marker the harness
+   * substituted for a path can find its file again. Absent when nothing was ever attached here.
+   */
+  attachmentSends?: AttachmentSend[]
 }
 
 export interface SessionChatProps {
@@ -1079,6 +1086,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     for (const file of files) {
       const body = new FormData()
       body.append('file', file)
+      // Which session this is going into. The server records it, so a `[Image #N]` marker the
+      // harness substitutes when it QUEUES the message can still find the file it stands for.
+      body.append('session', session.id)
       try {
         const res = await fetch(`/api/fleet/attach?lang=${lang}`, { method: 'POST', body })
         const json = await res.json() as { ok: boolean; path?: string; name?: string; message?: string }
@@ -1297,6 +1307,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               turn={t}
               lang={lang}
               harness={session.harness}
+              {...(payload?.attachmentSends ? { attachmentSends: payload.attachmentSends } : {})}
               anchorId={turnAnchorId('turn', i)}
               {...(canPrompt ? { onReply: onReplyToTurn } : {})}
               {
@@ -1317,6 +1328,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               turn={{ role: 'user', text: q.text }}
               lang={lang}
               harness={session.harness}
+              {...(payload?.attachmentSends ? { attachmentSends: payload.attachmentSends } : {})}
               anchorId={turnAnchorId('echo', i)}
               awaiting
               awaitingWorking={working}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { isImagePath, splitImageAttachments, splitImageMarkers } from './attachmentPreview'
+import { isImagePath, splitImageAttachments, splitImageMarkers, resolveMarkerPaths, SEND_WINDOW_MS } from './attachmentPreview'
 
 describe('isImagePath', () => {
   test('recognises known image extensions, case-insensitively', () => {
@@ -67,4 +67,39 @@ test('text with no marker is returned untouched, whitespace included', () => {
 test('a turn that is nothing but markers keeps no text', () => {
   expect(splitImageMarkers('[Image #1] [Image #2]')).toEqual({ markers: [1, 2], text: '' })
 })
+})
+
+// --- a marker that CAN find its file ----------------------------------------
+
+const T = Date.UTC(2026, 8, 7, 20, 0, 0)
+const snd = (atMs: number, path: string) => ({ sessionId: 's', atMs, path })
+
+test('three markers and three sends resolve, in the order they were sent', () => {
+  expect(resolveMarkerPaths({
+    markers: [4, 5, 6], turnAtMs: T,
+    sends: [snd(T - 3000, '/a/c.png'), snd(T - 9000, '/a/a.png'), snd(T - 6000, '/a/b.png')],
+  })).toEqual(['/a/a.png', '/a/b.png', '/a/c.png'])
+})
+
+// Every case below answers null: a wrong thumbnail is false and convincing, a chip is merely useless.
+test('one too few, or one too many, resolves nothing', () => {
+  expect(resolveMarkerPaths({ markers: [1, 2], turnAtMs: T, sends: [snd(T - 1, '/a/a.png')] })).toBe(null)
+  expect(resolveMarkerPaths({ markers: [1], turnAtMs: T, sends: [snd(T - 1, '/a/a.png'), snd(T - 2, '/a/b.png')] })).toBe(null)
+})
+
+test('a send after the turn, or older than the window, is not this turn’s', () => {
+  expect(resolveMarkerPaths({ markers: [1], turnAtMs: T, sends: [snd(T + 1, '/a/a.png')] })).toBe(null)
+  expect(resolveMarkerPaths({ markers: [1], turnAtMs: T, sends: [snd(T - SEND_WINDOW_MS - 1, '/a/a.png')] })).toBe(null)
+  expect(resolveMarkerPaths({ markers: [1], turnAtMs: T, sends: [snd(T - SEND_WINDOW_MS, '/a/a.png')] })).toEqual(['/a/a.png'])
+})
+
+test('no markers is not a question, and markers with no record resolve nothing', () => {
+  expect(resolveMarkerPaths({ markers: [], turnAtMs: T, sends: [snd(T - 1, '/a/a.png')] })).toBe(null)
+  expect(resolveMarkerPaths({ markers: [4, 5], turnAtMs: T, sends: [] })).toBe(null)
+})
+
+test('the ordinals are a count, never an index', () => {
+  const s = [snd(T - 2, '/a/a.png'), snd(T - 1, '/a/b.png')]
+  expect(resolveMarkerPaths({ markers: [4, 5], turnAtMs: T, sends: s }))
+    .toEqual(resolveMarkerPaths({ markers: [1, 2], turnAtMs: T, sends: s }))
 })

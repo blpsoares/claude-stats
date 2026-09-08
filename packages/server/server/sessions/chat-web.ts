@@ -28,6 +28,8 @@ import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ChatTurn } from './chat-turn'
+import type { AttachmentSend } from '@agentistics/core'
+import { readAttachmentSends } from './attachment-web'
 import { transcriptReaderFor } from './harness-transcript'
 import { conversationOfRow } from './row-conversation'
 import { pendingFor, type PendingPrompt } from './pending-prompts'
@@ -35,6 +37,13 @@ import { pendingFor, type PendingPrompt } from './pending-prompts'
 export interface ChatPayload {
   /** The turns, oldest first. Empty with no `unavailable` means a conversation with nothing in it. */
   turns: ChatTurn[]
+  /**
+   * What agentop typed into THIS session's pane, and when — so the view can draw a thumbnail where
+   * the harness substituted a `[Image #N]` marker for the path it was given. The RULE that reads it
+   * is `lib/attachmentPreview.ts`'s `resolveMarkerPaths`, which sits beside the marker parsing it
+   * serves and resolves only when the record accounts for a turn's markers exactly.
+   */
+  attachmentSends?: AttachmentSend[]
   /**
    * Already-localized reason there is no conversation to show.
    *
@@ -182,8 +191,13 @@ export async function readSessionChat(
   // is the right one: a message queued a minute ago cannot be older than the last 400 turns, and
   // comparing against a wider slice would cost a second read to learn nothing.
   const pending = pendingFor(conversationId, read.turns.filter(t => t.role === 'user').map(t => t.text))
+  // Read once per chat load, not per turn: the log is one small append-only file and the view
+  // resolves against it locally. Omitted when there is nothing recorded, so a machine that never
+  // attached anything carries no field at all.
+  const sends = await readAttachmentSends(id)
   return {
     turns: read.turns,
+    ...(sends.length > 0 ? { attachmentSends: sends } : {}),
     live,
     ...(pending.length > 0 ? { pending } : {}),
     ...(read.older

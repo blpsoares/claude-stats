@@ -1629,10 +1629,14 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
             headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           })
         }
+        // The session this is attached to, so a `[Image #N]` marker can find the file again when the
+        // harness queues the message and substitutes markers for the paths it was given. Absent is
+        // fine — the attachment still works, it just cannot be drawn as a thumbnail in that case.
+        const attachedTo = typeof form.get('session') === 'string' ? String(form.get('session')) : ''
         const out = await storeAttachment(lang, {
           name: file.name,
           bytes: new Uint8Array(await file.arrayBuffer()),
-        })
+        }, attachedTo)
         return new Response(JSON.stringify(out), {
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
