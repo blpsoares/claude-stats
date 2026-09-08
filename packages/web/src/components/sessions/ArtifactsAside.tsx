@@ -31,7 +31,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
-import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
+import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
   countSkills, groupSkills, shortName, skillInvocation, type SkillEntry,
@@ -39,6 +39,7 @@ import {
 import { requestDraft } from '../../lib/composerStore'
 import { splitFrontmatter } from '../../lib/skillGroups'
 import ReactMarkdown from 'react-markdown'
+import { SessionTasksTab } from '../tasks/SessionTasksTab'
 import remarkGfm from 'remark-gfm'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { agoLabel, isDoc, liveEvents, writeStatus, type LiveEvent, type LiveTurn, type WriteStatus } from '../../lib/artifactTabs'
@@ -77,7 +78,7 @@ import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 import { createSharedPref } from '../../lib/sharedPref'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs' | 'tasks'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 // SHARED. How a person reads the gallery and a skill is about the work, not about the screen —
@@ -130,6 +131,16 @@ export interface ArtifactsAsideProps {
   tabRequest?: { tab: string; at: number; ref?: string } | null
   sessionId: string
   lang: 'pt' | 'en'
+  /**
+   * The session itself, for the TASKS tab — what it is called, which harness, and what it is filed
+   * under right now. Absent on a surface that has the id and nothing else; the tab then offers
+   * nothing rather than inventing a name.
+   */
+  session?: { id: string; title: string; harness?: string; task?: string }
+  /** Open a task's page from the tasks tab. */
+  onOpenTask?: (taskId: string) => void
+  /** The filing changed — the caller re-reads the fleet so the row's badge agrees with the tab. */
+  onTaskChanged?: () => void
   /** Every file this session touched, newest first. */
   artifacts: readonly Artifact[]
   /** The conversation has not answered yet — distinct from having answered with nothing. */
@@ -314,7 +325,7 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 
 export function ArtifactsAside({
   sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, outsideNote, turns, facts, onClose,
-  tabRequest,
+  tabRequest, session, onOpenTask, onTaskChanged,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
@@ -382,7 +393,7 @@ export function ArtifactsAside({
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
-      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs') setTab(t)
+      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs' || t === 'tasks') setTab(t)
     // A requested STEP comes with the tab: the edge strip names an action, so pressing it
     // lands on that row rather than on the top of a feed to be searched. Set unconditionally,
     // including to undefined, so a later request with no step clears the previous one — a
@@ -662,6 +673,14 @@ export function ArtifactsAside({
     },
     { id: 'mcps', label: 'MCPs', icon: <Plug size={12} />, count: mcp === null ? null : mcp.servers.length },
     { id: 'prs', label: 'PRs', icon: <GitPullRequest size={12} />, count: prs === null ? null : prs.pulls.length },
+    // The task this session is filed under, and the form to file it somewhere new. The count is 1
+    // or 0 because a session belongs to at most one task — it is a badge, not a list.
+    {
+      id: 'tasks',
+      label: pt ? 'Tarefa' : 'Task',
+      icon: <ClipboardList size={12} />,
+      count: session?.task ? 1 : 0,
+    },
   ]
 
   /**
@@ -1569,7 +1588,18 @@ export function ArtifactsAside({
           {/* The REFUSAL outranks every tab: there is no list, feed or gallery to be empty when
               the conversation cannot be read at all, and `body()` is where that one sentence
               lives. */}
-          {unavailable ? body()
+          {/* The TASKS tab outranks the refusal: it is about the board, not about reading this
+              conversation, so a session whose transcript cannot be read can still be filed. */}
+          {tab === 'tasks' && session ? (
+            <div style={{ overflowY: 'auto', minHeight: 0 }}>
+              <SessionTasksTab
+                session={session}
+                lang={lang}
+                {...(onOpenTask ? { onOpenTask } : {})}
+                {...(onTaskChanged ? { onChanged: onTaskChanged } : {})}
+              />
+            </div>
+          ) : unavailable ? body()
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()

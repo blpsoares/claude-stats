@@ -217,7 +217,7 @@ describe("what the harness says about its OWN session", () => {
     // The guess this replaces matches on harness+directory, so every session in one repository
     // resolves to the same conversation — the bug that reopened three rows onto one conversation.
     const conv = (sessionId: string, title: string, lastActivityMs: number) => ({
-      sessionId, title, lastActivityMs,
+      sessionId, title, lastActivityMs, startedMs: 0,
       harness: 'claude' as const, cwd: '/repo/a', resumable: true, firstPrompt: '',
     })
     // The newest is deliberately the WRONG one, so the directory guess and the exact answer differ.
@@ -244,7 +244,7 @@ describe("what the harness says about its OWN session", () => {
       processes: [],
       conversations: [{
         sessionId: '581deab7', title: 'Build agentop harness cockpit with session management',
-        lastActivityMs: 1, harness: 'claude' as const, cwd: '/repo/a', resumable: true,
+        lastActivityMs: 1, startedMs: 0, harness: 'claude' as const, cwd: '/repo/a', resumable: true,
         firstPrompt: '',
       }],
       harnessSessions: index({ byConversation: { '581deab7': { name: 'MAIN' } } }),
@@ -265,7 +265,7 @@ describe("what the harness says about its OWN session", () => {
       activity: new Map(),
       processes: [],
       conversations: [{
-        sessionId: '581deab7', title: 'a title from another week', lastActivityMs: 1,
+        sessionId: '581deab7', title: 'a title from another week', lastActivityMs: 1, startedMs: 0,
         harness: 'claude' as const, cwd: '/repo/a', resumable: true, firstPrompt: '',
       }],
       harnessSessions: index({
@@ -291,7 +291,7 @@ describe("what the harness says about its OWN session", () => {
       activity: new Map(),
       processes: [],
       conversations: [{
-        sessionId: 'c1', title: 'stored title', lastActivityMs: 1,
+        sessionId: 'c1', title: 'stored title', lastActivityMs: 1, startedMs: 0,
         harness: 'claude' as const, cwd: '/repo/a', resumable: true, firstPrompt: '',
       }],
       harnessSessions: index({
@@ -309,7 +309,7 @@ describe("what the harness says about its OWN session", () => {
       activity: new Map(),
       processes: [],
       conversations: [{
-        sessionId: 'c1', title: 'a title somebody wrote', lastActivityMs: 1,
+        sessionId: 'c1', title: 'a title somebody wrote', lastActivityMs: 1, startedMs: 0,
         harness: 'claude' as const, cwd: '/repo/a', resumable: true, firstPrompt: '',
       }],
       harnessSessions: index({
@@ -348,7 +348,7 @@ describe('a row that KNOWS which conversation it drives', () => {
     harness: 'claude' as const,
     cwd: '/repo/a',
     title: sessionId,
-    lastActivityMs: 1,
+    lastActivityMs: 1, startedMs: 0,
     resumable: true,
     firstPrompt: '',
     ...over,

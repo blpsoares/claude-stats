@@ -75,9 +75,17 @@ export interface NewSessionModalProps {
   onClose: () => void
   /** Called with the new session's id when one starts, so the page can select it immediately. */
   onStarted: (id?: string) => void
+  /**
+   * Pre-fill the task field.
+   *
+   * Set by the task wizard, which creates the task first and hands the title over: the one moment
+   * attribution is free is the moment the session is started, and asking for it twice is how a
+   * field gets left blank.
+   */
+  initialTask?: string
 }
 
-export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalProps) {
+export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSessionModalProps) {
   const pt = lang === 'pt'
   const [harnesses, setHarnesses] = useState<HarnessOption[] | null>(null)
   const [projects, setProjects] = useState<ProjectOption[]>([])
@@ -100,7 +108,7 @@ export function NewSessionModal({ lang, onClose, onStarted }: NewSessionModalPro
 
   const [harness, setHarness] = useState<HarnessOption | null>(null)
   const [cwd, setCwd] = useState('')
-  const [task, setTask] = useState('')
+  const [task, setTask] = useState(initialTask ?? '')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState('')
   const [prompt, setPrompt] = useState('')

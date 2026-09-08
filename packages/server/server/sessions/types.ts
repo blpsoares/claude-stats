@@ -97,6 +97,9 @@ export interface SpawnRequest {
   effort?: string
   label?: string
   task?: string
+  /** See `ManagedSession.taskId`: recorded at spawn, the one moment it is a fact. */
+  taskId?: string
+  attemptId?: string
 }
 
 /**
@@ -233,6 +236,19 @@ export interface ManagedSession {
    */
   task?: string
   /**
+   * The Task and Attempt this session was started under — see `task-model.ts`.
+   *
+   * Stamped at SPAWN, the one moment the association is a fact rather than a guess, and carried by
+   * every path that mints a new managedId for the same work: resume, attach, takeover, openTask,
+   * adoption. The same discipline `conversationId` follows, for the same reason — a session filed
+   * under the wrong task makes every number wrong without looking wrong.
+   *
+   * `task` (the free-text name) stays beside these and keeps working, and a name typed before this
+   * existed resolves through `legacyTaskId`.
+   */
+  taskId?: string
+  attemptId?: string
+  /**
    * The last time this session was OBSERVED ALIVE, epoch ms — stamped at creation, then refreshed by
    * the poller's heartbeat for every session the backend reports as running.
    *
@@ -268,6 +284,15 @@ export interface ManagedSession {
    * the same one, and the fleet came back with a single session listed three times under one name.
    */
   conversationId?: string
+  /**
+   * HOW `conversationId` was established — see `LinkProvenance` in `task-model.ts`.
+   *
+   * `assigned` the CLI was handed the id at spawn; `observed` the poller claimed it at first
+   * sighting. A rollup must be able to tell them apart, and on the record alone they look
+   * identical. A MISSING value reads as `assigned`: every link written before this field existed
+   * was one.
+   */
+  conversationLink?: 'assigned' | 'observed'
   /**
    * The repository this session's directory belonged to WHEN IT STARTED.
    *
