@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ChevronUp, CornerUpLeft, History, Loader, Mic, Paperclip, RotateCcw, Send, SlidersHorizontal, Square, X } from 'lucide-react'
 import { hasSomethingToSend, stopShown as isStopShown } from '../../lib/composerAction'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { FleetActionId, FleetRow } from '../../lib/fleet'
@@ -61,7 +61,9 @@ import { pendingEchoes } from '@agentistics/core'
 import {
   applyDraftRequest, consumeDraftRequest, getDraftRequest, useDraftRequest,
 } from '../../lib/composerStore'
-import { splitSlashLine } from '../../lib/slashLine'
+import { commandToken, knownCommands } from '../../lib/commandToken'
+import { draftSegments, needsMirror } from '../../lib/commandMirror'
+import { commandNotFoundNotice } from '../../lib/commandNotice'
 import { lastSentMessage, turnAnchorId } from '../../lib/lastSent'
 import { goToTurn } from '../../lib/turnScroll'
 import { attachmentName, isImageAttachment, splitMessage } from '../../lib/messageAttachments'
@@ -866,8 +868,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * so a request can never land in another conversation's box. It APPENDS and never sends: what
    * reaches a session is what the person pressed enter on.
    */
-  /** The leading `/skill` of what is typed, for the field's own marker. See `slashLine.ts`. */
-  const slashDraft = useMemo(() => splitSlashLine(draft), [draft])
+  /**
+   * The leading `/command` of what is typed, for the field's own marker — see `commandToken.ts`.
+   * `knownCommands` carries `skills === null` through as `null` rather than an empty set, which is
+   * what keeps a session's first command from being painted `missing` before the list has answered.
+   */
+  const cmdToken = useMemo(() => commandToken(draft, knownCommands(skills)), [draft, skills])
   /**
    * A `/` typed where a command cannot be — see `slashMisplaced`.
    *
@@ -1838,18 +1844,30 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   onChange={e => pick(e.target.files)}
                   style={{ display: 'none' }}
                 />
-                {/* THE INVOCATION IS MARKED IN THE FIELD ITSELF.
-                    A textarea cannot hold coloured spans, so this is the standard underlay: a div
-                    with the SAME typography and padding, behind the field, drawing the command as a
-                    highlighted block with transparent text. The field above keeps its own colour
-                    and its own caret — which is the reason it is a BACKGROUND and not a colour
-                    swap: `color: transparent` on the textarea would take the selection highlight
-                    and the caret with it, and a millimetre of metric drift would then be unreadable
-                    text rather than a marker sitting slightly off.
-                    It scrolls with the field, is `aria-hidden` (the text is already in the field,
-                    and a screen reader must not hear it twice) and takes no pointer events. */}
+                {/* THE INVOCATION IS PAINTED LIKE A BUTTON, IN THE FIELD ITSELF.
+                    A textarea cannot hold a coloured span, so a FOUND command is drawn by a mirror:
+                    a div with the SAME typography, padding and wrapping, behind the field, drawing
+                    the whole draft again with the command's run wrapped in an orange-on-white span
+                    — and the field's OWN text turned transparent so only the mirror is seen. That is
+                    a bigger step than colouring a background block behind the field's own opaque
+                    text (which is all a background-only marker can ever do): a BUTTON needs the
+                    glyphs themselves recoloured, and a plain textarea has no way to recolour one run
+                    of its own text. `caretColor` is set explicitly so hiding the text does not hide
+                    the caret with it (the caret otherwise follows `color`, which the transparency
+                    would carry off too) — the trade this makes, and it is a real one, is that a
+                    dragged SELECTION over the mirrored text highlights the right span (the browser
+                    measures the real, transparent characters) but shows no glyphs inside it, because
+                    those glyphs are exactly what was made invisible.
+                    `needsMirror`/`draftSegments` (`commandMirror.ts`) are the ONE place both
+                    decisions are made — whether to draw the mirror at all and which runs it paints —
+                    so the two can never drift into "a mirror with nothing painted" or "hidden text
+                    with no mirror to show it". Nothing here is state: both are re-derived from the
+                    draft and the token on every render, which is what makes deleting one character
+                    of the command turn it back into plain text with no flag to remember.
+                    The mirror scrolls with the field, is `aria-hidden` (the text is already in the
+                    field, and a screen reader must not hear it twice) and takes no pointer events. */}
                 <div style={{ position: 'relative' }}>
-                  {slashDraft.command !== '' && (
+                  {needsMirror(cmdToken) && (
                     <div
                       aria-hidden
                       ref={underlayRef}
@@ -1857,15 +1875,20 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none',
                         boxSizing: 'border-box', padding: '6px 6px',
                         fontFamily: 'inherit', fontSize: 13.5, lineHeight: 1.5,
-                        whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'transparent',
+                        whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)',
                       }}
                     >
-                      <span style={{
-                        background: 'var(--anthropic-orange-dim)',
-                        boxShadow: '0 0 0 1px var(--anthropic-orange)',
-                        borderRadius: 4,
-                      }}>{slashDraft.command}</span>
-                      {slashDraft.rest}
+                      {draftSegments(draft, cmdToken).map((seg, i) => seg.button ? (
+                        <span key={i} style={{
+                          background: 'var(--anthropic-orange)', color: '#fff',
+                          borderRadius: 4,
+                          boxShadow: '0 0 0 2px var(--anthropic-orange)',
+                        }}>{seg.text}</span>
+                      ) : (
+                        // A plain run — key only, no wrapper style, so it never disagrees with the
+                        // textarea's own metrics for the text it is standing in for.
+                        <span key={i}>{seg.text}</span>
+                      ))}
                     </div>
                   )}
                 <textarea
@@ -1939,9 +1962,15 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // ROW and was left behind when it became a column.
                     width: '100%', display: 'block', boxSizing: 'border-box',
                     resize: 'none', border: 'none', outline: 'none', background: 'transparent',
-                    color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 13.5,
+                    // Transparent ONLY while the mirror is drawing the same text underneath — see
+                    // the note above the mirror div. `caretColor` is set unconditionally to the same
+                    // colour the text would otherwise be, so it never rides on `color` and vanishes
+                    // the moment `color` does.
+                    color: needsMirror(cmdToken) ? 'transparent' : 'var(--text-primary)',
+                    caretColor: 'var(--text-primary)',
+                    fontFamily: 'inherit', fontSize: 13.5,
                     lineHeight: 1.5, maxHeight: maxComposerH, overflowY: 'auto', padding: '6px 6px',
-                    // Above the underlay, and transparent so the mark shows through.
+                    // Above the mirror.
                     position: 'relative', zIndex: 1,
                   }}
                   onScroll={e => {
@@ -1959,6 +1988,21 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     {pt
                       ? 'Uma skill só vale no começo da linha — apague o que está antes, ou quebre a linha.'
                       : 'A skill only counts at the start of a line — clear what is before it, or break the line.'}
+                  </p>
+                )}
+
+                {/* MISSING WARNS, IT NEVER BLOCKS. `commandToken.ts` already refuses to guess here:
+                    this only ever renders for `missing` (the session's own list does not have it),
+                    never for `unknown` (no list to check yet) — see its header for why those two
+                    are not the same fact. The send button below reads none of this. */}
+                {cmdToken?.state === 'missing' && (
+                  <p role="status" style={{
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    margin: '2px 6px 0', fontSize: 10.5, lineHeight: 1.5,
+                    color: '#f59e0b',
+                  }}>
+                    <AlertTriangle size={11} style={{ flexShrink: 0 }} />
+                    {commandNotFoundNotice(cmdToken.text, pt)}
                   </p>
                 )}
 
