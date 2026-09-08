@@ -24,12 +24,21 @@ export type TaskCommand =
    */
   | { kind: 'deliver'; ref: string; json?: boolean }
   | { kind: 'abandon'; ref: string; json?: boolean }
+  /**
+   * Opt a delivery in or out of travelling to this machine's centrals.
+   *
+   * Two verbs rather than `share <ref> --on|--off`: the thing being decided is which of two states
+   * the delivery is in, and a flag that can be forgotten defaults it — which on this particular
+   * switch means publishing text nobody offered.
+   */
+  | { kind: 'share'; ref: string; on: boolean; json?: boolean }
   | { kind: 'help' }
   | { kind: 'error'; message: string }
 
 // The BETA is in the usage line because that is what a person meets when they get the command
 // wrong — the one moment they are certainly reading it.
-const USAGE = 'Usage: agentop task [ls | show <id|name> | deliver <id|name> | abandon <id|name>]'
+const USAGE = 'Usage: agentop task [ls | show <id|name> | deliver <id|name> | abandon <id|name>'
+  + ' | share <id|name> | unshare <id|name>]'
   + '\n(beta — the delivery board is new and still changing)'
 
 export function parseTaskArgs(argv: string[]): TaskCommand {
@@ -41,6 +50,12 @@ export function parseTaskArgs(argv: string[]): TaskCommand {
   // question needs a subcommand to ask is one people look up every time.
   if (!head || head === 'ls' || head === 'list') return { kind: 'ls', ...(json ? { json: true } : {}) }
   if (head === 'help' || head === '--help' || head === '-h') return { kind: 'help' }
+
+  if (head === 'share' || head === 'unshare') {
+    const ref = rest.slice(1).join(' ').trim()
+    if (!ref) return { kind: 'error', message: `Usage: agentop task ${head} <id|name>` }
+    return { kind: 'share', ref, on: head === 'share', ...(json ? { json: true } : {}) }
+  }
 
   if (head === 'show' || head === 'deliver' || head === 'abandon') {
     // The rest is JOINED rather than taken as one token: a task is named by a person and its name

@@ -22,6 +22,8 @@
  * central (on ingest, which is what protects against members still running older code).
  */
 
+import type { SharedTask, SharedTaskRecord } from './sharedTask'
+
 export const REDACTION = '[REDACTED]'
 
 /** Obvious non-secrets people type where a secret would go. Never redacted. */
@@ -162,4 +164,49 @@ export function redactSessionText<
     ...(ul !== undefined ? { user_label: ul } : {}),
     ...(un !== undefined ? { user_note: un } : {}),
   }
+}
+
+/**
+ * The same scrub, applied to a delivery.
+ *
+ * A board carries MORE free text than a session does — a title, a description somebody wrote out,
+ * every comment body, the subtasks, the reason a card is blocked, the names of the files attached
+ * to it — and all of it is text a person typed while working, which is exactly the text a
+ * credential gets pasted into. So the list below is the whole of what travels, and a field added
+ * to `SharedTask` without an entry here is how a secret reaches a central through the one field
+ * nobody thought of. Same reasoning as `redactSessionText`, applied to a bigger document.
+ *
+ * Called at BOTH boundaries: on the member before the push, and again on the central at ingest —
+ * a central cannot assume its members run current code, and in a mixed-version fleet the machine
+ * on the old build is exactly the one that leaks.
+ *
+ * Pure. Returns a new document only when something changed, like `redactSessionText`.
+ */
+export function redactSharedTask(shared: SharedTask): SharedTask {
+  const t = shared.task
+  const task: SharedTaskRecord = {
+    ...t,
+    title: redactSecrets(t.title),
+    ...(t.detail !== undefined ? { detail: redactSecrets(t.detail) } : {}),
+    ...(t.assignee !== undefined ? { assignee: redactSecrets(t.assignee) } : {}),
+    ...(t.blockedReason !== undefined ? { blockedReason: redactSecrets(t.blockedReason) } : {}),
+    ...(t.labels !== undefined ? { labels: t.labels.map(redactSecrets) } : {}),
+  }
+  const comments = shared.comments.map(c => ({
+    ...c, author: redactSecrets(c.author), body: redactSecrets(c.body),
+  }))
+  const subtasks = shared.subtasks.map(s => ({
+    ...s,
+    title: redactSecrets(s.title),
+    ...(s.assignee !== undefined ? { assignee: redactSecrets(s.assignee) } : {}),
+    ...(s.notes !== undefined ? { notes: redactSecrets(s.notes) } : {}),
+  }))
+  // A file's NAME is text somebody chose, and a pasted screenshot can be named anything at all.
+  const files = shared.files.map(f => ({
+    ...f,
+    name: redactSecrets(f.name),
+    ...(f.kind !== undefined ? { kind: redactSecrets(f.kind) } : {}),
+    ...(f.author !== undefined ? { author: redactSecrets(f.author) } : {}),
+  }))
+  return { ...shared, task, comments, subtasks, files }
 }

@@ -1,4 +1,4 @@
-import type { SessionMeta, StatsCache, WorkflowRun } from '@agentistics/core'
+import type { SessionMeta, SharedTask, StatsCache, WorkflowRun } from '@agentistics/core'
 import { tagUser, redactSessionText } from '@agentistics/core'
 import { toBsonDate, fromBsonDate, toBsonDates, fromBsonDates, type StoredDate } from './mongo-dates'
 
@@ -42,6 +42,15 @@ export interface IngestBody {
   /** Optional: the member's local workflow runs (computed metrics only — no chat/prompt
    *  text, same privacy contract as sessions). Upserted per (org, memberId, runId). */
   workflows?: WorkflowRun[]
+  /**
+   * Optional: the deliveries whose owner opted IN (`Task.shared`, absent reading as not shared).
+   *
+   * This is the one thing a member pushes that is free text by design — a title, a description,
+   * comments — which is why it travels only per task, is scrubbed by `redactSharedTask` on both
+   * sides, and carries no file bytes. Its SESSIONS are still decided by this connection's sharing
+   * rules: the field cannot widen them, only name what already travels.
+   */
+  tasks?: SharedTask[]
 }
 
 /**
@@ -156,5 +165,19 @@ export function parseIngestBody(raw: unknown):
     }
     workflows = r.workflows as WorkflowRun[]
   }
-  return { ok: true, body: { org, user, sessions: r.sessions as SessionMeta[], statsCache, workflows } }
+  // tasks is optional; each entry must carry a `task.id` — the same shallow level as the two
+  // above. A body whose `tasks` this parser did not COPY is a field that type-checks on both
+  // sides and is silently dropped at the boundary, which is how the shared board reached a live
+  // central as nothing at all for one afternoon.
+  let tasks: SharedTask[] | undefined
+  if (Array.isArray(r.tasks)) {
+    for (const t of r.tasks) {
+      const rec = (t as { task?: unknown })?.task as Record<string, unknown> | undefined
+      if (typeof t !== 'object' || t === null || !rec || typeof rec.id !== 'string') {
+        return { ok: false, error: 'each task must carry a task.id' }
+      }
+    }
+    tasks = r.tasks as SharedTask[]
+  }
+  return { ok: true, body: { org, user, sessions: r.sessions as SessionMeta[], statsCache, workflows, tasks } }
 }

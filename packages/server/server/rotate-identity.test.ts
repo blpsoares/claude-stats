@@ -5,6 +5,7 @@
  * has no "re-address" option. Everything after it is the arithmetic that follows from that proof.
  */
 import { describe, it, expect } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import { generateMachineKeypair, seal, open } from './envelope-crypto'
 import { planEnvelopeRotation, retargetMachineSources } from './rotate-identity'
 
@@ -147,5 +148,29 @@ describe('retargetMachineSources', () => {
     const sources = [{ type: 'machine' as const, value: 'sibling' }]
     expect(retargetMachineSources(sources, OLD, NEW)).toBe(sources)
     expect(retargetMachineSources([], OLD, NEW)).toEqual([])
+  })
+})
+
+/**
+ * The enumeration is the whole point of this module's header, and it is prose — nothing checks it.
+ * A collection keyed by the machine id that is neither listed here nor carried by `rotateToken` is
+ * silently stranded on every rotation, which that header records as "the same bug three times
+ * already". So both halves are asserted over the SOURCE, the way `events-frontier.test.ts` asserts
+ * its frontier: a new collection is added to both, or the build says so.
+ */
+describe('every collection keyed by the machine id is enumerated AND carried', () => {
+  const doc = readFileSync(new URL('./rotate-identity.ts', import.meta.url), 'utf8')
+  const rotate = readFileSync(new URL('./team-tokens.ts', import.meta.url), 'utf8')
+
+  for (const collection of ['sessions', 'memberStats', 'workflows', 'tags', 'tasks', 'machineKeys', 'envelopes']) {
+    it(`names \`${collection}\` in the module's own enumeration`, () => {
+      expect(doc).toContain(collection)
+    })
+  }
+
+  it('carries the deliveries across, not only the sessions', () => {
+    // The board is keyed by `memberId` and its `_id` embeds it, so a rotation that skipped it
+    // would leave a machine's whole delivery history addressed to an identity nothing resolves.
+    expect(rotate).toContain('rekeyMemberTasks')
   })
 })

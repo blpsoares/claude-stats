@@ -1679,12 +1679,17 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         return json(out, out.ok ? 200 : 404)
       }
       const FIELDS = ['title', 'detail', 'priority', 'assignee', 'dueDate', 'startDate'] as const
-      if (FIELDS.some(f => typeof body[f] === 'string') || Array.isArray(body.labels)) {
+      // `shared` is a BOOLEAN and is therefore tested separately: it is the one field of this patch
+      // whose `false` is a decision rather than an absence, and a truthiness test would make
+      // turning sharing OFF indistinguishable from not asking.
+      if (FIELDS.some(f => typeof body[f] === 'string') || Array.isArray(body.labels)
+        || typeof body.shared === 'boolean') {
         const ok = await mod.editTask(ref, {
           ...Object.fromEntries(FIELDS.filter(f => typeof body[f] === 'string').map(f => [f, body[f] as string])),
           ...(Array.isArray(body.labels)
             ? { labels: body.labels.filter((v): v is string => typeof v === 'string') }
             : {}),
+          ...(typeof body.shared === 'boolean' ? { shared: body.shared } : {}),
           ...(typeof body.actor === 'string' ? { actor: body.actor } : {}),
         })
         return json({ ok }, ok ? 200 : 404)
@@ -3061,6 +3066,15 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
     // ---------------------------------------------------------------------------
     // Admin routes (behind the gate — index.ts gate already enforces isAuthed)
     // ---------------------------------------------------------------------------
+
+    // GET /api/team/tasks — the delivery boards the machines of this central opted to share.
+    // Read-only by construction: a board lives on the machine that owns it.
+    if (url.pathname === '/api/team/tasks' && req.method === 'GET') {
+      if (!TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })
+      const { buildCentralTaskBoard } = await import('./team-task-routes')
+      const body = await buildCentralTaskBoard()
+      return json(body)
+    }
 
     if (url.pathname === '/api/team/members' && req.method === 'GET') {
       if (!TEAM_CENTRAL) return new Response('Not found', { status: 404, headers: CORS_HEADERS })

@@ -137,6 +137,32 @@ async function runMark(ref: string, to: TaskStatus, json: boolean): Promise<numb
   return 0
 }
 
+/**
+ * Turn sharing on or off for one delivery.
+ *
+ * The confirmation SAYS what the state now means, rather than echoing the verb: "shared" alone
+ * does not tell anybody that a description and every comment now travel, and this is the command's
+ * only chance to say it.
+ */
+async function runShare(ref: string, on: boolean, json: boolean): Promise<number> {
+  const { editTask } = await import('./task-web')
+  const ok = await editTask(ref, { shared: on, actor: 'cli' })
+  if (!ok) {
+    console.error(`No task matches "${ref}". \`agentop task ls\` lists them.`)
+    return 1
+  }
+  if (json) {
+    console.log(JSON.stringify({ ok, ref, shared: on }, null, 2))
+    return 0
+  }
+  console.log(on
+    ? `"${ref}" now travels to this machine's centrals: its title, description, comments, subtasks`
+      + ' and file names. The files themselves stay here, and its sessions still follow this'
+      + ' connection\'s sharing rules.'
+    : `"${ref}" stays on this machine. Nothing of it travels.`)
+  return 0
+}
+
 function printHelp(): void {
   console.log(`agentop task — the deliveries your sessions are filed under.
 
@@ -144,6 +170,8 @@ function printHelp(): void {
   agentop task show <id|name>  one task, its attempts side by side
   agentop task deliver <ref>   mark it done, and attach the git evidence
   agentop task abandon <ref>   mark it given up on (no evidence attached)
+  agentop task share <ref>     let it travel to this machine's centrals
+  agentop task unshare <ref>   keep it on this machine (the default: absent means NOT shared)
 
   --json  machine-readable output
 
@@ -160,5 +188,6 @@ export async function runTask(argv: string[]): Promise<number> {
     case 'show': return await runShow(cmd.ref, cmd.json === true)
     case 'deliver': return await runMark(cmd.ref, 'done', cmd.json === true)
     case 'abandon': return await runMark(cmd.ref, 'abandoned', cmd.json === true)
+    case 'share': return await runShare(cmd.ref, cmd.on, cmd.json === true)
   }
 }

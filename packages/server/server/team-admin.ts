@@ -160,6 +160,11 @@ export async function handleRevokeToken(req: Request): Promise<Response> {
       await deleteMemberStats(id)
       const { deleteMemberWorkflows } = await import('./team-workflows')
       await deleteMemberWorkflows(id)
+      // The deliveries go with them. A revoked machine's board is free text its owner shared with
+      // a central they are no longer part of — leaving it behind is the one cascade that would
+      // outlive the relationship it was shared under.
+      const { deleteMemberTasks } = await import('./team-tasks')
+      await deleteMemberTasks(id)
     } catch { /* session cleanup is best-effort; the token is already revoked */ }
     return new Response(JSON.stringify({ ok: deleted, sessionsDeleted }), {
       status: 200,

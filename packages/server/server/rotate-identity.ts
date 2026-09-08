@@ -12,6 +12,7 @@
  *   sessions      `memberId` + `_id` (teamDocId)         MIGRATED
  *   memberStats   `_id`                                  MIGRATED
  *   workflows     `memberId` + `_id` (teamWorkflowDocId) MIGRATED
+ *   tasks         `memberId` + `_id` (teamTaskDocId)     MIGRATED — the shared delivery board
  *   machineKeys   `_id`                                  MIGRATED — the machine's own published key
  *   tags          `sources[]`/`filters[]` of type        RETARGETED — a tag pinned to the machine
  *                 `machine`, whose `value` is the id

@@ -652,11 +652,11 @@ Every line is a thing that must be true of the shipped feature, in the order it 
 - [x] Progress bar on the parent task, one arithmetic, four surfaces
 - [x] Board in `tasks.json`, never in the parse cache (`cache.db` is derived state only)
 - [x] File bytes under `task-files/<taskId>/<fileId>`, paths built from minted ids only
-- [ ] `Task.shared`, absent reading as NOT shared
-- [ ] Repository sharing rules still bind a shared task's sessions; the shortfall is stated
-- [ ] Title / description / comments redacted at both boundaries
-- [ ] `tasks` added to `rotate-identity.ts` and its dates to `DATE_FIELDS`
-- [ ] Central board grouped by machine, with a see-all switch
+- [x] `Task.shared`, absent reading as NOT shared
+- [x] Repository sharing rules still bind a shared task's sessions; the shortfall is stated
+- [x] Title / description / comments redacted at both boundaries
+- [x] `tasks` added to `rotate-identity.ts` and its dates to `DATE_FIELDS`
+- [x] Central board grouped by machine, with a see-all switch
 - [x] Repositories → Tasks tab, keyed by the sessions' `git_remote`
 
 **The rules that must still hold**

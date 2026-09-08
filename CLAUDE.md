@@ -2023,6 +2023,34 @@ packages/web/src/components/tasks/   board.ts (vocabulary) · TaskTable · TaskB
   exists to have fixed once — and it counts `sessionsLinked`, never `sessionsUsed`: a row with no
   conversation link named no repository and contributed no numbers, so counting it would place a
   session in a repository nothing observed it in.
+- **A delivery reaches a CENTRAL only when its owner opts it in, one task at a time.**
+  `Task.shared`, **absent reading as NOT shared** — the `chat-gate.ts` rule and deliberately not
+  the `shareMode` one, where absence must read as "share" or a live rule would invert. A board is
+  the one thing a member pushes that is free text BY DESIGN (a description, every comment, the
+  names of the files), so there is no "share everything" switch: that is the lenient default by
+  another door. `taskShared` is the one reading of the flag; `false` is written as a boolean rather
+  than by deleting the key, and the route tests `typeof body.shared === 'boolean'` — a truthiness
+  test would make turning sharing OFF indistinguishable from not asking.
+  **The connection's rules still decide the SESSIONS**: `selectSharedTasks` (`task-share.ts`,
+  pure) is handed the very set `sessionShared` produced, so sharing a task can never widen a
+  repository rule — a shared task in a withheld repository ships its record and NONE of its
+  sessions, and `sessionsWithheld` travels so the central says the delivery is **measured short**
+  rather than showing a smaller figure with nothing explaining it. `sessionsMissing` is kept apart
+  from it: a rule somebody set and a push still in flight are different sentences.
+  **The wire shape is a LIST** (`SharedTask` in core), never a projection of `Task`: a field added
+  to the record does not travel until somebody adds it there. It carries **no numbers** (the
+  central resolves them through the same `task-rollup.ts`, over the sessions it already holds — a
+  total shipped from the member would be a second answer), **no claim** (a 30-minute lease pushed
+  every few seconds arrives stale and reads as "somebody is on this right now") and **no file
+  bytes**. `redactSharedTask` runs on the member AND at ingest, the `first_prompt` rule.
+  Storage is `team-tasks.ts`, keyed `org:memberId:taskId` — so it is enumerated in
+  `rotate-identity.ts`, carried by `rotateToken`, in `DATE_FIELDS` (the three INSTANTS only:
+  `dueDate`/`startDate` are `yyyy-MM-dd` days, like `TagDoc.window`), and deleted by revoke and by
+  `leave`. The central's board is `GET /api/team/tasks` (a team route, not a branch of `/api/tasks`
+  — that one is `localShell` in `capability-guard.ts` precisely because the board is a LOCAL
+  store), grouped BY MACHINE with a see-all switch, and **read-only**: a machine that shares
+  nothing is listed and EMPTY, because "has no deliveries" and "shares none of them" are different
+  facts.
 - **New `/api/tasks` sub-routes ride the existing `capability-guard.ts` entries** (`/api/tasks`,
   `/api/task-files` → `localShell`). `GET /api/tasks/next` and `/api/tasks/activity` are matched
   BEFORE the generic `<ref>` GET, or they resolve as task references and 404.

@@ -55,6 +55,21 @@ async function ensureLegacyTasks(store: TaskStore, rows: readonly ManagedSession
   }
 }
 
+/**
+ * The board and the fleet, WITHOUT the consolidate store.
+ *
+ * The uploader runs on the central's cadence — as often as every few seconds — and already holds
+ * the sessions it is about to push, so making it re-read a multi-megabyte store to answer "which
+ * deliveries travel" would spend that read on every cycle to learn what it already knows.
+ * `loadTaskWorld` is this plus the store, so there is still one reader of the book.
+ */
+export async function loadTaskBoard(): Promise<{ store: TaskStore; book: TaskBook; rows: ManagedSession[] }> {
+  const store = createTaskStore(TASKS_FILE)
+  const rows = await readRegistry()
+  await ensureLegacyTasks(store, rows)
+  return { store, book: await store.read(), rows }
+}
+
 export async function loadTaskWorld(): Promise<TaskWorld> {
   const store = createTaskStore(TASKS_FILE)
   const rows = await readRegistry()

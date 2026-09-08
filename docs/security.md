@@ -235,6 +235,46 @@ than this:**
    connection does not stop that repo's GitHub Actions runs or OTel metrics from reaching the same
    central by a different path.
 
+### 8.0b The delivery board — free text, per task, off by default
+
+The board (`/tasks`) is the one thing a member pushes that is **free text by design**: a title, a
+description somebody wrote out, every comment, the subtasks, the names of the files attached to a
+card. So it travels under a second, narrower gate than everything else:
+
+- **`Task.shared`, absent reading as NOT shared.** This is deliberately *not* the `shareMode`
+  migration rule (where absence reads as denylist, i.e. share) — it is the `chat-gate.ts` reading.
+  There, treating absence as anything else would silently invert live sharing rules; here, it
+  would publish text nobody offered. There is no "share everything" switch, which would be the
+  lenient default by another door. A board is opted in one delivery at a time, by its owner, from
+  the delivery's own screen or `agentop task share <ref>`.
+- **The connection's rules still bind the sessions, unchanged.** Sharing a delivery adds its own
+  record to what already travels; it can never widen a repository or project rule. A shared task
+  whose work sits in a withheld repository ships its record and **none** of its sessions — and the
+  central is told how many are missing (`sessionsWithheld`), so the delivery reads as *measured
+  short* rather than as one that cost less.
+- **The text is redacted at BOTH boundaries** — `redactSharedTask` on the member before the push,
+  and again in `toTeamTaskDoc` on the central at ingest. The second pass is not belt-and-braces: a
+  central cannot assume its members run current code, and in a mixed-version fleet the machine
+  still on the old build is exactly the one that leaks. The redactor is the same precise, never
+  exhaustive one `first_prompt` goes through, with the same limit: it is a safety net for the
+  accidental paste, never a substitute for rotating a leaked credential.
+- **File BYTES do not travel.** The central learns that a delivery has N files and what they are
+  called; fetching one would be an on-demand pull over the reverse channel, the way raw chat
+  already works, and does not exist yet.
+- **No number computed on the member travels.** Cost, rounds and tokens are resolved on the
+  central by the same `task-rollup.ts` the machine's own board uses, over the sessions it already
+  holds. A total shipped from the member would be a second answer to "what did this cost".
+- **The claim does not travel.** A 30-minute lease pushed on a seconds-to-minutes cadence arrives
+  stale and would read as "somebody is working on this right now" long after they stopped.
+- **A revoke or a `leave` takes the boards with it** (`deleteMemberTasks`), like the sessions and
+  the workflow runs: text shared under a relationship does not outlive it.
+- **The central's board is read-only.** `GET /api/team/tasks` is authenticated like every other
+  team route and there is no write path: the record lives on the machine that owns it.
+
+What is NOT guaranteed here is everything §8 already lists — in particular, **a delivery already
+pushed is disclosed by its removal**, exactly as a repository is. Turning sharing off stops future
+pushes; withdrawing what a central already holds is the observable delete described above.
+
 ### 8.1 Rules are per machine, and how a machine finds out
 
 Sharing rules live on the machine that declares them. Restricting a repository on one laptop does

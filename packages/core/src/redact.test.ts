@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test'
-import { redactSecrets, containsSecret, redactSessionText, REDACTION } from './redact'
+import { describe, expect, it, test } from 'bun:test'
+import { redactSecrets, containsSecret, redactSessionText, redactSharedTask, REDACTION } from './redact'
+import type { SharedTask } from './sharedTask'
 
 const R = '[REDACTED]'
 
@@ -209,5 +210,71 @@ describe("agentistics' own connect token", () => {
   test('does not fire on the prefix alone, or on prose that merely mentions it', () => {
     expect(redactSecrets('paste your act1_ token here')).toBe('paste your act1_ token here')
     expect(redactSecrets('the act1_ format embeds the endpoint')).toBe('the act1_ format embeds the endpoint')
+  })
+})
+
+describe('redactSharedTask', () => {
+  const base = (): SharedTask => ({
+    task: {
+      id: 't1', title: 'ship it', status: 'todo',
+      createdAt: '2026-09-05T10:00:00.000Z', updatedAt: '2026-09-05T10:00:00.000Z',
+    },
+    comments: [], subtasks: [], files: [], sessionIds: [], sessionsWithheld: 0,
+  })
+
+  it('scrubs the title, the description and the reason a card is blocked', () => {
+    const out = redactSharedTask({
+      ...base(),
+      task: {
+        ...base().task,
+        title: 'deploy with ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        detail: 'run it as MONGO_URL=mongodb+srv://user:s3cretPassw0rd@host',
+        blockedReason: 'waiting on sk-ant-aaaaaaaaaaaaaaaaaaaa to be rotated',
+      },
+    })
+    expect(out.task.title).toContain(REDACTION)
+    expect(out.task.title).not.toContain('ghp_')
+    expect(out.task.detail).toContain(REDACTION)
+    expect(out.task.blockedReason).toContain(REDACTION)
+    expect(out.task.blockedReason).not.toContain('sk-ant-')
+  })
+
+  it('scrubs every comment body and subtask, not only the first', () => {
+    const out = redactSharedTask({
+      ...base(),
+      comments: [
+        { id: 'c1', author: 'scion', body: 'ok', createdAt: '2026-09-05T10:00:00.000Z' },
+        { id: 'c2', author: 'scion', body: 'token ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', createdAt: '2026-09-05T10:00:00.000Z' },
+      ],
+      subtasks: [{
+        id: 's1', title: 'rotate ghp_cccccccccccccccccccccccccccccccccccc', done: false,
+        status: 'todo', createdAt: '2026-09-05T10:00:00.000Z', updatedAt: '2026-09-05T10:00:00.000Z',
+        notes: 'see AKIAIOSFODNN7EXAMPLE',
+      }],
+    })
+    expect(out.comments[1]!.body).toContain(REDACTION)
+    expect(out.comments[0]!.body).toBe('ok')
+    expect(out.subtasks[0]!.title).toContain(REDACTION)
+  })
+
+  it('scrubs a file NAME — a pasted screenshot can be called anything', () => {
+    const out = redactSharedTask({
+      ...base(),
+      files: [{
+        id: 'f1', name: 'ghp_dddddddddddddddddddddddddddddddddddd.png', size: 10,
+        createdAt: '2026-09-05T10:00:00.000Z',
+      }],
+    })
+    expect(out.files[0]!.name).toContain(REDACTION)
+  })
+
+  it('leaves an ordinary board completely alone', () => {
+    const doc = {
+      ...base(),
+      comments: [{ id: 'c1', author: 'scion', body: 'merged in dev', createdAt: '2026-09-05T10:00:00.000Z' }],
+    }
+    const out = redactSharedTask(doc)
+    expect(out.task.title).toBe('ship it')
+    expect(out.comments[0]!.body).toBe('merged in dev')
   })
 })

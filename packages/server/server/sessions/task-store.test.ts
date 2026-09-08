@@ -55,6 +55,19 @@ describe('createTaskStore', () => {
     expect(t!.updatedAt).toBe('2026-09-05T11:00:00.000Z')
   })
 
+  it('patch carries EVERY field of TaskPatch, sharing included', async () => {
+    // The bug this pins: a field absent from `TaskPatch` is dropped by the spread while the caller
+    // is told the write succeeded, and the compiler cannot see it (a patch built from spreads gets
+    // no excess-property check). `shared` shipped that way for exactly one afternoon.
+    const { s } = await store()
+    await s.upsertTask(task('t-1'))
+    await s.patchTask('t-1', { shared: true })
+    expect((await s.read()).tasks[0]!.shared).toBe(true)
+    // …and OFF is a decision, written as `false` rather than by dropping the key.
+    await s.patchTask('t-1', { shared: false })
+    expect((await s.read()).tasks[0]!.shared).toBe(false)
+  })
+
   it('reads an empty book from corrupt bytes instead of throwing', async () => {
     const { file, s } = await store()
     await writeFile(file, '{ this is not json', 'utf8')

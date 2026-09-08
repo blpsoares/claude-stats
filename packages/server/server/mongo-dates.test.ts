@@ -103,7 +103,7 @@ describe('array helpers', () => {
 describe('DATE_FIELDS', () => {
   test('covers every collection that stores a timestamp', () => {
     const names = DATE_FIELDS.map(s => s.collection)
-    for (const c of ['sessions', 'workflows', 'tokens', 'accounts', 'teams', 'tags', 'repos', 'memberStats', 'config', 'audit', 'machineKeys', 'envelopes']) {
+    for (const c of ['sessions', 'workflows', 'tokens', 'accounts', 'teams', 'tags', 'repos', 'memberStats', 'config', 'audit', 'machineKeys', 'envelopes', 'tasks']) {
       expect(names).toContain(c)
     }
   })
@@ -119,6 +119,16 @@ describe('DATE_FIELDS', () => {
     const ms = DATE_FIELDS.find(s => s.collection === 'memberStats')!
     expect(ms.fields).toEqual(['updatedAt'])
     expect(ms.arrays ?? []).toEqual([])
+  })
+
+  test('the delivery board declares its three instants and not its scheduled DAYS', () => {
+    // `dueDate`/`startDate` are `yyyy-MM-dd` — a day somebody scheduled, not an instant. Same
+    // treatment `TagDoc.window` gets; converting them would turn a date into a midnight in some
+    // timezone nobody chose.
+    const tasks = DATE_FIELDS.find(s => s.collection === 'tasks')!
+    expect(tasks.fields).toEqual(['createdAt', 'updatedAt', 'deliveredAt'])
+    expect(tasks.fields).not.toContain('dueDate')
+    expect(tasks.fields).not.toContain('startDate')
   })
 
   test('session timestamps are all declared', () => {

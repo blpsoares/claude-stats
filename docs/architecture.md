@@ -232,6 +232,37 @@ The members panel (`TeamMembers.tsx`, central Settings → Team) can **mint**, *
 
 `packages/web/src/lib/notifications.ts` is a small external store rendered by `NotificationToasts.tsx` (auto-dismiss, animated) and `NotificationBell.tsx` (history + unread badge). Notifications carry a `code` (+ `meta`) and are localized **at render time** (`NOTIFICATION_TEXT`, pt/en) so they follow the language toggle. The server emits them via `broadcastNotification()` (SSE). Fired on member auth/connection errors, "removed from central", "machine connected", and "update available".
 
+### The delivery board on a central — opted in one delivery at a time
+
+The board (`/tasks`) is per machine. A delivery reaches a central only when its owner opts it in —
+`Task.shared`, **absent reading as NOT shared**, the `chat-gate.ts` reading and deliberately not the
+`shareMode` one — from the delivery's own screen or `agentop task share <ref>`. It is the one thing
+a member pushes that is free text by design, which is why it has a gate of its own on top of the
+connection's rules rather than riding inside them.
+
+- **What travels** is `SharedTask` (`@agentistics/core/sharedTask.ts`): the record, its comments,
+  its subtasks, the NAMES of its files, and the ids of the sessions this connection already shares.
+  It is a written-out LIST and not a projection of the server's `Task`, so a field added to the
+  record does not reach a central until somebody adds it there and decides that it should.
+- **What does not**: the file bytes, the claim (a 30-minute lease pushed every few seconds arrives
+  stale), and every number. Cost, rounds and tokens are resolved ON the central by the same
+  `task-rollup.ts` the machine's own board uses, over the sessions it already holds — a total
+  shipped from the member would be a second answer to "what did this delivery cost".
+- **The connection's rules still decide the sessions**, unchanged: `selectSharedTasks`
+  (`sessions/task-share.ts`, pure) is handed the very set `sessionShared` produced. A shared task
+  in a withheld repository ships its record and none of its sessions, and reports
+  `sessionsWithheld` so the central says the delivery is **measured short** instead of showing a
+  smaller number with no explanation.
+- **The text is scrubbed at both boundaries** — `redactSharedTask` on the member before the push
+  and again in `toTeamTaskDoc` at ingest, the rule `first_prompt` already follows.
+- **Storage** is the `tasks` collection (`server/team-tasks.ts`), keyed `org:memberId:taskId` and
+  therefore enumerated in `rotate-identity.ts` and carried by `rotateToken`; its three instants are
+  in `DATE_FIELDS`. A revoke or a `leave` deletes it with the rest of that machine's data.
+- **The central's board** (`GET /api/team/tasks` → `team-task-view.ts`, pure) is grouped BY MACHINE
+  with a "see all" switch, and is **read-only**: the record lives on the machine that owns it. A
+  machine that shares nothing is listed and EMPTY — "has no deliveries" and "shares none of them"
+  are different facts.
+
 ### Per-connection repository sharing
 
 A member can push to more than one central (`preferences.team.connections: TeamConnection[]`) and can restrict what each connection receives **per connection** — a repo or project hidden from central A can still go to central B. Rules apply across **two dimensions** — repository (`git_remote`) and project (`project_path`) — and each connection picks one of **two modes**: `denylist` ("share everything except…", the default and the legacy behaviour) or `allowlist` ("share only…"). The full design is `docs/superpowers/specs/2026-07-28-multi-central-and-repo-sharing-design.md` plus its Plan 4 addendum; this is what shipped from it. Three layers:

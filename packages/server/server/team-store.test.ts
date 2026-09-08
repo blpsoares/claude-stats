@@ -196,3 +196,34 @@ test('stampCiSessions with no repo and no ci is a passthrough (same ref)', () =>
   const arr = [session('s1')]
   expect(stampCiSessions(arr, undefined, false)).toBe(arr)
 })
+
+test('parseIngestBody carries the shared deliveries through', () => {
+  // The bug this pins: the field type-checked on both sides while the parser never copied it, so
+  // a shared board reached a live central as nothing at all. Caught by pushing to a real one.
+  const r = parseIngestBody({
+    org: 'acme', user: 'laptop', sessions: [{ session_id: 's1' }],
+    tasks: [{
+      task: { id: 't1', title: 'ship it', status: 'todo', createdAt: 'x', updatedAt: 'x' },
+      comments: [], subtasks: [], files: [], sessionIds: ['s1'], sessionsWithheld: 0,
+    }],
+  })
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  expect(r.body.tasks).toHaveLength(1)
+  expect(r.body.tasks![0]!.task.id).toBe('t1')
+})
+
+test('parseIngestBody refuses a delivery with no task id rather than storing a nameless one', () => {
+  const r = parseIngestBody({
+    org: 'acme', user: 'laptop', sessions: [{ session_id: 's1' }],
+    tasks: [{ comments: [], subtasks: [], files: [], sessionIds: [], sessionsWithheld: 0 }],
+  })
+  expect(r.ok).toBe(false)
+})
+
+test('parseIngestBody leaves tasks absent when the body carries none', () => {
+  const r = parseIngestBody({ org: 'acme', user: 'laptop', sessions: [{ session_id: 's1' }] })
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  expect(r.body.tasks).toBeUndefined()
+})

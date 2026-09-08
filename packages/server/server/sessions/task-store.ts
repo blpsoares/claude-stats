@@ -44,6 +44,15 @@ export interface TaskPatch {
   labels?: string[]
   rank?: string
   blockedReason?: string
+  /**
+   * Does this delivery travel to a central? See `Task.shared` — absent reads as NOT shared.
+   *
+   * A field missing from THIS list is silently dropped by `patchTask` (`{...target, ...patch}`)
+   * while every caller is told the write succeeded, and TypeScript cannot catch it: `editTask`
+   * builds its patch out of spreads, where excess-property checking does not fire. That is
+   * exactly what happened to this field, and `task-store.test.ts` now pins it.
+   */
+  shared?: boolean
 }
 
 export interface AttemptPatch {
@@ -177,6 +186,11 @@ function sanitizeTask(raw: unknown): Task | null {
       ? { blockedReason: t.blockedReason }
       : {}),
     ...(sanitizeClaim(t.claim) ? { claim: sanitizeClaim(t.claim)! } : {}),
+    // A BOOLEAN only, and only when it is really one: anything else is not an answer to "may this
+    // travel", and the absent reading is the safe one. Kept explicitly rather than defaulted to
+    // `false`, so "nobody has decided" and "somebody said no" stay distinguishable in the file —
+    // both read as NOT shared through `taskShared`, which is the only reading anything uses.
+    ...(typeof t.shared === 'boolean' ? { shared: t.shared } : {}),
   }
 }
 

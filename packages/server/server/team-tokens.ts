@@ -202,6 +202,8 @@ export interface RotationResult {
   statsMoved: boolean
   workflows: number
   tags: number
+  /** Shared deliveries carried across. Keyed by the machine id, so a rotation must move them. */
+  tasks: number
   keyMoved: boolean
   /** Sealed envelopes addressed to the old id, deleted because no id can ever open them again.
    *  See `rotate-identity.ts` — the recipient is inside the seal, so this is a loss, not a move. */
@@ -275,9 +277,10 @@ export async function rotateToken(oldId: string): Promise<RotationResult | null>
   // Migrate the collections that were added AFTER this function and never taught about it.
   // Best-effort each: a rotation that has already re-keyed the sessions must not be abandoned
   // half-done because one later collection is unavailable.
-  const [workflows, tags, envelopes] = await Promise.all([
+  const [workflows, tags, tasks, envelopes] = await Promise.all([
     import('./team-workflows').then(m => m.rekeyMemberWorkflows(oldId, newId)).catch(() => 0),
     import('./tags-store').then(m => m.retargetMachineTagSources(oldId, newId)).catch(() => 0),
+    import('./team-tasks').then(m => m.rekeyMemberTasks(oldId, newId)).catch(() => 0),
     import('./envelope-store').then(m => m.rekeyMachineEnvelopes(oldId, newId))
       .catch(() => ({ keyMoved: false, envelopesDropped: 0 })),
   ])
@@ -291,6 +294,7 @@ export async function rotateToken(oldId: string): Promise<RotationResult | null>
     statsMoved: !!statsDoc,
     workflows,
     tags,
+    tasks,
     keyMoved: envelopes.keyMoved,
     envelopesDropped: envelopes.envelopesDropped,
   }

@@ -201,6 +201,21 @@ export interface Task {
    * an assistant must be able to attach a kind of link nobody anticipated without a schema change.
    */
   links?: TaskLink[]
+  /**
+   * Does this delivery travel to the centrals this machine is connected to?
+   *
+   * ABSENT READS AS NOT SHARED, and that is deliberately NOT the `shareMode` migration rule (where
+   * absence reads as denylist, i.e. share). There, treating absence as anything else would
+   * silently invert live sharing rules; here, a board carries a description, comments and file
+   * names somebody wrote for themselves, and defaulting those to travel would publish text nobody
+   * offered. It is the `chat-gate.ts` reading: the cost of the strict one is a switch to flip, the
+   * cost of the lenient one is text on somebody else's server.
+   *
+   * It says nothing about the task's SESSIONS: those are decided by the connection's own sharing
+   * rules, unchanged. A shared task in a withheld repository ships its record and none of its
+   * sessions, and says so.
+   */
+  shared?: boolean
 }
 
 export interface TaskLink {
@@ -265,6 +280,14 @@ export interface Subtask {
   /** One session filed under this specific piece. The task's own sessions stay on the task. */
   sessionId?: string
   notes?: string
+}
+
+/**
+ * Does this task travel? The ONE reading of `Task.shared`, so the uploader, the CLI, the MCP and
+ * the browser cannot disagree about what absent means. See the field's own note.
+ */
+export function taskShared(task: Pick<Task, 'shared'>): boolean {
+  return task.shared === true
 }
 
 /** `done` and `status` are one fact written twice; this keeps them from disagreeing. */

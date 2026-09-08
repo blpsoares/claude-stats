@@ -17,8 +17,8 @@
 
 import { createHash } from 'node:crypto'
 import { writeFile, unlink } from 'node:fs/promises'
-import type { SessionMeta, StatsCache, WorkflowRun, TeamConnection, TeamConfig } from '@agentistics/core'
-import { PUSH_INTERVAL, clampPushInterval, defaultTeam, normalizeEndpointKey, normalizeTeamConfig, redactSessionText } from '@agentistics/core'
+import type { SessionMeta, SharedTask, StatsCache, WorkflowRun, TeamConnection, TeamConfig } from '@agentistics/core'
+import { PUSH_INTERVAL, clampPushInterval, defaultTeam, normalizeEndpointKey, normalizeTeamConfig, redactSessionText, redactSharedTask } from '@agentistics/core'
 import { teamSentFile, teamSyncFile, teamRulesFile, teamForgetFile } from './config'
 import { loadConsolidated } from './consolidate'
 import { loadWorkflowRuns } from './workflow-store'
@@ -36,6 +36,47 @@ import { parseCapabilities, centralCanForget } from './team-capabilities'
 import { planRulesReconcile, computeLedger, loadRulesState, saveRulesState } from './team-rules'
 import { runForgetSequence, loadForgetJournal, type ForgetJournal, type ForgetProgress } from './team-forget-client'
 import { MAX_BATCH_SIZE, clampBatchSize, ingestTimeoutMs, nextBatchSize } from './ingest-batch'
+
+/**
+ * The deliveries this machine offers a central, already scrubbed.
+ *
+ * Best-effort and never throwing, exactly like `readMemberWorkflows`: a board that cannot be read
+ * costs the delivery list, never the push. It reads `loadTaskBoard` rather than `loadTaskWorld`
+ * because the uploader already holds the sessions and this runs on the central's cadence — see
+ * that function's note.
+ */
+async function readSharedTasks(
+  sharedIds: ReadonlySet<string>,
+  knownIds: ReadonlySet<string>,
+): Promise<SharedTask[]> {
+  try {
+    const [{ loadTaskBoard }, { selectSharedTasks }, { rowsOfTask }] = await Promise.all([
+      import('./sessions/task-source'),
+      import('./sessions/task-share'),
+      import('./sessions/task-report'),
+    ])
+    const { book, rows } = await loadTaskBoard()
+    const shared = selectSharedTasks({
+      tasks: book.tasks,
+      rows,
+      comments: book.comments,
+      subtasks: book.subtasks,
+      files: book.files,
+      sharedIds,
+      knownIds,
+      rowsOf: rowsOfTask,
+    })
+    // The last point at which this text is still purely local.
+    return shared.map(redactSharedTask)
+  } catch {
+    return []
+  }
+}
+
+/** Overridable for tests, the way `_readMemberWorkflows` is. */
+let selectSharedTasksForPush = readSharedTasks
+export function __setSharedTasksReader(fn: typeof readSharedTasks): void { selectSharedTasksForPush = fn }
+export function __resetSharedTasksReader(): void { selectSharedTasksForPush = readSharedTasks }
 
 /** This machine's local workflow runs (computed metrics only — no chat/prompt text). Fallback
  *  source when `buildApiResponse` could not be run (see `buildPushContext`). Mirrors the
@@ -953,6 +994,17 @@ export async function pushOnceDetailed(
       ? filterSharedWorkflows(ctx.workflows, sharedSessionIds(shared))
       : ctx.workflows
 
+    // The deliveries whose owner opted IN. Two independent gates: `Task.shared` decides whether
+    // the RECORD travels at all (absent reads as not shared), and the connection's rules decide
+    // its SESSIONS exactly as they decide everything else — `sharedSessionIds(shared)` is the very
+    // set the sessions above were selected from, so sharing a task can never widen a repository
+    // rule. The scrub happens here, on the last hop where the text is still purely local; the
+    // central scrubs again on ingest.
+    const tasks = await selectSharedTasksForPush(
+      sharedSessionIds(shared),
+      sharedSessionIds(ctx.storedSessions),
+    )
+
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (conn.token) {
       headers['Authorization'] = `Bearer ${conn.token}`
@@ -962,12 +1014,13 @@ export async function pushOnceDetailed(
     // ends up sending it — the batch path (below) attaches the identical `{statsCache, workflows}`
     // pair to batch 0, and both writers must agree on exactly this formula or the memo they share
     // desynchronizes (see `_lastPushedPayloadHash`'s doc comment).
-    const payloadDigest = createHash('sha256').update(JSON.stringify({ statsCache, workflows })).digest('hex')
+    const payloadDigest = createHash('sha256')
+      .update(JSON.stringify({ statsCache, workflows, tasks })).digest('hex')
 
     if (toSend.length === 0) {
       // No session deltas — still push the statsCache/workflows on their own so totals
       // and workflow runs stay fresh.
-      if (statsCache || workflows.length > 0) {
+      if (statsCache || workflows.length > 0 || tasks.length > 0) {
         // A restricted connection with genuinely nothing new must not still POST every cycle:
         // each request stamps `lastSeenAt` on the central at ~2s resolution, from which session
         // boundaries, working hours and intensity of the HIDDEN work are reconstructable from
@@ -1008,7 +1061,7 @@ export async function pushOnceDetailed(
           const res = await fetch(`${endpoint}/api/team/ingest`, {
             method: 'POST',
             headers,
-            body: JSON.stringify({ org: conn.org, user, sessions: [], statsCache, workflows }),
+            body: JSON.stringify({ org: conn.org, user, sessions: [], statsCache, workflows, tasks }),
             signal: AbortSignal.timeout(timeoutFor(0)),
           })
           // A reachable central (even a non-2xx that isn't auth) counts as contact for the pill.
@@ -1047,7 +1100,7 @@ export async function pushOnceDetailed(
           method: 'POST',
           headers,
           // Attach the statsCache/workflows to the first batch only (idempotent upsert on the central).
-          body: JSON.stringify({ org: conn.org, user, sessions: batch, ...(i === 0 ? { statsCache, workflows } : {}) }),
+          body: JSON.stringify({ org: conn.org, user, sessions: batch, ...(i === 0 ? { statsCache, workflows, tasks } : {}) }),
           signal: AbortSignal.timeout(timeoutFor(batch.length)),
         })
       } catch (fetchErr) {

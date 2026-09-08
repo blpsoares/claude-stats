@@ -119,11 +119,15 @@ export async function handleTeamLeave(req: Request): Promise<Response> {
   // 1. Minted token → memberId is authoritative.
   const { deleteMemberStats } = await import('./team-stats')
   const { deleteMemberWorkflows } = await import('./team-workflows')
+  // Leaving takes the DELIVERIES with it. A board left behind on a central the machine has
+  // disconnected from is the text its owner shared with a place they have just left.
+  const { deleteMemberTasks } = await import('./team-tasks')
   const minted = await validateIngestToken(bearer)
   if (minted.ok) {
     const res = await col.deleteMany({ memberId: minted.memberId })
     await deleteMemberStats(minted.memberId)
     await deleteMemberWorkflows(minted.memberId)
+    await deleteMemberTasks(minted.memberId).catch(() => 0)
     return new Response(JSON.stringify({ ok: true, deleted: res.deletedCount ?? 0 }), { status: 200, headers: JSON_HEADERS })
   }
 
@@ -153,6 +157,7 @@ export async function handleTeamLeave(req: Request): Promise<Response> {
   const res = await col.deleteMany({ org, user })
   await deleteMemberStats(`legacy:${user}`)
   await deleteMemberWorkflows(`legacy:${user}`)
+  await deleteMemberTasks(`legacy:${user}`).catch(() => 0)
   return new Response(JSON.stringify({ ok: true, deleted: res.deletedCount ?? 0 }), { status: 200, headers: JSON_HEADERS })
 }
 
@@ -200,6 +205,13 @@ async function handleIngestBody(req: Request, overrideMemberId?: string, overrid
     if (parsed.body.workflows && parsed.body.workflows.length > 0) {
       const { ingestWorkflows } = await import('./team-workflows')
       await ingestWorkflows(parsed.body.org, memberId, user, parsed.body.workflows).catch(() => {})
+    }
+    // Store the deliveries whose owner opted in. `toTeamTaskDoc` scrubs the free text AGAIN here:
+    // a central cannot assume its members run current code, and in a mixed-version fleet the
+    // machine still on the old build is exactly the one that leaks.
+    if (parsed.body.tasks && parsed.body.tasks.length > 0) {
+      const { ingestTasks } = await import('./team-tasks')
+      await ingestTasks(parsed.body.org, memberId, user, parsed.body.tasks).catch(() => {})
     }
     // Real-time central: a member push changed the aggregate → nudge the central's dashboards
     // via SSE (debounced) so they refresh live, without the viewer polling. This is what makes

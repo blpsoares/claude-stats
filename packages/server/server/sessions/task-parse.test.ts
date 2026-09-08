@@ -45,3 +45,24 @@ describe('parseTaskArgs', () => {
     expect(parseTaskArgs(['help'])).toEqual({ kind: 'help' })
   })
 })
+
+describe('share', () => {
+  it('reads both directions as one command carrying the state', () => {
+    expect(parseTaskArgs(['share', 'the ALM board']))
+      .toEqual({ kind: 'share', ref: 'the ALM board', on: true })
+    expect(parseTaskArgs(['unshare', 'the ALM board']))
+      .toEqual({ kind: 'share', ref: 'the ALM board', on: false })
+  })
+
+  it('joins a name with spaces, like every other ref', () => {
+    expect(parseTaskArgs(['share', 'two', 'words'])).toMatchObject({ ref: 'two words' })
+  })
+
+  it('refuses without a task, rather than acting on some default', () => {
+    expect(parseTaskArgs(['share'])).toMatchObject({ kind: 'error' })
+  })
+
+  it('carries --json', () => {
+    expect(parseTaskArgs(['share', 'x', '--json'])).toEqual({ kind: 'share', ref: 'x', on: true, json: true })
+  })
+})
