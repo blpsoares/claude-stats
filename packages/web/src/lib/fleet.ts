@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Baseline } from '@agentistics/core'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { fleetSeedNotice, fleetStaleNotice } from './fleetStale'
 import { cacheIsUsable, stripVolatile } from './fleetCache'
@@ -93,6 +94,8 @@ export interface FleetRow {
 
 export interface FleetPayload {
   sessions: FleetRow[]
+  /** This machine's 30-day behaviour baseline — see `session-profile.ts`. */
+  baseline?: Baseline
   /**
    * The same rows unshaped, for `session-fleet.ts` to arrange.
    *
