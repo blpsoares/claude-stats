@@ -120,7 +120,7 @@ or subagents. One shared `n` would compute the skills average over sessions that
 had one — a denominator that is quietly wrong in the direction of "you use fewer skills than you
 think".
 
-Measured over the 452: 444 carry messages.
+Measured over the 452: 444 carry messages, 61 carry skills, 43 carry subagents.
 
 ### What it reports
 
@@ -234,6 +234,14 @@ Measured on this machine, 2026-09-08:
   `archiveMode` used to be `full`; it is
   `consolidate` now, so nothing is being added to it. From here on, a transcript that ages past
   `cleanupPeriodDays` is gone.
+- **A further ~68 sessions are recoverable only through evidence that must not be used.** Their own
+  transcript is gone but a `<session-id>/subagents/` directory survives (5 live, 63 archived), and
+  `data.ts` already has a `_source: 'subdir'` fallback that reads the first agent file as a stand-in
+  for every other metric. Compaction is the one metric where that would be wrong: a subagent runs
+  its own context and compacts on its own (5 of this machine's 255 subagent transcripts carry their
+  own `compact_boundary`), so the session would be credited with its agent's compactions — and this
+  number feeds the MIGRATE trigger, so the error would not sit quietly on a dashboard, it would
+  propose moving a session that never burned its own context. Those sessions keep `undefined`.
 - **Therefore the field must be stamped early.** Once `compact_count` is written onto `SessionMeta`
   and persisted, it survives the cleanup like every other metric — but only from the day it ships.
   Backfill is a one-shot opportunity bounded by what is on disk when the feature lands, and it
