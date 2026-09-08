@@ -268,11 +268,13 @@ function ConfirmShare({ which, lang, isMobile, machineName, account, onCancel, o
         </p>
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          <button className="ag-tap"
+          {/* Paired with the Confirm below, which pays in paint: a dialog action is the documented
+              exception, and converting only one leaves the row two different heights. */}
+          <button
             type="button"
             onClick={onCancel}
             style={{
-              minHeight: 32, padding: '0 14px', borderRadius: 7,
+              minHeight: isMobile ? 44 : 32, padding: '0 14px', borderRadius: 7,
               border: '1px solid var(--border)', background: 'transparent',
               color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12.5, cursor: 'pointer',
             }}

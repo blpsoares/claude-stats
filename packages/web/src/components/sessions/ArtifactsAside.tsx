@@ -741,7 +741,9 @@ export function ArtifactsAside({
   const tabCell = (t: (typeof tabs)[number], forRuler: boolean) => {
     const on = !forRuler && tab === t.id
     return (
-      <button className="ag-tap"
+      // NO projected box: the bar this sits in is `overflow: hidden`, which CLIPS the overlay — so
+      // the class would have quietly REDUCED the target it exists to preserve. Painted instead.
+      <button
         key={t.id}
         {...(forRuler ? { 'data-tab-id': t.id, tabIndex: -1 } : { role: 'tab', 'aria-selected': on })}
         onClick={forRuler ? undefined : () => { setTab(t.id); setGridOpen(false) }}

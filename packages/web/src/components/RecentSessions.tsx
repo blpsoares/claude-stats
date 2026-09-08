@@ -1665,7 +1665,9 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
   // 44x44 squares around a 13px glyph made this row taller than the terminal header it sits in.
   const btn: React.CSSProperties = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: 24, height: 22,
+    // Three controls inside an ~88px strip with gap 2: a projected box would need 132px between
+    // @touch-intentional they would take each others edges, so this strip pays its target in paint.
+    width: isMobile ? 44 : 24, height: isMobile ? 44 : 22,
     borderRadius: 4, border: 'none', background: 'transparent', color: 'var(--text-secondary)',
     cursor: 'pointer', padding: 0,
   }
@@ -1682,15 +1684,18 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
         onClick={() => setTerminalZoom(zoom - ZOOM_STEP)}
         disabled={zoom <= ZOOM_MIN}
         aria-label={lang === 'pt' ? 'Diminuir fonte' : 'Smaller font'}
-        className="ag-tap-icon"
         style={{ ...btn, opacity: zoom <= ZOOM_MIN ? 0.4 : 1, cursor: zoom <= ZOOM_MIN ? 'default' : 'pointer' }}
       >
         <ZoomOut size={13} />
       </button>
-      <button className="ag-tap-icon"
+      {/* NO projected box on this strip: three controls inside ~88px with `gap: 2` would need
+          132px between them, so each one's box would take its neighbour's edge. They pay in paint. */}
+      <button
         onClick={() => setTerminalZoom(1)}
         title={lang === 'pt' ? 'Tamanho padrão' : 'Reset size'}
-        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums', minWidth: 32, padding: 0 }}
+        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: isMobile ? 12 : 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+          // @touch-intentional same strip as the two buttons beside it — painted, never projected.
+          minWidth: isMobile ? 44 : 32, minHeight: isMobile ? 44 : undefined, padding: 0 }}
       >
         {Math.round(zoom * 100)}%
       </button>
@@ -1698,7 +1703,6 @@ function TerminalZoomControls({ lang }: { lang: 'pt' | 'en' }) {
         onClick={() => setTerminalZoom(zoom + ZOOM_STEP)}
         disabled={zoom >= ZOOM_MAX}
         aria-label={lang === 'pt' ? 'Aumentar fonte' : 'Larger font'}
-        className="ag-tap-icon"
         style={{ ...btn, opacity: zoom >= ZOOM_MAX ? 0.4 : 1, cursor: zoom >= ZOOM_MAX ? 'default' : 'pointer' }}
       >
         <ZoomIn size={13} />

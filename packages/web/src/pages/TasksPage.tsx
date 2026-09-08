@@ -333,11 +333,15 @@ function ChipSelect({ value, options, disabled, onPick }: {
             boxShadow: 'var(--shadow-elevated)',
           }}>
             {options.map(o => (
-              <button className="ag-tap"
+              <button
+                  // A MENU ROW pays its 44px in PAINT. `.ag-tap` is for controls whose smallness
+                  // is their meaning; these sit in a `gap: 2` list, where a projected box covers
+                  // the row above and its bottom band selects the row below.
                 key={o.value}
                 onClick={() => { setOpen(false); if (o.value !== value) onPick(o.value) }}
                 style={{
                   border: 'none', cursor: 'pointer', textAlign: 'left', padding: '6px 9px',
+                  minHeight: isMobile ? 44 : undefined,
                   borderRadius: 5, background: o.value === value ? o.dim : 'transparent',
                   color: o.color, fontSize: 11.5, fontWeight: 600,
                 }}

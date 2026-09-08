@@ -125,7 +125,10 @@ export function ChipSelect({
             boxShadow: 'var(--shadow-elevated)', maxHeight: PANEL_MAX, overflowY: 'auto',
           }}>
             {options.map(o => (
-              <button className="ag-tap"
+              <button
+                // A MENU ROW pays its 44px in PAINT. `.ag-tap` is for controls whose smallness is
+                // their meaning; these sit in a `gap: 2` list, where a projected box covers the row
+                // above and its bottom band selects the row below.
                 key={o.value}
                 onClick={e => {
                   e.stopPropagation()
@@ -135,6 +138,7 @@ export function ChipSelect({
                 style={{
                   border: `1px solid ${o.value === value ? o.color : 'transparent'}`,
                   cursor: 'pointer', textAlign: 'left', padding: '6px 9px', borderRadius: 5,
+                  minHeight: isMobile ? 44 : undefined,
                   background: o.value === value ? o.dim : 'transparent',
                   color: o.color, fontSize: 11.5, fontWeight: 600,
                 }}

@@ -323,12 +323,14 @@ export function MachineFleetPanel({ open, machineId, lang, onlyRow, hideHeader }
               >
                 {pt ? 'Cancelar' : 'Cancel'}
               </button>
-              <button className="ag-tap"
+              {/* A dialog action pays in PAINT — the documented exception — and its Cancel beside
+                  it does too. Converting one of a pair leaves a row of two different heights. */}
+              <button
                 type="button"
                 disabled={!draft.trim()}
                 onClick={() => { const a = asking; setAsking(null); void act(a.row, a.action, draft.trim()) }}
                 style={{
-                  minHeight: 30, padding: '0 14px', borderRadius: 7,
+                  minHeight: isMobile ? 44 : 30, padding: '0 14px', borderRadius: 7,
                   border: '1px solid var(--anthropic-orange)', background: 'transparent',
                   color: 'var(--anthropic-orange)', fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
                   cursor: draft.trim() ? 'pointer' : 'default', opacity: draft.trim() ? 1 : 0.5,

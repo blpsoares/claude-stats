@@ -44,10 +44,14 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
             {COLUMN_ORDER.map(st => {
               const c = STATUS[st]
               return (
-                <button className="ag-tap"
+                <button
+                  // A MENU ROW pays its 44px in PAINT. `.ag-tap` is for controls whose smallness
+                  // is their meaning; these sit in a `gap: 2` list, where a projected box covers
+                  // the row above and its bottom band selects the row below.
                   key={st} onClick={() => { setOpen(false); onPick(st) }}
                   style={{
                     border: 'none', cursor: 'pointer', textAlign: 'left', padding: '5px 9px',
+                    minHeight: isMobile ? 44 : undefined,
                     borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5, fontWeight: 600,
                   }}
                 >{c.label}</button>
