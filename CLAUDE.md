@@ -802,6 +802,40 @@ the list by itself the first time it appears in a session, with no code change. 
 from `resolveProvider`, because a provider is a billing entity and a harness is not: Codex and
 Copilot both run OpenAI models, Antigravity runs Google's and Anthropic's.
 
+### One billed response is counted ONCE, and a round is a PERSON's turn
+
+Three defects found on 2026-09-08 by recounting real transcripts by hand and comparing — not by
+reading the code, which looked right in all three places. Each is now a named rule with a test.
+
+- **`usage-dedupe.ts`: Claude Code writes an assistant turn as SEVERAL lines** when its content has
+  several blocks (text, then a `tool_use`), and every line repeats the SAME `message.usage`.
+  `jsonl.ts` and `subagent-parse.ts` both summed per LINE. Measured: session 4c3a96ac had 148 usage
+  lines over **79 distinct `message.id`s**, every repeat byte-identical, and the stored figure
+  matched the per-line sum EXACTLY (17.845.286 against a true 10.381.785). Three sessions, 60-90 %
+  over; three subagent transcripts, 77-83 % over. **The key is `message.id`** — Anthropic's id for
+  one API response, and one response is one billing event. LAST wins per id (identical in every
+  sample; if a partial is ever written before the final one, the last is the complete one), and a
+  record with NO id is always counted: what cannot be shown to be a duplicate is not one. Same trap
+  as Kimi's `usage.record`/`step.end` and agy's request/execution — **when a transcript states one
+  fact in two places, decide which one you count.**
+- **`isHumanUserEntry` now refuses `isMeta` and `isCompactSummary`.** Those are entries the HARNESS
+  wrote under the user's role — the `<local-command-caveat>` block and the "this session is being
+  continued…" compaction summary. It counted them as rounds AND as turn boundaries, so a session
+  that ran 22 local commands reported **65 rounds for 43 messages**, and active time moved by −41 %
+  to +11 % once the boundaries were the person's turns only. `sessionLabel` already stripped these
+  wrappers out of `first_prompt`, so the product held two readings of one entry. NOTE the knock-on:
+  `!isHumanUserEntry(e)` no longer implies "has a content ARRAY", and the tool-error loop's
+  `contentArr!` threw on the first local command until it was guarded.
+- **`sessionCostUSD` priced every session at the FALLBACK rate.** It called `calcCost(u, '')` while
+  its own docstring said the fallback was only for a session with no model. Measured over 596
+  Claude sessions: **$19.685 against a true $30.306, 54 % under**. Opus read low, haiku read high.
+  It survived because it under-reported money — the reassuring direction — and because the token
+  over-count above pushed the other way, so the product of two defects looked plausible.
+
+**The store must be REBUILT for a correction to reach a screen**: `~/.agentistics/sessions/**` holds
+the computed `SessionMeta`, so a parser fix changes nothing until the next `buildApiResponse` writes
+it back.
+
 ### N/A vs real 0 — `HARNESS_CAPABILITIES`
 
 `HARNESS_CAPABILITIES` in `@agentistics/core` (`packages/core/src/types.ts`) is the single source of truth for which metrics each harness can produce. When a capability flag is `false`, the frontend renders "N/A" via the `NAtag` component + `capable(harness, metric)` helper (re-exported from `lib/harness.ts`), rather than showing a misleading 0. Current limitations: Codex and Gemini do not produce agent metrics or git line counts. **Antigravity produces `tokens`/`cost`/`model`** (decoded from the `gen_metadata` protobuf in `~/.gemini/antigravity-cli/conversations/<id>.db`, cost via the standard pricing table) and `gitLines` (edit deltas computed from the transcript's edit payloads, not `git diff`); it has `agents: false` because an `invoke_subagent` child is its own conversation, not an agent invocation on the parent. `dynamicWorkflows` (runs of the multi-agent orchestration Workflow tool) is `true` only for `claude` — it gates the repo-detail "Dynamic Workflows" tab.

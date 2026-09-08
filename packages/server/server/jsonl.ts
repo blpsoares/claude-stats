@@ -3,6 +3,7 @@ import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf, charCount } from '@agentistics/core'
 import { getSessionFileStats } from './git'
 import { countGitCommands } from './harness-activity'
+import { countUsage } from './usage-dedupe'
 import { extractAgentMetrics } from './agent-metrics'
 import { enrichFromSubagentTranscripts } from './subagent-metrics'
 import { addDelta, editDelta, type EditDelta } from './edit-lines'
@@ -69,6 +70,20 @@ export function classifyAgentFile(filePath: string): string | null {
  *  disagree, hence one helper used by both the full parser and the standalone active-time pass. */
 export function isHumanUserEntry(e: Record<string, unknown>): boolean {
   if (e.type !== 'user') return false
+  // `isMeta` is Claude Code's own marker for an entry IT inserted under the user's role — the
+  // `<local-command-caveat>` block that precedes a slash command's output. Nobody typed it, so it
+  // is not a round and it is not a turn boundary. Measured 2026-09-08 across four real sessions:
+  // the parser's count exceeded a hand recount by 22, 15, 7 and 1 — the isMeta count of each,
+  // exactly. On a session that ran 22 local commands, "rounds" read 65 for 43 real messages.
+  //
+  // `sessionLabel` already strips these wrappers out of `first_prompt`, so the product had two
+  // readings of the same entry: not-prose when labelling it, a person's turn when counting it.
+  //
+  // `isCompactSummary` is the other one, found the same way: the "This session is being continued
+  // from a previous conversation that ran out of context" block, which Claude Code writes under the
+  // user's role when it compacts. It was the last remaining discrepancy on the fourth session —
+  // exactly one entry, exactly one round of difference.
+  if (e.isMeta === true || e.isCompactSummary === true) return false
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
   const isPureToolResult = contentArr !== null && contentArr.length > 0 &&
@@ -277,6 +292,12 @@ export async function parseSessionJsonl(
    * Verified on a real transcript (2026-08-14, claude 2.1.232): 2 + 1.380 + 211.577 = 212.959.
    */
   let contextTokens = 0
+  /**
+   * The message ids whose usage has already been counted — see `usage-dedupe.ts`. A Set and not a
+   * post-pass, because this walk reads files that reach hundreds of megabytes and must stay one
+   * pass with nothing held.
+   */
+  const countedUsageIds = new Set<string>()
   let gitCommits = 0, gitPushes = 0
   let toolErrors = 0, userInterruptions = 0
   let hasMcp = false
@@ -382,12 +403,15 @@ export async function parseSessionJsonl(
       const msgContent = (e.message as Record<string, unknown> | undefined)?.content
       const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
 
-      // Tool result messages: content is an array where every item is type='tool_result'
-      const isPureToolResult = !isHumanUserEntry(e)
+      // NOT a person's turn: a tool result being fed back, or an entry the harness injected under
+      // the user's role (`isMeta`). The two are different things and only the first carries a
+      // content ARRAY — `contentArr!` used to rest on "not human implies tool result", which stopped
+      // being true the moment `isMeta` was excluded, and threw on the first local command.
+      const notHuman = !isHumanUserEntry(e)
 
-      if (isPureToolResult) {
+      if (notHuman) {
         // Count tool errors and attribute them to the originating tool
-        for (const p of contentArr!) {
+        for (const p of contentArr ?? []) {
           if (p.is_error === true) {
             toolErrors++
             const toolName = toolUseIdToName.get(p.tool_use_id as string) ?? 'unknown'
@@ -430,7 +454,11 @@ export async function parseSessionJsonl(
       if (!modelId && typeof msg?.model === 'string' && msg.model.startsWith('claude-')) modelId = msg.model
       const msgOutputTokens = (msg?.usage as Record<string, number> | undefined)?.output_tokens ?? 0
       { const d = dayOf(ts); if (d) d.messages++ }
-      if (msg?.usage) {
+      // ONE BILLED RESPONSE IS COUNTED ONCE. Claude Code writes an assistant turn as several lines
+      // when its content has several blocks, and every one repeats the SAME `message.usage`. This
+      // walk summed per LINE, so a real session's tokens — and the cost priced from them — read
+      // 60-90 % high; see `usage-dedupe.ts` for the three sessions that proved it.
+      if (msg?.usage && countUsage(msg.id, countedUsageIds)) {
         const u = msg.usage as Record<string, number>
         inputTokens         += u.input_tokens ?? 0
         outputTokens        += u.output_tokens ?? 0
