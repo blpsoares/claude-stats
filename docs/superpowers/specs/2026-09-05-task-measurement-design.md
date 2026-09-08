@@ -657,7 +657,7 @@ Every line is a thing that must be true of the shipped feature, in the order it 
 - [ ] Title / description / comments redacted at both boundaries
 - [ ] `tasks` added to `rotate-identity.ts` and its dates to `DATE_FIELDS`
 - [ ] Central board grouped by machine, with a see-all switch
-- [ ] Repositories → Tasks tab, keyed by the sessions' `git_remote`
+- [x] Repositories → Tasks tab, keyed by the sessions' `git_remote`
 
 **The rules that must still hold**
 - [x] One resolution shared by CLI, HTTP, web and MCP — no surface computes its own rollup

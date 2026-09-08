@@ -2006,6 +2006,18 @@ packages/web/src/components/tasks/   board.ts (vocabulary) · TaskTable · TaskB
   silence.
 - **The activity log is board-wide and capped** (2000, oldest dropped). Per-task arrays would put
   the cap per task in a file read on every poll.
+- **A task belongs to a REPOSITORY through its sessions, and the list row says which** — `repos` on
+  `TaskListRow` (`reposOfRows`, pure) is the distinct `git_remote` of the task's sessions, read off
+  the metas the caller passed, which are the SCOPED ones on every surface that filters. Never
+  `Task.repo`: that is inherited once at creation, and a second source for the same question is a
+  second answer. `''` is the "no linked repository" bucket, a real value here as in
+  `sessionInScope`. It is what the Repositories page's **Tasks** tab selects on (`tasksOfRepo` /
+  `repoTaskTotals`, `web/src/lib/repoTasks.ts`), so a delivery spanning two repositories appears
+  under both and counts on each side only what it spent there. That tab is a READ view — every verb
+  goes to `/tasks/:id`, because a second controller for one gesture is the bug `task-reopen.ts`
+  exists to have fixed once — and it counts `sessionsLinked`, never `sessionsUsed`: a row with no
+  conversation link named no repository and contributed no numbers, so counting it would place a
+  session in a repository nothing observed it in.
 - **New `/api/tasks` sub-routes ride the existing `capability-guard.ts` entries** (`/api/tasks`,
   `/api/task-files` → `localShell`). `GET /api/tasks/next` and `/api/tasks/activity` are matched
   BEFORE the generic `<ref>` GET, or they resolve as task references and 404.
