@@ -7,16 +7,30 @@
  * empty state to drift, and this is a screen that starts assistants or writes into them: the
  * number on the button is the last thing anybody checks.
  *
+ * `send` is a TWO-STEP WIZARD — pick WHO, then write WHAT — because the prompt grew a composer of
+ * its own (paste-to-attach, an attach button, a preview strip) and a session list plus a composer
+ * do not both fit a 390px screen. `reopen` has no prompt and stays exactly one step; `lib/
+ * sendWizard.ts` holds which steps a kind has, whether the second is reachable, and what the primary
+ * button says on each — the same reasoning `sessionPick.ts` applies to the two FEATURES applies here
+ * to the two STEPS of one of them. The step lives in this component's own state (never remounted
+ * between steps), which is what lets the ticks, the search and the typed text all survive going
+ * back and forth.
+ *
  * It is built from `formBits` and wears the new-session wizard's own shell, tab strip and field.
  * A dialog that invents its own chrome reads as a different product from the one beside it.
  */
-import React, { useEffect, useMemo, useState } from 'react'
-import { RotateCcw, Search, Send, X } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, Loader, Paperclip, RotateCcw, Search, Send, X } from 'lucide-react'
 import {
-  PICK_TABS, filterPickRows, initialPick, pickAllState, pickConfirmLabel, pickEmpty, pickTabHint,
+  PICK_TABS, filterPickRows, initialPick, pickAllState, pickEmpty, pickTabHint,
   pickTabLabel, pickedRows, togglePick, togglePickAll,
   type PickRow, type PickTab,
 } from '../../lib/sessionPick'
+import { composeBroadcastText, wizardPrimaryLabel, type WizardStep } from '../../lib/sendWizard'
+import { hasSomethingToSend } from '../../lib/composerAction'
+import { MAX_ATTACHMENTS, attachmentRoom, planPaste } from '../../lib/pastePlan'
+import { isImagePath } from '../../lib/attachmentPreview'
+import { attachmentUrl } from '../../lib/attachmentUrl'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { overlayPadding } from '../../lib/mobileOverlay'
 import { Field, Muted, TabStrip, inputStyle } from './formBits'
@@ -40,6 +54,9 @@ interface Props {
   onConfirm: (ids: string[], text: string) => void
 }
 
+/** One uploaded file, as the composer holds it — the same shape `SessionChat`'s own composer uses. */
+interface Attachment { name: string; path: string }
+
 export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }: Props) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
@@ -50,6 +67,14 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
   // Reopen has no tabs: every row in it fell, so none of them is running and "Active" would always
   // be empty. A tab that can only ever be empty is a control that teaches the wrong thing.
   const [tab, setTab] = useState<PickTab>('active')
+  // `reopen` never leaves 'pick' — `wizardSteps('reopen')` is a single entry, so nothing here ever
+  // asks it to advance. Kept in ONE piece of state (not remounted between screens) so the ticks, the
+  // search and the typed text all survive going back and forth.
+  const [step, setStep] = useState<WizardStep>('pick')
+  const [attached, setAttached] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   // The fleet polls every five seconds. A row that ended while this was open must not stay ticked,
   // and one that arrived must not be silently ticked into a verb the user never saw.
@@ -62,6 +87,9 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
   }, [rows])
 
   useEffect(() => {
+    // Escape ALWAYS closes the whole wizard, on either step — it is the modal's own exit, not the
+    // step's. Going back one screen is a separate gesture (the Back button), because a person who
+    // has half-written a prompt and presses Escape expects to leave, not to lose the page.
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -76,8 +104,78 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
   const allState = pickAllState(shown, picked)
   const chosen = useMemo(() => pickedRows(rows, picked), [rows, picked])
   const overCap = needsText && chosen.length > MAX_BROADCAST
-  const confirm = pickConfirmLabel(chosen.length, kind, pt)
-  const ready = confirm.enabled && !busy && !overCap && (!needsText || text.trim().length > 0)
+  const primary = wizardPrimaryLabel(step, kind, chosen.length, pt)
+  // On the PICK step, `send` only turns the page — busy/cap/text have nothing to do with that yet.
+  // On the one step `reopen` has, and on `send`'s COMPOSE step, the button actually PERFORMS the
+  // verb, so it inherits every guard the single-screen modal always had.
+  const ready = step === 'pick' && kind === 'send'
+    ? primary.enabled && !busy
+    : primary.enabled && !busy && !overCap
+      && (!needsText || hasSomethingToSend({ draft: text, attachments: attached.length }))
+
+  async function upload(files: readonly File[]): Promise<void> {
+    if (files.length === 0) return
+    setUploading(true)
+    for (const file of files) {
+      const body = new FormData()
+      body.append('file', file)
+      /*
+       * `session` IS OPTIONAL ON THE WIRE (see `/api/fleet/attach` in `server/index.ts`: "Absent is
+       * fine — the attachment still works, it just cannot be drawn as a thumbnail in that case").
+       * Its only job is letting a later `[Image #N]` marker find its file again FOR ONE SESSION —
+       * `recordAttachmentSend` files it under exactly the id given. A broadcast has no single
+       * session to name honestly: naming one of the N picked would make marker resolution work for
+       * that one recipient and silently not for the rest, which is a worse lie than naming none. So
+       * this is left BLANK on purpose — the path still reaches every session exactly as typed, it
+       * just never grows a `[Image #N]` thumbnail anywhere, the same outcome as attaching from a
+       * session `SessionChat` cannot link to a transcript at all.
+       */
+      body.append('session', '')
+      try {
+        const res = await fetch(`/api/fleet/attach?lang=${lang}`, { method: 'POST', body })
+        const json = await res.json() as { ok: boolean; path?: string; name?: string; message?: string }
+        if (json.ok && json.path && json.name) {
+          setAttached(a => [...a, { name: json.name!, path: json.path! }])
+        } else {
+          setNotice(json.message ?? (pt ? 'O anexo falhou.' : 'The attachment failed.'))
+        }
+      } catch {
+        setNotice(pt ? 'Erro de rede ao enviar o anexo.' : 'Network error uploading the attachment.')
+      }
+    }
+    setUploading(false)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  function pickFiles(list: FileList | null): void {
+    if (!list) return
+    const room = attachmentRoom(attached.length)
+    const files = Array.from(list).slice(0, room)
+    if (files.length < list.length) {
+      setNotice(pt
+        ? `No máximo ${MAX_ATTACHMENTS} anexos por mensagem.`
+        : `At most ${MAX_ATTACHMENTS} attachments per message.`)
+    }
+    void upload(files)
+  }
+
+  /** Same rule the live composer uses — `planPaste.ts` decides which of the three a paste is. */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>): void {
+    const plan = planPaste({
+      files: Array.from(e.clipboardData.files),
+      text: e.clipboardData.getData('text/plain'),
+      existing: attached.length,
+    })
+    if (plan.kind === 'text') return
+    e.preventDefault()
+    if (plan.kind === 'files') { void upload(plan.files); return }
+    if (plan.kind === 'textFile') {
+      void upload([new File([plan.text], plan.name, { type: 'text/plain' })])
+      setNotice(pt
+        ? 'O texto colado era grande demais para digitar na sessão, então foi anexado como arquivo.'
+        : 'The pasted text was too large to type into the session, so it was attached as a file.')
+    }
+  }
 
   const t = {
     title: kind === 'reopen'
@@ -88,8 +186,15 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
         ? 'Estas sessões estavam abertas quando a máquina parou. Vêm todas marcadas — desmarque as que não quiser de volta.'
         : 'These sessions were open when the machine stopped. They all start ticked — untick any you do not want back.')
       : (pt
-        ? 'O mesmo prompt vai para cada sessão marcada, uma de cada vez. Nenhuma vem marcada: escolha uma a uma.'
-        : 'The same prompt goes to each ticked session, one at a time. None start ticked: pick them yourself.'),
+        ? 'Escolha as sessões que vão receber o mesmo prompt. Nenhuma vem marcada: escolha uma a uma.'
+        : 'Pick the sessions that will receive the same prompt. None start ticked: pick them yourself.'),
+    composeLead: pt
+      ? (chosen.length === 1
+        ? 'O prompt vai para 1 sessão.'
+        : `O prompt vai para ${chosen.length} sessões, uma de cada vez.`)
+      : (chosen.length === 1
+        ? 'The prompt goes to 1 session.'
+        : `The prompt goes to ${chosen.length} sessions, one at a time.`),
     sessions: pt ? 'Sessões' : 'Sessions',
     prompt: pt ? 'Prompt' : 'Prompt',
     all: pt ? 'Marcar todas' : 'Tick all',
@@ -97,6 +202,11 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
     searchSessions: pt ? 'Buscar por título ou pasta…' : 'Search by title or folder…',
     placeholder: pt ? 'O prompt que cada sessão vai receber…' : 'The prompt each session will receive…',
     cancel: pt ? 'Cancelar' : 'Cancel',
+    back: pt ? 'Voltar' : 'Back',
+    attach: pt ? 'Anexar arquivo' : 'Attach file',
+    attachNote: pt
+      ? 'gravados nesta máquina; o caminho vai na mensagem'
+      : 'stored on this machine; the path goes in the message',
     cap: pt
       ? `No máximo ${MAX_BROADCAST} de uma vez — ${chosen.length} marcadas.`
       : `At most ${MAX_BROADCAST} at a time — ${chosen.length} ticked.`,
@@ -136,6 +246,21 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
           display: 'flex', alignItems: 'center', gap: 10,
           padding: '16px 20px', borderBottom: '1px solid var(--border)',
         }}>
+          {/* Only on the compose step — the pick step's own way out is the X, exactly as before. */}
+          {step === 'compose' && (
+            <button
+              onClick={() => !busy && setStep('pick')}
+              aria-label={t.back}
+              title={t.back}
+              style={{
+                display: 'flex', width: tap, height: tap, alignItems: 'center', justifyContent: 'center',
+                borderRadius: 8, border: 'none', background: 'transparent', flexShrink: 0,
+                color: 'var(--text-tertiary)', cursor: busy ? 'default' : 'pointer',
+              }}
+            >
+              <ArrowLeft size={16} />
+            </button>
+          )}
           <h2 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', flex: 1 }}>
             {t.title}
           </h2>
@@ -157,9 +282,10 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
           display: 'flex', flexDirection: 'column', gap: 16, padding: '16px 20px',
         }}>
           <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, color: 'var(--text-secondary)' }}>
-            {t.lead}
+            {step === 'compose' ? t.composeLead : t.lead}
           </p>
 
+          {step === 'pick' && (
           <Field label={t.sessions}>
             <div style={{ position: 'relative' }}>
               <Search size={13} style={{
@@ -275,23 +401,129 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
               })}
             </div>
           </Field>
+          )}
 
-          {needsText && (
-            <Field label={t.prompt}>
-              <textarea
-                value={text}
-                onChange={e => setText(e.target.value)}
-                placeholder={t.placeholder}
-                rows={3}
-                style={{
-                  ...inputStyle, paddingLeft: 12, resize: 'vertical', lineHeight: 1.5,
-                  ...(isMobile ? { fontSize: 16 } : {}),
-                }}
-              />
-              {overCap && (
-                <span role="status" style={{ fontSize: 11.5, color: 'var(--accent-red)' }}>{t.cap}</span>
-              )}
-            </Field>
+          {step === 'compose' && (
+            <>
+              {/* WHO it is going to — read-only here, on purpose: changing the list is Back's job,
+                  and a second way to edit the same set from this screen is a second place for the
+                  two to disagree about what "chosen" means. */}
+              <Field label={t.sessions}>
+                <div style={{
+                  maxHeight: 96, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2,
+                  border: '1px solid var(--border-subtle)', borderRadius: 10, padding: '6px 10px',
+                }}>
+                  {chosen.map(row => (
+                    <span key={row.id} style={{
+                      fontSize: 12, color: 'var(--text-secondary)',
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>
+                      {row.title}
+                    </span>
+                  ))}
+                </div>
+              </Field>
+
+              <Field label={t.prompt}>
+                <textarea
+                  value={text}
+                  onChange={e => setText(e.target.value)}
+                  onPaste={onPaste}
+                  placeholder={t.placeholder}
+                  rows={3}
+                  style={{
+                    ...inputStyle, paddingLeft: 12, resize: 'vertical', lineHeight: 1.5,
+                    ...(isMobile ? { fontSize: 16 } : {}),
+                  }}
+                />
+
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  onChange={e => pickFiles(e.target.files)}
+                  style={{ display: 'none' }}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploading}
+                    aria-label={t.attach}
+                    title={t.attach}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: tap, height: tap, borderRadius: 9, border: 'none', flexShrink: 0,
+                      background: 'transparent', color: 'var(--text-tertiary)',
+                      cursor: uploading ? 'default' : 'pointer',
+                    }}
+                  >
+                    {uploading ? <Loader size={15} className="ag-working-spin" /> : <Paperclip size={15} />}
+                  </button>
+                </div>
+
+                {attached.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {attached.map(a => isImagePath(a.path) ? (
+                      <span key={a.path} title={a.name} style={{
+                        position: 'relative', display: 'block', width: 48, height: 48,
+                        borderRadius: 8, overflow: 'hidden', flexShrink: 0,
+                        border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+                      }}>
+                        <img
+                          src={attachmentUrl(a.path)} alt=""
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        />
+                        <button
+                          onClick={() => setAttached(list => list.filter(x => x.path !== a.path))}
+                          aria-label={pt ? `Remover ${a.name}` : `Remove ${a.name}`}
+                          style={{
+                            position: 'absolute', top: 2, right: 2,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            width: 16, height: 16, borderRadius: '50%', border: 'none', padding: 0,
+                            background: 'rgba(0,0,0,0.55)', color: '#fff', cursor: 'pointer',
+                          }}
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ) : (
+                      <span key={a.path} title={a.path} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
+                        padding: '5px 8px', borderRadius: 8, minWidth: 0,
+                        background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                        fontSize: 11.5, color: 'var(--text-secondary)',
+                      }}>
+                        <Paperclip size={11} style={{ flexShrink: 0 }} />
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {a.name}
+                        </span>
+                        <button
+                          onClick={() => setAttached(list => list.filter(x => x.path !== a.path))}
+                          aria-label={pt ? `Remover ${a.name}` : `Remove ${a.name}`}
+                          style={{
+                            display: 'flex', border: 'none', background: 'transparent', padding: 0,
+                            color: 'var(--text-tertiary)', cursor: 'pointer', flexShrink: 0,
+                          }}
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                    <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', alignSelf: 'center' }}>
+                      {t.attachNote}
+                    </span>
+                  </div>
+                )}
+
+                {notice && (
+                  <span role="status" style={{ fontSize: 11.5, color: 'var(--anthropic-orange)' }}>{notice}</span>
+                )}
+                {overCap && (
+                  <span role="status" style={{ fontSize: 11.5, color: 'var(--accent-red)' }}>{t.cap}</span>
+                )}
+              </Field>
+            </>
           )}
         </div>
 
@@ -300,17 +532,28 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
           padding: '14px 20px', borderTop: '1px solid var(--border)',
         }}>
           <button
-            onClick={onClose}
+            onClick={() => (step === 'compose' ? setStep('pick') : onClose())}
+            disabled={busy}
             style={{
-              minHeight: isMobile ? 44 : 34, padding: '0 14px', borderRadius: 9, cursor: 'pointer',
+              minHeight: isMobile ? 44 : 34, padding: '0 14px', borderRadius: 9,
+              cursor: busy ? 'default' : 'pointer',
               border: '1px solid var(--border)', background: 'transparent',
               color: 'var(--text-secondary)', fontFamily: 'inherit', fontSize: 12.5,
             }}
           >
-            {t.cancel}
+            {step === 'compose' ? t.back : t.cancel}
           </button>
           <button
-            onClick={() => ready && onConfirm(chosen.map(r => r.id), text.trim())}
+            onClick={() => {
+              if (!ready) return
+              // `send`'s pick step only turns the page — the verb has not happened yet, so it must
+              // not call `onConfirm`, which is what actually starts writing into live sessions.
+              if (kind === 'send' && step === 'pick') { setStep('compose'); return }
+              onConfirm(
+                chosen.map(r => r.id),
+                kind === 'send' ? composeBroadcastText(attached.map(a => a.path), text.trim()) : '',
+              )
+            }}
             disabled={!ready}
             style={{
               display: 'flex', alignItems: 'center', gap: 7,
@@ -322,8 +565,8 @@ export function SessionPickModal({ kind, rows, lang, busy, onClose, onConfirm }:
               fontFamily: 'inherit', fontSize: 12.5, fontWeight: 650,
             }}
           >
-            {kind === 'reopen' ? <RotateCcw size={13} /> : <Send size={13} />}
-            {confirm.label}
+            {kind === 'reopen' ? <RotateCcw size={13} /> : (step === 'compose' ? <Send size={13} /> : null)}
+            {primary.label}
           </button>
         </footer>
       </div>
