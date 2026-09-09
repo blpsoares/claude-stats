@@ -89,13 +89,33 @@ describe('allowlist — nothing else reaches the process', () => {
     expect(intent('\x1b[15~')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' }) // F5
     expect(intent('\x1b[200~')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' }) // paste start
     expect(intent('\x1b[M')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' }) // mouse
-    expect(intent('\x1b')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' }) // lone ESC
+    // A LONE ESC used to be listed here. It is now `Escape` — a deliberate widening with its own
+    // describe block above; everything BUILT on the escape byte is still refused unless mapped.
   })
   it('a chunk mixing printable text and a control char is refused (not a single keystroke)', () => {
     // A paste containing a newline is the line-composer's job, not a raw keystroke — refuse rather
     // than silently reinterpret half of it as text and half as a key.
     expect(intent('ab\r')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' })
     expect(intent('a\x03')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' })
+  })
+})
+
+describe('Escape — the one widening the utility shell needed', () => {
+  it('a bare ESC is a named key, not an unsupported sequence', () => {
+    // A soft keyboard has no Escape at all, so the shell's mobile key strip is the only way out of
+    // `vim`; and a permission dialog's own footer says `Esc to cancel`. It CANCELS and controls no
+    // process, which is the line this allowlist draws.
+    expect(classifyInput('\x1b')).toEqual({ kind: 'key', key: 'Escape' })
+  })
+
+  it('it does not swallow the escape SEQUENCES built on it', () => {
+    // `\x1b[A` is still Up; the bare byte is only Escape when nothing follows it.
+    expect(classifyInput('\x1b[A')).toEqual({ kind: 'key', key: 'Up' })
+    expect(classifyInput('\x1bOD')).toEqual({ kind: 'key', key: 'Left' })
+  })
+
+  it('an unmapped escape sequence is still refused', () => {
+    expect(classifyInput('\x1b[1;5A')).toEqual({ kind: 'blocked', reason: 'unsupported-sequence' })
   })
 })
 

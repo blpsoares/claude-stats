@@ -231,3 +231,39 @@ describe('xtermTheme', () => {
     expect(typeof d.foreground).toBe('string')
   })
 })
+
+describe('the honesty line names the RIGHT thing', () => {
+  const live = {
+    phase: 'streaming' as const,
+    open: null,
+    frame: { seq: 1, content: 'x', cols: 80, rows: 24, cursor: { x: 0, y: 0 }, alive: true, lines: 3, historyLimit: 50, truncated: false },
+    endReason: null,
+  }
+  const gone = { ...live, phase: 'ended' as const, endReason: 'gone' as const }
+
+  test('a fleet pane is the AGENT’s screen', () => {
+    expect(terminalStatus(live, 'pt').detail).toContain('agente')
+    expect(terminalStatus(live, 'en').detail).toContain('agent')
+  })
+
+  test('a SHELL is yours, and saying "the agent’s screen" over it is simply false', () => {
+    // Read off a real 390px screenshot before this existed: the shell the person opened themselves
+    // was labelled "A tela atual do agente". Nobody's agent is in there.
+    expect(terminalStatus(live, 'pt', 'shell').detail).not.toContain('agente')
+    expect(terminalStatus(live, 'pt', 'shell').detail.toLowerCase()).toContain('shell')
+    expect(terminalStatus(live, 'en', 'shell').detail).not.toContain('agent')
+    expect(terminalStatus(live, 'en', 'shell').detail.toLowerCase()).toContain('shell')
+  })
+
+  test('and a shell that left tmux is not "a session"', () => {
+    expect(terminalStatus(gone, 'en', 'shell').detail.toLowerCase()).toContain('shell')
+    expect(terminalStatus(gone, 'pt', 'shell').detail.toLowerCase()).toContain('shell')
+  })
+
+  test('the subject changes the words and nothing else', () => {
+    for (const s of [live, gone]) {
+      expect(terminalStatus(s, 'en', 'shell').tone).toBe(terminalStatus(s, 'en').tone)
+      expect(terminalStatus(s, 'en', 'shell').showCursor).toBe(terminalStatus(s, 'en').showCursor)
+    }
+  })
+})

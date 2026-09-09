@@ -182,6 +182,14 @@ export interface AppContext {
     mcpAdmin?: boolean
   }
 
+  /** What `/api/shell/*` will ACTUALLY answer: `CAPS.localShell` AND the user's own switch. It is
+   *  separate from `capabilities.localShell` (the profile alone) for the reason `chatEnabled` is:
+   *  Settings has to be able to say "your profile allows this, you have it off". Undefined on an
+   *  older server that has no switch — read as OFF, because a raw shell is opt-in and absence is
+   *  never consent (`shell-gate.ts`), which is the OPPOSITE of the reading chat takes for its own
+   *  flag and deliberately so: chat was on before it had a switch, and this never was. */
+  shellEnabled?: boolean
+
   /** The tag definitions `useDerivedStats` resolves a tag filter against.
    *
    *  Exposed because a page that derives a SECOND scope (the compare page's B side) must pass the

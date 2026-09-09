@@ -30,6 +30,7 @@ import type { FleetActionId, FleetRow } from '../../lib/fleet'
 import { TerminalRegion } from '../RecentSessions'
 import { SessionChat, type SessionChatProps } from './SessionChat'
 import { SessionActions } from './SessionActions'
+import { ShellBand } from './ShellBand'
 
 export type SessionView = 'chat' | 'terminal'
 
@@ -60,9 +61,19 @@ export interface SessionPanelProps {
   onViewChange?: (v: SessionView) => void
   /** Passed straight to `SessionChat` — see its own `onArtifacts`. This panel reads none of it. */
   onArtifacts?: SessionChatProps['onArtifacts']
+  /**
+   * May this machine serve a per-session utility SHELL right now — `CAPS.localShell` AND the
+   * user's own switch, as `/api/team/session` reports it.
+   *
+   * Absent reads as OFF, and the band is then ABSENT rather than present-and-refusing: a control
+   * that is there and says no teaches nothing, while Settings → Sessions is where the switch lives
+   * and says so. It is never inferred from `capabilities.localShell` alone — that is the profile's
+   * answer, and the switch may only ever narrow it further.
+   */
+  shellEnabled?: boolean
 }
 
-export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, onOpened, view: viewProp, onViewChange, onArtifacts }: SessionPanelProps) {
+export function SessionPanel({ session, row, lang, theme, act, authorName, onGone, onOpened, view: viewProp, onViewChange, onArtifacts, shellEnabled }: SessionPanelProps) {
   /**
    * Is this a session of ANOTHER machine, reached through the relay?
    *
@@ -202,6 +213,25 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
           </div>
         )}
       </div>
+
+      {/* THE LAST BAND, below everything — the VS Code geometry, where the panel is always the
+          bottom-most strip. It is deliberately OUTSIDE the view switch: a shell you opened to run
+          `bun test` must not vanish because you moved from the conversation to the assistant's own
+          screen. It is keyed by session, so switching rows unmounts it — which is also what drops
+          its stream, the client half of the unwatch discipline.
+
+          Absent on a RELAYED session for the same reason the live stream is: those routes are the
+          machine's own and a central refuses them outright, so a band there could only ever draw a
+          refusal. Absent when the machine does not serve shells at all — see `shellEnabled`. */}
+      {shellEnabled && !relayed && (
+        <ShellBand
+          key={session.id}
+          sessionId={session.id}
+          {...(session.cwd ? { cwd: session.cwd } : {})}
+          lang={lang}
+          theme={theme}
+        />
+      )}
     </div>
   )
 }

@@ -176,4 +176,15 @@ describe('handleSession', () => {
     expect(typeof body['required']).toBe('boolean')
     expect(typeof body['central']).toBe('boolean')
   })
+
+  it('reports shellEnabled separately from capabilities.localShell', async () => {
+    // Two different questions, and Settings has to be able to say "your profile allows this, you
+    // have it off" — the same split `chatEnabled` already makes. `shellEnabled` is the capability
+    // AND the user's switch; `capabilities.localShell` stays the exposure profile's answer alone.
+    const body = (await (await handleSession(new Request('http://localhost/api/team/session'))).json()) as
+      Record<string, unknown>
+    expect(typeof body['shellEnabled']).toBe('boolean')
+    // Absent reads as OFF: nobody acquires a browser shell by having upgraded.
+    expect(body['shellEnabled']).toBe(false)
+  })
 })
