@@ -38,6 +38,7 @@ import {
   readBoardPrefs, writeBoardPrefs, type BoardView as ViewId, type LaneKey,
 } from '../components/tasks/boardPrefs'
 import { BoardArrange } from '../components/tasks/BoardArrange'
+import { useMoney } from '../components/tasks/money'
 import { RailSection } from '../components/tasks/RailSection'
 import { ConfirmModal } from './settings/primitives'
 import { DatePicker } from '../components/DatePicker'
@@ -53,7 +54,7 @@ import { NewTaskWizard } from '../components/tasks/NewTaskWizard'
 import { NewSessionModal } from '../components/sessions/NewSessionModal'
 import {
   COLUMN_ORDER, NA, PRIORITY, SESSION_STATE, STATUS, button, claimLeft, field, fmtInt, fmtTokens,
-  fmtUSD, harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
+  harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from '../components/tasks/board'
 import {
   addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, editComment, fileUrl,
@@ -389,9 +390,10 @@ function Caveats({ r }: { r: AttemptRollup }) {
 }
 
 function Rollup({ r }: { r: AttemptRollup }) {
+  const fmt = useMoney()
   const money = r.mixedCurrency || (r.credits !== null && r.costUSD === null)
     ? `${r.credits!.premiumRequests} req`
-    : fmtUSD(r.costUSD)
+    : fmt(r.costUSD)
   return (
     <>
       <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
@@ -877,6 +879,7 @@ function BlockedBy({ id, task, onChanged, bare }: {
  * rather than claiming it finished.
  */
 function SessionsTab({ detail }: { detail: TaskDetail }) {
+  const money = useMoney()
   const { fleet } = useFleet('en')
   const live = useMemo(
     () => new Map((fleet.sessions ?? []).map(r => [r.id, r])),
@@ -918,7 +921,7 @@ function SessionsTab({ detail }: { detail: TaskDetail }) {
                 </td>
                 <td style={{ padding: '8px 10px', ...numeric }}>{fmtInt(row.rounds)}</td>
                 <td style={{ padding: '8px 10px', ...numeric }}>{fmtTokens(row.tokens)}</td>
-                <td style={{ padding: '8px 10px', ...numeric }}>{fmtUSD(row.costUSD)}</td>
+                <td style={{ padding: '8px 10px', ...numeric }}>{money(row.costUSD)}</td>
                 <td style={{ padding: '8px 10px' }}>
                   <a
                     href={sessionPath(row.id)}

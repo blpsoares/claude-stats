@@ -15,8 +15,9 @@ import { useMemo, useState } from 'react'
 import { ExternalLink, Link2, Plus, Unlink } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
-  NA, STATUS, button, fmtInt, fmtUSD, microLabel, numeric, pill, surface, type BoardStatus,
+  NA, STATUS, button, fmtInt, microLabel, numeric, pill, surface, type BoardStatus,
 } from './board'
+import { useMoney } from './money'
 import { TaskProgressBar } from './TaskProgressBar'
 import { boardCopy } from './copy'
 import { TaskComposer } from './TaskComposer'
@@ -35,6 +36,7 @@ export interface SessionTasksTabProps {
 
 export function SessionTasksTab(p: SessionTasksTabProps) {
   const isMobile = useIsMobile()
+  const money = useMoney()
   const pt = p.lang === 'pt'
   const { rows, reload } = useTaskList()
   const [composing, setComposing] = useState(false)
@@ -110,7 +112,7 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
                     measurable, and this is where you see that it worked. */}
                 <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                   {([
-                    [pt ? 'Custo' : 'Cost', fmtUSD(current.rollup.costUSD)],
+                    [pt ? 'Custo' : 'Cost', money(current.rollup.costUSD)],
                     [pt ? 'Rodadas' : 'Rounds', fmtInt(current.rollup.rounds)],
                     [pt ? 'Sessões' : 'Sessions', String(current.rollup.sessionsUsed)],
                   ] as const).map(([label, value]) => (

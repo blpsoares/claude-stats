@@ -12,19 +12,21 @@ import { useEffect, useMemo, useState } from 'react'
 import { Bot, CalendarClock, MessageSquare, Paperclip, Terminal } from 'lucide-react'
 import { sortRows, type SortSpec } from '@agentistics/core'
 import {
-  COLUMN_ORDER, PRIORITY, SESSION_STATE, STATUS, cardStyle, claimLeft, fmtInt, fmtTokens, fmtUSD,
+  COLUMN_ORDER, PRIORITY, SESSION_STATE, STATUS, cardStyle, claimLeft, fmtInt, fmtTokens,
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus,
 } from './board'
 import type { LaneKey } from './boardPrefs'
 import { TaskProgressBar } from './TaskProgressBar'
 import { statusLabel } from './copy'
+import { useMoney } from './money'
 import type { TaskListRow } from '../../lib/tasks'
 
 function Facts({ row }: { row: TaskListRow }) {
+  const fmt = useMoney()
   const r = row.rollup
   const money = r.mixedCurrency || (r.credits !== null && r.costUSD === null)
     ? `${r.credits!.premiumRequests} req`
-    : fmtUSD(r.costUSD)
+    : fmt(r.costUSD)
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
       <span style={{ minWidth: 0 }}>

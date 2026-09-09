@@ -29,9 +29,10 @@ import {
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
-  COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens, fmtUSD,
+  COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens,
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus, type ColumnId,
 } from './board'
+import { useMoney, type Money } from './money'
 import {
   DEFAULT_SORT, nextSort, PRIORITY_ORDER, sortRows,
   type SortKey, type SortSpec, type TaskPriorityId,
@@ -173,6 +174,7 @@ function cellFor(
   onPriority: (p: TaskPriorityId) => void,
   nowMs: number,
   lang: 'pt' | 'en',
+  money: Money,
 ): React.ReactNode {
   const r = row.rollup
   switch (col) {
@@ -225,7 +227,7 @@ function cellFor(
     case 'rounds': return <Num v={r.rounds} />
     case 'cost': return r.mixedCurrency || (r.credits !== null && r.costUSD === null)
       ? <span style={{ ...numeric, fontSize: 12 }}>{r.credits!.premiumRequests} req</span>
-      : <span style={{ ...numeric, fontSize: 12, color: r.costUSD === null ? 'var(--text-tertiary)' : 'var(--anthropic-orange)' }}>{fmtUSD(r.costUSD)}</span>
+      : <span style={{ ...numeric, fontSize: 12, color: r.costUSD === null ? 'var(--text-tertiary)' : 'var(--anthropic-orange)' }}>{money(r.costUSD)}</span>
     case 'tokens': return <span style={{ ...numeric, fontSize: 12, color: r.tokens === null ? 'var(--text-tertiary)' : undefined }}>{fmtTokens(r.tokens)}</span>
     case 'harnesses': return (
       <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
@@ -404,6 +406,7 @@ export interface TaskTableProps {
 
 export function TaskTable(p: TaskTableProps) {
   const isMobile = useIsMobile()
+  const money = useMoney()
   const stored = useMemo(readBoardPrefs, [])
 
   const [shown, setShown] = useState<ColumnId[]>(stored.columns ?? DEFAULT_COLUMNS)
@@ -690,6 +693,7 @@ export function TaskTable(p: TaskTableProps) {
                                   pr => p.onPriority?.(row.task.id, pr),
                                   nowMs,
                                   p.lang ?? 'en',
+                                  money,
                                 )}
                               </td>
                             ))}

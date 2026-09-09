@@ -12,9 +12,10 @@
 
 import { CircleDashed, CircleCheck, CircleSlash, Coins, Timer } from 'lucide-react'
 import {
-  COLUMN_ORDER, NA, STATUS, fmtInt, fmtTokens, fmtUSD, harnessColor, microLabel, numeric, surface,
+  COLUMN_ORDER, NA, STATUS, fmtInt, fmtTokens, harnessColor, microLabel, numeric, surface,
   type BoardStatus,
 } from './board'
+import { useMoney } from './money'
 import { fmtDuration, type BoardOverview, type Bucket } from '../../lib/tasks'
 
 function Big({ label, value, note, icon, accent }: {
@@ -81,6 +82,7 @@ function Ranked({ title, items, color }: {
 }
 
 export function BoardOverviewView({ o }: { o: BoardOverview }) {
+  const money = useMoney()
   const gap = o.tasksWithoutCost > 0
     ? `${o.tasksWithoutCost} of ${o.tasks} could not be priced`
     : undefined
@@ -99,12 +101,12 @@ export function BoardOverviewView({ o }: { o: BoardOverview }) {
           note={o.abandoned > 0 ? `${o.abandoned} abandoned` : undefined}
         />
         <Big
-          label="Avg cost / delivery" value={fmtUSD(o.avgCostPerDelivered)} accent
+          label="Avg cost / delivery" value={money(o.avgCostPerDelivered)} accent
           icon={<Coins size={13} style={{ color: 'var(--anthropic-orange)' }} />}
           note={o.avgCostPerDelivered === null ? 'nothing delivered yet' : gap}
         />
         <Big
-          label="Avg cost / task" value={fmtUSD(o.avgCostPerTask)}
+          label="Avg cost / task" value={money(o.avgCostPerTask)}
           icon={<Coins size={13} style={{ color: 'var(--text-tertiary)' }} />}
           note={gap}
         />
@@ -114,7 +116,7 @@ export function BoardOverviewView({ o }: { o: BoardOverview }) {
           note="delivered tasks only — an open task has no duration"
         />
         <Big
-          label="Total spent" value={fmtUSD(o.totalCostUSD)}
+          label="Total spent" value={money(o.totalCostUSD)}
           icon={<Coins size={13} style={{ color: 'var(--text-tertiary)' }} />}
           note={`${fmtTokens(o.totalTokens)} tokens`}
         />
