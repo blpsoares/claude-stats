@@ -119,7 +119,26 @@ export function rollupSessionsFor(
   metas: ReadonlyMap<string, SessionMeta>,
   costOf: (m: SessionMeta) => number,
 ): RollupSession[] {
-  return rows.map(r => {
+  // ONE CONVERSATION IS COUNTED ONCE, however many rows point at it.
+  //
+  // Every attach, reopen and restart mints a NEW managedId for the SAME conversation (see
+  // `collapseSupersededSessions`, which does this for the fleet's own list), so a delivery worked
+  // on across six reopenings holds six rows resolving to one `SessionMeta` — and this summed that
+  // meta's tokens and cost six times. Measured on a live board on 2026-09-08: the "ALM board"
+  // delivery reported 13.072.988.605 tokens and $7.477,50 where the truth was 2.456.546.185 and
+  // $1.402,92. FIVE TIMES over, on the headline figure of the whole feature.
+  //
+  // A row with NO conversation link is kept as its own row: it cannot be shown to be a duplicate of
+  // anything, and it contributes no numbers anyway — the same rule `usage-dedupe.ts` applies to a
+  // usage record with no message id, and `filedUnder` to an attachment.
+  const seen = new Set<string>()
+  const distinct = rows.filter(r => {
+    if (!r.conversationId) return true
+    if (seen.has(r.conversationId)) return false
+    seen.add(r.conversationId)
+    return true
+  })
+  return distinct.map(r => {
     const meta = r.conversationId ? metas.get(r.conversationId) ?? null : null
     return {
       rowId: r.id,
