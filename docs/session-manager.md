@@ -560,3 +560,81 @@ Four fixes that all come from the same place — a row must say what it IS, and 
   find, which is how two holders happen; a vanished lock now retries and an abandoned one is taken
   over by an atomic `rename`. Measured before and after over 600 concurrent writes: 31 losses in 150,
   then 0 in 600.
+
+## The per-session utility shell
+
+A real shell — a full PTY, so `vim`, `htop`, colours and `Ctrl+C` all work — opened in a session's
+own directory, for the person rather than for an assistant. Phase 1 is the server half: it can be
+opened, listed and closed through `/api/shell/*`, and it is verifiable with `curl` and `tmux` alone.
+
+### It is not a session, and that is structural
+
+A shell runs on its **own tmux socket** (`SHELL_SOCKET` = `agentop-shell`) and records itself in
+`~/.agentistics/shells.json` — never in `managed-sessions.json`. Both halves are load-bearing.
+
+On the fleet socket it would become a fleet row, silently: `idFromTmuxName` strips the `agentop-`
+prefix, so `parseTmuxList` keeps the session, and `reconcileSessions` then finds a running session
+the registry has no record of and calls it `unregistered` — the row `session-adopt.ts` describes as
+"visible and inert", filed under `GONE_PROJECT_KEY`, that no verb in the cockpit can act on.
+
+In the registry, each shell would join the pane walk `host.sessions()` performs every 5 s in four
+processes (~200 ms measured), be probed by `attention.ts` for dialog markers, take a `lastSeenMs`
+heartbeat, and count toward "N sessions waiting on you" — so an `htop` would read as a session
+needing a person.
+
+A naming convention would have worked and been one refactor away from breaking. A socket cannot
+break: `list-sessions -L agentop` cannot see another socket at all. `shell-isolation.test.ts`
+asserts it over the modules' own source, with comments stripped first — those modules are *required*
+to explain themselves in terms of the registry.
+
+### Two gates, and absent reads OFF
+
+- `CAPS.localShell` — the exposure profile's answer, already false outside `local`.
+- `preferences.shellEnabled` — the user's own switch, which may only ever NARROW.
+
+A raw shell is strictly more powerful than the chat, which `chat-gate.ts` already calls the most
+powerful thing this server does: the chat at least spawns a NAMED assistant CLI. So absent reads as
+OFF, it is a separate switch from `chatEnabled`, it is enforced in `index.ts` before the routes
+rather than only in the UI, and a central refuses outright.
+
+### A ceiling, never a timer
+
+`SHELL_CAP` is 8, stated once in `shell-spec.ts`. A TTL would kill the `bun test` that finished at
+minute 61 and whose output somebody wanted, at an hour nobody was watching, and it needs a timer
+running for the life of the process. A ceiling needs nothing running: one check, on open, and it
+only ever closes something at the instant somebody is asking for a new one.
+
+Records go one way (`reconcileShells`): a pane that is gone is dropped — typing `exit` is the
+ordinary death of a shell — and a pane with **no** record is not adopted, the exact opposite of
+`session-adopt.ts`, because a shell carries no name, task or conversation worth recovering.
+
+### The four refusals, and their order
+
+`no-tmux`, `no-cwd`, `cwd-missing`, `at-cap` — codes, rendered into sentences by the route so the
+deciding module stays language-free. The IMPOSSIBLE ones come before the merely FULL one: at the
+ceiling the caller asks the person to close a shell to make room, and asking somebody to destroy
+work to make room for an open that could never have succeeded is worse than saying no.
+
+A session whose directory is gone is refused by name — it never falls back to `$HOME`. Opening a
+shell somewhere other than where it was asked for is the same class of error as a confident `0` for
+a metric nobody can produce.
+
+### Verifying it
+
+```bash
+AGENTISTICS_DIR=/tmp/shell-check PORT=48291 WEB_PORT=48292 bun run packages/server/bin/cli.ts server
+
+curl -s -X POST localhost:48291/api/shell/open -d '{"sessionId":"<id>"}' \
+  -H 'Content-Type: application/json'      # {"error":"shell_disabled"} until the switch is on
+
+curl -s -X PUT localhost:48291/api/preferences -d '{"shellEnabled":true}' \
+  -H 'Content-Type: application/json'
+
+tmux -L agentop-shell ls    # the shell is here
+tmux -L agentop ls          # and never here
+```
+
+Measured on 2026-09-09: the switch refused before it was flipped; the shell opened in the row's own
+cwd; it appeared under `-L agentop-shell` and in neither `-L agentop` nor `/api/fleet`; the ninth
+open was refused in words; a pane killed outside agentop left no ghost record; and `close` named an
+unknown id instead of counting it closed.

@@ -453,6 +453,50 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          row and `SessionsPage` hides the chat tab. Its format WAS measured and
   │                          the finding is recorded in `harness-transcript.ts` so nobody spends it
   │                          twice: a patch log, not one message per line. See docs/session-manager.md
+  │                          **THE PER-SESSION UTILITY SHELL is not a session, and the separation
+  │                          is structural** (`shell-spec.ts` / `shell-gate.ts` / `shell-store.ts` /
+  │                          `shell-backend.ts` / `shell-web.ts`, phase 1). It is a PTY in a
+  │                          session's own directory, opened for the PERSON — `$SHELL` bare, no
+  │                          `-l`, because tmux already gives the pane a tty and a login flag would
+  │                          read a different set of rc files from the panes `agentop session`
+  │                          opens. It runs on its OWN tmux socket (`SHELL_SOCKET`,
+  │                          `agentop-shell`) and records itself in `~/.agentistics/shells.json`,
+  │                          never in the registry, and BOTH halves of that are load-bearing: on the
+  │                          fleet socket `idFromTmuxName` strips the `agentop-` prefix, so
+  │                          `parseTmuxList` KEEPS the session and `reconcileSessions` reports it as
+  │                          an `unregistered` row — "visible and inert", filed under
+  │                          `GONE_PROJECT_KEY`, beyond every verb — while in the registry each
+  │                          shell would join the ~200 ms pane walk `host.sessions()` runs every 5 s
+  │                          in four processes, be probed by `attention.ts` for dialog markers, take
+  │                          a `lastSeenMs` heartbeat, and count toward "N sessions waiting on you",
+  │                          so an `htop` would read as a session needing a person. A naming
+  │                          convention would have worked and been one refactor from breaking; a
+  │                          socket cannot break, and `shell-isolation.test.ts` asserts all of it
+  │                          over the module SOURCE (comments stripped first — these modules are
+  │                          REQUIRED to explain themselves in terms of the registry). **Two gates,
+  │                          and absent reads OFF**: `CAPS.localShell` decides the security answer
+  │                          and `preferences.shellEnabled` may only ever NARROW it — a raw shell is
+  │                          strictly more powerful than the chat `chat-gate.ts` already calls the
+  │                          most powerful thing this server does, because the chat at least runs a
+  │                          NAMED assistant CLI. Enforced in `index.ts` before the routes, not only
+  │                          in the UI, and a CENTRAL refuses outright. **Lifetime is a CEILING
+  │                          (`SHELL_CAP` = 8) and never a timer**: a TTL kills the `bun test` that
+  │                          finished at minute 61 at an hour nobody was watching and needs a timer
+  │                          running forever, while a ceiling is one check on open and only ever
+  │                          closes something at the instant somebody asks for a new one. Records go
+  │                          ONE WAY (`reconcileShells`): a pane that is gone is dropped — `exit` is
+  │                          the ordinary death — and a pane with no record is NOT adopted, the
+  │                          exact opposite of `session-adopt.ts`, because a shell carries no name,
+  │                          task or conversation worth recovering. The four refusals are CODES
+  │                          rendered by the route (`no-tmux` / `no-cwd` / `cwd-missing` /
+  │                          `at-cap`), ordered so the IMPOSSIBLE ones come before the merely FULL
+  │                          one: asking somebody to destroy work to make room for an open that
+  │                          could never have succeeded is worse than saying no. Verified end to
+  │                          end on 2026-09-09 — the switch refused before it was flipped, the
+  │                          shell opened in the row's own cwd, it appeared under `-L agentop-shell`
+  │                          and NOT under `-L agentop` nor anywhere in `/api/fleet`, the ninth open
+  │                          was refused in words, a pane killed outside agentop left no ghost, and
+  │                          `close` named an unknown id instead of counting it closed.
   ├── cli-start.ts         → the control center's HOST (`ControlHost`): service detection, start/stop/restart, connect/disconnect, boot service, archive consent, language — every action returns an already-localized `ActionResult` instead of printing
   ├── cli-stream.ts        → the control center's OUTPUT CHANNEL: subscribers + `streamCommand` (both pipes captured, never `inherit`) → lines via the pure `@agentistics/tui/control/stream`
   ├── cli-ui.ts            → dependency-free arrow-key select/confirm/input/pause + clearScreen (bundles clean into the binary; no node_modules to resolve)
