@@ -45,6 +45,7 @@ import { BlockedDialog } from './BlockedDialog'
 import { RailSection } from './RailSection'
 import { StatusChip } from './StatusChip'
 import { SubtaskTable } from './SubtaskTable'
+import { BlockedSubtaskResolve } from './BlockedSubtaskResolve'
 import { TaskFiles } from './TaskFiles'
 import { TaskProgressBar } from './TaskProgressBar'
 import { DatePicker } from '../DatePicker'
@@ -914,6 +915,10 @@ export function DeliveryDetail({ id, detail, lang, reload, dense, onDeleted }: D
   const [confirmDelete, setConfirmDelete] = useState(false)
   /** Set while the task is on its way to `blocked` — see the list view's `toStatus`. */
   const [blocking, setBlocking] = useState(false)
+  /** Set when a subtask's own `blockedBy` refused an attach — see `task-attach.ts`. */
+  const [subtaskBlocked, setSubtaskBlocked] = useState<
+    { subtaskId: string; sessionId: string; blockedBy: string[] } | null
+  >(null)
   // The other tasks, to offer as blockers. The board is small enough that this is the same list the
   // page already loads; a second endpoint for "what could block this" would be a second answer.
   const { rows: boardRows } = useTaskList()
@@ -1006,7 +1011,16 @@ export function DeliveryDetail({ id, detail, lang, reload, dense, onDeleted }: D
               onAdd={title => run(() => addSubtask(id, title))}
               onPatch={(sid, patch) => run(() => patchSubtask(id, sid, patch))}
               onRemove={sid => run(() => removeSubtask(id, sid))}
-              onAttach={(subtaskId, sessionId) => run(() => attachSession(id, sessionId, subtaskId))}
+              onAttach={async (subtaskId, sessionId) => {
+                setBusy(true)
+                const result = await attachSession(id, sessionId, subtaskId)
+                setBusy(false)
+                if (!result.ok && result.reason === 'blocked') {
+                  setSubtaskBlocked({ subtaskId, sessionId, blockedBy: result.blockedBy ?? [] })
+                  return
+                }
+                await reload()
+              }}
               onUnfile={sessionId => run(() => detachSession(id, sessionId))}
               onOpenSession={sid => navigate(sessionPath(sid))}
             />
@@ -1138,6 +1152,25 @@ export function DeliveryDetail({ id, detail, lang, reload, dense, onDeleted }: D
           void run(async () => { await deleteTask(id); onDeleted?.() })
         }}
       />
+
+      {subtaskBlocked && (
+        <BlockedSubtaskResolve
+          taskId={id}
+          blockedSubtaskTitle={detail.subtasks.find(s => s.id === subtaskBlocked.subtaskId)?.title ?? ''}
+          blockedBy={subtaskBlocked.blockedBy}
+          subtasks={detail.subtasks}
+          sessions={detail.sessions}
+          lang={lang}
+          onCancel={() => setSubtaskBlocked(null)}
+          onResolved={async () => {
+            // The attach that was refused a moment ago is RETRIED here, not merely dismissed — the
+            // thing that was blocking it no longer does, so it now succeeds.
+            const { subtaskId, sessionId } = subtaskBlocked
+            setSubtaskBlocked(null)
+            await run(() => attachSession(id, sessionId, subtaskId))
+          }}
+        />
+      )}
     </>
   )
 }

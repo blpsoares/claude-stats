@@ -41,7 +41,8 @@ import { HarnessMark } from './HarnessMark'
 import { TaskPicker } from '../tasks/TaskPicker'
 import { boardCopy } from '../tasks/copy'
 import { useFleet } from '../../lib/fleet'
-import { useTaskList } from '../../lib/tasks'
+import { attachSession, useTaskList, type TaskDetail } from '../../lib/tasks'
+import { BlockedSubtaskResolve } from '../tasks/BlockedSubtaskResolve'
 import { suggestDelivery } from '../../lib/taskSuggest'
 import {
   STEP_ORDER, clearForHarness, modelDisplay, nextStep, prevStep, stepReady, unsetAnswer,
@@ -130,6 +131,20 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
   const [harness, setHarness] = useState<HarnessOption | null>(null)
   const [cwd, setCwd] = useState('')
   const [task, setTask] = useState(initialTask ?? '')
+  /**
+   * The exact SUBTASK this session will be filed under, once it exists — set only by the picker,
+   * never by the folder suggestion below (which only ever proposes a delivery TITLE, and asking a
+   * suggestion to also pick a subtask would be asking it to answer a question it never asked).
+   * `task` stays the free-text label sent at spawn either way — this is the extra, exact half that
+   * lets the attach happen automatically once the session is created.
+   */
+  const [subtaskTarget, setSubtaskTarget] = useState<{ taskId: string; subtaskId: string } | null>(null)
+  /** Set when that automatic attach comes back refused because the subtask is still blocked. */
+  const [subtaskBlocked, setSubtaskBlocked] = useState<
+    { taskId: string; subtaskId: string; blockedBy: string[]; sessionId: string } | null
+  >(null)
+  /** The blocked delivery's own subtasks/sessions, fetched once for `BlockedSubtaskResolve`. */
+  const [blockedDetail, setBlockedDetail] = useState<TaskDetail | null>(null)
   /** Open when the delivery picker is up. */
   const [pickingTask, setPickingTask] = useState(false)
   /**
@@ -557,11 +572,36 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
       if (json.ok) {
         // Still `busy` — the button keeps saying it is working, because it is.
         if (json.id) await waitForRow(json.id)
-        setBusy(false)
-        onStarted(json.id, {
-          ...(harness ? { harness: harness.id } : {}),
-          ...(label ? { label } : {}),
-        })
+
+        const finish = () => {
+          setBusy(false)
+          onStarted(json.id, {
+            ...(harness ? { harness: harness.id } : {}),
+            ...(label ? { label } : {}),
+          })
+        }
+
+        // The session EXISTS now, so this is the true first moment its filing can actually be
+        // attempted — a subtask picked a minute ago may have been blocked all along, or someone
+        // else may have filed the last open one under it in between. Never retried silently: the
+        // person picked a SPECIFIC subtask, and filing under a different one because that is what
+        // was free would be a session filed somewhere nobody chose.
+        if (subtaskTarget && json.id) {
+          const { taskId, subtaskId } = subtaskTarget
+          const result = await attachSession(taskId, json.id, subtaskId)
+          if (!result.ok && result.reason === 'blocked') {
+            const detailRes = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`).catch(() => null)
+            const body = detailRes?.ok ? await detailRes.json() as { task: TaskDetail } : null
+            setBlockedDetail(body?.task ?? null)
+            setSubtaskBlocked({ taskId, subtaskId, blockedBy: result.blockedBy ?? [], sessionId: json.id })
+            // The session already exists and is left UNFILED while this is open — it is not lost,
+            // it is one `SessionFiling` click away, and finishing the wizard is not held hostage by
+            // a question about a piece of work that is not this session's own.
+            setBusy(false)
+            return
+          }
+        }
+        finish()
         return
       }
       setBusy(false)
@@ -570,6 +610,38 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
       setBusy(false)
       setNotice(pt ? 'Erro de rede ao falar com esta máquina.' : 'Network error talking to this machine.')
     }
+  }
+
+  // Replaces the wizard outright, exactly as `SessionFiling` does for the same reason: the
+  // session this is about already EXISTS by the time this can appear, so the form behind it has
+  // nothing left to ask, and stacking two fixed overlays would double the scrim.
+  if (subtaskBlocked) {
+    const finish = () => {
+      setSubtaskBlocked(null)
+      onStarted(subtaskBlocked.sessionId, {
+        ...(harness ? { harness: harness.id } : {}),
+        ...(label ? { label } : {}),
+      })
+    }
+    return (
+      <BlockedSubtaskResolve
+        taskId={subtaskBlocked.taskId}
+        blockedSubtaskTitle={blockedDetail?.subtasks.find(s => s.id === subtaskBlocked.subtaskId)?.title ?? ''}
+        blockedBy={subtaskBlocked.blockedBy}
+        subtasks={blockedDetail?.subtasks ?? []}
+        sessions={blockedDetail?.sessions ?? []}
+        lang={lang}
+        // Declining to resolve it does not undo the session — it was created a moment ago and
+        // stays exactly as unfiled as any session started outside this wizard, one `SessionFiling`
+        // click away from the same subtask once it is free.
+        onCancel={finish}
+        onResolved={async () => {
+          const { taskId, subtaskId } = subtaskBlocked
+          await attachSession(taskId, subtaskBlocked.sessionId, subtaskId)
+          finish()
+        }}
+      />
+    )
   }
 
   return (
@@ -961,7 +1033,10 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
                 </span>
                 <button
                   type="button"
-                  onClick={() => { setTask(''); setTaskWasSuggested(false); setSuggestionDismissed(true) }}
+                  onClick={() => {
+                    setTask(''); setSubtaskTarget(null)
+                    setTaskWasSuggested(false); setSuggestionDismissed(true)
+                  }}
                   title={pt ? 'Não usar a sugestão' : 'Do not use the suggestion'}
                   // `.ag-tap-icon` PROJECTS the 44px a finger needs around a 22px glyph, rather
                   // than painting a 44x44 box three times the size of what is in it.
@@ -983,8 +1058,9 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
             <TaskPicker
               title={boardCopy(lang).fileUnder}
               lang={lang}
-              onPick={(_id, picked) => {
-                setTask(picked.title)
+              onPick={pick => {
+                setTask(pick.taskTitle)
+                setSubtaskTarget({ taskId: pick.taskId, subtaskId: pick.subtaskId })
                 // A person chose it, so the effect above must stop proposing over the top of it.
                 setTaskWasSuggested(false)
                 setSuggestionDismissed(true)

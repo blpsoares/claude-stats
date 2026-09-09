@@ -19,7 +19,7 @@ import {
   type Task, type TaskEvent, type TaskStatus,
 } from './task-model'
 import { boardProgress, DEFAULT_LEASE_MS, planNext } from './task-next'
-import { planAttach } from './task-attach'
+import { planAttach, sanitizeSubtaskBlockedBy } from './task-attach'
 import { planMove } from './task-rank'
 import { compareBy } from '@agentistics/core'
 import { deleteTaskFile, deleteTaskFiles, readTaskFile, writeTaskFile } from './task-files'
@@ -378,6 +378,8 @@ export async function patchSubtask(subtaskId: string, patch: {
   startDate?: string
   sessionId?: string
   notes?: string
+  /** Sanitized against this subtask's OWN siblings — see `sanitizeSubtaskBlockedBy`. */
+  blockedBy?: string[]
 }): Promise<boolean> {
   const w = await loadTaskWorld()
   const found = w.book.subtasks.find(t => t.id === subtaskId)
@@ -395,6 +397,11 @@ export async function patchSubtask(subtaskId: string, patch: {
     ...(patch.startDate !== undefined ? { startDate: patch.startDate } : {}),
     ...(patch.sessionId !== undefined ? { sessionId: patch.sessionId } : {}),
     ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
+    ...(patch.blockedBy !== undefined ? {
+      blockedBy: sanitizeSubtaskBlockedBy({
+        subtaskId: found.id, taskId: found.taskId, ids: patch.blockedBy, siblings: w.book.subtasks,
+      }),
+    } : {}),
     updatedAt: new Date().toISOString(),
   })
   return true
@@ -541,29 +548,52 @@ export async function removeLink(ref: string, linkId: string): Promise<boolean> 
  * the subtask. A session is never under both — see `task-attach.ts`, which is the only place that
  * rule exists.
  */
+/**
+ * What `attachSession` answers, instead of a bare boolean.
+ *
+ * A client that ends up here because a subtask is BLOCKED needs to say so in words and name what
+ * is still open — the whole point of "diz que a subtask ainda está bloqueada e pergunta se você já
+ * finalizou". A caller that only wants the yes/no still gets it: `ok` is always there.
+ */
+export type AttachResult =
+  | { ok: true }
+  | {
+    ok: false
+    reason: 'no_such_task' | 'no_such_session' | 'no_such_subtask' | 'needs_subtask'
+      | 'wrong_delivery' | 'blocked'
+    /** Set only for `reason: 'blocked'` — the subtask ids still open. */
+    blockedBy?: readonly string[]
+  }
+
 export async function attachSession(
   ref: string,
   sessionId: string,
   o: { subtaskId?: string } = {},
-): Promise<boolean> {
+): Promise<AttachResult> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
-  if (!task) return false
+  if (!task) return { ok: false, reason: 'no_such_task' }
   const row = w.rows.find(r => r.id === sessionId)
-  if (!row) return false
+  if (!row) return { ok: false, reason: 'no_such_session' }
 
   // A DELIVERY DOES NOT TAKE SESSIONS: without a subtask this refuses, and the surfaces offer
   // "create one and move it here" rather than filing at the wrong level.
   const plan = planAttach({
     target: o.subtaskId ? { kind: 'subtask', id: o.subtaskId } : { kind: 'task', id: task.id },
     taskIds: w.book.tasks.map(t => t.id),
-    subtasks: w.book.subtasks.map(st => ({ id: st.id, taskId: st.taskId })),
+    subtasks: w.book.subtasks.map(st => ({
+      id: st.id, taskId: st.taskId, done: st.done, blockedBy: st.blockedBy,
+    })),
   })
-  if (!plan.ok) return false
+  if (!plan.ok) {
+    return plan.reason === 'blocked'
+      ? { ok: false, reason: 'blocked', blockedBy: plan.blockedBy }
+      : { ok: false, reason: plan.reason }
+  }
   // A subtask of ANOTHER delivery is refused rather than quietly re-parenting the session: the
   // caller named a task, and honouring a subtask outside it would file the work somewhere nobody
   // asked for.
-  if (plan.taskId !== task.id) return false
+  if (plan.taskId !== task.id) return { ok: false, reason: 'wrong_delivery' }
 
   const { patchSession } = await import('./registry')
   const ok = await patchSession(row.id, {
@@ -572,7 +602,7 @@ export async function attachSession(
     // `null` CLEARS — a move from a subtask back to the delivery leaves nothing behind.
     subtaskId: plan.subtaskId,
   })
-  if (!ok) return false
+  if (!ok) return { ok: false, reason: 'no_such_session' }
 
   // The record first, then LIVE git. Every row written before `ManagedSession.repo` existed carries
   // nothing, which is most of the fleet on a machine that has been running a while — and reading
@@ -588,7 +618,7 @@ export async function attachSession(
   await w.store.logEvents([event(task.id, row.label || sessionId, 'session', {
     to: sessionId, detail: row.harness,
   })])
-  return true
+  return { ok: true }
 }
 
 /**

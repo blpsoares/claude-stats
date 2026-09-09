@@ -847,8 +847,20 @@ button:focus-within .ag-row-pin,
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  backdrop-filter: blur(14px);
+  /* PREFIXED FIRST, STANDARD LAST — the same order `mask-image` already uses three lines down,
+     and the order that matters here for a reason neither browser support NOR this file's own
+     `@supports` fallback covers: esbuild's CSS minifier (Vite's production build) canonicalises a
+     {prefixed, standard} pair that share one value, and with the standard property declared FIRST
+     it kept only `-webkit-backdrop-filter` and DROPPED `backdrop-filter` outright — verified by
+     fetching the shipped `assets/index-*.css` byte for byte. Chromium does not treat the bare
+     `-webkit-` alias as sufficient on its own (`getComputedStyle` reported `backdropFilter: 'none'`
+     against a live build), so the whole ground rendered as the SOLID `@supports not (...)`
+     fallback below on every ordinary Chrome tab, never the blurred one — reported as a flat dark
+     bar sitting over the last messages. Swapping the order does not change what either browser or
+     minifier is allowed to do; it changes which of two identical declarations survives the pass
+     that only keeps one. */
   -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
   /* Plain first, so a browser without `color-mix` still gets the fade rather than no ground. */
   background: linear-gradient(to bottom, transparent 0%, var(--bg-base) 100%);
   background: linear-gradient(

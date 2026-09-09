@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test'
-import { filedUnder, planAttach, reconcileAttachment } from './task-attach'
+import { filedUnder, planAttach, reconcileAttachment, sanitizeSubtaskBlockedBy } from './task-attach'
 
 const SUBS = [
-  { id: 's1', taskId: 't1' },
-  { id: 's2', taskId: 't1' },
-  { id: 's9', taskId: 't2' },
+  { id: 's1', taskId: 't1', done: false },
+  { id: 's2', taskId: 't1', done: false },
+  { id: 's9', taskId: 't2', done: false },
 ]
 const TASKS = ['t1', 't2']
 
@@ -44,6 +44,81 @@ describe('planAttach', () => {
   it('refuses a subtask that names nothing, rather than guessing one', () => {
     expect(planAttach({ target: { kind: 'subtask', id: 'gone' }, taskIds: TASKS, subtasks: SUBS }))
       .toEqual({ ok: false, reason: 'no_such_subtask' })
+  })
+
+  it("refuses a subtask still blocked by a sibling that is not done", () => {
+    const blocked = [...SUBS, { id: 's3', taskId: 't1', done: false, blockedBy: ['s1'] }]
+    expect(planAttach({ target: { kind: 'subtask', id: 's3' }, taskIds: TASKS, subtasks: blocked }))
+      .toEqual({ ok: false, reason: 'blocked', blockedBy: ['s1'] })
+  })
+
+  it('files under a subtask once every one of its blockers is done', () => {
+    const done = SUBS.map(s => (s.id === 's1' ? { ...s, done: true } : s))
+    const withBlocker = [...done, { id: 's3', taskId: 't1', done: false, blockedBy: ['s1'] }]
+    expect(planAttach({ target: { kind: 'subtask', id: 's3' }, taskIds: TASKS, subtasks: withBlocker }))
+      .toEqual({ ok: true, taskId: 't1', subtaskId: 's3' })
+  })
+
+  it('names every unmet blocker, in the order recorded, when there is more than one', () => {
+    const withBlockers = [
+      ...SUBS,
+      { id: 's3', taskId: 't1', done: false, blockedBy: ['s2', 's1'] },
+    ]
+    expect(planAttach({ target: { kind: 'subtask', id: 's3' }, taskIds: TASKS, subtasks: withBlockers }))
+      .toEqual({ ok: false, reason: 'blocked', blockedBy: ['s2', 's1'] })
+  })
+
+  it('a blocker naming a subtask that no longer exists is not a live block', () => {
+    // The same reconciliation `filedUnder` already gives a session whose OWN subtask is gone —
+    // a dangling reference stands in nobody's way forever.
+    const withGoneBlocker = [...SUBS, { id: 's3', taskId: 't1', done: false, blockedBy: ['gone'] }]
+    expect(planAttach({ target: { kind: 'subtask', id: 's3' }, taskIds: TASKS, subtasks: withGoneBlocker }))
+      .toEqual({ ok: true, taskId: 't1', subtaskId: 's3' })
+  })
+
+  it('a blocker outside this book of subtasks is not a live block either', () => {
+    // `planAttach` is handed the DELIVERY's own subtasks in every measured caller; a blocker id
+    // that does not resolve inside that set reads exactly like a deleted one.
+    const scoped = [
+      { id: 's1', taskId: 't1', done: false },
+      { id: 's3', taskId: 't1', done: false, blockedBy: ['s9'] },
+    ]
+    expect(planAttach({ target: { kind: 'subtask', id: 's3' }, taskIds: TASKS, subtasks: scoped }))
+      .toEqual({ ok: true, taskId: 't1', subtaskId: 's3' })
+  })
+})
+
+describe('sanitizeSubtaskBlockedBy', () => {
+  const SIBLINGS = [
+    { id: 's1', taskId: 't1' },
+    { id: 's2', taskId: 't1' },
+    { id: 's3', taskId: 't1' },
+    { id: 's9', taskId: 't2' },
+  ]
+
+  it('keeps a sibling of the same task', () => {
+    expect(sanitizeSubtaskBlockedBy({ subtaskId: 's3', taskId: 't1', ids: ['s1'], siblings: SIBLINGS }))
+      .toEqual(['s1'])
+  })
+
+  it('drops a self-reference — a subtask cannot block itself', () => {
+    expect(sanitizeSubtaskBlockedBy({ subtaskId: 's3', taskId: 't1', ids: ['s3', 's1'], siblings: SIBLINGS }))
+      .toEqual(['s1'])
+  })
+
+  it('drops a subtask of a DIFFERENT delivery', () => {
+    expect(sanitizeSubtaskBlockedBy({ subtaskId: 's3', taskId: 't1', ids: ['s9'], siblings: SIBLINGS }))
+      .toEqual([])
+  })
+
+  it('drops an id naming nothing', () => {
+    expect(sanitizeSubtaskBlockedBy({ subtaskId: 's3', taskId: 't1', ids: ['ghost'], siblings: SIBLINGS }))
+      .toEqual([])
+  })
+
+  it('dedupes', () => {
+    expect(sanitizeSubtaskBlockedBy({ subtaskId: 's3', taskId: 't1', ids: ['s1', 's1', 's2'], siblings: SIBLINGS }))
+      .toEqual(['s1', 's2'])
   })
 })
 

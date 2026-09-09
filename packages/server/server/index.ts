@@ -1657,11 +1657,18 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         // `subtaskId` files it under a SUBTASK of this delivery instead of under the delivery
         // itself — a move, never an addition. `task-attach.ts` holds the exclusivity; a subtask
         // belonging to another task is refused there, not repaired.
-        const ok = await mod.attachSession(ref, String(body.sessionId ?? ''),
+        const result = await mod.attachSession(ref, String(body.sessionId ?? ''),
           typeof body.subtaskId === 'string' && body.subtaskId
             ? { subtaskId: body.subtaskId }
             : {})
-        return json({ ok }, ok ? 200 : 404)
+        if (result.ok) return json({ ok: true })
+        // `blocked` is a 422, the same status `markTask`'s own `blocked_needs_reason` answers with
+        // — both name a piece of work this request cannot do YET, not a resource that is missing.
+        // Everything else stays 404: the ref, the session or the subtask named nothing.
+        return json(
+          { ok: false, reason: result.reason, ...(result.blockedBy ? { blockedBy: result.blockedBy } : {}) },
+          result.reason === 'blocked' ? 422 : 404,
+        )
       }
       if (verb === 'links') {
         if (typeof body.remove === 'string') {
@@ -1690,6 +1697,12 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
             ...(typeof body.startDate === 'string' ? { startDate: body.startDate } : {}),
             ...(typeof body.sessionId === 'string' ? { sessionId: body.sessionId } : {}),
             ...(typeof body.notes === 'string' ? { notes: body.notes } : {}),
+            // A subtask blocked by ANOTHER subtask, of the same delivery — see `task-attach.ts`.
+            // `patchSubtask` sanitizes it against the real sibling list; a bare array here would
+            // let a caller name a subtask outside this task and have it silently do nothing later.
+            ...(Array.isArray(body.blockedBy)
+              ? { blockedBy: body.blockedBy.filter((x): x is string => typeof x === 'string') }
+              : {}),
           }) })
         }
         const ok = await mod.addSubtask(ref, String(body.title ?? ''))
