@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import {
   LIST_FORMAT, PANE_INFO_FORMAT, attachArgs, capturePaneArgs, capturePaneAnsiArgs, idFromTmuxName,
   isSessionGoneError, killSessionArgs, newSessionArgs, paneInfoArgs, parsePaneInfo, parsePrefix,
@@ -7,7 +7,7 @@ import {
   tmuxName,
   serverOptionsArgs, HISTORY_LIMIT, PANE_COLS, PANE_ROWS,
   resolveDefaultTerminal, resolveTruecolorTerm, spawnArgs,
-  type TerminalProfile, tmuxListIsEmptyState,
+  type TerminalProfile, tmuxListIsEmptyState, SHELL_SOCKET, TMUX_SOCKET, listSessionsArgs,
 } from './tmux-cli'
 
 /** A colour-neutral profile: neither a 256-colour terminfo entry nor a truecolor invoker. */
@@ -369,5 +369,56 @@ describe('tmuxListIsEmptyState — an unreachable tmux is not an empty fleet', (
 
   it('is case-insensitive — the message is the only signal there is', () => {
     expect(tmuxListIsEmptyState(1, 'No server running on /tmp/x')).toBe(true)
+  })
+})
+
+describe('the socket is a PARAMETER — the utility shell runs on its own', () => {
+  /*
+   * A shell opened for a session is not a fleet row and must never become one. On the FLEET socket
+   * it would be, silently: `idFromTmuxName` strips `agentop-`, so `parseTmuxList` KEEPS the session,
+   * and `reconcileSessions` then finds a running session the registry has no record of and calls it
+   * `unregistered` — the row `session-adopt.ts` describes as "visible and inert", filed under
+   * `GONE_PROJECT_KEY`, that no verb in the cockpit can act on.
+   *
+   * A naming convention would have worked and been one refactor from breaking. A socket cannot
+   * break: `list-sessions -L agentop` cannot see another socket at all. Same argument this module
+   * already makes for keeping OUR sessions out of the USER's tmux, applied one level down.
+   */
+  test('SHELL_SOCKET is not the fleet socket', () => {
+    expect(SHELL_SOCKET).not.toBe(TMUX_SOCKET)
+  })
+
+  test('every builder DEFAULTS to the fleet socket, so no existing caller changes', () => {
+    expect(killSessionArgs('a').slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(paneInfoArgs('a').slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(listSessionsArgs().slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(capturePaneAnsiArgs('a', 10).slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(sendKeysLiteralArgs('a', 'x').slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(sendKeysNamedArgs('a', 'Enter').slice(0, 2)).toEqual(['-L', TMUX_SOCKET])
+    expect(newSessionArgs({ id: 'a', cwd: '/w', argv: ['bash'] }).slice(0, 2))
+      .toEqual(['-L', TMUX_SOCKET])
+  })
+
+  test('every builder takes the shell socket when asked, and changes nothing else', () => {
+    expect(killSessionArgs('a', SHELL_SOCKET))
+      .toEqual(['-L', SHELL_SOCKET, 'kill-session', '-t', 'agentop-a'])
+    expect(listSessionsArgs(SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(paneInfoArgs('a', SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(capturePaneAnsiArgs('a', 10, SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(sendKeysLiteralArgs('a', 'x', SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(sendKeysNamedArgs('a', 'Enter', SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(sendKeysEnterArgs('a', SHELL_SOCKET).slice(0, 2)).toEqual(['-L', SHELL_SOCKET])
+    expect(newSessionArgs({ id: 'a', cwd: '/w', argv: ['bash'], socket: SHELL_SOCKET }))
+      .toEqual([
+        '-L', SHELL_SOCKET, 'new-session', '-d', '-s', 'agentop-a',
+        '-x', String(PANE_COLS), '-y', String(PANE_ROWS), '-c', '/w', '--', 'bash',
+      ])
+  })
+
+  test('an explicitly undefined socket is still the fleet socket, never a bare -L', () => {
+    // The default must live on `sock`, not on each parameter: a caller threading an optional socket
+    // through would otherwise produce `['-L', undefined, …]` and tmux would be handed a nonsense
+    // argv that fails at runtime rather than at the type checker.
+    expect(killSessionArgs('a', undefined)).toEqual(['-L', TMUX_SOCKET, 'kill-session', '-t', 'agentop-a'])
   })
 })
