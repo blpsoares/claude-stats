@@ -2,9 +2,14 @@
  * useTerminalStream — the EventSource wiring for the live terminal read channel.
  *
  * The pure decisions (what each event means, what the user is told) live in `lib/terminalStream.ts`.
- * This hook is the thin, impure glue: open `GET /api/fleet/stream?id=<id>` as SSE, funnel its named
+ * This hook is the thin, impure glue: open the SSE stream for one pane, funnel its named
  * `open`/`frame`/`end` events through the reducer, and tear the connection down when the id changes
  * or the component unmounts.
+ *
+ * It is generic over the SCOPE — a fleet row's screen or a per-session utility SHELL — because both
+ * channels send the very same frames and differ only in which store the server resolves the id
+ * against. The route is never interpolated here: `lib/terminalEndpoint.ts` owns that mapping, so a
+ * shell id cannot be handed to a route that would resolve it against the session registry.
  *
  * Two things it is careful about:
  *  - **No leak between sessions.** When `id` changes it dispatches `connecting` FIRST (which drops
@@ -23,6 +28,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { streamUrl, type TerminalScope } from '../lib/terminalEndpoint'
 import {
   INITIAL_TERMINAL_STATE,
   terminalReducer,
@@ -43,7 +49,7 @@ export interface TerminalStream {
   reconnect: () => void
 }
 
-export function useTerminalStream(id: string | null): TerminalStream {
+export function useTerminalStream(id: string | null, scope: TerminalScope = 'fleet'): TerminalStream {
   const [state, dispatch] = useReducer(terminalReducer, INITIAL_TERMINAL_STATE)
   // Bumped by reconnect() to force the effect to tear down and re-open, even for the same id.
   const [nonce, setNonce] = useState(0)
@@ -58,7 +64,7 @@ export function useTerminalStream(id: string | null): TerminalStream {
     // Fresh id → clear any previous session's frame before a single byte of the new one arrives.
     dispatch({ type: 'connecting' })
 
-    const es = new EventSource(`/api/fleet/stream?id=${encodeURIComponent(id)}`)
+    const es = new EventSource(streamUrl(scope, id))
 
     // Has this connection drawn anything yet? While false, a timeout or an error means the channel
     // never established — worth saying so. Once true, a drop is a transient blip: keep the screen and
@@ -99,7 +105,7 @@ export function useTerminalStream(id: string | null): TerminalStream {
     es.onerror = () => { if (!framed) { clearStall(); dispatch({ type: 'stall' }) } }
 
     return () => { clearStall(); es.close() }
-  }, [id, nonce])
+  }, [id, scope, nonce])
 
   return { state, reconnect }
 }

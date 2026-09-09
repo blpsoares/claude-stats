@@ -193,8 +193,20 @@ export interface TerminalStatus {
   truncated: boolean
 }
 
-export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): TerminalStatus {
+/**
+ * WHAT the pane belongs to — the only thing that changes between the two channels.
+ *
+ * The frames, the tones and the cursor rule are identical; the WORDS are not. Saying "the agent's
+ * current screen" over a shell the person opened themselves is simply false, and it was on screen
+ * at 390px before this parameter existed. The tone, the label and `showCursor` are untouched by it.
+ */
+export type TerminalSubject = 'session' | 'shell'
+
+export function terminalStatus(
+  state: TerminalState, lang: 'pt' | 'en', subject: TerminalSubject = 'session',
+): TerminalStatus {
   const pt = lang === 'pt'
+  const shell = subject === 'shell'
   const f = state.frame
   const lines = f?.lines ?? 0
   const truncated = Boolean(f?.truncated)
@@ -202,8 +214,10 @@ export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): Termina
   if (state.phase === 'idle') {
     return {
       tone: 'idle',
-      label: pt ? 'Nenhuma sessão' : 'No session',
-      detail: pt ? 'Escolha uma sessão viva para ver o terminal dela.' : 'Pick a live session to watch its terminal.',
+      label: shell ? (pt ? 'Nenhum shell' : 'No shell') : (pt ? 'Nenhuma sessão' : 'No session'),
+      detail: shell
+        ? (pt ? 'Abra um shell para ver a tela dele.' : 'Open a shell to watch its screen.')
+        : (pt ? 'Escolha uma sessão viva para ver o terminal dela.' : 'Pick a live session to watch its terminal.'),
       showCursor: false,
       truncated: false,
     }
@@ -247,7 +261,9 @@ export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): Termina
     return {
       tone: 'live',
       label: pt ? 'Ao vivo' : 'Live',
-      detail: pt ? `A tela atual do agente — ${scope}.` : `The agent's current screen — ${scope}.`,
+      detail: shell
+        ? (pt ? `A tela atual do seu shell — ${scope}.` : `Your shell's current screen — ${scope}.`)
+        : (pt ? `A tela atual do agente — ${scope}.` : `The agent's current screen — ${scope}.`),
       showCursor: Boolean(f?.cursor),
       truncated,
     }
@@ -256,7 +272,7 @@ export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): Termina
   if (state.phase === 'finished') {
     return {
       tone: 'finished',
-      label: pt ? 'Encerrada' : 'Finished',
+      label: shell ? (pt ? 'Encerrado' : 'Finished') : (pt ? 'Encerrada' : 'Finished'),
       detail: pt
         ? `O comando terminou; esta é a última tela que ele desenhou — ${scope}.`
         : `The command exited; this is the last screen it drew — ${scope}.`,
@@ -270,23 +286,35 @@ export function terminalStatus(state: TerminalState, lang: 'pt' | 'en'): Termina
   // "the screen below is the last thing it drew" is only true when there IS a last frame; a session
   // that was already gone when we opened the stream left nothing to show, so say that instead.
   const goneDetail = state.frame
-    ? (pt
-        ? 'A sessão saiu do tmux; a tela abaixo é a última coisa que ela desenhou.'
-        : 'The session left tmux; the screen below is the last thing it drew.')
-    : (pt
-        ? 'A sessão já não estava mais no tmux; não há tela para mostrar.'
-        : 'The session was already gone from tmux; there is no screen to show.')
+    ? shell
+      ? (pt
+          ? 'O shell saiu do tmux; a tela abaixo é a última coisa que ele desenhou.'
+          : 'The shell left tmux; the screen below is the last thing it drew.')
+      : (pt
+          ? 'A sessão saiu do tmux; a tela abaixo é a última coisa que ela desenhou.'
+          : 'The session left tmux; the screen below is the last thing it drew.')
+    : shell
+      ? (pt
+          ? 'Este shell já não estava mais no tmux; não há tela para mostrar.'
+          : 'The shell was already gone from tmux; there is no screen to show.')
+      : (pt
+          ? 'A sessão já não estava mais no tmux; não há tela para mostrar.'
+          : 'The session was already gone from tmux; there is no screen to show.')
   const detail =
     reason === 'not-found'
-      ? (pt
-          ? 'Esta sessão deixou de ser gerenciada por esta máquina.'
-          : 'This session is no longer managed by this machine.')
+      ? shell
+        ? (pt
+            ? 'Este shell não está mais aberto nesta máquina.'
+            : 'This shell is no longer open on this machine.')
+        : (pt
+            ? 'Esta sessão deixou de ser gerenciada por esta máquina.'
+            : 'This session is no longer managed by this machine.')
       : reason === 'error'
         ? (pt ? 'O canal do terminal não pôde ser lido.' : 'The terminal channel could not be read.')
         : goneDetail
   return {
     tone: 'ended',
-    label: pt ? 'Sessão encerrada' : 'Session gone',
+    label: shell ? (pt ? 'Shell encerrado' : 'Shell gone') : (pt ? 'Sessão encerrada' : 'Session gone'),
     detail,
     showCursor: false,
     truncated,

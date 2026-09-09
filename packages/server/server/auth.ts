@@ -21,6 +21,7 @@ import { TEAM_CENTRAL, TEAM_PASSWORD, TEAM_SESSION_SECRET, TEAM_TLS, CENTRAL_USE
 import { getAccount } from './accounts'
 import { CAPS, PROFILE } from './exposure'
 import { chatAllowed } from './chat-gate'
+import { shellAllowed } from './sessions/shell-gate'
 import { readPreferences } from './preferences'
 import type { Principal } from './iam-types'
 
@@ -315,8 +316,8 @@ export async function handleSession(req: Request): Promise<Response> {
   const required = Boolean(TEAM_PASSWORD)
   const authed = isAuthed(req)
   const aggregatorOnly = TEAM_CENTRAL && !CENTRAL_USER
-  // Unreadable preferences are not consent: chat stays off rather than falling open.
-  const prefs = await readPreferences().catch(() => ({} as { chatEnabled?: boolean }))
+  // Unreadable preferences are not consent: chat and the shell stay off rather than falling open.
+  const prefs = await readPreferences().catch(() => ({} as { chatEnabled?: boolean; shellEnabled?: boolean }))
   return new Response(
     JSON.stringify({
       authed,
@@ -337,6 +338,11 @@ export async function handleSession(req: Request): Promise<Response> {
       // Separate from `capabilities.localChat`, which stays the exposure profile's answer alone —
       // the Settings tab has to be able to say "your profile allows this, you have it off".
       chatEnabled: chatAllowed(CAPS.localChat, prefs.chatEnabled),
+      // The same split, for the per-session utility SHELL: the capability AND the user's own
+      // switch, separate from `capabilities.localShell` (the profile alone) so Settings can say
+      // "your profile allows this, you have it off". Unreadable preferences are not consent here
+      // either — `shellAllowed` reads an absent switch as OFF.
+      shellEnabled: shellAllowed(CAPS.localShell, prefs.shellEnabled),
     }),
     { status: 200, headers: JSON_CT },
   )

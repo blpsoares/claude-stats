@@ -38,6 +38,10 @@ export type AuditAction =
   // entry per channel, never per keystroke. `fleet.input.denied` records a rejected WS upgrade
   // (e.g. a cross-origin attempt); the capability refusal is already `capability.denied`.
   | 'fleet.input.open' | 'fleet.input.denied'
+  // The same two, for the per-session UTILITY SHELL's write channel. Its own pair rather than a
+  // reuse of the fleet's: a shell is a raw PTY on this host and a session is a named assistant CLI,
+  // so a reader of the log must be able to tell which of the two a keyboard was attached to.
+  | 'shell.input.open' | 'shell.input.denied'
 
 export interface AuditEvent {
   action: AuditAction

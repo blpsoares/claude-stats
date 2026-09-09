@@ -49,9 +49,16 @@ export const MAX_INPUT_TEXT = 8192
  * is refused rather than passed to `send-keys`, so the write channel can never be talked into an
  * arbitrary key sequence. To widen it, add the tmux key name here — deliberately a code change, not a
  * client-supplied value.
+ *
+ * `Escape` was ADDED for the per-session utility shell's mobile key strip, and the reasoning is the
+ * line this set draws: Escape CANCELS (leaves insert mode, dismisses a picker) and controls no
+ * process, so it belongs with the editing keys rather than with `C-z`. A soft keyboard has none at
+ * all — the cockpit already records that it has no arrow keys either — so without it there is no way
+ * to leave `vim` from a phone; and a Claude Code permission dialog's own footer says `Esc to
+ * cancel`, which this channel could not reach for as long as the set excluded it.
  */
 export const KEY_ALLOWLIST: ReadonlySet<string> = new Set([
-  'Enter', 'BSpace', 'Tab',
+  'Enter', 'BSpace', 'Tab', 'Escape',
   'Up', 'Down', 'Left', 'Right',
   'C-c', 'C-d', 'C-a', 'C-e', 'C-u', 'C-w', 'C-k',
 ])

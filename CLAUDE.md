@@ -455,7 +455,8 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          twice: a patch log, not one message per line. See docs/session-manager.md
   │                          **THE PER-SESSION UTILITY SHELL is not a session, and the separation
   │                          is structural** (`shell-spec.ts` / `shell-gate.ts` / `shell-store.ts` /
-  │                          `shell-backend.ts` / `shell-web.ts`, phase 1). It is a PTY in a
+  │                          `shell-backend.ts` / `shell-web.ts` / `shell-terminal.ts` /
+  │                          `shell-stream-web.ts` / `shell-input-web.ts`). It is a PTY in a
   │                          session's own directory, opened for the PERSON — `$SHELL` bare, no
   │                          `-l`, because tmux already gives the pane a tty and a login flag would
   │                          read a different set of rc files from the panes `agentop session`
@@ -497,6 +498,31 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          and NOT under `-L agentop` nor anywhere in `/api/fleet`, the ninth open
   │                          was refused in words, a pane killed outside agentop left no ghost, and
   │                          `close` named an unknown id instead of counting it closed.
+  │                          **SEEING IT AND DRIVING IT is the fleet's own two channels, pointed at
+  │                          the other store** — `GET /api/shell/stream` sends the very frames
+  │                          `/api/fleet/stream` sends and `WS /api/shell/input` speaks the very
+  │                          protocol `/api/fleet/input` speaks, so the browser has ONE reader and
+  │                          ONE writer. The frame shape, the one-loop-per-watched-pane hub and the
+  │                          serial ack queue are all shared; what is NOT shared is the one rule
+  │                          each channel keeps, the SCOPE. `terminal-web.ts` / `input-web.ts`
+  │                          resolve an id against `managed-sessions.json` and the shell pair
+  │                          resolves it against `shells.json` — reusing the fleet's modules would
+  │                          have given a shell id the fleet's answer AND STILL WORKED, so
+  │                          `shell-isolation.test.ts` asserts those imports are absent over the
+  │                          source. `Escape` joined `KEY_ALLOWLIST` for the mobile key strip, on
+  │                          both sides: it CANCELS and controls no process, which is the line that
+  │                          set draws, and without it there is no leaving `vim` from a phone and a
+  │                          permission dialog's own `Esc to cancel` was unreachable. **The CAPTURE
+  │                          RUNS ONLY while the band is open, the session selected and the tab
+  │                          visible** (`shellWatching`, pure) — the only per-second cost the
+  │                          feature has, and the rule `terminal-web.ts` already states for the
+  │                          fleet. There is no arm/disarm: OPENING the shell is the consent.
+  │                          The honesty line takes a SUBJECT (`terminalStatus(state, lang,
+  │                          'shell')`), because "the agent's current screen" over a shell the
+  │                          person opened themselves is simply false — it was on a 390px screen
+  │                          before the parameter existed, beside a path whose leading `~` had been
+  │                          moved to the END by `direction: rtl` (`eu/freelas/Proj/~`, which reads
+  │                          as a folder called `~`; the trim is computed now, `shellWhere`).
   ├── cli-start.ts         → the control center's HOST (`ControlHost`): service detection, start/stop/restart, connect/disconnect, boot service, archive consent, language — every action returns an already-localized `ActionResult` instead of printing
   ├── cli-stream.ts        → the control center's OUTPUT CHANNEL: subscribers + `streamCommand` (both pipes captured, never `inherit`) → lines via the pure `@agentistics/tui/control/stream`
   ├── cli-ui.ts            → dependency-free arrow-key select/confirm/input/pause + clearScreen (bundles clean into the binary; no node_modules to resolve)

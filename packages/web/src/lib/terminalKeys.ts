@@ -22,8 +22,8 @@
  * The allowlist's dividing line: "edits the line" passes; "controls the process" is refused unless
  * explicitly requested. So it admits printable text, Enter, BSpace, Tab, the four arrows, the
  * line-editing controls (Ctrl+A/E cursor, Ctrl+U/W/K kill line/word/to-end — none touch the
- * process), and the two process-control keys the assignment does request (Ctrl+C for A7's interrupt,
- * Ctrl+D for EOF). Everything else is refused: other process-control C0 keys (Ctrl+Z suspend, Ctrl+\
+ * process), Escape (it cancels — see its entry in `NAMED`), and the two process-control keys the
+ * assignment does request (Ctrl+C for A7's interrupt, Ctrl+D for EOF). Everything else is refused: other process-control C0 keys (Ctrl+Z suspend, Ctrl+\
  * SIGQUIT) and every unmapped escape sequence (function keys, mouse, bracketed-paste). Widening it
  * again is a deliberate security choice with a reason, which is exactly why the default is "no".
  *
@@ -32,7 +32,7 @@
 
 /** The named keys the server keystroke channel accepts (tmux `send-keys` key names). */
 export type NamedKey =
-  | 'Enter' | 'BSpace' | 'Tab' | 'Up' | 'Down' | 'Left' | 'Right'
+  | 'Enter' | 'BSpace' | 'Tab' | 'Escape' | 'Up' | 'Down' | 'Left' | 'Right'
   | 'C-c' | 'C-d' // process control — explicitly requested (A7 / EOF)
   | 'C-a' | 'C-e' | 'C-u' | 'C-w' | 'C-k' // line editing — "edits the line" passes
 
@@ -62,6 +62,12 @@ const NAMED: Readonly<Record<string, NamedKey>> = {
   '\x7f': 'BSpace', // DEL — what most terminals send for Backspace
   '\x08': 'BSpace', // BS
   '\t': 'Tab',
+  // ESC, and it is the LAST thing matched against a bare byte — `NAMED` is consulted for the WHOLE
+  // chunk, so `\x1b[A` still resolves to `Up` and only a lone escape reaches this entry. Added for
+  // the utility shell's mobile key strip: a soft keyboard has no Escape, so without it there is no
+  // way out of `vim` from a phone, and a permission dialog's `Esc to cancel` was unreachable. It
+  // cancels; it controls no process, which is the line the allowlist draws.
+  '\x1b': 'Escape',
   '\x03': 'C-c', // interrupt (A7)
   '\x04': 'C-d', // EOF
   // Line editing — none of these touch the process; they are what "typing in a terminal" means.

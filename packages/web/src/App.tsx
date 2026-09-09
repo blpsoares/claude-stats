@@ -143,6 +143,8 @@ interface TeamSessionState {
    *  Undefined on an older server, which had no switch — treated as "the capability decides",
    *  so upgrading the web ahead of the server never hides a chat that still works. */
   chatEnabled?: boolean
+  /** The same, for `/api/shell/*`. Undefined reads as OFF — see `AppContext.shellEnabled`. */
+  shellEnabled?: boolean
 }
 
 export interface IamAccount { id: string; name: string; email: string; role: 'owner' | 'member'; memberships: { teamId: string; role: 'manager' | 'user' }[]; mustChangePassword: boolean }
@@ -3007,6 +3009,7 @@ export default function AppLayout() {
     harnesses: data.harnesses,
     isCentral,
     capabilities: teamSession?.capabilities,
+    shellEnabled: teamSession?.shellEnabled === true,
     me: iam?.account,
     teams: teamsList,
     machines: machinesList,

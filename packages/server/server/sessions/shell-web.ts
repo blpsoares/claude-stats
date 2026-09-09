@@ -1,5 +1,5 @@
 /**
- * shell-web.ts — the three routes behind the per-session utility shell.
+ * shell-web.ts — the routes behind the per-session utility shell.
  *
  * `capability-guard.ts` has already refused these paths where the exposure profile forbids them,
  * and `index.ts` has already applied the user's own `shellEnabled` switch on top and refused a
@@ -11,6 +11,7 @@
 import type { StartHost } from '../cli-start'
 import type { CliLang } from '../cli-lang'
 import { closeShells, listShells, openShell } from './shell-backend'
+import { openShellStream, shellStreamAtCapacity, shellStreamExists } from './shell-stream-web'
 import { SHELL_CAP, type ShellRefusal } from './shell-spec'
 
 /** One sentence per refusal code. The module that decides never writes prose; this one never decides. */
@@ -43,6 +44,25 @@ export async function handleShellRoute(
   host: StartHost,
   lang: CliLang,
 ): Promise<Response | null> {
+  // The live READ channel — the same SSE frames `/api/fleet/stream` sends, so the browser's reader
+  // is the same reader. The three checks are the ones a stream needs and no more: an id, SCOPE (the
+  // id must be an OPEN SHELL — resolved against `shells.json`, never the registry) and the ceiling.
+  if (url.pathname === '/api/shell/stream' && req.method === 'GET') {
+    const id = url.searchParams.get('id')
+    if (!id) return json({ error: 'bad_request' }, 400)
+    if (!(await shellStreamExists(id))) return json({ error: 'not_found' }, 404)
+    if (shellStreamAtCapacity()) return json({ error: 'too_many_streams' }, 503)
+    return new Response(await openShellStream(id, req.signal), {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      },
+    })
+  }
+
   if (url.pathname === '/api/shell/list' && req.method === 'GET') {
     return json({ shells: await listShells(), cap: SHELL_CAP })
   }

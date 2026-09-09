@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef } from 'react'
+import { inputWsUrl, type TerminalScope } from '../lib/terminalEndpoint'
 import { inputReasonText, splitInput } from '../lib/terminalKeys'
 import {
   INITIAL_CHANNEL,
@@ -39,17 +40,20 @@ export interface TerminalWrite {
   reason: string | null
 }
 
-function wsUrl(id: string): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${window.location.host}/api/fleet/input?id=${encodeURIComponent(id)}`
+/** The route mapping is `lib/terminalEndpoint.ts`'s, never written out here — see its header. */
+function wsUrl(scope: TerminalScope, id: string): string {
+  return inputWsUrl(scope, id, window.location.protocol, window.location.host)
 }
 
 /**
- * @param id       the fleet row id (same id `/api/fleet/stream` and `/api/fleet/act` use)
+ * @param id       the pane's id — a fleet row id, or a shell id under the `shell` scope
  * @param enabled  consent stands AND the row is typable — the ONLY thing that opens the socket
  * @param lang     for the localized failure reason
+ * @param scope    which channel this id belongs to; the read hook takes the same one
  */
-export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'): TerminalWrite {
+export function useTerminalWrite(
+  id: string, enabled: boolean, lang: 'pt' | 'en', scope: TerminalScope = 'fleet',
+): TerminalWrite {
   const [state, dispatch] = useReducer(channelReducer, INITIAL_CHANNEL)
   const wsRef = useRef<WebSocket | null>(null)
   const seqRef = useRef(1)
@@ -71,7 +75,7 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
 
     let ws: WebSocket
     try {
-      ws = new WebSocket(wsUrl(id))
+      ws = new WebSocket(wsUrl(scope, id))
     } catch {
       dispatch({ type: 'closed', reason: 'channel_unavailable' })
       return
@@ -111,7 +115,7 @@ export function useTerminalWrite(id: string, enabled: boolean, lang: 'pt' | 'en'
       try { ws.close() } catch { /* already closing */ }
       wsRef.current = null
     }
-  }, [id, enabled])
+  }, [id, enabled, scope])
 
   const send = useCallback((data: string) => {
     const ws = wsRef.current

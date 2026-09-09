@@ -619,6 +619,50 @@ A session whose directory is gone is refused by name — it never falls back to 
 shell somewhere other than where it was asked for is the same class of error as a confident `0` for
 a metric nobody can produce.
 
+### Seeing it and driving it — the two channels
+
+A shell has the same two channels a session has, and the browser reads and writes both with one
+implementation:
+
+| | session | shell |
+|---|---|---|
+| read | `GET /api/fleet/stream?id=` | `GET /api/shell/stream?id=` |
+| write | `WS /api/fleet/input?id=` | `WS /api/shell/input?id=` |
+
+Everything generic is shared — the frame shape (`terminal-stream.ts`), the one-loop-per-watched-pane
+hub with its dedup and its death handling (`terminal-hub.ts`), the serial write queue and its
+per-key acks (`input-channel.ts` / `input-protocol.ts`). What is **not** shared is the one rule each
+channel keeps: **scope**. `terminal-web.ts` and `input-web.ts` resolve an id against
+`managed-sessions.json`; `shell-stream-web.ts` and `shell-input-web.ts` resolve it against
+`shells.json`. Reusing the fleet's modules would have given a shell id the fleet's answer, and it
+would still have worked — so `shell-isolation.test.ts` asserts the absence of those imports over the
+modules' own source, and `shell-terminal.ts` (the pane I/O) takes its tmux runner injected so the
+socket discipline is provable without a tmux server.
+
+`Escape` joined `KEY_ALLOWLIST` for this, on both sides, and the reasoning is the line that set
+draws: Escape **cancels** and controls no process, so it belongs with the editing keys rather than
+with `C-z`. A soft keyboard has none at all, so without it there is no way out of `vim` from a
+phone; and a Claude Code permission dialog's own footer says `Esc to cancel`, which this channel
+could not reach for as long as the set excluded it.
+
+### The band, and the unwatch discipline
+
+The band is the **last** strip of the session panel, below the composer — the VS Code geometry —
+with a drag handle on its top edge that also answers the arrow keys. On mobile it is a full-screen
+sheet with a back control and the key strip `esc tab ctrl ↑ ↓ ← →`; `ctrl` is a **sticky modifier**,
+because a soft keyboard has no chord to hold, and a letter the channel would refuse yields nothing
+rather than composing a key that earns a `bad_key` ack.
+
+**The capture loop runs only while the band is open, this session is selected and the tab is
+visible** (`shellWatching`, pure). It is the only per-second cost the feature has — two tmux reads a
+second per watched pane — and it is the rule `terminal-web.ts` already states for the fleet's own
+channel: a surface that forgets to unwatch leaves a `capture-pane` loop running for a screen nobody
+can see. Handing `useTerminalStream` a `null` id is what drops the subscription; the server's hub
+then stops capturing as its last reader leaves.
+
+There is no arm/disarm here, unlike the fleet terminal's composer: **opening the shell is the
+consent**, and the server refused the whole route unless the capability and the switch both stood.
+
 ### Verifying it
 
 ```bash
@@ -638,3 +682,12 @@ Measured on 2026-09-09: the switch refused before it was flipped; the shell open
 cwd; it appeared under `-L agentop-shell` and in neither `-L agentop` nor `/api/fleet`; the ninth
 open was refused in words; a pane killed outside agentop left no ghost record; and `close` named an
 unknown id instead of counting it closed.
+
+Measured again on 2026-09-09 for the two channels: the SSE stream carried the real pane, colours and
+all; a shell id on `/api/fleet/stream` and a fleet id on `/api/shell/stream` were both a clean 404,
+as was a fleet id on the shell's WS upgrade, and a cross-origin upgrade was 403; typing
+`echo …` + `Enter` over `WS /api/shell/input` acked `ok` and the output came back on the read
+channel, while `C-z` — outside the allowlist — acked `bad_key`. In the browser, counting
+EventSources: opening the band opened one stream and closed none, collapsing it closed one,
+re-opening opened a second, and backgrounding the tab closed it. At 390px `scrollWidth` equalled
+`innerWidth`, every control in the sheet measured 44x44, and the inputs computed to 16px.

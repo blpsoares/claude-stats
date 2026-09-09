@@ -536,6 +536,8 @@ export default function SessionsPage() {
       view={sessionView}
       onViewChange={setSessionView}
       onArtifacts={onArtifacts}
+      // The capability AND the user's switch, as the server reports them. Absent reads as OFF.
+      shellEnabled={ctx.shellEnabled === true}
     />
   )
 

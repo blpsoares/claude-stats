@@ -82,6 +82,13 @@ import {
   openInputSocket, onInputMessage, closeInputSocket,
   createInputState, inputSessionExists, inputAtCapacity, type FleetInputState,
 } from './sessions/input-web'
+// The utility shell's own WS write channel. Its graph is the shell store plus the two pure input
+// modules — no registry, no session-view — so it is statically importable for the same reason
+// `input-web` is, and its handlers must be reachable synchronously from `_wsHandlers`.
+import {
+  openShellInputSocket, onShellInputMessage, closeShellInputSocket,
+  createShellInputState, shellInputExists, shellInputAtCapacity, type ShellInputState,
+} from './sessions/shell-input-web'
 import { wsInputOriginOk } from './sessions/input-protocol'
 // Type only: the module itself reaches `cli-start` → `@agentistics/tui/control` → Ink, and is
 // loaded by dynamic import inside the two /api/fleet handlers.
@@ -336,25 +343,35 @@ ensureClaudeChat().catch(err => console.warn('[claude-chat] failed to initialize
 // Bun HTTP server
 // ---------------------------------------------------------------------------
 
-// Two kinds of socket ride these handlers: the member↔central reverse channel (`isAgent`) and the
-// browser's live-terminal WRITE channel (`fleetInput`). They are disjoint — an agent socket never
-// carries `fleetInput` and vice versa — so each handler dispatches on which field is present.
-type WSData = { user: string; memberId: string; isAgent?: boolean; fleetInput?: FleetInputState }
+// Three kinds of socket ride these handlers: the member↔central reverse channel (`isAgent`), the
+// browser's live-terminal WRITE channel onto a SESSION (`fleetInput`), and the same channel onto a
+// utility SHELL (`shellInput`). They are disjoint — a socket carries exactly one of the three — so
+// each handler dispatches on which field is present. The last two are separate fields rather than
+// one with a scope tag, because that is what makes it impossible for a shell id to be dispatched
+// into the fleet's handler: the two never share a code path at all.
+type WSData = {
+  user: string; memberId: string; isAgent?: boolean
+  fleetInput?: FleetInputState
+  shellInput?: ShellInputState
+}
 
 // Shared WS + request handlers, so the binary can bind the SAME logic to two ports below:
 // PORT (47291 = api + mcp) and WEB_PORT (47292 = the web dashboard you open).
 const _wsHandlers = {
   open(ws: ServerWebSocket<WSData>) {
     if (ws.data.fleetInput) { openInputSocket(ws); return }
+    if (ws.data.shellInput) { openShellInputSocket(ws); return }
     if (!ws.data.isAgent) return; registerAgent(ws)
   },
   message(ws: ServerWebSocket<WSData>, msg: string | Buffer) {
     if (ws.data.fleetInput) { onInputMessage(ws, msg); return }
+    if (ws.data.shellInput) { onShellInputMessage(ws, msg); return }
     if (!ws.data.isAgent) return; onAgentMessage(ws, msg)
   },
   pong(ws: ServerWebSocket<WSData>) { if (!ws.data.isAgent) return; onAgentPong(ws) },
   close(ws: ServerWebSocket<WSData>) {
     if (ws.data.fleetInput) { closeInputSocket(ws); return }
+    if (ws.data.shellInput) { closeShellInputSocket(ws); return }
     if (!ws.data.isAgent) return; unregisterAgent(ws)
   },
 }
@@ -2499,6 +2516,50 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         })
       }
+      // The shell's WRITE channel, upgraded HERE because only this scope holds `server`. It rides
+      // the two gates just applied plus the two a WS upgrade needs of its own: SAME-ORIGIN (CSWSH —
+      // `localShell` being on does not stop a malicious page in the user's own browser opening a
+      // socket to localhost) and SCOPE (the id must be an OPEN SHELL, resolved against
+      // `shells.json` and never the session registry), plus the ceiling.
+      if (url.pathname === '/api/shell/input') {
+        const id = url.searchParams.get('id')
+        if (!id) {
+          return new Response(JSON.stringify({ error: 'bad_request' }), {
+            status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        if (!wsInputOriginOk({ origin: req.headers.get('origin'), host: url.host, allowlist: ALLOWED_ORIGINS, dev: !SERVE_STATIC })) {
+          void writeAudit({ action: 'shell.input.denied', ip: clientIp, meta: { id, reason: 'origin' } })
+          return new Response(JSON.stringify({ error: 'forbidden_origin' }), {
+            status: 403, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        if (!(await shellInputExists(id))) {
+          return new Response(JSON.stringify({ error: 'not_found' }), {
+            status: 404, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        if (shellInputAtCapacity()) {
+          return new Response(JSON.stringify({ error: 'too_many_streams' }), {
+            status: 503, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          })
+        }
+        const upgraded = server.upgrade(req, {
+          // The shell id is fixed HERE — a message can never redirect a keystroke to another pane —
+          // and `shellInput` is its own field, so this socket can never reach the fleet's handler.
+          data: { user: '', memberId: '', shellInput: createShellInputState(id) },
+        })
+        if (upgraded) {
+          // ONE entry per channel opened — a keyboard was attached to a shell on this host — never
+          // one per keystroke, which would drown the log.
+          void writeAudit({ action: 'shell.input.open', ip: clientIp, meta: { id } })
+          return
+        }
+        return new Response(JSON.stringify({ error: 'upgrade_failed' }), {
+          status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+
       // Dynamic, following the `/api/fleet` handler's own pattern: the session machinery stays out
       // of a cold start that never touches it.
       const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
