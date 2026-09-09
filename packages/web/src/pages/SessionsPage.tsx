@@ -26,15 +26,10 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { FleetOverview } from '../components/sessions/FleetOverview'
 import { SessionCreating } from '../components/sessions/SessionCreating'
 
-/**
- * How long a navigation may keep claiming its session is still coming.
- *
- * `NewSessionModal.waitForRow` already gave the SERVER 6s to hold the row; this covers the poll
- * that brings it to THIS browser afterwards. Past it the page stops asserting and says the id
- * names nothing here, which is the honest answer and the one that can be acted on — a loader with
- * no end cannot be told from a session that never started.
- */
-const CREATE_WAIT_MS = 20_000
+// How long a navigation may keep claiming its session is still coming is `ARRIVAL_WAIT_MS` in
+// `lib/sessionRoute.ts`, beside the rest of the arrival rule. It lived here as `CREATE_WAIT_MS`
+// while creating was the only thing that could announce a session; a reopen announces one too, and
+// two constants for one budget is two answers.
 import { SessionStatsMenu } from '../components/sessions/SessionStatsMenu'
 import { MagnifierButton } from '../components/a11y/MagnifierButton'
 import { HideLensesButton } from '../components/a11y/HideLensesButton'
@@ -53,7 +48,9 @@ import { SessionsAside } from '../components/nav/SessionsAside'
 import { SessionActions } from '../components/sessions/SessionActions'
 import { filterFleet } from '../lib/fleetFilter'
 import { FiltersSheet } from '../components/sessions/FiltersSheet'
-import { sessionPath } from '../lib/sessionRoute'
+import {
+  arrivalFor, reopenedSessionRoute, sessionPath, stillArriving, type SessionArrival,
+} from '../lib/sessionRoute'
 import { sessionPlanFactor } from '../lib/costBasis'
 
 /** The dimensions a live fleet row can be narrowed by — the same set on both layouts. */
@@ -116,6 +113,20 @@ export default function SessionsPage() {
     : fleet.rows.find(r => r.id === sessionId || r.conversationId === sessionId)
 
   /**
+   * WHERE A REOPEN LANDS — one place, for all three controls on this page that can perform one.
+   *
+   * A reopen mints a new managed row and RETIRES the one it was asked about, so staying on the id
+   * in the URL leaves the reader on a session the next poll drops. The state it carries is what
+   * makes the wait a wait instead of the fleet overview; the row it came FROM is what names it.
+   */
+  const goToReopened = (id: string) => {
+    const r = reopenedSessionRoute(id, selected
+      ? { harness: selected.harness, title: selected.title }
+      : undefined)
+    navigate(r.path, r.options)
+  }
+
+  /**
    * THE STORE'S RECORD for the open conversation — read ONCE, for the two surfaces that show it.
    *
    * The metrics card in the bar and the aside's METRICS tab are the small reading and the full one
@@ -155,11 +166,25 @@ export default function SessionsPage() {
    * nothing here. A loader with no end is the worse failure, because it cannot be told from a
    * session that simply never started.
    */
+  /**
+   * THE BUDGET BELONGS TO THE ID, NOT TO THE MOUNT — `sessionRoute.ts` carries the whole account.
+   *
+   * `creatingSince` was a `useState` taken once and never reset, so it measured from the moment the
+   * PAGE was opened. Creating from the overview remounts this page (`sessions` and
+   * `sessions/:sessionId` are different `<Route>`s), which is why it always looked right. A REOPEN
+   * is `/sessions/A` -> `/sessions/B`: the same route, no remount, the stamp long spent — so the
+   * guard did nothing and the fleet overview showed for the whole poll interval.
+   *
+   * Set during RENDER rather than in an effect: this is state derived from the URL, and an effect
+   * would paint the overview for one frame before correcting itself, which is the flash being
+   * fixed. `arrivalFor` returns the previous record unchanged for the same id, so it settles at
+   * once instead of looping.
+   */
   const creatingState = (useLocation().state as { creating?: { harness?: string; label?: string } } | null)?.creating
-  const [creatingSince] = useState(() => Date.now())
-  const arriving = creatingState !== undefined
-    && sessionId !== undefined
-    && Date.now() - creatingSince < CREATE_WAIT_MS
+  const [arrival, setArrival] = useState<SessionArrival | null>(null)
+  const nextArrival = arrivalFor(arrival, sessionId, creatingState !== undefined, Date.now())
+  if (nextArrival !== arrival) setArrival(nextArrival)
+  const arriving = stillArriving(nextArrival, sessionId, Date.now())
   const creating = arriving && selected === undefined
   /**
    * ONE FRAME, and only so the finish is real.
@@ -169,13 +194,16 @@ export default function SessionsPage() {
    * frame lets that state be painted instead of existing only in the types. It is a frame, not a
    * beat: nothing here is watched to the end, and showing the session fast is the whole point.
    */
-  const [handedOver, setHandedOver] = useState(false)
-  const finishing = arriving && selected !== undefined && !handedOver
+  // Keyed on the ARRIVAL, for the reason the budget is: a `useState(false)` flipped once per mount
+  // stayed true for every later arrival on the same page, so only the first one got a finish frame.
+  const [handedOver, setHandedOver] = useState<string | null>(null)
+  const finishing = arriving && selected !== undefined && handedOver !== nextArrival?.id
+  const arrivingId = nextArrival?.id
   useEffect(() => {
     if (!finishing) return
-    const raf = requestAnimationFrame(() => setHandedOver(true))
+    const raf = requestAnimationFrame(() => setHandedOver(arrivingId ?? null))
     return () => cancelAnimationFrame(raf)
-  }, [finishing])
+  }, [finishing, arrivingId])
 
   // The Chat/Terminal choice, in the URL — the SAME `?view=` the shared header in `App.tsx` reads
   // and writes on desktop. Independent `useSearchParams()` calls on the one search string, not a
@@ -501,7 +529,7 @@ export default function SessionsPage() {
       onGone={() => navigate('/sessions')}
       // Follow a reopen to the row it created. Without it the panel keeps an id the fleet no longer
       // carries — see `SessionPanel`'s own `onOpened`.
-      onOpened={id => navigate(sessionPath(id))}
+      onOpened={goToReopened}
       // CONTROLLED on both layouts now. Passing `onViewChange` is what suppresses SessionPanel's
       // own header, and mobile draws the same three things in the row that already holds the back
       // button — one bar instead of two stacked ones saying overlapping things.
@@ -739,7 +767,7 @@ export default function SessionsPage() {
                 lang={pt ? 'pt' : 'en'}
                 act={act}
                 onGone={() => navigate('/sessions')}
-                onOpened={id => navigate(sessionPath(id))}
+                onOpened={goToReopened}
                 /* THE VIEW SWITCH, AS THE SWITCH IT IS. It came off the bar and was briefly two
                    rows in this list, which is a different statement: two rows read as two things
                    you could pick, while a segmented control says they are ALTERNATIVES and which

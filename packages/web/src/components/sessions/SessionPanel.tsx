@@ -178,6 +178,9 @@ export function SessionPanel({ session, row, lang, theme, act, authorName, onGon
             key={session.id}
             session={session} {...(row ? { row } : {})} lang={lang} act={act}
             {...(onArtifacts ? { onArtifacts } : {})}
+            /* THE SAME callback the row's menu gets. There are two Reopen buttons on this
+               screen — the menu's verb and the composer's — and they must land in one place. */
+            {...(onOpened ? { onReopened: onOpened } : {})}
           />
         ) : relayed ? (
           /* ANOTHER MACHINE's session. The live stream is the machine's own SSE route, refused on a

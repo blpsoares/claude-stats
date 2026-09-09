@@ -2398,6 +2398,26 @@ harness must not break.
     the page body.
   - New pages need their nav entry in **both** the desktop `SideNav` `items` array **and** the
     `MobileBottomNav` `navTiles` array in `App.tsx` — adding only the first hides the page on a phone.
+- **A REOPEN LANDS SOMEWHERE, and the wait belongs to the ID.** Reopening retires the row it was
+  asked about and mints a new one, so the id in the URL stops naming anything the instant it
+  succeeds. `lib/sessionRoute.ts` is the ONE place both halves live — `reopenedSessionRoute` (the
+  path plus the state that says the row is coming) and `arrivalFor` / `stillArriving` (the budget),
+  all pure and tested. Two rules, each of which was a real defect:
+  **(a) EVERY surface that can reopen must follow the new id.** Four can: the row menu
+  (`SessionActions.onOpened`), the composer's own Reopen button (`SessionChat.onReopened`), the
+  aside's row handler, and the header's menu. Two of them kept only the message, on the written
+  belief that "the page follows it there" — nothing followed it, `collapseSupersededSessions`
+  dropped the retired row on the next poll, and the page fell through to the fleet OVERVIEW
+  permanently. Reported as "reabro uma sessão e ele me joga pra tela de sessions". `SessionChat`
+  still does not navigate — it reports the id and the PAGE decides, which is why the callback is
+  the same one the row menu already gets: two Reopen buttons on one screen must land in one place.
+  **(b) THE "IT IS ON ITS WAY" BUDGET MUST BE KEYED ON THE ID, NEVER ON THE MOUNT.** It was a
+  `useState(() => Date.now())` taken once, so it measured from when the PAGE was opened. Creating
+  from the overview remounts the page (`sessions` and `sessions/:sessionId` are different
+  `<Route>`s), which is why it always looked right; a reopen is `/sessions/A` -> `/sessions/B`, the
+  same route, no remount, the stamp long spent — so even a correctly-navigating reopen showed the
+  overview for the whole poll interval. `handedOver` had the same shape and the same bug: flipped
+  once per mount, only the FIRST arrival ever got its finish frame.
 - **A DATE FILTER IS ANSWERED BY `SessionMeta.daily`, AND AN UNBOUNDED RANGE IS ANSWERED FROM THE
   OTHER SIDE.** A session is a SPAN whose four counters are LIFETIME totals, so filing it on the day
   it STARTED empties "today" for anyone whose session has been open since Tuesday, and filing it on
