@@ -233,6 +233,31 @@ function emit(): void {
  */
 let pollCentral = false
 
+/**
+ * How long to wait before the follow-up read after an action.
+ *
+ * A verb that changes what the SCREEN says — cycling the harness's mode is the one this exists for
+ * — is answered by the server as soon as the keystroke is sent, but the row's words come from the
+ * next capture of the pane, and the harness has not redrawn its footer yet at that instant. One
+ * immediate read plus one a moment later covers both: the fast case where it already repainted,
+ * and the ordinary one where it needed a frame.
+ */
+const NUDGE_FOLLOWUP_MS = 450
+
+/**
+ * Read the fleet NOW instead of waiting out the interval.
+ *
+ * The poll is every `FLEET_POLL_MS`, which is right for watching and far too slow for a control
+ * somebody just pressed: cycling the mode left the chip showing the OLD mode for up to five
+ * seconds, so the button read as broken and people pressed it again. Nothing here invents the new
+ * state — it asks sooner. An optimistic label would be a guess about what the harness did with the
+ * keystroke, and this file does not guess.
+ */
+export function nudgeFleet(): void {
+  void pollOnce()
+  setTimeout(() => { void pollOnce() }, NUDGE_FOLLOWUP_MS)
+}
+
 export function setFleetSourceCentral(on: boolean): void {
   if (pollCentral === on) return
   pollCentral = on

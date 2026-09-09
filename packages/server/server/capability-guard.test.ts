@@ -111,6 +111,11 @@ describe('routeCapability', () => {
     expect(routeCapability('/api/mcpanything')).toBeNull()
   })
 
+  it('maps /api/mcp/check and /api/mcp/tools to localShell, not the mcpAdmin prefix — reading config and RUNNING a server are different powers', () => {
+    expect(routeCapability('/api/mcp/check')).toBe('localShell')
+    expect(routeCapability('/api/mcp/tools')).toBe('localShell')
+  })
+
   it('returns null for ordinary metric routes', () => {
     expect(routeCapability('/api/data')).toBeNull()
     expect(routeCapability('/api/tags/abc')).toBeNull()
