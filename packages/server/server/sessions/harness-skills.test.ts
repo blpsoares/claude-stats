@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HARNESS_SKILLS, parseSkillFrontmatter, readHarnessSkills, skillLine, skillsReason } from './harness-skills'
+import { HARNESS_SKILLS, parseSkillFrontmatter, readHarnessSkills, skillLine, skillNameFromDir, skillsReason } from './harness-skills'
 
 describe('parseSkillFrontmatter', () => {
   it('reads name and description out of the frontmatter', () => {
@@ -82,4 +82,48 @@ describe('readHarnessSkills', () => {
     expect(out.some(s => s.name === 'not-a-skill')).toBe(false)
     expect(await readHarnessSkills('claude', join(dir, 'gone'))).toBeArray()
   })
+})
+
+/**
+ * THE INJECTED ENTRY NAMES THE SKILL, AND THE NOTE THREW IT AWAY.
+ *
+ * `chat-envelope.ts` turns `Base directory for this skill: …` into the note `a skill was loaded`
+ * and drops the body — so the chip could open the skills tab and never say WHICH row. Measured on a
+ * real transcript, the body carries the base directory and nothing else is needed:
+ *
+ *   Base directory for this skill: …/superpowers-dev/superpowers/6.0.2/skills/brainstorming
+ *
+ * The name has to come out as the INVOCATION name, because that is what `HarnessSkill.name` is and
+ * what the panel lists; `path` deliberately never crosses to the browser. So the layout is read
+ * from `HARNESS_SKILLS` itself rather than re-derived here — one declaration, two readers.
+ */
+test('a PLUGIN skill directory yields the invocation name, prefix included', () => {
+  expect(skillNameFromDir(
+    '/home/u/.claude/plugins/cache/superpowers-dev/superpowers/6.0.2/skills/brainstorming',
+    HARNESS_SKILLS.claude!,
+  )).toBe('superpowers:brainstorming')
+})
+
+test('a USER skill directory yields the bare name', () => {
+  expect(skillNameFromDir('/home/u/.claude/skills/graphify', HARNESS_SKILLS.claude!)).toBe('graphify')
+})
+
+test('a PROJECT skill directory yields the bare name too — same segment, same rule', () => {
+  expect(skillNameFromDir('/home/u/work/repo/.claude/skills/deploy', HARNESS_SKILLS.claude!))
+    .toBe('deploy')
+})
+
+test('a trailing separator does not become part of the name', () => {
+  expect(skillNameFromDir('/home/u/.claude/skills/graphify/', HARNESS_SKILLS.claude!)).toBe('graphify')
+})
+
+test('a directory outside every declared source names NOTHING, rather than guessing', () => {
+  // A basename would be a plausible-looking answer that resolves to no row in the panel, which is
+  // the confident-wrong-value this repo refuses everywhere else.
+  expect(skillNameFromDir('/tmp/whatever/skills/x', HARNESS_SKILLS.claude!)).toBeNull()
+  expect(skillNameFromDir('', HARNESS_SKILLS.claude!)).toBeNull()
+})
+
+test('a plugin path too short to carry a plugin segment names nothing', () => {
+  expect(skillNameFromDir('/home/u/.claude/plugins/cache/skills/x', HARNESS_SKILLS.claude!)).toBeNull()
 })

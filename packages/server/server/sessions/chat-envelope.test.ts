@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import { classifyUserEntry, classifyUserText } from './chat-envelope'
 
 describe('classifyUserText', () => {
@@ -169,4 +169,40 @@ describe('the compaction summary', () => {
   const quoted = 'This session is being continued from a previous conversation that ran out of context.'
   expect(classifyUserEntry({ text: quoted }).kind).toBe('person')
   })
+})
+
+/**
+ * A NOTE NAMES A KIND; SOME BODIES ALSO NAME THE THING.
+ *
+ * The chip for `a skill was loaded` opens the skills tab and lands at the top of a list to be
+ * searched — the limitation CLAUDE.md already records. The body knew all along: measured on real
+ * transcripts, a load carries `Base directory for this skill: <dir>` and a re-invocation carries
+ * `(Re-invocation of /<invocation-name> — …`. The BODY is still dropped; only the identity is kept.
+ */
+test('a skill LOAD carries which skill, in the form the panel names it', () => {
+  expect(classifyUserEntry({
+    text: 'Base directory for this skill: /home/u/.claude/plugins/cache/superpowers-dev/superpowers/6.0.2/skills/brainstorming\n\n# Brainstorming',
+    isMeta: true,
+  })).toEqual({ kind: 'system', note: 'a skill was loaded', noteRef: 'superpowers:brainstorming' })
+})
+
+test('a skill RE-INVOCATION carries it too, from its own measured shape', () => {
+  // `(Re-invocation of /claude-code-notifications:ccn — the skill instructions were previously
+  // loaded; …` — the invocation name is already there, behind a leading slash.
+  expect(classifyUserEntry({
+    text: '(Re-invocation of /claude-code-notifications:ccn — the skill instructions were previously loaded)',
+    isMeta: true,
+  })).toEqual({ kind: 'system', note: 'a skill was re-invoked', noteRef: 'claude-code-notifications:ccn' })
+})
+
+test('a note whose body names nothing carries NO reference — an absent one, never an empty one', () => {
+  expect(classifyUserEntry({ text: 'Continue from where you left off.', isMeta: true }))
+    .toEqual({ kind: 'system', note: 'the session was resumed' })
+})
+
+test('a skill directory outside every declared source loads WITHOUT a reference', () => {
+  // The chip then behaves exactly as it does today: it opens the tab and claims nothing about which
+  // row. A basename would look like an answer and match no row.
+  expect(classifyUserEntry({ text: 'Base directory for this skill: /opt/elsewhere/thing', isMeta: true }))
+    .toEqual({ kind: 'system', note: 'a skill was loaded' })
 })

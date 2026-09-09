@@ -265,7 +265,12 @@ function queuedPromptText(prompt: unknown): string | null {
 function userTurn(entry: UserEntry): ChatTurn {
   return entry.kind === 'person'
     ? { role: 'user', text: entry.text }
-    : { role: 'user', text: entry.note, system: entry.note }
+    : {
+        role: 'user',
+        text: entry.note,
+        system: entry.note,
+        ...(entry.noteRef ? { systemRef: entry.noteRef } : {}),
+      }
 }
 
 function extractAssistantText(e: Record<string, unknown>): string | null {

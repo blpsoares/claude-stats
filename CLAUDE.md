@@ -2335,13 +2335,34 @@ harness must not break.
   replaces; `chatNote.test.ts` greps the server's own sources and fails the build when a note can
   be emitted that this table does not carry — the gap the old `SYSTEM_NOTE_PT` fell into when five
   readers arrived with notes of their own. **TWO SHAPES, deliberately different**: a note with a
-  destination is a button wearing an arrow that calls `openArtifacts(tab)` — the same call the edge
-  strip makes, so it opens the ASIDE and never a full screen — and a note with nowhere to go tells
-  you instead, on tap as well as hover, because a phone has no hover. One appearance for both would
-  make half the chips silently inert. **`tab` is NOT filled in wherever it would fit**: `command
-  output` would point at the `live` feed, hundreds of rows deep, and with no step id on a chat turn
-  the click lands at the top of a list to be searched — which the edge strip's own comment already
-  calls a navigation control rather than an answer. Those explain and do not navigate.
+  destination is a button wearing an arrow that calls `openArtifacts(tab, ref)` — the same call the
+  edge strip makes, so it opens the ASIDE and never a full screen — and a note with nowhere to go
+  tells you instead, on tap as well as hover, because a phone has no hover. One appearance for both
+  would make half the chips silently inert. **`tab` is NOT filled in wherever it would fit**:
+  `command output` would point at the `live` feed, hundreds of rows deep, with no step id on the
+  turn to land on, and the click would arrive at the top of a list to be searched — which the edge
+  strip's own comment already calls a navigation control rather than an answer. Those explain and do
+  not navigate.
+  **A NOTE THAT CAN NAME THE THING CARRIES IT** (`ChatTurn.systemRef`), and until it did, a chip
+  that navigated still landed on a list to be hunted. The body knew: measured on real transcripts, a
+  skill load carries `Base directory for this skill: <dir>` and a re-invocation carries
+  `(Re-invocation of /<invocation-name> — …`. The BODY stays dropped; only the identity is kept, and
+  it is kept in the form the panel LISTS — `HarnessSkill.name`, prefix and all — through the pure
+  `skillNameFromDir`, which reads the layout off the `SkillSource` the harness already declares
+  rather than re-deriving it. `skill-source.ts` exists for exactly that: `chat-envelope.ts` is a
+  zero-import pure parser and importing the skills READER would have dragged `HOME_DIR` and the
+  whole of `config.ts` into it. A directory matching no declared source yields NO reference rather
+  than its basename — a basename looks like an answer and matches no row. **The aside's focus
+  machinery was already complete and disconnected**: `openArtifacts` has always taken a `ref`,
+  `EventRow` has always answered `focused` by opening itself, scrolling into view and flashing, and
+  the state was computed and faded on a timer — nothing ever passed the prop, so the live feed's own
+  `openArtifacts('live', hint.ref)` landed at the top of the feed too. Both lists are wired now,
+  through the pure `noteFocus.ts`: `ROW_FLASH` is one constant so two tabs cannot disagree about
+  what "the one you asked for" looks like, an ABSENT reference focuses nothing, and a reference NO
+  row carries is SAID in words — a tab that opens and highlights nothing is indistinguishable from a
+  button that did not work. The highlight FADES (4 s), because it answers "which one" and a marker
+  that stays becomes part of the row; re-pressing the same chip re-arms it, since the request is
+  keyed on its own `at`.
 - **A TRANSCRIPT THAT IS NOT THERE YET IS NOT A TRANSCRIPT THAT IS NOWHERE.** Three resolvers
   memoized their answer by conversation id — the found path AND the `null` — so an unresolvable id
   cost one scan instead of one per poll. The intent is right; caching the `null` was not. **A
