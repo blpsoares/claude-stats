@@ -62,6 +62,12 @@ const PREFIXES: ReadonlyArray<readonly [string, keyof Capabilities]> = [
   // next fleet route someone adds must be guarded by having been added AT ALL, never by having
   // remembered a second table.
   ['/api/fleet', 'localShell'],
+  // The per-session UTILITY SHELL. It spawns `$SHELL` on the host in a directory of the caller's
+  // session and types whatever arrives into it — the most powerful thing this server offers, more
+  // than `/api/fleet` itself, which at least only ever runs a NAMED assistant CLI. Same capability,
+  // and a PREFIX for the same reason: the next shell route must be guarded by having been added at
+  // all. The user's own opt-in switch is enforced separately, in index.ts — see shell-gate.ts.
+  ['/api/shell', 'localShell'],
   // The task board reads the session registry and the local store, and its DELIVER verb runs git in
   // the directories those sessions ran in. That is host power, so it rides the same capability as
   // the fleet — and a prefix for the same reason: the next task route must be guarded by having
