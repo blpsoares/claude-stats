@@ -18,34 +18,56 @@
  */
 
 import type { CommandToken } from './commandToken'
+import type { MentionToken } from './mentionTokens'
+
+/** How a run is painted. `plain` is the ordinary text the field would have drawn anyway. */
+export type SegmentKind = 'plain' | 'command' | 'mention'
 
 export interface DraftSegment {
   text: string
-  /** Paint this run as the command button — orange background, white text. */
-  button: boolean
+  kind: SegmentKind
 }
 
 /**
  * The runs the mirror layer draws, in order.
  *
- * Only a `found` token is ever painted — `missing` and `unknown` claim nothing about the text (see
- * `commandToken.ts`), so there is nothing to recolour and the textarea's own text already reads
- * correctly. The whole draft comes back as one plain run in every other case, which is also the
- * signal `needsMirror` uses to decide whether the mirror should be drawn at all.
+ * TWO KINDS, and they are not the same thing. A `found` command is an ACTION the message performs,
+ * and it is painted as the button it effectively is. A mention is a REFERENCE to something on this
+ * machine, and it is marked as a chip — enough to say "this was picked from a real list", which is
+ * what it was missing when it read as loose text.
  *
- * `token.start` is always 0 (`commandToken` only ever matches the head of the draft), but the slice
- * is taken from it rather than hardcoded so this keeps working if that ever stops being true.
+ * Only what can be vouched for is painted: a `missing` or `unknown` command claims nothing (see
+ * `commandToken.ts`), and a mention whose server this machine does not have is left plain (see
+ * `mentionTokens.ts`). Everything else comes back as plain runs, which is also the signal
+ * `needsMirror` uses to decide whether to draw the mirror at all.
+ *
+ * The command is only ever at the head and a mention can be anywhere, so the ranges are collected,
+ * sorted and walked once. They cannot overlap — a command's range ends before any whitespace, and
+ * a mention must start after whitespace — but the walk skips anything that would, rather than
+ * trusting that.
  */
-export function draftSegments(draft: string, token: CommandToken | null): DraftSegment[] {
-  if (token === null || token.state !== 'found') return [{ text: draft, button: false }]
-  const before = draft.slice(0, token.start)
-  const head = draft.slice(token.start, token.end)
-  const rest = draft.slice(token.end)
-  const segments: DraftSegment[] = []
-  if (before !== '') segments.push({ text: before, button: false })
-  segments.push({ text: head, button: true })
-  if (rest !== '') segments.push({ text: rest, button: false })
-  return segments
+export function draftSegments(
+  draft: string,
+  token: CommandToken | null,
+  mentions: readonly MentionToken[] = [],
+): DraftSegment[] {
+  const marks: { start: number; end: number; kind: SegmentKind }[] = []
+  if (token !== null && token.state === 'found') {
+    marks.push({ start: token.start, end: token.end, kind: 'command' })
+  }
+  for (const m of mentions) marks.push({ start: m.start, end: m.end, kind: 'mention' })
+  marks.sort((a, b) => a.start - b.start)
+
+  const out: DraftSegment[] = []
+  let at = 0
+  for (const mark of marks) {
+    if (mark.start < at) continue
+    if (mark.start > at) out.push({ text: draft.slice(at, mark.start), kind: 'plain' })
+    out.push({ text: draft.slice(mark.start, mark.end), kind: mark.kind })
+    at = mark.end
+  }
+  if (at < draft.length) out.push({ text: draft.slice(at), kind: 'plain' })
+  return out.length > 0 ? out : [{ text: draft, kind: 'plain' }]
 }
 
 /**
@@ -56,6 +78,9 @@ export function draftSegments(draft: string, token: CommandToken | null): DraftS
  * the textarea's text transparent) and those two decisions must never drift apart: a mirror drawn
  * without the text hidden doubles the command, and hidden text with no mirror is a blank field.
  */
-export function needsMirror(token: CommandToken | null): boolean {
-  return token !== null && token.state === 'found'
+export function needsMirror(
+  token: CommandToken | null,
+  mentions: readonly MentionToken[] = [],
+): boolean {
+  return (token !== null && token.state === 'found') || mentions.length > 0
 }
