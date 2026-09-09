@@ -68,6 +68,7 @@ import {
 } from '../../lib/composerStore'
 import { commandToken, knownCommands } from '../../lib/commandToken'
 import { draftSegments, needsMirror } from '../../lib/commandMirror'
+import { knownServers, mentionTokens } from '../../lib/mentionTokens'
 import { commandNotFoundNotice } from '../../lib/commandNotice'
 import { lastSentMessage, turnAnchorId } from '../../lib/lastSent'
 import { goToTurn } from '../../lib/turnScroll'
@@ -475,6 +476,18 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * POLLING (below) for as long as the picker could still be showing one.
    */
   const [mcpServers, setMcpServers] = useState<MenuMcpServer[] | null>(null)
+  /**
+   * The references in the draft that point at a server this machine actually has.
+   *
+   * Derived on every render from the draft and the server list, exactly like `cmdToken` — which is
+   * what makes deleting a character un-mark a reference with nothing to invalidate. Empty while the
+   * list has not arrived: a mark is read at a glance and believed, so it may never stand over
+   * something unverified. See `mentionTokens.ts`.
+   */
+  const mentions = useMemo(
+    () => mentionTokens(draft, knownServers(mcpServers)),
+    [draft, mcpServers],
+  )
   /** Escape closes the picker while the `@word` it was triggered by is still on screen — see `slashDismissed`. */
   const [atDismissed, setAtDismissed] = useState(false)
   const [atIndex, setAtIndex] = useState(0)
@@ -2105,7 +2118,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     The mirror scrolls with the field, is `aria-hidden` (the text is already in the
                     field, and a screen reader must not hear it twice) and takes no pointer events. */}
                 <div style={{ position: 'relative' }}>
-                  {needsMirror(cmdToken) && (
+                  {needsMirror(cmdToken, mentions) && (
                     <div
                       aria-hidden
                       ref={underlayRef}
@@ -2116,17 +2129,29 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)',
                       }}
                     >
-                      {draftSegments(draft, cmdToken).map((seg, i) => seg.button ? (
-                        <span key={i} style={{
-                          background: 'var(--anthropic-orange)', color: '#fff',
-                          borderRadius: 4,
-                          boxShadow: '0 0 0 2px var(--anthropic-orange)',
-                        }}>{seg.text}</span>
-                      ) : (
-                        // A plain run — key only, no wrapper style, so it never disagrees with the
-                        // textarea's own metrics for the text it is standing in for.
-                        <span key={i}>{seg.text}</span>
-                      ))}
+                      {draftSegments(draft, cmdToken, mentions).map((seg, i) => {
+                        // A plain run gets a key and nothing else, so it can never disagree with
+                        // the textarea's own metrics for the text it is standing in for.
+                        if (seg.kind === 'plain') return <span key={i}>{seg.text}</span>
+                        // TWO MARKS, because they are two different things. A command is an ACTION
+                        // the message performs and is painted as the button it effectively is; a
+                        // mention is a REFERENCE to something on this machine and is marked as a
+                        // chip. Giving both the same paint would say they do the same thing.
+                        const command = seg.kind === 'command'
+                        return (
+                          <span key={i} style={{
+                            background: command ? 'var(--anthropic-orange)' : 'var(--accent-blue-dim)',
+                            color: command ? '#fff' : 'var(--accent-blue)',
+                            borderRadius: 4,
+                            // The ring is what gives the run its padding WITHOUT taking any width:
+                            // the mirror has to lay out character-for-character with the field
+                            // behind it, so nothing here may change the text's metrics.
+                            boxShadow: command
+                              ? '0 0 0 2px var(--anthropic-orange)'
+                              : '0 0 0 2px var(--accent-blue-dim)',
+                          }}>{seg.text}</span>
+                        )
+                      })}
                     </div>
                   )}
                 <textarea
@@ -2237,7 +2262,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // the note above the mirror div. `caretColor` is set unconditionally to the same
                     // colour the text would otherwise be, so it never rides on `color` and vanishes
                     // the moment `color` does.
-                    color: needsMirror(cmdToken) ? 'transparent' : 'var(--text-primary)',
+                    color: needsMirror(cmdToken, mentions) ? 'transparent' : 'var(--text-primary)',
                     caretColor: 'var(--text-primary)',
                     fontFamily: 'inherit', fontSize: 13.5,
                     lineHeight: 1.5, maxHeight: maxComposerH, overflowY: 'auto', padding: '6px 6px',
