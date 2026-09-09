@@ -40,7 +40,9 @@
  */
 
 import { Suspense, lazy, useCallback, useEffect, useReducer, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, ChevronLeft, Loader2, RotateCcw, TerminalSquare, X } from 'lucide-react'
+import {
+  ChevronDown, ChevronUp, ChevronLeft, Loader2, RotateCcw, TerminalSquare, Trash2,
+} from 'lucide-react'
 import { useDocumentVisible } from '../../hooks/useDocumentVisible'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useTerminalStream } from '../../hooks/useTerminalStream'
@@ -64,6 +66,7 @@ interface T {
   close: string
   collapse: string
   expand: string
+  toggleBar: string
   back: string
   ctrlHint: string
   ctrlRefused: (c: string) => string
@@ -76,9 +79,10 @@ const TXT: Record<'pt' | 'en', T> = {
     title: 'Shell',
     open: 'Open a shell here',
     opening: 'Opening…',
-    close: 'Close this shell',
+    close: 'End this shell',
     collapse: 'Collapse the shell',
     expand: 'Expand the shell',
+    toggleBar: 'Open or collapse the shell',
     back: 'Back to the session',
     ctrlHint: 'ctrl is armed — press a letter',
     ctrlRefused: c => `ctrl+${c} is not one of the keys this channel sends.`,
@@ -89,9 +93,10 @@ const TXT: Record<'pt' | 'en', T> = {
     title: 'Shell',
     open: 'Abrir um shell aqui',
     opening: 'Abrindo…',
-    close: 'Fechar este shell',
+    close: 'Encerrar este shell',
     collapse: 'Recolher o shell',
     expand: 'Expandir o shell',
+    toggleBar: 'Abrir ou recolher o shell',
     back: 'Voltar para a sessão',
     ctrlHint: 'ctrl armado — pressione uma letra',
     ctrlRefused: c => `ctrl+${c} não é uma das teclas que este canal envia.`,
@@ -414,7 +419,7 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
                 border: 'none', background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer',
               }}
             >
-              <X size={18} />
+              <Trash2 size={18} />
             </button>
           )}
         </div>
@@ -452,7 +457,27 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
           style={{ height: 6, cursor: 'ns-resize', background: 'transparent' }}
         />
       )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px', minHeight: 32 }}>
+      {/* THE WHOLE BAR IS THE TOGGLE. A 26px chevron at the far right of a full-width strip is a
+          target you have to aim at, and the strip beside it did nothing at all — so the bar takes
+          the click and the chevron stays as the thing that NAMES the gesture. `role="button"`
+          rather than a real one: it contains buttons, and nesting them is invalid HTML. The
+          controls inside it stop propagation, or ending a shell would also collapse the band. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={prefs.open}
+        aria-label={t.toggleBar}
+        onClick={() => setBand({ open: !prefs.open })}
+        onKeyDown={e => {
+          if (e.key !== 'Enter' && e.key !== ' ') return
+          e.preventDefault()
+          setBand({ open: !prefs.open })
+        }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px', minHeight: 32,
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
         <span style={{ color: 'var(--anthropic-orange)', display: 'inline-flex' }}><TerminalSquare size={14} /></span>
         <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: 0.4, color: 'var(--text-secondary)' }}>
           {t.title.toUpperCase()}
@@ -465,19 +490,21 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
         {busy && <Loader2 size={13} className="ag-spin" style={{ color: 'var(--text-tertiary)' }} />}
         {prefs.open && shell && (
           <button className="ag-tap-icon"
-            onClick={() => { void close() }}
+            /* A TRASH CAN, not an ✕. The ✕ read as "close this panel" next to a chevron that
+               actually closes the panel, and this one KILLS the shell — a different, irreversible
+               act. The icon is the only thing saying which of the two you are about to do. */
+            onClick={e => { e.stopPropagation(); void close() }}
             title={t.close}
             aria-label={t.close}
             style={iconBtn}
           >
-            <X size={13} />
+            <Trash2 size={13} />
           </button>
         )}
         <button className="ag-tap-icon"
-          onClick={() => setBand({ open: !prefs.open })}
+          onClick={e => { e.stopPropagation(); setBand({ open: !prefs.open }) }}
           title={prefs.open ? t.collapse : t.expand}
           aria-label={prefs.open ? t.collapse : t.expand}
-          aria-expanded={prefs.open}
           style={iconBtn}
         >
           {prefs.open ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
