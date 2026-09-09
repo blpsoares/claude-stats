@@ -39,22 +39,23 @@
  * one place that turns those into sentences. A blank band is never an answer.
  */
 
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, ChevronLeft, Loader2, TerminalSquare, X } from 'lucide-react'
+import { Suspense, lazy, useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import { ChevronDown, ChevronUp, ChevronLeft, Loader2, RotateCcw, TerminalSquare, X } from 'lucide-react'
 import { useDocumentVisible } from '../../hooks/useDocumentVisible'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useTerminalStream } from '../../hooks/useTerminalStream'
 import { useTerminalWrite } from '../../hooks/useTerminalWrite'
 import {
-  BAND_MIN_PX, clampBandHeight, readBandPrefs, shellErrorText, shellWatching, shellWhere,
-  writeBandPrefs,
+  BAND_MIN_PX, clampBandHeight, readBandPrefs, shellApiUrl, shellErrorText, shellWatching,
+  shellWhere, writeBandPrefs,
 } from '../../lib/shellBand'
+import {
+  INITIAL_SHELL_BAND, shellBandReducer, shellResolveWanted, type OpenShell,
+} from '../../lib/shellBandState'
 import { SHELL_STRIP, ctrlKeyFor, keyBytes, stripKeyLabel } from '../../lib/shellKeys'
 import { terminalStatus } from '../../lib/terminalStream'
 
 const SessionTerminal = lazy(() => import('../SessionTerminal'))
-
-interface OpenShell { id: string; cwd: string }
 
 interface T {
   title: string
@@ -67,6 +68,7 @@ interface T {
   ctrlHint: string
   ctrlRefused: (c: string) => string
   resize: string
+  retry: string
 }
 
 const TXT: Record<'pt' | 'en', T> = {
@@ -81,6 +83,7 @@ const TXT: Record<'pt' | 'en', T> = {
     ctrlHint: 'ctrl is armed — press a letter',
     ctrlRefused: c => `ctrl+${c} is not one of the keys this channel sends.`,
     resize: 'Drag to resize the shell',
+    retry: 'Try again',
   },
   pt: {
     title: 'Shell',
@@ -93,6 +96,7 @@ const TXT: Record<'pt' | 'en', T> = {
     ctrlHint: 'ctrl armado — pressione uma letra',
     ctrlRefused: c => `ctrl+${c} não é uma das teclas que este canal envia.`,
     resize: 'Arraste para redimensionar o shell',
+    retry: 'Tentar de novo',
   },
 }
 
@@ -111,9 +115,10 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
   const documentVisible = useDocumentVisible()
 
   const [prefs, setPrefs] = useState(() => readBandPrefs())
-  const [shell, setShell] = useState<OpenShell | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  // THE MACHINE, not a pile of flags. See `shellBandState.ts` for the rule it enforces.
+  const [band, dispatch] = useReducer(shellBandReducer, INITIAL_SHELL_BAND, init =>
+    readBandPrefs().open ? shellBandReducer(init, { type: 'openBand' }) : init)
+  const shell = band.shell
   const [ctrlArmed, setCtrlArmed] = useState(false)
   const [ctrlNote, setCtrlNote] = useState<string | null>(null)
 
@@ -123,6 +128,8 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
       writeBandPrefs(merged)
       return merged
     })
+    if (next.open === true) dispatch({ type: 'openBand' })
+    if (next.open === false) dispatch({ type: 'closeBand' })
   }, [])
 
   /**
@@ -131,29 +138,33 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
    * A shell lives until it is closed — it survives switching session, reloading the page and closing
    * the browser — so the list is asked first. Opening blind would mint a second shell per reload and
    * walk into the ceiling with seven copies of one directory.
+   *
+   * The effect is driven by ONE fact, `shellResolveWanted(band)`, and every exit dispatches: an
+   * abandoned attempt goes back to `wanted` rather than leaving the band spinning on work nobody is
+   * doing. That is the whole reason the machine exists — see `shellBandState.ts`.
    */
-  // A REF, not `busy`, because `busy` cannot be an effect dependency here: setting it re-runs the
-  // effect, whose CLEANUP then cancels the very request it just started, and the band would sit on
-  // "Opening…" forever. The ref is the in-flight guard; `busy` is only what the UI reads.
-  const resolvingRef = useRef(false)
+  // DEPENDS ON `band.attempt` AND NOT ON `band`. The effect dispatches, and an effect that depends
+  // on what it dispatches cancels its own request on the very next render — the loop that made this
+  // band spin on "Abrindo…". `attempt` moves only when a PERSON opens or retries.
+  const wanted = shellResolveWanted(band)
+  const wantedRef = useRef(wanted)
+  wantedRef.current = wanted
   useEffect(() => {
-    if (!prefs.open || shell || resolvingRef.current) return
+    if (!wantedRef.current) return
     let cancelled = false
-    resolvingRef.current = true
-    setBusy(true)
-    setError(null)
+    dispatch({ type: 'resolving' })
     void (async () => {
       try {
-        const listed = await fetch('/api/shell/list')
+        const listed = await fetch(shellApiUrl('/api/shell/list', lang))
         if (listed.ok) {
-          const body = await listed.json() as { shells?: OpenShell[] & { sessionId?: string }[] }
-          const mine = (body.shells ?? []).find(s => (s as { sessionId?: string }).sessionId === sessionId)
-          if (mine) { if (!cancelled) setShell({ id: mine.id, cwd: mine.cwd }); return }
+          const body = await listed.json() as { shells?: (OpenShell & { sessionId?: string })[] }
+          const mine = (body.shells ?? []).find(sh => sh.sessionId === sessionId)
+          if (mine) { if (!cancelled) dispatch({ type: 'resolved', shell: { id: mine.id, cwd: mine.cwd } }); return }
         } else {
           const body = await listed.json().catch(() => ({})) as { error?: string }
-          if (body.error) { if (!cancelled) setError(shellErrorText(body.error, lang)); return }
+          if (body.error) { if (!cancelled) dispatch({ type: 'refused', message: shellErrorText(body.error, lang) }); return }
         }
-        const res = await fetch('/api/shell/open', {
+        const res = await fetch(shellApiUrl('/api/shell/open', lang), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId }),
@@ -164,18 +175,17 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
         if (cancelled) return
         // A REFUSAL arrives as a sentence the server composed; it is shown verbatim. A route-level
         // error carries only a code, and `shellErrorText` is the one place that words those.
-        if (body.ok && body.shell) setShell(body.shell)
-        else if (body.message) setError(body.message)
-        else setError(shellErrorText(body.error ?? 'network', lang))
+        if (body.ok && body.shell) dispatch({ type: 'resolved', shell: body.shell })
+        else if (body.message) dispatch({ type: 'refused', message: body.message })
+        else dispatch({ type: 'refused', message: shellErrorText(body.error ?? 'network', lang) })
       } catch {
-        if (!cancelled) setError(shellErrorText('network', lang))
-      } finally {
-        resolvingRef.current = false
-        if (!cancelled) setBusy(false)
+        if (!cancelled) dispatch({ type: 'refused', message: shellErrorText('network', lang) })
       }
     })()
-    return () => { cancelled = true }
-  }, [prefs.open, shell, sessionId, lang])
+    // An abandoned attempt is NOT a failure and NOT a silence: it returns to `wanted`, so the next
+    // render asks again instead of leaving a spinner over nothing.
+    return () => { cancelled = true; dispatch({ type: 'cancelled' }) }
+  }, [band.attempt, sessionId, lang])
 
   const watching = shellWatching({
     bandOpen: prefs.open,
@@ -220,14 +230,14 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
   const close = useCallback(async () => {
     if (!shell) return
     const id = shell.id
-    setShell(null)
+    dispatch({ type: 'ended' })
     setBand({ open: false })
-    await fetch('/api/shell/close', {
+    await fetch(shellApiUrl('/api/shell/close', lang), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: [id] }),
     }).catch(() => {})
-  }, [shell, setBand])
+  }, [shell, setBand, lang])
 
   // ---- the drag handle -----------------------------------------------------------------------
   const dragRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -280,8 +290,9 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
   )
 
   /** The one sentence the band always has: a refusal, a delivery failure, or what is on screen. */
-  const line = error ?? (write.reason ? write.reason : busy ? t.opening : status.detail)
-  const lineIsBad = Boolean(error || write.reason)
+  const line = band.message ?? (write.reason ? write.reason : band.phase === 'opening' ? t.opening : status.detail)
+  const lineIsBad = Boolean(band.message || write.reason)
+  const busy = band.phase === 'opening'
 
   const notice = (
     <div
@@ -292,6 +303,23 @@ export function ShellBand({ sessionId, cwd, lang, theme }: ShellBandProps) {
       }}
     >
       {ctrlArmed ? t.ctrlHint : ctrlNote ?? line}
+      {/* A refusal is a DEAD STOP by design — the band never retries a "no" on its own — so the way
+          forward has to be on screen. Without it a refused band is a sentence and nothing else. */}
+      {band.phase === 'refused' && (
+        <button
+          onClick={() => dispatch({ type: 'retry' })}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8,
+            minHeight: isMobile ? 44 : 22, padding: isMobile ? '0 12px' : '0 8px',
+            borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontSize: 11, fontWeight: 600,
+            border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <RotateCcw size={11} />
+          {t.retry}
+        </button>
+      )}
     </div>
   )
 

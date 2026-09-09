@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, test } from 'bun:test'
 import {
   BAND_MAX_FRACTION, BAND_MIN_PX, DEFAULT_BAND_PREFS, clampBandHeight, readBandPrefs, shellErrorText,
-  shellWatching, shellWhere, writeBandPrefs, type BandPrefs,
+  shellApiUrl, shellWatching, shellWhere, writeBandPrefs, type BandPrefs,
 } from './shellBand'
 
 describe('the unwatch discipline', () => {
@@ -71,6 +71,17 @@ describe('where the shell was opened, said in the room a band has', () => {
   it('nothing to say is an empty string, never a guess', () => {
     expect(shellWhere(undefined)).toBe('')
     expect(shellWhere('')).toBe('')
+  })
+})
+
+describe('the refusal comes back in the reader’s own language', () => {
+  test('every call carries the language, because the SERVER composes the sentence', () => {
+    // `handleShellRoute` renders each `ShellRefusal` code into prose and reads the language off the
+    // query string; with no `lang` it answers in English. Seen on screen: a Portuguese dashboard
+    // showing "8 terminals are already open. Close one to open another." beside a Portuguese retry
+    // button. The one thing a refusal has to be is readable.
+    expect(shellApiUrl('/api/shell/open', 'pt')).toBe('/api/shell/open?lang=pt')
+    expect(shellApiUrl('/api/shell/list', 'en')).toBe('/api/shell/list?lang=en')
   })
 })
 

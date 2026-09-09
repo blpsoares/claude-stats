@@ -80,6 +80,20 @@ const ERROR_TEXT: Record<string, { en: string; pt: string }> = {
   },
 }
 
+/**
+ * A shell API call, carrying the reader's language.
+ *
+ * `handleShellRoute` renders each `ShellRefusal` CODE into prose — the deciding module stays
+ * language-free — and it reads the language off the query string, answering in English when none is
+ * given. Omitting it put "8 terminals are already open. Close one to open another." on a Portuguese
+ * dashboard, beside a Portuguese retry button. A refusal that cannot be read is the one kind this
+ * feature cannot afford, so the language travels on every call rather than on the ones somebody
+ * remembered.
+ */
+export function shellApiUrl(path: string, lang: 'pt' | 'en'): string {
+  return `${path}?lang=${lang}`
+}
+
 /** An unknown code is shown VERBATIM — a reason nobody can read still beats a silent failure. */
 export function shellErrorText(code: string, lang: 'pt' | 'en'): string {
   const entry = ERROR_TEXT[code]
