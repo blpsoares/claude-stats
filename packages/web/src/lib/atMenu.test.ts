@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test'
 import {
   applyAtServer, applyAtTool, atLevel, atQuery, atServerStatusText, atToolViewReason,
   emptyAtServerReason, emptyAtToolReason, filterAtServers, filterAtTools, findAtServer,
-  resolveAtToolView, type MenuMcpServer, type MenuMcpTool,
+  resolveAtToolView, dropEmptyAtTrigger, type MenuMcpServer, type MenuMcpTool,
 } from './atMenu'
 
 const tool = (name: string, description = ''): MenuMcpTool => ({ name, description })
@@ -210,4 +210,27 @@ test('a second pick on the reopened trigger appends its own token — never a,b 
 test('what comes after the caret survives a tool pick, exactly as a server pick preserves it', () => {
   const out = applyAtTool('@serena: tail', 8, 'serena', 'find_symbol')
   expect(out.text).toBe('@serena:find_symbol @serena: tail')
+})
+
+test('a trailing empty @server: is the picker\'s scaffolding, and is dropped', () => {
+  // What picking exactly one tool leaves behind: the token, plus the trigger that would have let
+  // you pick another. Nobody typed the tail and nobody wants to send it.
+  expect(dropEmptyAtTrigger('@serena:find_symbol @serena:')).toBe('@serena:find_symbol')
+  expect(dropEmptyAtTrigger('olha @serena:')).toBe('olha')
+  expect(dropEmptyAtTrigger('@serena:')).toBe('')
+})
+
+test('it never touches a reference that names a tool', () => {
+  expect(dropEmptyAtTrigger('@serena:find_symbol')).toBe('@serena:find_symbol')
+  expect(dropEmptyAtTrigger('@serena:a @serena:b')).toBe('@serena:a @serena:b')
+})
+
+test('it only ever takes the TAIL, never a word inside the message', () => {
+  // Somebody writing about the syntax must keep what they wrote.
+  expect(dropEmptyAtTrigger('use @serena: para isso')).toBe('use @serena: para isso')
+})
+
+test('a half-typed server name is the person still writing', () => {
+  expect(dropEmptyAtTrigger('@ser')).toBe('@ser')
+  expect(dropEmptyAtTrigger('')).toBe('')
 })
