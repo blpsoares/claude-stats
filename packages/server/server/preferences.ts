@@ -89,6 +89,10 @@ export interface Preferences {
    *  CLI on the host, and until it was made opt-in every machine installed for its metrics also
    *  shipped a shell nobody had chosen. It can only ever narrow `CAPS.localChat`; see chat-gate.ts. */
   chatEnabled?: boolean
+  /** Opt-in for the per-session utility SHELL (`/api/shell/*`). Absent reads as OFF, and it can
+   *  only ever narrow `CAPS.localShell`; see sessions/shell-gate.ts. Separate from `chatEnabled`
+   *  because they are different powers: the chat runs a named assistant CLI, this runs anything. */
+  shellEnabled?: boolean
   /** true once the user dismissed the install prompt with "don't show again".
    *  Persisted server-side (not localStorage) so it survives incognito windows. */
   installDismissed?: boolean
