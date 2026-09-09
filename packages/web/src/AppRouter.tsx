@@ -5,7 +5,6 @@ import AppLayout from './App'
 const HomePage = lazy(() => import('./pages/HomePage'))
 const CostsPage = lazy(() => import('./pages/CostsPage'))
 const TopUsagePage = lazy(() => import('./pages/TopUsagePage'))
-const ProjectsPage = lazy(() => import('./pages/ProjectsPage'))
 const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage'))
 const RepoDetailPage = lazy(() => import('./pages/RepoDetailPage'))
 const ActionsPage = lazy(() => import('./pages/ActionsPage'))
@@ -66,7 +65,11 @@ export default function AppRouter() {
           <Route path="sessions" element={<Suspense fallback={<PageFallback />}><SessionsPage /></Suspense>} />
           <Route path="sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><SessionsPage /></Suspense>} />
           <Route path="workflows" element={<Suspense fallback={<PageFallback />}><WorkflowsPage /></Suspense>} />
-          <Route path="projects" element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
+          {/* GONE, and redirected rather than 404'd. Its two panels — top projects and
+              languages — are on Home, and the dimension the page was really asked for is the
+              REPOSITORY, which is the same repo across machines where a project path is not.
+              A bookmark, a pinned tab or an old link still lands somewhere that answers. */}
+          <Route path="projects" element={<Navigate to="/repositories" replace />} />
           <Route path="repositories" element={<Suspense fallback={<PageFallback />}><RepositoriesPage /></Suspense>} />
           <Route path="repositories/actions" element={<Suspense fallback={<PageFallback />}><ActionsPage /></Suspense>} />
           <Route path="repo/:id" element={<Suspense fallback={<PageFallback />}><RepoDetailPage /></Suspense>} />
