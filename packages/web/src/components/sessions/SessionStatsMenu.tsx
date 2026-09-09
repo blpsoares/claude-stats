@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { sessionTime } from '../../lib/sessionTime'
 import { asideCache, asideKey } from '../../lib/asideCache'
-import { BarChart3, X } from 'lucide-react'
+import { BarChart3, ChevronRight, PanelRight, X } from 'lucide-react'
 import { fmt, fmtCost, type CostBasis, type HarnessId, type SessionMeta } from '@agentistics/core'
 import { HARNESS_LABELS } from '../../lib/harness'
 import { sessionStats, statReason } from '../../lib/sessionStats'
@@ -68,11 +68,24 @@ export interface SessionStatsMenuProps {
    * everywhere else.
    */
   planFactor?: number | null
+  /**
+   * OPEN THE WHOLE READING — the same figures with everything the store also knows: the token
+   * split with its account, every tool with its output volume, each subagent invocation, the
+   * workflow runs, the hour distribution.
+   *
+   * A CALLBACK and not a flag, because this card does not know where "everything" opens. In the
+   * sessions workspace it is a tab in the right aside, where the numbers sit beside the
+   * conversation they are about; on a surface with no aside there is nothing to open and the
+   * caller passes nothing, so the link is ABSENT rather than inert — the same rule the fleet's
+   * verbs keep. The caller also withholds it when the store has no record of this conversation,
+   * which is the same fact that decides whether the tab exists at all.
+   */
+  onOpenFull?: () => void
 }
 
 export function SessionStatsMenu({
   harness, sessionId, meta, lang, currency, brlRate, startedModel, startedEffort, touch = false,
-  costBasis = 'api', planFactor = null,
+  costBasis = 'api', planFactor = null, onOpenFull,
 }: SessionStatsMenuProps) {
   const pt = lang === 'pt'
   const [open, setOpen] = useState(false)
@@ -346,6 +359,34 @@ export function SessionStatsMenu({
               </>
             ) : <Absent text={na('gitLines')} />}
           </Block>
+
+          {/* THE WAY TO THE FULL READING. This card is what a 300px popover can hold; the panel
+              holds the rest, and saying so here is what stops the two being built twice. It names
+              WHERE it opens — a link that moves something on the other side of the screen without
+              saying so reads as a control that did nothing. */}
+          {onOpenFull && (
+            <button
+              onClick={() => { onOpenFull(); setOpen(false) }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                marginTop: 10, paddingTop: 10,
+                // 44px is the MOBILE number — this is the one CONTROL in a card of read-only
+                // lines, so it is the one thing here that has to be a target.
+                minHeight: touch ? 44 : 0,
+                borderTop: '1px solid var(--border-subtle)', borderLeft: 'none',
+                borderRight: 'none', borderBottom: 'none',
+                background: 'transparent', color: 'var(--anthropic-orange)',
+                fontFamily: 'inherit', fontSize: 11.5, fontWeight: 600,
+                cursor: 'pointer', textAlign: 'left',
+              }}
+            >
+              <PanelRight size={12} style={{ flexShrink: 0 }} />
+              <span style={{ minWidth: 0 }}>
+                {pt ? 'Ver tudo no painel' : 'See everything in the panel'}
+              </span>
+              <ChevronRight size={12} style={{ marginLeft: 'auto', flexShrink: 0 }} />
+            </button>
+          )}
         </div>
       )}
     </div>
