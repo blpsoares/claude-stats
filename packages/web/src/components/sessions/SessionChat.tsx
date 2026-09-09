@@ -46,6 +46,7 @@ import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
 import { scratchKey, sessionScratch } from '../../lib/sessionScratch'
 import { chatReadAt, firstFrameStale, refreshChat, subscribeChat } from '../../lib/chatFeed'
 import { composerMaxHeight } from '../../lib/composerHeight'
+import { isPickerSelectKey } from '../../lib/pickerKeys'
 import { nudgeFleet } from '../../lib/fleet'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
@@ -1689,8 +1690,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   ))}
                   <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                     {pt
-                      ? '↑↓ escolhe · enter escreve no campo · esc fecha. Não envia.'
-                      : '↑↓ to move · enter writes it into the field · esc closes. It does not send.'}
+                      ? '↑↓ escolhe · enter ou tab escreve no campo · esc fecha. Não envia.'
+                      : '↑↓ to move · enter or tab writes it into the field · esc closes. It does not send.'}
                   </p>
                 </>
               )}
@@ -1765,8 +1766,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     ))}
                     <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                       {pt
-                        ? '↑↓ escolhe · enter adiciona (dá para escolher mais de uma) · esc fecha. Não envia.'
-                        : '↑↓ to move · enter adds it (choose more than one) · esc closes. It does not send.'}
+                        ? '↑↓ escolhe · enter ou tab adiciona (dá para escolher mais de uma) · esc fecha. Não envia.'
+                        : '↑↓ to move · enter or tab adds it (choose more than one) · esc closes. It does not send.'}
                     </p>
                   </>
                 )
@@ -1810,8 +1811,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     ))}
                     <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                       {pt
-                        ? '↑↓ escolhe · enter referencia · digite “:” para ver as ferramentas · esc fecha.'
-                        : '↑↓ to move · enter references it · type “:” to see its tools · esc closes.'}
+                        ? '↑↓ escolhe · enter ou tab referencia · digite “:” para ver as ferramentas · esc fecha.'
+                        : '↑↓ to move · enter or tab references it · type “:” to see its tools · esc closes.'}
                     </p>
                   </>
                 )
@@ -2182,7 +2183,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (skillPickerOpen && slashFlat.length > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                      // Enter or Tab — one rule, shared with the `@` picker below. See
+                      // `pickerKeys.ts` for why shift is excluded and why Tab is not gated on
+                      // mobile the way Enter is.
+                      if (isPickerSelectKey({ key: e.key, shiftKey: e.shiftKey, isMobile })) {
                         e.preventDefault()
                         const picked = slashFlat[Math.min(slashIndex, slashFlat.length - 1)]
                         if (picked) insertSkill(picked.name)
@@ -2199,7 +2203,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (atOpen && atFlatLen > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                      if (isPickerSelectKey({ key: e.key, shiftKey: e.shiftKey, isMobile })) {
                         e.preventDefault()
                         const i = Math.min(atIndex, atFlatLen - 1)
                         if (atLvl?.level === 'tool') {
