@@ -86,20 +86,6 @@ export function classifyAgentFile(filePath: string): string | null {
  */
 export function isUserRoleMessage(e: Record<string, unknown>): boolean {
   if (e.type !== 'user') return false
-  // `isMeta` is Claude Code's own marker for an entry IT inserted under the user's role — the
-  // `<local-command-caveat>` block that precedes a slash command's output. Nobody typed it, so it
-  // is not a round and it is not a turn boundary. Measured 2026-09-08 across four real sessions:
-  // the parser's count exceeded a hand recount by 22, 15, 7 and 1 — the isMeta count of each,
-  // exactly. On a session that ran 22 local commands, "rounds" read 65 for 43 real messages.
-  //
-  // `sessionLabel` already strips these wrappers out of `first_prompt`, so the product had two
-  // readings of the same entry: not-prose when labelling it, a person's turn when counting it.
-  //
-  // `isCompactSummary` is the other one, found the same way: the "This session is being continued
-  // from a previous conversation that ran out of context" block, which Claude Code writes under the
-  // user's role when it compacts. It was the last remaining discrepancy on the fourth session —
-  // exactly one entry, exactly one round of difference.
-  if (e.isMeta === true || e.isCompactSummary === true) return false
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
   const isPureToolResult = contentArr !== null && contentArr.length > 0 &&
