@@ -59,6 +59,12 @@ export default defineConfig({
       '/api': {
         target: `http://localhost:${apiPort}`,
         changeOrigin: true,
+        // WEBSOCKETS TOO, and without this line the write channels are dead in dev while
+        // everything else works. Both of them ride an upgrade (`/api/fleet/input`,
+        // `/api/shell/input`); a proxy entry without `ws` forwards ordinary requests and silently
+        // DROPS the handshake, so the socket times out with no status to look up — the live screen
+        // keeps drawing over SSE (a plain GET) and typing into it just does nothing.
+        ws: true,
       },
     },
   },
