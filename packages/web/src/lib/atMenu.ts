@@ -287,3 +287,28 @@ export function applyAtTool(draft: string, caret: number, server: string, tool: 
   const text = draft.slice(0, start) + inserted + after
   return { text, caret: start + inserted.length }
 }
+
+/**
+ * DROP A TRIGGER THAT NEVER BECAME A REFERENCE — PURE.
+ *
+ * `applyAtTool` writes `@server:tool @server:` on every pick: the token you chose, plus a fresh open
+ * trigger on the same server so choosing another is the next keystroke rather than a new gesture.
+ * That is what makes "one or more" work, and it leaves a tail behind for anyone who wanted exactly
+ * one — `@serena:find_symbol @serena:` sitting in the draft, ready to be sent as literal text.
+ *
+ * An `@server:` with nothing after the colon is not a reference to anything. It is the picker's own
+ * scaffolding, and once the picker is closed or the message is going out, it is noise the person
+ * never typed. So it is removed at exactly those two moments, and nowhere else: while the picker is
+ * OPEN the trigger is doing its job, and a half-typed `@ser` is the person still writing.
+ *
+ * Only ever the TAIL, and only when it is empty. `@serena:find_symbol` keeps its tool, and an
+ * `@server:` in the middle of a sentence is left exactly as typed — this cannot reach in and edit
+ * words somebody wrote.
+ */
+const TRAILING_EMPTY_TRIGGER = /(?:^|\s)@[A-Za-z0-9][A-Za-z0-9_./-]*:\s*$/
+
+export function dropEmptyAtTrigger(draft: string): string {
+  const m = TRAILING_EMPTY_TRIGGER.exec(draft)
+  if (!m) return draft
+  return draft.slice(0, m.index).replace(/\s+$/, '')
+}

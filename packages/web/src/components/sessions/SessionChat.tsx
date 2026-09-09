@@ -59,7 +59,7 @@ import {
 import {
   applyAtServer, applyAtTool, atLevel, atQuery, atServerStatusText, atToolViewReason,
   emptyAtServerReason, emptyAtToolReason, filterAtServers, findAtServer, resolveAtToolView,
-  type MenuMcpServer,
+  type MenuMcpServer, dropEmptyAtTrigger,
 } from '../../lib/atMenu'
 import { composeReply, markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
 import { pendingEchoes } from '@agentistics/core'
@@ -1305,7 +1305,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   }
 
   async function send() {
-    const text = draft.trim()
+    // A trailing `@server:` is the picker's scaffolding and was never typed — it must not be sent.
+    const text = dropEmptyAtTrigger(draft).trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
     // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
     // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
@@ -2143,7 +2144,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // is what a keyboard user tabbing onto an entry does.
                     const into = e.relatedTarget as Node | null
                     if (!skillPickerRef.current?.contains(into)) setSlashDismissed(true)
-                    if (!atPickerRef.current?.contains(into)) setAtDismissed(true)
+                    if (!atPickerRef.current?.contains(into)) {
+                      setAtDismissed(true)
+                      setDraft(d => dropEmptyAtTrigger(d))
+                    }
                   }}
                   onPaste={onPaste}
                   onKeyDown={e => {
@@ -2183,7 +2187,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         return
                       }
                     }
-                    if (e.key === 'Escape' && atOpen) { e.preventDefault(); setAtDismissed(true); return }
+                    if (e.key === 'Escape' && atOpen) {
+                      e.preventDefault()
+                      setAtDismissed(true)
+                      // Closing the picker ends the pick, so the open `@server:` it left for the
+                      // NEXT one is scaffolding now — see `dropEmptyAtTrigger`.
+                      setDraft(d => dropEmptyAtTrigger(d))
+                      return
+                    }
                     // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
                     // convention every messaging app on a touch keyboard follows: the return key is
                     // the only way to write a second line there, because `shift+enter` needs a
