@@ -142,6 +142,7 @@ import {
   broadcastReport, planBroadcast, type BroadcastOutcome,
 } from './sessions/broadcast-plan'
 import { sessionRunning } from '@agentistics/tui/control/session-dimensions'
+import { controlStrings } from '@agentistics/tui/control/i18n'
 import { loadHarnessSessions } from './sessions/harness-sessions'
 import { readProcessConversation } from './sessions/process-conversation'
 import { idleServers, isServerCommand } from './idle-servers'
@@ -1812,6 +1813,37 @@ async function restorableSessions(fell: readonly ManagedSession[]): Promise<Rest
  * of that would be a button that approves the highlighted row. Only `suspend`-requiring actions
  * (`central.sh init`) need a real terminal, and the web host is never asked for one.
  */
+/**
+ * Wait until a just-reopened session is actually LISTENING — or give up and say so.
+ *
+ * `resumeSession` returns when the session has been STARTED, which is not the same thing: the
+ * harness still has to come up, and a prompt typed into a pane that is mid-boot goes nowhere while
+ * looking exactly like a delivery. The broadcast needs the stronger fact, so it polls the fleet for
+ * the row and waits for `sessionRunning`.
+ *
+ * It returns the id it FOUND, because a reopen mints a new row for the same conversation: writing
+ * to the id that was ticked would write to the record that was just retired.
+ *
+ * Bounded, and a timeout is an honest failure for that one session rather than a silent skip — the
+ * whole point of reopening was that the person asked for the message to reach it.
+ */
+const REOPEN_WAIT_MS = 20_000
+const REOPEN_POLL_MS = 700
+
+async function waitRunning(
+  id: string,
+  read: () => Promise<ControlSessions | undefined> | undefined,
+): Promise<string | null> {
+  const until = Date.now() + REOPEN_WAIT_MS
+  for (;;) {
+    const fleet = await read()
+    const row = fleet?.sessions.find(r => r.id === id)
+    if (row && sessionRunning(row)) return row.id
+    if (Date.now() >= until) return null
+    await new Promise(r => setTimeout(r, REOPEN_POLL_MS))
+  }
+}
+
 export function createControlHost(initialLang: CliLang, altScreen: Suspendable): StartHost {
   let lang = initialLang
   const S = () => cliStrings(lang)
@@ -3276,12 +3308,59 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
           // The row's own knowledge of an open dialog. The HOST still re-reads at write time; this
           // only keeps a doomed send out of the list before anything is typed.
           blocked: (r.approvalLines?.length ?? 0) > 0,
+          // Read off the row's own reopen target, never inferred: it is absent exactly when the
+          // harness cannot reopen by id, and promising to write to a row nothing can resurrect is
+          // the failure this flag exists to avoid.
+          reopenable: Boolean(r.resume),
         })),
       })
       if (!plan.ok) return { ok: false, message: s.sessBroadcastRefused(plan.reason, plan.skipped.length) }
 
       const outcomes: BroadcastOutcome[] = []
+      let reopened = 0
       for (const t of plan.targets) {
+        /*
+         * A CLOSED SESSION IS BROUGHT BACK BEFORE ANYTHING IS TYPED, and the reopen is CONFIRMED.
+         *
+         * `resumeSession` returns once it has started the session, not once the assistant is
+         * listening, so writing immediately would type into a pane that is still coming up — and
+         * reporting that as a send is worse than the skip this replaced. `waitRunning` polls the
+         * fleet until the row is actually running, and a reopen that never becomes real is reported
+         * as a failure for THAT session rather than silently prompting nothing.
+         */
+        if (t.needsReopen) {
+          // The reopen target is read from the FLEET, never composed here: it names a conversation
+          // and a directory, and the `resume` route makes the same read for the same reason.
+          const row = rows.find(r => r.id === t.id)
+          if (!row?.resume) {
+            outcomes.push({ id: t.id, title: t.title, ok: false, message: controlStrings(lang).sessionsReopenNone })
+            continue
+          }
+          const back = await this.resumeSession!({
+            sessionId: row.resume.sessionId,
+            harness: row.harness,
+            cwd: row.cwd,
+            label: row.named ? row.title : row.resume.title,
+            // DETACHED, always. A broadcast is a message to several sessions at once; taking the
+            // terminal for one of them is not something this gesture can mean.
+            attach: false,
+            ...(row.actionable ? { replaces: row.id } : {}),
+          })
+          if (!back.ok) {
+            outcomes.push({ id: t.id, title: t.title, ok: false, message: back.message })
+            continue
+          }
+          const live = await waitRunning(back.id ?? t.id, () => this.sessions?.())
+          if (!live) {
+            outcomes.push({ id: t.id, title: t.title, ok: false, message: s.sessBroadcastReopenSlow })
+            continue
+          }
+          reopened++
+          // The reopen mints a NEW row for the same conversation, so the prompt goes to that one.
+          const out = await this.promptSession!(live, text)
+          outcomes.push({ id: live, title: t.title, ok: out.ok, message: out.message })
+          continue
+        }
         const out = await this.promptSession!(t.id, text)
         outcomes.push({ id: t.id, title: t.title, ok: out.ok, message: out.message })
       }
@@ -3291,7 +3370,7 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         // where four of five landed is not a failure, and reporting it as one would send somebody
         // to re-send to the four that already have it.
         ok: report.sent > 0,
-        message: s.sessBroadcastDone(report.sent, report.failed, report.skipped.length),
+        message: s.sessBroadcastDone(report.sent, report.failed, report.skipped.length, reopened),
       }
     },
 

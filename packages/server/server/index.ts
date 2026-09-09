@@ -57,6 +57,7 @@ async function readLocalLiveSnapshot(sessions: SessionMeta[]): Promise<{
 import { AUTH_PUBLIC, isAdminPath, MFA_EXEMPT } from './index-routes'
 import { CAPS, PROFILE } from './exposure'
 import { chatAllowed } from './chat-gate'
+import { shellAllowed } from './sessions/shell-gate'
 import { limiter, RULES, rateRuleFor, tooManyRequests } from './rate-limit'
 import { resolveClientIp } from './client-ip'
 import { corsHeadersFor } from './cors'
@@ -2478,6 +2479,36 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         status: 500,
         headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
       })
+    }
+
+    // THE PER-SESSION UTILITY SHELL. Two gates and a refusal, all of them enforced HERE and not
+    // only in the UI: a hidden button is not a closed door, and this endpoint is what actually
+    // spawns `$SHELL` on the host.
+    if (url.pathname === '/api/shell' || url.pathname.startsWith('/api/shell/')) {
+      // A CENTRAL NEVER OFFERS ONE. It aggregates other machines and has no host to serve — the
+      // same refusal, in the same shape, the `/api/fleet` block gives.
+      if (TEAM_CENTRAL) {
+        return new Response(JSON.stringify({ error: 'shell_central' }), {
+          status: 404,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      if (!shellAllowed(CAPS.localShell, (await readPreferences()).shellEnabled)) {
+        return new Response(JSON.stringify({ error: 'shell_disabled' }), {
+          status: 403,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        })
+      }
+      // Dynamic, following the `/api/fleet` handler's own pattern: the session machinery stays out
+      // of a cold start that never touches it.
+      const { hostForFleet, fleetLang } = await import('./sessions/fleet-web')
+      const { handleShellRoute } = await import('./sessions/shell-web')
+      const shellLang = fleetLang(url.searchParams.get('lang'))
+      const res = await handleShellRoute(req, url, await hostForFleet(shellLang), shellLang)
+      if (res) {
+        for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v)
+        return res
+      }
     }
 
     // Chat is opt-in. `capability-guard.ts` has already refused these paths where the exposure

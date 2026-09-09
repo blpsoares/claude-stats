@@ -46,6 +46,7 @@ import { liveTurnText, stripAnsi } from '../../lib/liveTurn'
 import { scratchKey, sessionScratch } from '../../lib/sessionScratch'
 import { chatReadAt, firstFrameStale, refreshChat, subscribeChat } from '../../lib/chatFeed'
 import { composerMaxHeight } from '../../lib/composerHeight'
+import { isPickerSelectKey } from '../../lib/pickerKeys'
 import { nudgeFleet } from '../../lib/fleet'
 import { artifactsFromTurns, hasUnlistedWrites, type Artifact } from '../../lib/sessionArtifacts'
 import type { LiveTurn } from '../../lib/artifactTabs'
@@ -59,7 +60,7 @@ import {
 import {
   applyAtServer, applyAtTool, atLevel, atQuery, atServerStatusText, atToolViewReason,
   emptyAtServerReason, emptyAtToolReason, filterAtServers, findAtServer, resolveAtToolView,
-  type MenuMcpServer,
+  type MenuMcpServer, dropEmptyAtTrigger,
 } from '../../lib/atMenu'
 import { composeReply, markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
 import { pendingEchoes } from '@agentistics/core'
@@ -68,6 +69,7 @@ import {
 } from '../../lib/composerStore'
 import { commandToken, knownCommands } from '../../lib/commandToken'
 import { draftSegments, needsMirror } from '../../lib/commandMirror'
+import { knownServers, mentionTokens } from '../../lib/mentionTokens'
 import { commandNotFoundNotice } from '../../lib/commandNotice'
 import { lastSentMessage, turnAnchorId } from '../../lib/lastSent'
 import { goToTurn } from '../../lib/turnScroll'
@@ -475,6 +477,18 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * POLLING (below) for as long as the picker could still be showing one.
    */
   const [mcpServers, setMcpServers] = useState<MenuMcpServer[] | null>(null)
+  /**
+   * The references in the draft that point at a server this machine actually has.
+   *
+   * Derived on every render from the draft and the server list, exactly like `cmdToken` — which is
+   * what makes deleting a character un-mark a reference with nothing to invalidate. Empty while the
+   * list has not arrived: a mark is read at a glance and believed, so it may never stand over
+   * something unverified. See `mentionTokens.ts`.
+   */
+  const mentions = useMemo(
+    () => mentionTokens(draft, knownServers(mcpServers)),
+    [draft, mcpServers],
+  )
   /** Escape closes the picker while the `@word` it was triggered by is still on screen — see `slashDismissed`. */
   const [atDismissed, setAtDismissed] = useState(false)
   const [atIndex, setAtIndex] = useState(0)
@@ -1305,7 +1319,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
   }
 
   async function send() {
-    const text = draft.trim()
+    // A trailing `@server:` is the picker's scaffolding and was never typed — it must not be sent.
+    const text = dropEmptyAtTrigger(draft).trim()
     // A message that is ONLY attachments is still a message: the paths are the content.
     // `canPrompt` is checked HERE now rather than only on the field's `disabled`, which no longer
     // follows it — see the note on the textarea. This is where it belonged anyway: the rule is
@@ -1675,8 +1690,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                   ))}
                   <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                     {pt
-                      ? '↑↓ escolhe · enter escreve no campo · esc fecha. Não envia.'
-                      : '↑↓ to move · enter writes it into the field · esc closes. It does not send.'}
+                      ? '↑↓ escolhe · enter ou tab escreve no campo · esc fecha. Não envia.'
+                      : '↑↓ to move · enter or tab writes it into the field · esc closes. It does not send.'}
                   </p>
                 </>
               )}
@@ -1751,8 +1766,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     ))}
                     <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                       {pt
-                        ? '↑↓ escolhe · enter adiciona (dá para escolher mais de uma) · esc fecha. Não envia.'
-                        : '↑↓ to move · enter adds it (choose more than one) · esc closes. It does not send.'}
+                        ? '↑↓ escolhe · enter ou tab adiciona (dá para escolher mais de uma) · esc fecha. Não envia.'
+                        : '↑↓ to move · enter or tab adds it (choose more than one) · esc closes. It does not send.'}
                     </p>
                   </>
                 )
@@ -1796,8 +1811,8 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     ))}
                     <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
                       {pt
-                        ? '↑↓ escolhe · enter referencia · digite “:” para ver as ferramentas · esc fecha.'
-                        : '↑↓ to move · enter references it · type “:” to see its tools · esc closes.'}
+                        ? '↑↓ escolhe · enter ou tab referencia · digite “:” para ver as ferramentas · esc fecha.'
+                        : '↑↓ to move · enter or tab references it · type “:” to see its tools · esc closes.'}
                     </p>
                   </>
                 )
@@ -2104,7 +2119,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     The mirror scrolls with the field, is `aria-hidden` (the text is already in the
                     field, and a screen reader must not hear it twice) and takes no pointer events. */}
                 <div style={{ position: 'relative' }}>
-                  {needsMirror(cmdToken) && (
+                  {needsMirror(cmdToken, mentions) && (
                     <div
                       aria-hidden
                       ref={underlayRef}
@@ -2115,17 +2130,29 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: 'var(--text-primary)',
                       }}
                     >
-                      {draftSegments(draft, cmdToken).map((seg, i) => seg.button ? (
-                        <span key={i} style={{
-                          background: 'var(--anthropic-orange)', color: '#fff',
-                          borderRadius: 4,
-                          boxShadow: '0 0 0 2px var(--anthropic-orange)',
-                        }}>{seg.text}</span>
-                      ) : (
-                        // A plain run — key only, no wrapper style, so it never disagrees with the
-                        // textarea's own metrics for the text it is standing in for.
-                        <span key={i}>{seg.text}</span>
-                      ))}
+                      {draftSegments(draft, cmdToken, mentions).map((seg, i) => {
+                        // A plain run gets a key and nothing else, so it can never disagree with
+                        // the textarea's own metrics for the text it is standing in for.
+                        if (seg.kind === 'plain') return <span key={i}>{seg.text}</span>
+                        // TWO MARKS, because they are two different things. A command is an ACTION
+                        // the message performs and is painted as the button it effectively is; a
+                        // mention is a REFERENCE to something on this machine and is marked as a
+                        // chip. Giving both the same paint would say they do the same thing.
+                        const command = seg.kind === 'command'
+                        return (
+                          <span key={i} style={{
+                            background: command ? 'var(--anthropic-orange)' : 'var(--accent-blue-dim)',
+                            color: command ? '#fff' : 'var(--accent-blue)',
+                            borderRadius: 4,
+                            // The ring is what gives the run its padding WITHOUT taking any width:
+                            // the mirror has to lay out character-for-character with the field
+                            // behind it, so nothing here may change the text's metrics.
+                            boxShadow: command
+                              ? '0 0 0 2px var(--anthropic-orange)'
+                              : '0 0 0 2px var(--accent-blue-dim)',
+                          }}>{seg.text}</span>
+                        )
+                      })}
                     </div>
                   )}
                 <textarea
@@ -2143,7 +2170,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // is what a keyboard user tabbing onto an entry does.
                     const into = e.relatedTarget as Node | null
                     if (!skillPickerRef.current?.contains(into)) setSlashDismissed(true)
-                    if (!atPickerRef.current?.contains(into)) setAtDismissed(true)
+                    if (!atPickerRef.current?.contains(into)) {
+                      setAtDismissed(true)
+                      setDraft(d => dropEmptyAtTrigger(d))
+                    }
                   }}
                   onPaste={onPaste}
                   onKeyDown={e => {
@@ -2153,7 +2183,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (skillPickerOpen && slashFlat.length > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashIndex(i => stepSkill(i, slashFlat.length, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                      // Enter or Tab — one rule, shared with the `@` picker below. See
+                      // `pickerKeys.ts` for why shift is excluded and why Tab is not gated on
+                      // mobile the way Enter is.
+                      if (isPickerSelectKey({ key: e.key, shiftKey: e.shiftKey, isMobile })) {
                         e.preventDefault()
                         const picked = slashFlat[Math.min(slashIndex, slashFlat.length - 1)]
                         if (picked) insertSkill(picked.name)
@@ -2170,7 +2203,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     if (atOpen && atFlatLen > 0) {
                       if (e.key === 'ArrowDown') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, 1)); return }
                       if (e.key === 'ArrowUp') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, -1)); return }
-                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                      if (isPickerSelectKey({ key: e.key, shiftKey: e.shiftKey, isMobile })) {
                         e.preventDefault()
                         const i = Math.min(atIndex, atFlatLen - 1)
                         if (atLvl?.level === 'tool') {
@@ -2183,7 +2216,14 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                         return
                       }
                     }
-                    if (e.key === 'Escape' && atOpen) { e.preventDefault(); setAtDismissed(true); return }
+                    if (e.key === 'Escape' && atOpen) {
+                      e.preventDefault()
+                      setAtDismissed(true)
+                      // Closing the picker ends the pick, so the open `@server:` it left for the
+                      // NEXT one is scaffolding now — see `dropEmptyAtTrigger`.
+                      setDraft(d => dropEmptyAtTrigger(d))
+                      return
+                    }
                     // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
                     // convention every messaging app on a touch keyboard follows: the return key is
                     // the only way to write a second line there, because `shift+enter` needs a
@@ -2226,7 +2266,7 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // the note above the mirror div. `caretColor` is set unconditionally to the same
                     // colour the text would otherwise be, so it never rides on `color` and vanishes
                     // the moment `color` does.
-                    color: needsMirror(cmdToken) ? 'transparent' : 'var(--text-primary)',
+                    color: needsMirror(cmdToken, mentions) ? 'transparent' : 'var(--text-primary)',
                     caretColor: 'var(--text-primary)',
                     fontFamily: 'inherit', fontSize: 13.5,
                     lineHeight: 1.5, maxHeight: maxComposerH, overflowY: 'auto', padding: '6px 6px',

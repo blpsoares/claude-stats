@@ -53,10 +53,11 @@ You have direct tool access. Use it. If you need data, call the tool.
 
 Add ONE button when the response contains data fetched from a tool:
 - Costs for a specific project → [→ Ver custos](/costs?projects=PROJECT_PATH)
-- Sessions for a specific project → [→ Ver projetos](/projects?projects=PROJECT_PATH)
+- Sessions for a specific project → [→ Ver projetos](/?projects=PROJECT_PATH)
 - Multiple projects → [→ Ver custos](/costs?projects=PATH1|PATH2)
 - Generic cost breakdown → [→ Ver custos](/costs)
-- Generic projects overview → [→ Ver projetos](/projects)
+- Generic projects overview → [→ Ver projetos](/)
+- A repository rather than a folder → [→ Ver repositórios](/repositories)
 - Created/modified a layout → [→ Abrir layout](/custom)
 - General dashboard stats → [→ Dashboard](/)
 

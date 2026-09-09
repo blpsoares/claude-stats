@@ -453,6 +453,50 @@ packages/server/server/          — server-side modules (never bundled by Vite)
   │                          row and `SessionsPage` hides the chat tab. Its format WAS measured and
   │                          the finding is recorded in `harness-transcript.ts` so nobody spends it
   │                          twice: a patch log, not one message per line. See docs/session-manager.md
+  │                          **THE PER-SESSION UTILITY SHELL is not a session, and the separation
+  │                          is structural** (`shell-spec.ts` / `shell-gate.ts` / `shell-store.ts` /
+  │                          `shell-backend.ts` / `shell-web.ts`, phase 1). It is a PTY in a
+  │                          session's own directory, opened for the PERSON — `$SHELL` bare, no
+  │                          `-l`, because tmux already gives the pane a tty and a login flag would
+  │                          read a different set of rc files from the panes `agentop session`
+  │                          opens. It runs on its OWN tmux socket (`SHELL_SOCKET`,
+  │                          `agentop-shell`) and records itself in `~/.agentistics/shells.json`,
+  │                          never in the registry, and BOTH halves of that are load-bearing: on the
+  │                          fleet socket `idFromTmuxName` strips the `agentop-` prefix, so
+  │                          `parseTmuxList` KEEPS the session and `reconcileSessions` reports it as
+  │                          an `unregistered` row — "visible and inert", filed under
+  │                          `GONE_PROJECT_KEY`, beyond every verb — while in the registry each
+  │                          shell would join the ~200 ms pane walk `host.sessions()` runs every 5 s
+  │                          in four processes, be probed by `attention.ts` for dialog markers, take
+  │                          a `lastSeenMs` heartbeat, and count toward "N sessions waiting on you",
+  │                          so an `htop` would read as a session needing a person. A naming
+  │                          convention would have worked and been one refactor from breaking; a
+  │                          socket cannot break, and `shell-isolation.test.ts` asserts all of it
+  │                          over the module SOURCE (comments stripped first — these modules are
+  │                          REQUIRED to explain themselves in terms of the registry). **Two gates,
+  │                          and absent reads OFF**: `CAPS.localShell` decides the security answer
+  │                          and `preferences.shellEnabled` may only ever NARROW it — a raw shell is
+  │                          strictly more powerful than the chat `chat-gate.ts` already calls the
+  │                          most powerful thing this server does, because the chat at least runs a
+  │                          NAMED assistant CLI. Enforced in `index.ts` before the routes, not only
+  │                          in the UI, and a CENTRAL refuses outright. **Lifetime is a CEILING
+  │                          (`SHELL_CAP` = 8) and never a timer**: a TTL kills the `bun test` that
+  │                          finished at minute 61 at an hour nobody was watching and needs a timer
+  │                          running forever, while a ceiling is one check on open and only ever
+  │                          closes something at the instant somebody asks for a new one. Records go
+  │                          ONE WAY (`reconcileShells`): a pane that is gone is dropped — `exit` is
+  │                          the ordinary death — and a pane with no record is NOT adopted, the
+  │                          exact opposite of `session-adopt.ts`, because a shell carries no name,
+  │                          task or conversation worth recovering. The four refusals are CODES
+  │                          rendered by the route (`no-tmux` / `no-cwd` / `cwd-missing` /
+  │                          `at-cap`), ordered so the IMPOSSIBLE ones come before the merely FULL
+  │                          one: asking somebody to destroy work to make room for an open that
+  │                          could never have succeeded is worse than saying no. Verified end to
+  │                          end on 2026-09-09 — the switch refused before it was flipped, the
+  │                          shell opened in the row's own cwd, it appeared under `-L agentop-shell`
+  │                          and NOT under `-L agentop` nor anywhere in `/api/fleet`, the ninth open
+  │                          was refused in words, a pane killed outside agentop left no ghost, and
+  │                          `close` named an unknown id instead of counting it closed.
   ├── cli-start.ts         → the control center's HOST (`ControlHost`): service detection, start/stop/restart, connect/disconnect, boot service, archive consent, language — every action returns an already-localized `ActionResult` instead of printing
   ├── cli-stream.ts        → the control center's OUTPUT CHANNEL: subscribers + `streamCommand` (both pipes captured, never `inherit`) → lines via the pure `@agentistics/tui/control/stream`
   ├── cli-ui.ts            → dependency-free arrow-key select/confirm/input/pause + clearScreen (bundles clean into the binary; no node_modules to resolve)
@@ -694,7 +738,6 @@ packages/web/src/ (React + Vite, port 47292 in dev)
   │   ├── HomePage.tsx          → main dashboard (KPIs, charts, sessions)
   │   ├── CustomPage.tsx        → custom layout builder (/custom route)
   │   ├── CostsPage.tsx         → cost deep-dive page
-  │   ├── ProjectsPage.tsx      → projects overview page
   │   ├── RepositoriesPage.tsx  → repositories overview (/repositories): cards grouped by normalized git remote (RepositoriesList) so the same repo unifies across devs/paths/machines. **Only repos WITH a remote are shown by default** — remote-less sessions can't be attributed to a repo (and would split the same repo's metrics across machines), so they're hidden behind an "Unlinked · N" toggle. Links to /repo/:id
   │   ├── RepoDetailPage.tsx    → per-repo detail (/repo/:id): scopes a repo via an overridden `repos` filter (no global filter mutation) + tabs Overview/Members/Actions/Sessions/Dynamic Workflows. The "Actions" tab shows only when the repo has CI sessions; the "Dynamic Workflows" tab shows only when the repo has workflow runs from a `dynamicWorkflows`-capable harness, and renders each run as a step-by-step timeline (phases → agents) with a harness badge, and offers an "All / By session" view toggle that groups runs per session (see `lib/workflowSteps.ts` `buildWorkflowSteps` + `groupRunsBySession`)
   │   ├── ActionsPage.tsx       → /repositories/actions: all CI-runner sessions (SessionMeta.ci) grouped by repo — the GitHub Actions submenu of Repositories
@@ -704,6 +747,26 @@ packages/web/src/ (React + Vite, port 47292 in dev)
   │   ├── HarnessPage.tsx       → generic per-harness dashboard at /h/:harness (validates param; sets harness filter; tab bar: "Overview" = dashboard, "Data & sources" = HarnessInfoPanel); replaced the old hardcoded CodexPage
   │   └── ComparePage.tsx       → unified side-by-side comparison at /compare (per-harness colors; N/A for incapable metrics; sessions/messages/tokens/cost + comparatives: usage-by-hour with peak hour, busiest day-of-week, activity-over-time sparkline, peak token day / peak session cost)
   └── components/               → UI (charts, cards, heatmap, modals, PDF export)
+      ├── SessionDrilldown.tsx  → **everything the store knows about ONE conversation**, as a HEAD
+      │                          (what the session is) and a BODY (what it spent). Two surfaces draw
+      │                          it: `SessionDrilldownModal` (a centred dialog, for the dashboard's
+      │                          session lists — Home's "who leads" board, a repo's Actions tab, a
+      │                          custom layout: pages with no aside to open into) and the sessions
+      │                          workspace's **Metrics** tab in the right aside, reached from the
+      │                          metrics card's own "see everything in the panel" link, where the
+      │                          figures sit beside the conversation they are about. **The layout
+      │                          follows the COLUMN, not the viewport**: the dense grids were
+      │                          switched on `useIsMobile()`, which is right for a dialog that is
+      │                          either 980px or the whole phone and wrong for a panel the reader
+      │                          drags between 280 and 900px, so the body MEASURES ITSELF
+      │                          (`NARROW_AT`) and `isMobile` answers only for the frame before the
+      │                          measurement lands. The tab is ABSENT when the store has no record
+      │                          of the conversation, and the LINK is withheld on the same fact —
+      │                          a link into a tab that does not exist is the dead control this
+      │                          product refuses everywhere. There is no `/projects` page: its two
+      │                          panels (top projects, languages) are on Home, sessions are the
+      │                          sessions workspace's, and the dimension the page was really asked
+      │                          for is the REPOSITORY — `/projects` redirects to `/repositories`
       ├── HarnessInfoPanel.tsx  → inline panel explaining each harness's data sources / what's captured / what's missing (and why) / caveats; driven by HARNESS_INFO in lib/harness.ts
       ├── PreferencesModal.tsx  → unified Settings modal with tabs: Preferences / Live / Install (Environment tab removed)
       ├── TeamLogin.tsx / TeamMembers.tsx / TeamSettings.tsx → central: password login, members panel (mint/rotate/revoke/rename + presence), team settings (interval/express, offline-data policy)
@@ -2627,7 +2690,7 @@ harness must not break.
   missing from `embed-dist.ts`'s `TEXT_EXTS`, arrived base64 and skipped the rewrite in silence.
 - **Mobile / responsive UI** — the whole dashboard is responsive; gate mobile-only branches on the `useIsMobile()` hook (`packages/web/src/hooks/useIsMobile.ts`, `MOBILE_BREAKPOINT = 768`). Conventions:
   - **Sticky header** holds everything needed for interaction. On mobile the header shows only the logo; the lang/theme/export/settings/health/live/refresh controls are **not** in the top row — they live in the bottom-nav "More" sheet (see below). Desktop keeps the full action row.
-  - **`MobileBottomNav`** (in `App.tsx`) is the only mobile chrome: 4 primary tabs (Home/Costs/Projects/Tools) + a **"More" bottom sheet rendered as a 3-column grid of square tiles** (Custom / Export / Compare when >1 harness, plus the moved actions: Live toggle w/ interval badge, Refresh, Settings, Warnings w/ issue count). The More button shows a dot when health warnings exist. The sheet slides in via a `transform` transition. Do not move these actions back into the top header on mobile, and keep the tiles compact (no square `aspect-ratio`).
+  - **`MobileBottomNav`** (in `App.tsx`) is the only mobile chrome: 4 primary tabs (Home/Costs/Repositories/Tools) + a **"More" bottom sheet rendered as a 3-column grid of square tiles** (Custom / Export / Compare when >1 harness, plus the moved actions: Live toggle w/ interval badge, Refresh, Settings, Warnings w/ issue count). The More button shows a dot when health warnings exist. The sheet slides in via a `transform` transition. Do not move these actions back into the top header on mobile, and keep the tiles compact (no square `aspect-ratio`).
   - **Collapsible filter bar**: on mobile the full `FiltersBar` (harness chips + date/projects/models) sits in the sticky header and can be minimized to a slim "Filters" row (with an active-filter count badge) via `filtersCollapsed`. The open/close is animated with a `grid-template-rows: 0fr↔1fr` transition. The animation wrapper needs `overflow: hidden`, which would clip the Models popover — so it's only clipped while animating/collapsed (`filtersClip` + `onTransitionEnd`), then switches to `visible`.
   - **`FiltersBar` `compact` prop** (used on mobile): hides the vestigial vertical dividers and tightens padding. On mobile the controls also stretch to fill each row (date presets `flex:1`, custom range full-width, the ＋ Filtro button full-width).
   - **`FiltersBar` "＋ Filtro" model**: the top bar shows only the date presets + custom range + a single dashed **＋ Filtro** button (with an active-dimension count badge). It opens a menu of the *available* dimensions (Members/Harnesses/Presence shown only on central-with-data; Repos only when a repo dimension exists; Projects/Models when present); picking one opens that dimension's inline value picker (Projects opens the full `ProjectsModal`). The selected values are NOT shown in the top bar — they render in the animated per-category chip rows below (`AnimatedRow`/`ChipRow`/`FilterChip`, one row per dimension incl. Presence). Do not re-add always-visible dimension dropdowns to the top bar.

@@ -184,7 +184,8 @@ export interface CliStrings {
   /** A broadcast that was refused before anything was typed. */
   sessBroadcastRefused: (reason: string, skipped: number) => string
   /** What a broadcast did, per outcome. Partial delivery is the NORMAL case. */
-  sessBroadcastDone: (sent: number, failed: number, skipped: number) => string
+  sessBroadcastDone: (sent: number, failed: number, skipped: number, reopened: number) => string
+  sessBroadcastReopenSlow: string
   /**
    * Refusing to open a conversation a live session already has, and NAMING that session.
    *
@@ -600,14 +601,19 @@ const EN: CliStrings = {
     }
     return `none of the ${skipped} session(s) picked can take a prompt right now — see the reason on each.`
   },
-  sessBroadcastDone: (sent: number, failed: number, skipped: number) => {
+  sessBroadcastDone: (sent: number, failed: number, skipped: number, reopened: number) => {
     const parts = [`sent to ${sent} session${sent === 1 ? '' : 's'}`]
+    // Said because it STARTED something: a reopen spawns an assistant, which is a bigger act than
+    // typing into one that was already running, and the person should read that it happened.
+    if (reopened > 0) parts.push(`${reopened} reopened first`)
     // Named separately: a REFUSAL at write time (the session was asking after all) and a row that
     // was never eligible are two different things to do something about.
     if (failed > 0) parts.push(`${failed} refused it`)
     if (skipped > 0) parts.push(`${skipped} could not be sent to`)
     return `${parts.join(', ')}.`
   },
+  sessBroadcastReopenSlow:
+    'it was reopened but had not come up in time to be written to — nothing was typed into it.',
   sessResumeInUse: (holder: string) =>
     `that conversation is already open in ${holder} — open it there instead of starting a second assistant in it.`,
   sessAdoptFailed: (holder: string) =>
@@ -937,6 +943,8 @@ const PT: CliStrings = {
     if (skipped > 0) parts.push(`${skipped} não pôde receber`)
     return `${parts.join(', ')}.`
   },
+  sessBroadcastReopenSlow:
+    'ela foi reaberta mas não subiu a tempo de receber a mensagem — nada foi digitado nela.',
   sessResumeInUse: (holder: string) =>
     `essa conversa já está aberta em ${holder} — abra ela por lá, em vez de colocar um segundo assistente dentro dela.`,
   sessAdoptFailed: (holder: string) =>

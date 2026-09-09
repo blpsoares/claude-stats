@@ -8,7 +8,7 @@ describe('modeOfPath — the mode is read off the URL, so there is one answer', 
   })
 
   test('everything else is the dashboard', () => {
-    for (const p of ['/', '/costs', '/projects', '/repositories', '/settings/notifications']) {
+    for (const p of ['/', '/costs', '/tools', '/repositories', '/settings/notifications']) {
       expect(modeOfPath(p)).toBe('dashboard')
     }
   })
