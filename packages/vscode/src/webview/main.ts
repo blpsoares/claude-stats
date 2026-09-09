@@ -397,16 +397,12 @@ function groupHeading(
 
   if (group && state.arrangement.grouping === 'task' && group.key && group.key !== UNFILED_KEY) {
     const task = group.key
-    heading.append(iconButton('⚑', s('openTaskWhole'), 'icon-btn tiny', () => {
-      // The row's own verb, asked of any session in the band: the server reads the task off the row
-      // and never from the request, so a caller cannot reopen a task it does not own a session in.
-      const anchor = group ? rowsOfGroup(group.key)[0] : undefined
-      if (anchor) act(anchor.id, 'openTask')
-    }))
-    heading.append(iconButton(group.done ? '↺' : '✓', group.done ? s('unfinishTask') : s('finishTask'), 'icon-btn tiny', () => {
-      const anchor = rowsOfGroup(group.key)[0]
-      if (anchor) act(anchor.id, 'finishTask')
-    }))
+    /*
+     * The band used to carry ⚑ "reopen this whole task" and ✓ "mark it finished". Both verbs are
+     * gone from the server (see `session-verbs.ts`): they asked about a DELIVERY at a moment nobody
+     * was thinking about one. Finishing is now asked when a session is STOPPED, and reopening a
+     * whole task is `agentop session open`.
+     */
     heading.append(iconButton('␡', s('deleteTask'), 'icon-btn tiny danger', () => {
       post({ type: 'act', id: '', action: 'deleteTask', text: task })
     }))
@@ -774,8 +770,6 @@ function labelButton(
  */
 const TOOL_VERBS: readonly (readonly [FleetActionId, string])[] = [
   ['resume', '↻'],
-  ['openTask', '⚑'],
-  ['finishTask', '✓'],
 ]
 
 /** An icon control. The label is never only in the glyph: it is the tooltip and the accessible name. */

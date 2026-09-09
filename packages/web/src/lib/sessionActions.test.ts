@@ -14,8 +14,6 @@ function row(state: FleetRow['state'], enabled: Partial<Record<FleetVerb['action
     verb('rename', on('rename'), 'Rename'),
     verb('note', on('note'), 'Note'),
     verb('task', on('task'), 'Task'),
-    verb('openTask', on('openTask'), 'Open whole task'),
-    verb('finishTask', on('finishTask'), 'Finish task'),
     verb('kill', on('kill'), 'Stop session'),
   ]
   return {
@@ -54,7 +52,7 @@ describe('primaryAction', () => {
   })
 
   it('waiting leads with a prompt (never approve — nothing is asking)', () => {
-    const p = primaryAction(row('waiting', { approve: false, prompt: true, openTask: true }))
+    const p = primaryAction(row('waiting', { approve: false, prompt: true }))
     expect(p?.kind).toBe('prompt')
     expect(p?.action).toBe('prompt')
     expect(p?.human).toBe(false)

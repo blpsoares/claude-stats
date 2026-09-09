@@ -2982,6 +2982,19 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         : { ok: false, message: s.sessRestoreFailed(skipped) }
     },
 
+    /**
+     * Finish a piece of work — asked when its session is STOPPED, which is the one moment somebody
+     * knows the answer. It used to be a standing verb on every filed row; see `session-verbs.ts`.
+     *
+     * It writes BOTH places a delivery can be finished. `finishedTasks` is the cockpit's own switch
+     * (it hides the task's sessions), and the BOARD is where a delivery's status actually lives —
+     * `markTask` on the way out. Writing only the first is how the cockpit came to call work
+     * finished that the board still drew in `To do`, and the board's own `markTask` has always
+     * mirrored the other way. One gesture, one resulting state, whichever surface asked.
+     *
+     * The board write is best-effort and never fails the action: a machine with no board store is
+     * still entitled to hide a finished task in its own cockpit.
+     */
     async finishTask(task: string, done: boolean): Promise<ActionResult> {
       const s = S()
       if (!task) return { ok: false, message: s.sessNoTask }
@@ -2990,6 +3003,10 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
         ? (current.includes(task) ? current : [...current, task])
         : current.filter(t => t !== task)
       await writePreferences({ finishedTasks: next })
+      if (done) {
+        const { markTask } = await import('./sessions/task-web')
+        await markTask(task, 'done', 'cockpit').catch(() => false)
+      }
       return { ok: true, message: done ? s.sessTaskFinished(task) : s.sessTaskReopened(task) }
     },
 
@@ -3182,25 +3199,14 @@ export function createControlHost(initialLang: CliLang, altScreen: Suspendable):
       return spawned
     },
 
-    /**
-     * Reopen every session of one task, detached.
+    /*
+     * `openTask` USED TO LIVE HERE, and it is deliberately gone.
      *
-     * The whole point of naming a task is getting its work back at once. Sessions whose conversation
-     * cannot be resolved are SKIPPED AND COUNTED — a partial reopen reported as a success would
-     * leave someone believing they had their whole task back when they did not.
+     * Reopening every session of a piece of work is a real thing to want and a poor thing to offer
+     * as a menu row two keys from `kill`: it spawns N live assistants, it was on every filed row,
+     * and it was pressed by accident. It survives as `agentop session open` — the same
+     * `task-reopen.ts` arithmetic, reached by typing the words — where it is a deliberate act.
      */
-    async openTask(task: string): Promise<ActionResult> {
-      const s = S()
-      const wanted = (await readRegistry()).filter(m => m.task === task)
-      if (wanted.length === 0) return { ok: false, message: s.sessTaskEmpty(task) }
-
-      // The DECISION is the pure `planTaskReopen`, and the PERFORMANCE is `reopenEntries` — shared
-      // with `reopenFell` below, which is the same gesture over a set chosen a different way.
-      const { plan, opened, skipped } = await reopenEntries(wanted, s)
-      return taskReopenSucceeded(plan, opened)
-        ? { ok: true, message: s.sessTaskOpened(task, opened, skipped, plan.heldElsewhere.length) }
-        : { ok: false, message: s.sessTaskNoneOpened(task, skipped) }
-    },
 
     /**
      * Reopen everything the machine took at once.

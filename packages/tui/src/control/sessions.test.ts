@@ -546,8 +546,7 @@ describe('detailLines', () => {
 describe('sessionActions', () => {
   const words = {
     attach: 'Attach', resume: 'Reopen', rename: 'Rename', note: 'Note', task: 'Task',
-    kill: 'Stop', openTask: 'Open whole task', reopenFell: 'Reopen what fell',
-    finishTask: 'Finish task', approve: 'Answer', prompt: 'Send',
+    kill: 'Stop', reopenFell: 'Reopen what fell', approve: 'Answer', prompt: 'Send',
     new: 'New', search: 'Search', group: 'Group',
   }
   const of = (s?: ControlSession) => sessionActions(s).map(a => a.action)
@@ -592,9 +591,13 @@ describe('sessionActions', () => {
     expect(on(external)).toEqual(['new', 'search', 'group'])
   })
 
-  it('enables the whole task only once the session is filed under one', () => {
-    expect(on(session('m'))).not.toContain('openTask')
-    expect(on(session('m', { task: 'XPTO' }))).toContain('openTask')
+  // The two DELIVERY verbs are gone from the row on purpose — see `session-verbs.ts`. Reopening a
+  // whole task is `agentop session open`; finishing one is asked when a session is stopped.
+  it('offers no standing delivery verb, filed or not', () => {
+    for (const row of [session('m'), session('m', { task: 'XPTO' })]) {
+      expect(of(row)).not.toContain('openTask')
+      expect(of(row)).not.toContain('finishTask')
+    }
   })
 
   it('never lets the cursor land on a verb that cannot run', () => {
@@ -873,8 +876,7 @@ describe('sessionsCockpit', () => {
 describe('asideRows', () => {
   const words = {
     attach: 'Attach', resume: 'Reopen', rename: 'Rename', note: 'Note', task: 'Task',
-    kill: 'Stop', openTask: 'Open whole task', reopenFell: 'Reopen what fell',
-    finishTask: 'Finish task', approve: 'Answer', prompt: 'Send',
+    kill: 'Stop', reopenFell: 'Reopen what fell', approve: 'Answer', prompt: 'Send',
     new: 'New', search: 'Search', group: 'Group',
   }
   const groupWords = { day: 'day', repo: 'repo', none: 'flat', tree: 'cascade', task: 'tasks', harness: 'harness', model: 'model', project: 'project', status: 'state', marked: 'marked' }
@@ -1384,7 +1386,7 @@ describe('the only-active toggle', () => {
     actions: sessionActions(session('m')),
     actionWords: {
       attach: 'A', resume: 'R', rename: 'N', note: 'O', task: 'T', kill: 'K',
-      openTask: 'OT', reopenFell: 'RF', finishTask: 'FT', approve: 'AP', prompt: 'PR',
+      reopenFell: 'RF', approve: 'AP', prompt: 'PR',
       new: 'NW', search: 'S', group: 'G',
     },
     grouping: 'project',
@@ -1612,7 +1614,7 @@ describe('sessionAge', () => {
 describe('sessionKeyHelp', () => {
   const words = Object.fromEntries(
     ['move', 'open', 'attach', 'menu', 'section', 'newSession', 'search', 'clear', 'kill',
-      'rename', 'note', 'task', 'openTask', 'finishTask', 'recent', 'cascade',
+      'rename', 'note', 'task', 'recent', 'cascade',
       'mark', 'bulkStop', 'onlyActive', 'closed', 'exited', 'group', 'layout',
       'detail', 'menuFold', 'reset', 'tabs', 'help', 'quit',
       'approve', 'prompt', 'reopenFell'].map(k => [k, `does ${k}`]),
@@ -2295,7 +2297,7 @@ describe('asideRows — the layout section', () => {
     actions: sessionActions(session('m')),
     actionWords: {
       attach: 'A', resume: 'R', rename: 'N', note: 'O', task: 'T', kill: 'K',
-      openTask: 'OT', reopenFell: 'RF', finishTask: 'FT', approve: 'AP', prompt: 'PR',
+      reopenFell: 'RF', approve: 'AP', prompt: 'PR',
       new: 'NW', search: 'S', group: 'G',
     },
     grouping: 'project',

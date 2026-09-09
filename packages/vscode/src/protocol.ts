@@ -19,7 +19,6 @@
 /** Mirrors `FleetActionId` in `packages/server/server/sessions/fleet-row.ts`. */
 export type FleetActionId =
   | 'approve' | 'prompt' | 'rename' | 'note' | 'task' | 'kill' | 'resume'
-  | 'openTask' | 'finishTask'
   /** The two that act on something other than one row — see the server's own note. */
   | 'reopenFell' | 'deleteTask'
 

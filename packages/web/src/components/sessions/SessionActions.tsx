@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
 import { SessionFiling } from '../tasks/SessionFiling'
+import { StopSessionConfirm } from '../tasks/StopSessionConfirm'
 import { boardCopy } from '../tasks/copy'
 import { BetaTag } from '../BetaTag'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
@@ -82,10 +83,13 @@ export interface SessionActionsProps {
 const TEXT_VERBS = new Set<string>(['rename', 'note'])
 
 /** Shown in the menu, in this order. `prompt` and `approve` have their own places in the chat. */
-const MENU_ORDER: string[] = ['rename', 'note', 'task', 'openTask', 'finishTask', 'resume', 'kill']
+// `openTask` and `finishTask` are GONE from this menu and from the fleet's verbs: they asked about
+// a delivery at a moment nobody was thinking about one. The question moved to the stop confirmation
+// — see `StopSessionConfirm` — which is when somebody actually knows the answer.
+const MENU_ORDER: string[] = ['rename', 'note', 'task', 'resume', 'kill']
 
 /** The verbs that belong to the delivery board rather than to the session itself. */
-const TASK_VERBS = new Set<string>(['task', 'openTask', 'finishTask'])
+const TASK_VERBS = new Set<string>(['task'])
 
 export function SessionActions({
   row, lang, act, onGone, onOpened, extra = [], extraTop,
@@ -258,26 +262,16 @@ export function SessionActions({
                 </div>
               </form>
             ) : confirming ? (
-              <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.5, color: 'var(--text-primary)' }}>
-                  {pt
-                    ? 'Encerrar esta sessão? O que ela estiver fazendo para agora.'
-                    : 'End this session? Whatever it is doing stops now.'}
-                </p>
-                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <button onClick={() => setConfirming(false)} style={ghostBtn}>
-                    {pt ? 'Cancelar' : 'Cancel'}
-                  </button>
-                  <button
-                    onClick={() => void run('kill')}
-                    disabled={busy}
-                    style={{ ...primaryBtn, background: 'var(--accent-red)' }}
-                  >
-                    <X size={13} />
-                    {pt ? 'Encerrar' : 'End'}
-                  </button>
-                </div>
-              </div>
+              <StopSessionConfirm
+                title={row.title}
+                {...(row.task ? { task: row.task } : {})}
+                lang={lang}
+                busy={busy}
+                onStop={() => run('kill')}
+                onCancel={() => setConfirming(false)}
+                onNotice={setNotice}
+                styles={{ danger: { ...primaryBtn, background: 'var(--accent-red)' }, plain: ghostBtn }}
+              />
             ) : (
               <>
                 {verbs.map(v => (

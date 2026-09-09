@@ -19,7 +19,7 @@ import type { ControlSession } from './types'
 /** What a verb DOES, independent of what it is called in either language. */
 export type SessionAction =
   | 'attach' | 'resume' | 'approve' | 'prompt' | 'rename' | 'note' | 'task' | 'kill'
-  | 'openTask' | 'reopenFell' | 'finishTask'
+  | 'reopenFell'
   | 'new' | 'search' | 'group'
 
 /**
@@ -49,6 +49,20 @@ export interface OfferedAction {
  * — the cursor skips them and a click does nothing — but the screen no longer implies that renaming
  * a session stopped existing because the one you selected cannot be renamed.
  */
+/**
+ * **`openTask` and `finishTask` are GONE, and this is where they were decided.**
+ *
+ * They were standing verbs about a DELIVERY on a row about a SESSION: "open every session of its
+ * task" and "mark its task finished", offered on every row that happened to be filed under
+ * something. Both asked at a moment nobody was thinking about a delivery — so they were pressed by
+ * accident, and the one that mattered (finishing) was a switch somebody had to remember to flip,
+ * which left deliveries open long after their last session ended.
+ *
+ * The question moved to the one moment the answer is in the reader's head: stopping a session that
+ * is filed under a delivery asks whether the delivery is finished (`StopSessionConfirm`). Reopening
+ * a whole task remains `agentop session open`, a CLI verb, where it is a deliberate act rather than
+ * a menu row two keys from `kill`.
+ */
 export function sessionActions(
   selected: ControlSession | undefined,
   /** Facts about the FLEET rather than the row — what the fleet-level verbs need. */
@@ -67,7 +81,6 @@ export function sessionActions(
     && (selected.state === 'working' || selected.state === 'waiting'
       || selected.state === 'waiting-approval')
   const canReopen = Boolean(selected?.resume)
-  const hasTask = Boolean(selected?.task)
 
   return [
     // The row-specific verb comes first, and which one it is depends on what the row IS: something
@@ -96,15 +109,10 @@ export function sessionActions(
     { action: 'rename', enabled: hosted },
     { action: 'note', enabled: hosted },
     { action: 'task', enabled: hosted },
-    { action: 'openTask', enabled: hosted && hasTask },
     // A FLEET verb sitting among the row verbs, because that is where the hand already is when a
     // reboot has just emptied the screen. Enabled only when something actually fell — offered and
     // doing nothing is the shape this menu already refuses everywhere else.
     { action: 'reopenFell', enabled: (fleet.fell ?? 0) > 0 },
-    // Finishing needs only a TASK, not a live session: the ordinary moment to close a piece of work
-    // is when its last session has already ended, and requiring a hosted row would make the verb
-    // unreachable at exactly that moment.
-    { action: 'finishTask', enabled: hasTask },
     { action: 'kill', enabled: hosted },
     // These three need no selection at all and are therefore never dim.
     { action: 'new', enabled: true },
@@ -131,9 +139,7 @@ export const actionWords = (s: ControlStrings): Record<SessionAction, string> =>
   note: s.actSessions.note,
   task: s.actSessions.task,
   kill: s.actSessions.kill,
-  openTask: s.actSessions.openTask,
   reopenFell: s.actSessions.reopenFell,
-  finishTask: s.actSessions.finishTask,
   new: s.actSessions.newSession,
   search: s.actSessions.search,
   group: s.actSessions.group,

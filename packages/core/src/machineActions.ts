@@ -20,9 +20,20 @@
  * a note, a task, or ending/reopening a session — and none of them needs to read a terminal.
  */
 
-/** Verbs that need no screen, and may cross to a central once the fleet consent is given. */
+/**
+ * Verbs that need no screen, and may cross to a central once the fleet consent is given.
+ *
+ * **`openTask` and `finishTask` were on this list and are gone with the verbs themselves.** They
+ * acted on the piece of WORK a row was filed under rather than on the row — `openTask` expanded to
+ * every session of that task over the whole registry — and `machine-fleet.ts` carried a dedicated
+ * refusal so a restricted central could not reach a withheld directory through them. That guard is
+ * gone too, and it is not a weakening: this list is CLOSED, so an action it does not name is
+ * refused, and neither id exists as a `FleetActionId` any more. Finishing a delivery is now asked
+ * when a session is stopped and written through the board's own API; reopening a whole task is
+ * `agentop session open`, on the machine.
+ */
 export const REMOTE_SCREENLESS_ACTIONS = [
-  'rename', 'note', 'task', 'interrupt', 'kill', 'resume', 'openTask', 'finishTask',
+  'rename', 'note', 'task', 'interrupt', 'kill', 'resume',
 ] as const
 
 export type RemoteScreenlessAction = typeof REMOTE_SCREENLESS_ACTIONS[number]

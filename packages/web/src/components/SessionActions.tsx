@@ -4,9 +4,10 @@
  * It replaced a flat bar of eight buttons drawn under every card. A row is not a toolbar: the fleet
  * verbs (`Answer its question`, `Send a prompt`, `Rename`, `Note`, `Task`, `Stop session`) live
  * behind a kebab MENU, and only the state's ONE lead action stays on the row (decided by the pure
- * `primaryAction`). `Open whole task` / `Finish task` are DROPPED from the menu entirely (`HIDDEN_VERBS`
- * below) — never rendered, never pickable — because the card is session control, not task
- * bookkeeping; those two belong to the fleet cockpit. The menu also carries non-fleet items the CARD
+ * `primaryAction`). `Open whole task` / `Finish task` no longer exist ANYWHERE — the card used to
+ * hide them and the cockpit used to offer them, and both were asking about a delivery at a moment
+ * nobody was thinking about one; the question moved to the stop confirmation, which is when
+ * somebody actually knows the answer (`StopSessionConfirm`). The menu also carries non-fleet items the CARD
  * itself decides on (`extraItems`, e.g. "Session metrics") — listed above the fleet verbs, since a
  * menu already opened to act on a session is also where you look to inspect it. The forms, the
  * confirm, the dialog to answer, the attach command and the result all render in the PANEL, inside
@@ -43,6 +44,7 @@ import {
   subscribePromptAudit,
   type PromptAuditEntry,
 } from '../lib/promptAudit'
+import { StopSessionConfirm } from './tasks/StopSessionConfirm'
 
 const T = {
   pt: {
@@ -112,9 +114,6 @@ function usePromptAuditForSession(sessionId: string): PromptAuditEntry[] {
 /** Verbs that end work and are asked about before they run. */
 const CONFIRM_VERBS: ReadonlySet<FleetActionId> = new Set<FleetActionId>(['kill'])
 
-/** Task bookkeeping verbs — deliberately never rendered in the menu. The card is session control,
- *  not task management; these two belong to the fleet cockpit, not the dashboard. */
-const HIDDEN_VERBS: ReadonlySet<FleetActionId> = new Set<FleetActionId>(['openTask', 'finishTask'])
 
 /** A non-fleet item the card mixes into the menu (e.g. "Session metrics") — the menu is where you
  *  act on a session, and also where you go to inspect it. */
@@ -194,7 +193,6 @@ export function useSessionActionsController(
   function refuse(action: FleetActionId, reason?: string) {
     if (reason) return setMsg({ ok: false, text: reason })
     if (row.state === 'unknown') return setMsg({ ok: false, text: t.external })
-    if (action === 'openTask' || action === 'finishTask') return setMsg({ ok: false, text: t.noTask })
     if (action === 'approve') return setMsg({ ok: false, text: t.notAsking })
     if (action === 'resume') return setMsg({ ok: false, text: t.noReopen })
     setMsg({ ok: false, text: t.notRunning(row.stateLabel) })
@@ -209,7 +207,7 @@ export function useSessionActionsController(
     }
     if (CONFIRM_VERBS.has(v.action)) return setActive(v.action)
     // `approve` shows the dialog, which the panel already draws whenever the row has one; just clear
-    // any open form. Everything else (resume / openTask / finishTask) runs straight away.
+    // any open form. Everything else (`resume`) runs straight away.
     if (v.action === 'approve') return setActive(null)
     void run(v.action)
   }
@@ -318,7 +316,7 @@ export function SessionActionsMenu({ ctrl, onActivate, extraItems }: {
               <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
             </>
           )}
-          {ctrl.row.verbs.filter(v => !HIDDEN_VERBS.has(v.action)).map(v => {
+          {ctrl.row.verbs.map(v => {
             const live = v.enabled && PERFORMABLE.has(v.action)
             return (
               <button
@@ -358,7 +356,6 @@ export function SessionActionsPanel({ ctrl }: { ctrl: SessionActionsController }
   const touch = isMobile ? 44 : 28
   const btn = (kind: 'plain' | 'danger' | 'primary') => btnStyle(kind, touch, isMobile)
 
-  const killVerb = row.verbs.find(v => v.action === 'kill')
   const audit = usePromptAuditForSession(row.id)
 
   return (
@@ -460,19 +457,21 @@ export function SessionActionsPanel({ ctrl }: { ctrl: SessionActionsController }
         </div>
       )}
 
-      {/* The confirm for a destructive verb (Stop session). */}
+      {/* Stopping a session — and, when it is filed under a delivery, the one question worth
+          asking while doing it. See `StopSessionConfirm`: the two standing task verbs this
+          replaces asked at a moment nobody was thinking about a delivery. */}
       {active && CONFIRM_VERBS.has(active) && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#ef4444' }}>
-            <AlertTriangle size={13} /> {killVerb?.label} — {row.title}
-          </span>
-          <button disabled={busy} onClick={() => void ctrl.run(active)} style={btn('danger')}>
-            <Check size={13} /> {busy ? t.working : t.confirm}
-          </button>
-          <button onClick={ctrl.cancel} style={btn('plain')}>
-            <X size={13} /> {t.cancel}
-          </button>
-        </div>
+        <StopSessionConfirm
+          title={row.title}
+          {...(row.task ? { task: row.task } : {})}
+          lang={lang}
+          busy={busy}
+          layout="row"
+          onStop={() => ctrl.run(active)}
+          onCancel={ctrl.cancel}
+          onNotice={text => ctrl.refuse(active, text)}
+          styles={{ danger: btn('danger'), plain: btn('plain') }}
+        />
       )}
 
       {/* Attaching, as the command that does it. */}

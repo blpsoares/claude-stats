@@ -60,6 +60,20 @@ export interface BoardCopy {
   addSubtask: string
   nothingBrokenOut: string
   remove: string
+  /**
+   * Stopping a session, which is the moment somebody actually knows whether the work is done.
+   *
+   * It replaces two standing verbs on the session row — "open the whole task" and "finish task" —
+   * that asked about a delivery at a moment nobody was thinking about one. This asks at the only
+   * moment the answer is in the reader's head.
+   */
+  endSession: string
+  endSessionWhat: string
+  deliveredQuestion: string
+  endOnly: string
+  endAndDeliver: string
+  markedDelivered: string
+  couldNotMarkDelivered: string
 }
 
 const EN: BoardCopy = {
@@ -100,6 +114,13 @@ const EN: BoardCopy = {
     'Nothing broken out yet. A session is filed under a SUBTASK, never under the delivery itself — '
     + 'so break the work into parts here, and the delivery’s cost becomes the cost of its parts.',
   remove: 'Remove',
+  endSession: 'End this session?',
+  endSessionWhat: 'Whatever it is doing stops now.',
+  deliveredQuestion: 'Is this delivery finished?',
+  endOnly: 'End the session only',
+  endAndDeliver: 'End and mark delivered',
+  markedDelivered: 'Marked delivered.',
+  couldNotMarkDelivered: 'Could not mark it delivered — the session was left running.',
 }
 
 const PT: BoardCopy = {
@@ -142,6 +163,13 @@ const PT: BoardCopy = {
     'Nada dividido ainda. Uma sessão se filia a uma SUBTAREFA, nunca à entrega em si — divida o '
     + 'trabalho em partes aqui, e o custo da entrega passa a ser o custo das partes dela.',
   remove: 'Remover',
+  endSession: 'Encerrar esta sessão?',
+  endSessionWhat: 'O que ela estiver fazendo para agora.',
+  deliveredQuestion: 'Esta entrega está finalizada?',
+  endOnly: 'Só encerrar a sessão',
+  endAndDeliver: 'Encerrar e marcar entregue',
+  markedDelivered: 'Entrega marcada como entregue.',
+  couldNotMarkDelivered: 'Não foi possível marcar a entrega — a sessão continua rodando.',
 }
 
 export function boardCopy(lang: Lang): BoardCopy {

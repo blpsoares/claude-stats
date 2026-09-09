@@ -10,7 +10,7 @@
  * TWO SWITCHES, NOT ONE — and the split is the security model, not a preference:
  *
  * - `allowRemoteSessions` grants the ROWS and the verbs that carry no screen (rename, note, task,
- *   interrupt, kill, resume, openTask, finishTask).
+ *   interrupt, kill, resume).
  * - `allowRemoteScreens` additionally grants `lastLines`, `approvalLines` and `dialogOptions` —
  *   the session's terminal and the dialog it is blocked on — and therefore `approve` and `prompt`.
  *

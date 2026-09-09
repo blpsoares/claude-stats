@@ -143,26 +143,28 @@ describe('buildMachineFleetReply', () => {
     expect(r.unavailable).toBe('tmux is not installed')
   })
 
-  it('drops the TASK verbs from a row when the connection is restricted', async () => {
-    // A verb this machine will refuse must never appear on the row — the same rule the screen
-    // verbs already follow. Offering it and refusing on the click is the control that reads as
-    // broken.
+  it('drops a verb no central may drive, restricted or not', async () => {
+    // A verb this machine will refuse must never appear on the row — offering it and refusing on
+    // the click is the control that reads as broken. `openTask`/`finishTask` no longer exist at
+    // all, so what this now pins is the CLOSED list: an id it does not name never reaches a row.
     const rows = [row('1', '/home/me/alpha', {
       verbs: [
         { action: 'rename', label: 'Rename', enabled: true },
         { action: 'openTask', label: 'Open task', enabled: true },
-        { action: 'finishTask', label: 'Finish task', enabled: true },
+        { action: 'approve', label: 'Answer', enabled: true },
       ],
     })]
-    const restricted = (await buildMachineFleetReply({
-      allowRemoteSessions: true,
-      shareMode: 'denylist',
-      sources: [{ type: 'repo', value: 'github.com/o/beta' }],
-    }, 'en', deps_(rows)))!
-    expect(restricted.rows[0]!.verbs?.map(v => v.action)).toEqual(['rename'])
-    // ...and keeps them when nothing is withheld.
-    const open = (await buildMachineFleetReply({ allowRemoteSessions: true }, 'en', deps_(rows)))!
-    expect(open.rows[0]!.verbs?.map(v => v.action)).toEqual(['rename', 'openTask', 'finishTask'])
+    for (const consent of [
+      { allowRemoteSessions: true },
+      {
+        allowRemoteSessions: true,
+        shareMode: 'denylist' as const,
+        sources: [{ type: 'repo' as const, value: 'github.com/o/beta' }],
+      },
+    ]) {
+      const r = (await buildMachineFleetReply(consent, 'en', deps_(rows)))!
+      expect(r.rows[0]!.verbs?.map(v => v.action)).toEqual(['rename'])
+    }
   })
 })
 
@@ -181,7 +183,7 @@ describe('performMachineAction', () => {
   const deps = { ...deps_(ACT_ROWS), runAction } as never
 
   it('performs a screenless verb once the machine has agreed', async () => {
-    for (const action of ['rename', 'note', 'task', 'interrupt', 'kill', 'resume', 'openTask', 'finishTask']) {
+    for (const action of ['rename', 'note', 'task', 'interrupt', 'kill', 'resume']) {
       const r = await performMachineAction({ allowRemoteSessions: true }, 'en', { action, id: 's1' }, deps)
       expect(r.ok).toBe(true)
     }
@@ -264,19 +266,20 @@ describe('performMachineAction', () => {
     expect(ran).toEqual([])
   })
 
-  it('refuses the TASK verbs on a restricted connection, without saying whether this task spans one', async () => {
-    // `openTask` expands over the whole registry, so pressing it on the VISIBLE `s1` reopened `s2`
-    // in the withheld repo. Refused for every restricted connection rather than only when it
-    // provably spans: the narrower check is an oracle for which visible rows share work with the
-    // hidden half.
-    for (const action of ['openTask', 'finishTask']) {
-      ran.length = 0
-      const r = await performMachineAction(DENY_BETA, 'en', { action, id: 's1' }, deps)
-      expect(r.ok).toBe(false)
-      expect(r.message).toMatch(/task on the machine itself/)
-      expect(ran).toEqual([])
-      // The refusal may not name the hidden row, its repo, or a count of them.
-      expect(r.message).not.toMatch(/beta|s2/)
+  it('refuses the TASK verbs outright — they are not on the closed list any more', async () => {
+    // `openTask` expanded over the whole registry, so pressing it on the VISIBLE `s1` reopened `s2`
+    // in the withheld repo. It used to be refused by a dedicated guard; both verbs are now gone
+    // from `REMOTE_SCREENLESS_ACTIONS`, which is closed, so the refusal is structural — and it
+    // holds for an UNRESTRICTED connection too, which the old guard did not cover.
+    for (const consent of [DENY_BETA, { allowRemoteSessions: true }]) {
+      for (const action of ['openTask', 'finishTask']) {
+        ran.length = 0
+        const r = await performMachineAction(consent, 'en', { action, id: 's1' }, deps)
+        expect(r.ok).toBe(false)
+        expect(ran).toEqual([])
+        // The refusal may not name the hidden row, its repo, or a count of them.
+        expect(r.message).not.toMatch(/beta|s2/)
+      }
     }
   })
 
@@ -288,7 +291,7 @@ describe('performMachineAction', () => {
       readFleet: async (l: never) => { read++; return await deps_(ACT_ROWS).readFleet(l) },
       runAction,
     } as never
-    for (const action of ['kill', 'openTask']) {
+    for (const action of ['kill', 'resume']) {
       const r = await performMachineAction({ allowRemoteSessions: true }, 'en', { action, id: 's1' }, counting)
       expect(r.ok).toBe(true)
     }
@@ -305,7 +308,7 @@ describe('performMachineAction', () => {
   })
 
   it('refuses in the asked-for language on both new refusals', async () => {
-    for (const req of [{ action: 'kill', id: 's2' }, { action: 'openTask', id: 's1' }]) {
+    for (const req of [{ action: 'kill', id: 's2' }, { action: 'approve', id: 's1' }]) {
       const en = await performMachineAction(DENY_BETA, 'en', req, deps)
       const pt = await performMachineAction(DENY_BETA, 'pt', req, deps)
       expect(en.message).not.toBe(pt.message)
