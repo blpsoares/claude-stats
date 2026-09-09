@@ -56,6 +56,11 @@ import {
   applySkill, emptyPickerReason, filterSkills, flattenGroups, groupSkills, slashMisplaced,
   slashQuery, stepSkill,
 } from '../../lib/skillMenu'
+import {
+  applyAtServer, applyAtTool, atLevel, atQuery, atServerStatusText, atToolViewReason,
+  emptyAtServerReason, emptyAtToolReason, filterAtServers, findAtServer, resolveAtToolView,
+  type MenuMcpServer,
+} from '../../lib/atMenu'
 import { composeReply, markExcerpt, quoteFor, replyAuthor, replyPreview, type ReplyTarget } from '../../lib/replyQuote'
 import { pendingEchoes } from '@agentistics/core'
 import {
@@ -457,6 +462,110 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
       .catch(() => { if (alive) setSkills([]) })
     return () => { alive = false }
   }, [moreOpen, slashText, skills, session.id, pt])
+
+  /**
+   * TYPING `@` REFERENCES AN MCP SERVER — two levels, the second reached by typing `:` after a
+   * server's name, exactly as asked for ("com : uma lista de ferramentas aparece"). Every decision
+   * — the trigger, the two levels, the filter, what a pick writes — lives in `atMenu.ts`; this is
+   * only the wiring, mirroring the `/` picker above rather than inventing a second interaction
+   * model.
+   *
+   * `null` is "not asked yet", same distinction `skills` keeps: `/api/mcp/tools` answers server
+   * NAMES instantly but a `pending` one's tool count arrives later, which is why this keeps
+   * POLLING (below) for as long as the picker could still be showing one.
+   */
+  const [mcpServers, setMcpServers] = useState<MenuMcpServer[] | null>(null)
+  /** Escape closes the picker while the `@word` it was triggered by is still on screen — see `slashDismissed`. */
+  const [atDismissed, setAtDismissed] = useState(false)
+  const [atIndex, setAtIndex] = useState(0)
+  const atPickerRef = useRef<HTMLDivElement | null>(null)
+  const atText = useMemo(() => atQuery(draft.slice(0, caret)), [draft, caret])
+  useEffect(() => { if (atText === null) setAtDismissed(false) }, [atText])
+  // A new query (server filter OR tool filter) is a new list — see `slashIndex`'s own reasoning.
+  useEffect(() => { setAtIndex(0) }, [atText])
+  const atLvl = useMemo(() => (atText === null ? null : atLevel(atText)), [atText])
+
+  useEffect(() => {
+    // Fetched once, the first time the `@` picker opens — same reasoning as the skill fetch just
+    // above: most sessions are read rather than driven, and answering this starts every configured
+    // server's command.
+    if (atText === null || mcpServers !== null) return
+    let alive = true
+    const q = session.cwd ? `?projectPath=${encodeURIComponent(session.cwd)}` : ''
+    fetch(`/api/mcp/tools${q}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { servers?: MenuMcpServer[] } | null) => { if (alive) setMcpServers(d?.servers ?? []) })
+      .catch(() => { if (alive) setMcpServers([]) })
+    return () => { alive = false }
+  }, [atText, mcpServers, session.cwd])
+
+  useEffect(() => {
+    // A `pending` server's tool count is not yet known — `/api/mcp/tools` never waits for it (see
+    // its own header), so getting past `pending` means asking again. Only while the picker could
+    // still be showing the answer, and stopped the moment nothing is pending any more.
+    if (atText === null || mcpServers === null || !mcpServers.some(s => s.status === 'pending')) return
+    const q = session.cwd ? `?projectPath=${encodeURIComponent(session.cwd)}` : ''
+    const t = setTimeout(() => {
+      fetch(`/api/mcp/tools${q}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then((d: { servers?: MenuMcpServer[] } | null) => { if (d?.servers) setMcpServers(d.servers) })
+        .catch(() => { /* the next poll tries again */ })
+    }, 1500)
+    return () => clearTimeout(t)
+  }, [atText, mcpServers, session.cwd])
+
+  /** The SERVER level's filtered list — empty until `mcpServers` has answered. */
+  const atServers = useMemo(() => {
+    if (mcpServers === null || atLvl === null || atLvl.level !== 'server') return []
+    return filterAtServers(mcpServers, atLvl.serverText)
+  }, [mcpServers, atLvl])
+  /** The TOOL level's resolved view — `null` until both the servers and the level are known. */
+  const atTools = useMemo(() => {
+    if (mcpServers === null || atLvl === null || atLvl.level !== 'tool') return null
+    return resolveAtToolView(mcpServers, atLvl.serverText, atLvl.toolText)
+  }, [mcpServers, atLvl])
+  /** The flat, navigable list for THIS level — servers, or a ready server's tools. */
+  const atFlatLen = atLvl?.level === 'tool'
+    ? (atTools?.kind === 'tools' ? atTools.tools.length : 0)
+    : atServers.length
+  // Same reasoning as the skill picker's own scroll effect — a cursor stepped past the fold is
+  // invisible and still the thing enter acts on.
+  useEffect(() => {
+    const el = atPickerRef.current?.querySelector(`[data-at-index="${atIndex}"]`)
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [atIndex, atServers, atTools])
+
+  /** Rule 4: a bare server mention, no `:` typed. Writes `@name ` and closes. */
+  const insertAtServer = useCallback((name: string) => {
+    const at = textareaRef.current?.selectionStart ?? caret
+    const out = applyAtServer(draft, at, name)
+    editDraft(out.text)
+    setCaret(out.caret)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      node.focus()
+      node.setSelectionRange(out.caret, out.caret)
+    })
+  }, [draft, caret, editDraft])
+
+  /**
+   * A tool picked at the tool level. Writes `@server:tool ` and REOPENS an empty `@server:`
+   * trigger right after it — see `applyAtTool`'s own header for why that is the whole mechanism
+   * behind choosing more than one before the picker closes.
+   */
+  const insertAtTool = useCallback((server: string, tool: string) => {
+    const at = textareaRef.current?.selectionStart ?? caret
+    const out = applyAtTool(draft, at, server, tool)
+    editDraft(out.text)
+    setCaret(out.caret)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      node.focus()
+      node.setSelectionRange(out.caret, out.caret)
+    })
+  }, [draft, caret, editDraft])
 
   /** Switch the model mid-conversation by TYPING the harness's own command — see modelSwitch.ts. */
   const switchModel = useCallback(async (model: string) => {
@@ -1034,6 +1143,12 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
    * is already disabled there, so there is nothing to type a `/` into and no control left inert.
    */
   const skillPickerOpen = canPrompt && !blocked && !slashDismissed && slashText !== null
+  /**
+   * The `@` picker is open. Same refusals `skillPickerOpen` states for the same reason — a
+   * reference typed into a session sitting on a dialog goes into that dialog's own filter, and the
+   * submit takes the highlighted option.
+   */
+  const atOpen = canPrompt && !blocked && !atDismissed && atText !== null
   /** The row's own reopen verb, if it has one. Enabled by the server, never inferred here. */
   const reopen = row?.verbs.find(v => v.action === 'resume')
   const [reopening, setReopening] = useState(false)
@@ -1567,6 +1682,128 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
               )}
             </div>
           )}
+          {/* THE MCP PICKER, opened by typing `@` at the start of a word. Two levels — the
+              configured SERVERS, and (once `:` is typed after one) that server's TOOLS — driven
+              entirely by the text itself, exactly as `atMenu.ts`'s header explains. */}
+          {atOpen && (
+            <div
+              ref={atPickerRef}
+              role="listbox"
+              aria-label="MCP"
+              style={{
+                position: 'absolute', bottom: '100%', left: 0, right: 0, zIndex: 60,
+                marginBottom: 8, padding: 4, borderRadius: 12,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.38)',
+                maxHeight: isMobile ? '50vh' : 300, overflowY: 'auto', overscrollBehavior: 'contain',
+              }}
+            >
+              {mcpServers === null ? (
+                <p style={{ margin: 0, padding: '8px 10px', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                  {pt ? 'Lendo os servidores MCP…' : 'Reading the MCP servers…'}
+                </p>
+              ) : atLvl?.level === 'tool' ? (
+                // TOOL LEVEL — a `:` was typed after a server's name.
+                atTools === null ? null : atTools.kind !== 'tools' ? (
+                  <p style={{ margin: 0, padding: '8px 10px', fontSize: 11.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
+                    {atToolViewReason(atTools, atLvl.serverText, pt ? 'pt' : 'en')}
+                  </p>
+                ) : atTools.tools.length === 0 ? (
+                  <p style={{ margin: 0, padding: '8px 10px', fontSize: 11.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
+                    {emptyAtToolReason(
+                      atLvl.serverText, findAtServer(mcpServers, atLvl.serverText)?.tools?.length ?? 0,
+                      atLvl.toolText, pt ? 'pt' : 'en',
+                    )}
+                  </p>
+                ) : (
+                  <>
+                    {atTools.tools.map((t, i) => (
+                      <button
+                        key={t.name}
+                        role="option"
+                        aria-selected={i === Math.min(atIndex, atTools.tools.length - 1)}
+                        data-at-index={i}
+                        title={t.description}
+                        onMouseDown={e => e.preventDefault()}
+                        onMouseEnter={() => setAtIndex(i)}
+                        onClick={() => insertAtTool(atLvl.serverText, t.name)}
+                        style={{
+                          display: 'block', width: '100%', textAlign: 'left',
+                          minHeight: isMobile ? 44 : 34, padding: '6px 8px', borderRadius: 8,
+                          border: 'none',
+                          background: i === Math.min(atIndex, atTools.tools.length - 1) ? 'var(--bg-surface)' : 'transparent',
+                          color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 12.5,
+                          cursor: 'pointer', minWidth: 0,
+                        }}
+                      >
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {t.name}
+                        </span>
+                        {t.description && (
+                          <span style={{
+                            display: 'block', fontSize: 10.5, lineHeight: 1.35, color: 'var(--text-tertiary)',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>
+                            {t.description}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
+                      {pt
+                        ? '↑↓ escolhe · enter adiciona (dá para escolher mais de uma) · esc fecha. Não envia.'
+                        : '↑↓ to move · enter adds it (choose more than one) · esc closes. It does not send.'}
+                    </p>
+                  </>
+                )
+              ) : (
+                // SERVER LEVEL — no `:` typed yet.
+                atServers.length === 0 ? (
+                  <p style={{ margin: 0, padding: '8px 10px', fontSize: 11.5, lineHeight: 1.45, color: 'var(--text-tertiary)' }}>
+                    {emptyAtServerReason(mcpServers.length, atLvl?.serverText ?? '', pt ? 'pt' : 'en')}
+                  </p>
+                ) : (
+                  <>
+                    {atServers.map((s, i) => (
+                      <button
+                        key={s.name}
+                        role="option"
+                        aria-selected={i === Math.min(atIndex, atServers.length - 1)}
+                        data-at-index={i}
+                        onMouseDown={e => e.preventDefault()}
+                        onMouseEnter={() => setAtIndex(i)}
+                        onClick={() => insertAtServer(s.name)}
+                        style={{
+                          display: 'block', width: '100%', textAlign: 'left',
+                          minHeight: isMobile ? 44 : 34, padding: '6px 8px', borderRadius: 8,
+                          border: 'none',
+                          background: i === Math.min(atIndex, atServers.length - 1) ? 'var(--bg-surface)' : 'transparent',
+                          color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 12.5,
+                          cursor: s.status === 'unreachable' ? 'default' : 'pointer', minWidth: 0,
+                        }}
+                      >
+                        <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          @{s.name}
+                        </span>
+                        <span style={{
+                          display: 'block', fontSize: 10.5, lineHeight: 1.35,
+                          color: s.status === 'unreachable' ? 'var(--accent-red)' : 'var(--text-tertiary)',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {atServerStatusText(s, pt ? 'pt' : 'en')}
+                        </span>
+                      </button>
+                    ))}
+                    <p style={{ margin: '4px 8px', fontSize: 10, lineHeight: 1.4, color: 'var(--text-tertiary)' }}>
+                      {pt
+                        ? '↑↓ escolhe · enter referencia · digite “:” para ver as ferramentas · esc fecha.'
+                        : '↑↓ to move · enter references it · type “:” to see its tools · esc closes.'}
+                    </p>
+                  </>
+                )
+              )}
+            </div>
+          )}
           {/* NO COMPOSER UNTIL THE CONVERSATION IS THERE. A field offered over a conversation still
               loading invites a message into a session whose state is not yet known — including one
               sitting in a dialog, where the text would go into the dialog's own filter. */}
@@ -1904,7 +2141,9 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     setTyping(false)
                     // Leaving the field closes the picker — unless the focus went INTO it, which
                     // is what a keyboard user tabbing onto an entry does.
-                    if (!skillPickerRef.current?.contains(e.relatedTarget as Node | null)) setSlashDismissed(true)
+                    const into = e.relatedTarget as Node | null
+                    if (!skillPickerRef.current?.contains(into)) setSlashDismissed(true)
+                    if (!atPickerRef.current?.contains(into)) setAtDismissed(true)
                   }}
                   onPaste={onPaste}
                   onKeyDown={e => {
@@ -1924,6 +2163,27 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
                     // Escape closes the picker BEFORE it reaches the stop verb: a person dismissing
                     // a list they opened by accident must not interrupt the session's turn.
                     if (e.key === 'Escape' && skillPickerOpen) { e.preventDefault(); setSlashDismissed(true); return }
+                    // THE `@` PICKER OWNS THE SAME KEYS, over whichever level is showing. At the
+                    // tool level Enter does NOT close it — `insertAtTool` reopens an empty
+                    // `@server:` trigger right after the token it writes, which is the whole
+                    // mechanism behind picking more than one before moving on.
+                    if (atOpen && atFlatLen > 0) {
+                      if (e.key === 'ArrowDown') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, 1)); return }
+                      if (e.key === 'ArrowUp') { e.preventDefault(); setAtIndex(i => stepSkill(i, atFlatLen, -1)); return }
+                      if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                        e.preventDefault()
+                        const i = Math.min(atIndex, atFlatLen - 1)
+                        if (atLvl?.level === 'tool') {
+                          const picked = atTools?.kind === 'tools' ? atTools.tools[i] : undefined
+                          if (picked) insertAtTool(atLvl.serverText, picked.name)
+                        } else {
+                          const picked = atServers[i]
+                          if (picked) insertAtServer(picked.name)
+                        }
+                        return
+                      }
+                    }
+                    if (e.key === 'Escape' && atOpen) { e.preventDefault(); setAtDismissed(true); return }
                     // ON A PHONE, ENTER BREAKS THE LINE. Asked for directly, and it is the
                     // convention every messaging app on a touch keyboard follows: the return key is
                     // the only way to write a second line there, because `shift+enter` needs a
