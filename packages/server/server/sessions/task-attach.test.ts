@@ -9,11 +9,16 @@ const SUBS = [
 const TASKS = ['t1', 't2']
 
 describe('planAttach', () => {
-  it('files under a task, and CLEARS any subtask', () => {
-    // Moving is the operation. A row keeping a stale subtask would go on being drawn under one it
-    // was explicitly moved out of.
+  it('REFUSES a delivery as a target — a delivery does not take sessions', () => {
+    // The delivery is the container; the subtask is the work. Allowing both left "does this cost
+    // include the subtasks" without an answer.
     expect(planAttach({ target: { kind: 'task', id: 't1' }, taskIds: TASKS, subtasks: SUBS }))
-      .toEqual({ ok: true, taskId: 't1', subtaskId: null })
+      .toEqual({ ok: false, reason: 'needs_subtask' })
+  })
+
+  it('still refuses a delivery that does not exist, before anything else', () => {
+    expect(planAttach({ target: { kind: 'task', id: 'gone' }, taskIds: TASKS, subtasks: SUBS }))
+      .toEqual({ ok: false, reason: 'no_such_task' })
   })
 
   it('files under a subtask, and takes the parent FROM the subtask', () => {
@@ -36,9 +41,7 @@ describe('planAttach', () => {
       .toEqual({ ok: true, taskId: null, subtaskId: null })
   })
 
-  it('refuses a target that names nothing, rather than guessing one', () => {
-    expect(planAttach({ target: { kind: 'task', id: 'gone' }, taskIds: TASKS, subtasks: SUBS }))
-      .toEqual({ ok: false, reason: 'no_such_task' })
+  it('refuses a subtask that names nothing, rather than guessing one', () => {
     expect(planAttach({ target: { kind: 'subtask', id: 'gone' }, taskIds: TASKS, subtasks: SUBS }))
       .toEqual({ ok: false, reason: 'no_such_subtask' })
   })

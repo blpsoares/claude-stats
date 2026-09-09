@@ -149,7 +149,7 @@ export function BoardArrange(p: BoardArrangeProps) {
         value={p.columns}
         onChange={next => p.onColumns(next as BoardStatus[])}
         orderable
-        note="Drag a ticked column to reorder the pipeline. A hidden column's tasks are still there."
+        note="Drag a ticked column, or use ▲▼, to reorder the pipeline. A hidden column's tasks are still there."
       >
         <Columns3 size={13} /> Columns · {p.columns.length}
       </PickerMenu>

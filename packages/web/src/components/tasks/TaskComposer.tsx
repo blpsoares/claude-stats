@@ -23,7 +23,9 @@
  */
 
 import { useMemo, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Link2, ListPlus, Plus, Terminal, X } from 'lucide-react'
+import {
+  ArrowLeft, ArrowRight, Check, CornerDownRight, Link2, ListPlus, Plus, Terminal, X,
+} from 'lucide-react'
 import { PRIORITY_ORDER, type TaskPriorityId } from '@agentistics/core'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useFleet } from '../../lib/fleet'
@@ -32,7 +34,7 @@ import {
   surface, type BoardStatus,
 } from './board'
 import { ChipSelect, statusOptions } from './ChipSelect'
-import { addSubtask, attachSession, createTask, editTask, markTask } from '../../lib/tasks'
+import { addSubtask, attachSession, createTask, editTask, markTask, type Subtask } from '../../lib/tasks'
 
 const LIVE = new Set(['working', 'waiting', 'waiting-approval'])
 
@@ -59,7 +61,16 @@ export function TaskComposer(p: TaskComposerProps) {
   const [priority, setPriority] = useState<TaskPriorityId>('none')
   const [subs, setSubs] = useState<string[]>([])
   const [subDraft, setSubDraft] = useState('')
-  const [picked, setPicked] = useState<Set<string>>(new Set(p.session ? [p.session.id] : []))
+  /**
+   * The picked sessions, each with the INDEX of the part it goes under.
+   *
+   * A Set was enough while a session could be filed under the delivery itself. It cannot be any
+   * more: a delivery holds no sessions, so every one of these needs a subtask named for it, and
+   * "which part is this" is a question with a different answer per session.
+   */
+  const [picked, setPicked] = useState<Map<string, number>>(
+    () => new Map(p.session ? [[p.session.id, 0]] : []),
+  )
   const [busy, setBusy] = useState(false)
 
   /**
@@ -73,6 +84,15 @@ export function TaskComposer(p: TaskComposerProps) {
 
   const ready = title.trim().length > 0
 
+  /**
+   * How many picks will actually be FILED — a pick whose part does not exist cannot be.
+   *
+   * It differs from `picked.size` in exactly one case, and it is the common one: the composer was
+   * opened from a session, so that session is picked before any part has been named. Counting the
+   * picks instead would put "Create and link 1" on a button that files nothing.
+   */
+  const filable = [...picked.values()].filter(i => subs[i] !== undefined).length
+
   const make = async (then: 'done' | 'session') => {
     if (!ready || busy) return
     setBusy(true)
@@ -84,8 +104,28 @@ export function TaskComposer(p: TaskComposerProps) {
     if (status !== 'todo') await markTask(task.id, status)
     if (priority !== 'none') await editTask(task.id, { priority })
     for (const s of subs) await addSubtask(task.id, s)
+
+    /**
+     * The parts, READ BACK — `addSubtask` reports success and not the id it minted.
+     *
+     * On a task created a moment ago the store holds exactly the parts just written, in the order
+     * they were written, so `made[i]` is `subs[i]`. That equivalence is only safe HERE, on a task
+     * nothing else has touched; anywhere else two parts could share a title and the pairing would
+     * be a guess.
+     */
+    let made: Subtask[] = []
+    if (subs.length > 0) {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`)
+      if (res.ok) made = ((await res.json()) as { task: { subtasks: Subtask[] } }).task.subtasks
+    }
     // The repo and project are inherited server-side from the session — see `attachSession`.
-    for (const id of picked) await attachSession(task.id, id)
+    // A session whose part could not be read back is LEFT UNFILED rather than filed under the
+    // delivery: that attach is refused by the server, and filing it under some other part would be
+    // putting the work somewhere nobody chose.
+    for (const [id, at] of picked) {
+      const sub = made[at]
+      if (sub) await attachSession(task.id, id, sub.id)
+    }
     setBusy(false)
     if (then === 'session' && p.onCreateSession) { p.onCreateSession(task.id, task.title); return }
     await p.onDone(task.id, task.title)
@@ -211,7 +251,11 @@ export function TaskComposer(p: TaskComposerProps) {
                 {p.session.title}
               </span>
               <span style={{ ...microLabel, fontSize: 10 }}>
-                {picked.has(p.session.id) ? 'will be filed here' : 'not linked'}
+                {!picked.has(p.session.id)
+                  ? 'not linked'
+                  : subs.length === 0
+                    ? 'name a part below to file it'
+                    : `files under “${subs[picked.get(p.session.id) ?? 0] ?? ''}”`}
               </span>
             </div>
           )}
@@ -219,10 +263,34 @@ export function TaskComposer(p: TaskComposerProps) {
           <div style={{ display: 'grid', gap: 4 }}>
             <span style={{ ...microLabel, fontSize: 9 }}>Link the sessions already running</span>
             <span style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
-              Their repository and project come with them. Pick several when one task is being
-              attempted more than one way — that comparison is what the board measures.
+              A session is filed under a PART of the delivery, never under the delivery itself — so
+              each one you pick names the part it belongs to. Their repository and project come with
+              them, and several parts can run at once.
             </span>
           </div>
+
+          {/* No parts yet, so there is nowhere to file anything. Said, with the field that fixes it
+              right here: sending somebody back to step 1 for one line is a step nobody needs. */}
+          {subs.length === 0 && (
+            <div style={{
+              ...surface, padding: '9px 11px', display: 'grid', gap: 7,
+              background: 'var(--bg-elevated)',
+            }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                This delivery has no parts yet. Name the first one and the sessions below can be
+                filed under it.
+              </span>
+              <input
+                style={field(isMobile)} value={subDraft} placeholder="The first part, then Enter"
+                onChange={e => setSubDraft(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && subDraft.trim()) {
+                    setSubs(v => [...v, subDraft.trim()]); setSubDraft('')
+                  }
+                }}
+              />
+            </div>
+          )}
           {live.length === 0 && (
             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
               Nothing is running right now. You can file finished conversations under this task from
@@ -232,45 +300,72 @@ export function TaskComposer(p: TaskComposerProps) {
           <div style={{ display: 'grid', gap: 3, maxHeight: 210, overflowY: 'auto' }}>
             {live.map(s => {
               const st = SESSION_STATE[s.state]
-              const on = picked.has(s.id)
+              const at = picked.get(s.id)
+              const on = at !== undefined
               return (
-                <button
-                  key={s.id}
-                  onClick={() => setPicked(v => {
-                    const next = new Set(v)
-                    next.has(s.id) ? next.delete(s.id) : next.add(s.id)
-                    return next
-                  })}
-                  style={{
-                    ...row,
-                    border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border)'}`,
-                    background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
-                  }}
-                >
-                  {on
-                    ? <Check size={13} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
-                    : <Terminal size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />}
-                  <span style={{ flex: 1, minWidth: 0, display: 'grid' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {s.title}
+                <div key={s.id} style={{ display: 'grid', gap: 4 }}>
+                  <button
+                    // Ticking with no part to file into would arm an attach the server refuses, so
+                    // the row is inert until the first part exists — and the block above says why.
+                    disabled={!on && subs.length === 0}
+                    onClick={() => setPicked(v => {
+                      const next = new Map(v)
+                      if (next.has(s.id)) next.delete(s.id)
+                      else if (subs.length > 0) next.set(s.id, 0)
+                      return next
+                    })}
+                    style={{
+                      ...row,
+                      border: `1px solid ${on ? 'var(--anthropic-orange)' : 'var(--border)'}`,
+                      background: on ? 'var(--anthropic-orange-dim)' : 'transparent',
+                      opacity: !on && subs.length === 0 ? 0.5 : 1,
+                      cursor: !on && subs.length === 0 ? 'default' : 'pointer',
+                    }}
+                  >
+                    {on
+                      ? <Check size={13} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
+                      : <Terminal size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />}
+                    <span style={{ flex: 1, minWidth: 0, display: 'grid' }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {s.title}
+                      </span>
+                      <span style={{ ...microLabel, textTransform: 'none', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {s.cwd.split('/').slice(-2).join('/')}
+                      </span>
                     </span>
-                    <span style={{ ...microLabel, textTransform: 'none', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {s.cwd.split('/').slice(-2).join('/')}
-                    </span>
-                  </span>
-                  <span style={pill(harnessColor(s.harness))}>{s.harness}</span>
-                  {st && <span style={pill(st.color)}>{st.label}</span>}
-                </button>
+                    <span style={pill(harnessColor(s.harness))}>{s.harness}</span>
+                    {st && <span style={pill(st.color)}>{st.label}</span>}
+                  </button>
+                  {/* The part it goes under — shown only once the session is picked, because it is
+                      an answer about a decision already made. One part is still a choice worth
+                      seeing: it says where the work is about to be filed. */}
+                  {on && (
+                    <label style={{
+                      display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 12,
+                      fontSize: 11.5, color: 'var(--text-tertiary)',
+                    }}>
+                      <CornerDownRight size={12} style={{ flexShrink: 0 }} />
+                      <span style={{ flexShrink: 0 }}>files under</span>
+                      <select
+                        value={at}
+                        onChange={e => setPicked(v => new Map(v).set(s.id, Number(e.target.value)))}
+                        style={{ ...field(isMobile), flex: 1, minWidth: 0, height: isMobile ? 44 : 28, padding: '0 8px' }}
+                      >
+                        {subs.map((t, i) => <option key={i} value={i}>{t}</option>)}
+                      </select>
+                    </label>
+                  )}
+                </div>
               )
             })}
           </div>
 
-          {picked.size === 0 && (
+          {filable === 0 && (
             // Said rather than implied: an unattached task is a note until something is filed under
             // it, and every metric on it reads N/A.
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', lineHeight: 1.5 }}>
-              A task with no session has no cost, no rounds and no harness — it will read N/A until
-              you file work under it.
+              A delivery with no session has no cost, no rounds and no harness — it will read N/A
+              until work is filed under one of its parts.
             </div>
           )}
         </>
@@ -292,10 +387,10 @@ export function TaskComposer(p: TaskComposerProps) {
           </button>
         )}
         {step === 2 && (
-          picked.size > 0
+          filable > 0
             ? (
               <button style={button(isMobile, 'primary')} disabled={!ready || busy} onClick={() => void make('done')}>
-                <Link2 size={14} /> Create and link {picked.size}
+                <Link2 size={14} /> Create and link {filable}
               </button>
             )
             : (

@@ -33,7 +33,6 @@ import {
 } from '../lib/commentBody'
 import { BoardView } from '../components/tasks/TaskBoard'
 import { TaskTable } from '../components/tasks/TaskTable'
-import { SessionPicker } from '../components/tasks/SessionPicker'
 import { SubtaskTable } from '../components/tasks/SubtaskTable'
 import {
   readBoardPrefs, writeBoardPrefs, type BoardView as ViewId, type LaneKey,
@@ -58,7 +57,8 @@ import {
 } from '../components/tasks/board'
 import {
   addComment, addLink, addSubtask, createTask, deleteFile, deleteTask, editComment, fileUrl,
-  attachSession, fmtDuration, markTask, patchSubtask, removeComment, removeLink, removeSubtask,
+  attachSession, detachSession, fmtDuration, markTask, patchSubtask, removeComment, removeLink,
+  removeSubtask,
   claimTask, editTask, moveTask, setBlockedBy, uploadFile, useNextTasks, useTaskActivity,
   useTaskDetail, useTaskList,
   type AttemptRollup, type AttemptView, type TaskDetail, type TaskFieldPatch, type TaskFile,
@@ -459,7 +459,6 @@ function TaskList() {
   const [starting, setStarting] = useState<{ taskId: string; title: string } | null>(null)
   /** Details fetched for the rows the table has expanded — subtasks live there. */
   const [details, setDetails] = useState<Map<string, TaskDetail>>(new Map())
-  const [linking, setLinking] = useState<string | null>(null)
 
   /** The ONE way a status is set from this page. `blocked` asks its question first. */
   const toStatus = async (ids: string[], status: TaskStatus) => {
@@ -662,7 +661,19 @@ function TaskList() {
             for (const id of ids) await deleteTask(id)
             await reload()
           }}
-          onLinkSession={ref => setLinking(ref)}
+          // Filing is per SUBTASK now, so the list's verb names both and the picker lives inside
+          // the expanded row — there is no delivery-level "link a session" left to open.
+          onLinkSession={async (ref, subtaskId, sessionId) => {
+            await attachSession(ref, sessionId, subtaskId)
+            await refreshDetail(ref)
+            await reload()
+          }}
+          onUnfileSession={async (ref, sessionId) => {
+            await detachSession(ref, sessionId)
+            await refreshDetail(ref)
+            await reload()
+          }}
+          onOpenSession={sid => navigate(sessionPath(sid))}
         />
       )}
 
@@ -683,17 +694,6 @@ function TaskList() {
         />
       )}
 
-      {linking && (
-        <SessionPicker
-          onPick={async ids => {
-            // Sequential, not parallel: `attachSession` read-modify-writes the registry, and three
-            // of those in flight is the very race `registry.ts` documents.
-            for (const id of ids) await attachSession(linking, id)
-            await reload()
-          }}
-          onClose={() => setLinking(null)}
-        />
-      )}
     </div>
   )
 }
@@ -1334,10 +1334,14 @@ function TaskDetailView({ id }: { id: string }) {
           {tab === 'subtasks' && (
             <SubtaskTable
               subtasks={detail.subtasks}
-              sessionTitleOf={sid => detail.sessions.find(r => r.id === sid)?.label}
+              sessions={detail.sessions}
+              lang={lang}
               onAdd={title => run(() => addSubtask(id, title))}
               onPatch={(sid, patch) => run(() => patchSubtask(id, sid, patch))}
               onRemove={sid => run(() => removeSubtask(id, sid))}
+              onAttach={(subtaskId, sessionId) => run(() => attachSession(id, sessionId, subtaskId))}
+              onUnfile={sessionId => run(() => detachSession(id, sessionId))}
+              onOpenSession={sid => navigate(sessionPath(sid))}
             />
           )}
 

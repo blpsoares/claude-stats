@@ -12,11 +12,17 @@
  * It also REORDERS: the columns of a table are a sequence, not a set, and the only honest way to
  * say "cost before tokens" is to drag one above the other. Dragging is offered on the ticked rows
  * only — an unticked row has no position to hold.
+ *
+ * **And dragging is never the only way to reorder.** HTML5 drag-and-drop does not exist on a touch
+ * screen: on a phone the grip handle is a decoration and the note under the list asks for a gesture
+ * the device cannot make, so the order was reorderable on a desktop and frozen everywhere else.
+ * Every ticked row therefore carries ▲/▼ buttons — a real control, reachable by thumb and by
+ * keyboard, doing exactly what the drag does.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, GripVertical } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, GripVertical } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { microLabel, surface } from './board'
 
@@ -89,6 +95,31 @@ export function PickerMenu(p: PickerMenuProps) {
     next.splice(at_, 0, from)
     p.onChange(next)
   }
+
+  /** One step up or down the ticked sequence. Clamped at the ends — a list is not a ring. */
+  const step = (v: string, by: 1 | -1) => {
+    const from = p.value.indexOf(v)
+    const to = from + by
+    if (from === -1 || to < 0 || to >= p.value.length) return
+    const next = [...p.value]
+    next.splice(to, 0, ...next.splice(from, 1))
+    p.onChange(next)
+  }
+
+  const stepButton = (v: string, by: 1 | -1, disabled: boolean) => (
+    <button
+      onClick={e => { e.stopPropagation(); step(v, by) }}
+      disabled={disabled}
+      aria-label={by === -1 ? 'Move up' : 'Move down'}
+      className="ag-tap-icon"
+      style={{
+        background: 'none', border: 'none', padding: 0, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18,
+        color: disabled ? 'var(--border)' : 'var(--text-tertiary)',
+        cursor: disabled ? 'default' : 'pointer',
+      }}
+    >{by === -1 ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</button>
+  )
 
   return (
     <>
@@ -164,6 +195,12 @@ export function PickerMenu(p: PickerMenuProps) {
                   }}>{item.label}</span>
                   {item.hint !== undefined && (
                     <span style={{ ...microLabel, fontSize: 10.5, flexShrink: 0 }}>{item.hint}</span>
+                  )}
+                  {p.orderable && on && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
+                      {stepButton(item.value, -1, p.value.indexOf(item.value) === 0)}
+                      {stepButton(item.value, 1, p.value.indexOf(item.value) === p.value.length - 1)}
+                    </span>
                   )}
                 </div>
               )

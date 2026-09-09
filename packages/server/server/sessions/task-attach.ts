@@ -1,7 +1,17 @@
 /**
  * task-attach.ts — PURE. What a session is filed under, and the fact that it is exactly one thing.
  *
- * **A session is filed under a TASK or under one of its SUBTASKS. Never both, and never two.**
+ * **A session is filed under a SUBTASK. Never a delivery directly, never two, never both.**
+ *
+ * A delivery is the unit of DELIVERY; a subtask is the unit of WORK, and work is what a session
+ * does. Allowing both meant the same delivery could hold sessions at two levels with no rule for
+ * reading them together — "did this cost include the subtasks or not" had no answer. So the
+ * delivery is now a container: its cost is its subtasks' cost, and nothing else.
+ *
+ * Rows filed directly under a delivery before this rule existed are NOT migrated: inventing a
+ * subtask to hold them would be inventing the one thing this module refuses to invent. They keep
+ * their `taskId`, `filedUnder` still answers `task` for them, and the delivery's screen lists them
+ * as work still to be PLACED — visible, countable, and one click from a subtask.
  * That is the whole point of this module: the exclusivity is one rule in one place, so a second
  * surface cannot invent a session that appears in the delivery's own list AND in a subtask's, where
  * a reader would count it twice and neither list would be the truth.
@@ -37,7 +47,11 @@ export type AttachTarget =
 
 export type AttachPlan =
   | { ok: true; taskId: string | null; subtaskId: string | null }
-  | { ok: false; reason: 'no_such_task' | 'no_such_subtask' }
+  | {
+    ok: false
+    /** `needs_subtask`: the target was a delivery, and a delivery does not take sessions. */
+    reason: 'no_such_task' | 'no_such_subtask' | 'needs_subtask'
+  }
 
 export function planAttach(o: {
   target: AttachTarget
@@ -49,9 +63,10 @@ export function planAttach(o: {
 
   if (o.target.kind === 'task') {
     if (!o.taskIds.includes(o.target.id)) return { ok: false, reason: 'no_such_task' }
-    // The subtask is CLEARED, not left behind. A row keeping a stale `subtaskId` would go on being
-    // drawn under a subtask it was explicitly moved out of.
-    return { ok: true, taskId: o.target.id, subtaskId: null }
+    // A DELIVERY DOES NOT TAKE SESSIONS. The caller has to name a subtask of it — creating one is
+    // a gesture the surfaces offer, and refusing here is what keeps "the delivery's cost is its
+    // subtasks' cost" true rather than aspirational.
+    return { ok: false, reason: 'needs_subtask' }
   }
 
   const wanted = o.target.id

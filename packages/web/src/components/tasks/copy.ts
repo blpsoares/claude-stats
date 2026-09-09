@@ -48,6 +48,18 @@ export interface BoardCopy {
   /** The picker's own two lines. */
   searchOrCreate: string
   newWithDetails: string
+  /**
+   * The subtask table — the one grid a session is actually filed in, so its columns are read
+   * closely and were the last English left on a Portuguese board.
+   */
+  subtasks: string
+  owner: string
+  start: string
+  due: string
+  sessions: string
+  addSubtask: string
+  nothingBrokenOut: string
+  remove: string
 }
 
 const EN: BoardCopy = {
@@ -78,6 +90,16 @@ const EN: BoardCopy = {
   actions: 'Actions',
   searchOrCreate: 'Search deliveries, or type a new name',
   newWithDetails: 'New delivery with all the details…',
+  subtasks: 'Subtasks',
+  owner: 'Owner',
+  start: 'Start',
+  due: 'Due',
+  sessions: 'Sessions',
+  addSubtask: 'Add a subtask, then Enter',
+  nothingBrokenOut:
+    'Nothing broken out yet. A session is filed under a SUBTASK, never under the delivery itself — '
+    + 'so break the work into parts here, and the delivery’s cost becomes the cost of its parts.',
+  remove: 'Remove',
 }
 
 const PT: BoardCopy = {
@@ -110,6 +132,16 @@ const PT: BoardCopy = {
   actions: 'Ações',
   searchOrCreate: 'Buscar entregas, ou digitar um nome novo',
   newWithDetails: 'Nova entrega, com todos os detalhes…',
+  subtasks: 'Subtarefas',
+  owner: 'Responsável',
+  start: 'Início',
+  due: 'Prazo',
+  sessions: 'Sessões',
+  addSubtask: 'Adicionar subtarefa e apertar Enter',
+  nothingBrokenOut:
+    'Nada dividido ainda. Uma sessão se filia a uma SUBTAREFA, nunca à entrega em si — divida o '
+    + 'trabalho em partes aqui, e o custo da entrega passa a ser o custo das partes dela.',
+  remove: 'Remover',
 }
 
 export function boardCopy(lang: Lang): BoardCopy {

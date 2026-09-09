@@ -21,8 +21,7 @@ import { TaskProgressBar } from './TaskProgressBar'
 import { boardCopy } from './copy'
 import { TaskComposer } from './TaskComposer'
 import { attachSession, detachSession, useTaskDetail, useTaskList } from '../../lib/tasks'
-import { SessionPlacement } from './SessionPlacement'
-import { TaskPicker } from './TaskPicker'
+import { SessionFiling } from './SessionFiling'
 import { BetaTag } from '../BetaTag'
 
 export interface SessionTasksTabProps {
@@ -165,21 +164,6 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
           </div>
         )}
 
-      {/* WHERE inside the delivery. Only once it is filed at all: a placement control on a session
-          that belongs to nothing would be asking which room of a house nobody has bought. */}
-      {current && detail && (
-        <SessionPlacement
-          taskId={current.task.id}
-          taskTitle={current.task.title}
-          sessionId={p.session.id}
-          subtasks={detail.subtasks}
-          {...(detail.sessions.find(r => r.id === p.session.id)
-            ? { row: detail.sessions.find(r => r.id === p.session.id)! }
-            : {})}
-          lang={p.lang}
-          onChanged={refresh}
-        />
-      )}
 
       {/* The composer, INLINE — the same form the board opens in a dialog, with this session
           pre-linked. Creating a task from the session you are sitting in should not mean leaving
@@ -209,12 +193,11 @@ export function SessionTasksTab(p: SessionTasksTabProps) {
       </div>
 
       {picking && (
-        <TaskPicker
-          title={boardCopy(p.lang).fileUnder}
-          lang={p.lang}
+        <SessionFiling
           session={p.session}
-          onPick={async taskId => { await link(taskId) }}
-          onDetach={() => void unlink()}
+          lang={p.lang}
+          onChanged={refresh}
+          {...(p.onOpenTask ? { onOpenTask: p.onOpenTask } : {})}
           onClose={() => setPicking(false)}
         />
       )}

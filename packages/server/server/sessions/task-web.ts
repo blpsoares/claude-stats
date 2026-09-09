@@ -552,6 +552,8 @@ export async function attachSession(
   const row = w.rows.find(r => r.id === sessionId)
   if (!row) return false
 
+  // A DELIVERY DOES NOT TAKE SESSIONS: without a subtask this refuses, and the surfaces offer
+  // "create one and move it here" rather than filing at the wrong level.
   const plan = planAttach({
     target: o.subtaskId ? { kind: 'subtask', id: o.subtaskId } : { kind: 'task', id: task.id },
     taskIds: w.book.tasks.map(t => t.id),

@@ -46,9 +46,12 @@ export function BetaTag({ what, compact, style }: BetaTagProps) {
         padding: '1px 5px', borderRadius: 4,
         fontSize: 8.5, fontWeight: 700, letterSpacing: '0.08em', lineHeight: 1.5,
         textTransform: 'uppercase',
-        border: '1px solid var(--border)',
-        background: 'var(--bg-elevated)',
-        color: 'var(--text-tertiary)',
+        // Orange on a HOLLOW ground: the mark reads as the product's own voice rather than as a
+        // disabled chip, which is what the grey-on-elevated version looked like beside a status
+        // pill. It is still never colour alone — the word `beta` is the signal.
+        border: '1px solid var(--anthropic-orange)',
+        background: 'transparent',
+        color: 'var(--anthropic-orange)',
         ...style,
       }}
     >beta</span>
