@@ -12,15 +12,21 @@
  */
 
 import { useState } from 'react'
-import { Plus, Terminal, Trash2, X } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
-import { COLUMN_ORDER, STATUS, field, microLabel, pill, surface, type BoardStatus } from './board'
+import { COLUMN_ORDER, STATUS, microLabel, surface, type BoardStatus } from './board'
 import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
 import { TaskProgressBar } from './TaskProgressBar'
-import type { Subtask, TaskStatus } from '../../lib/tasks'
+import { subtaskSessions } from './SubtaskSessions'
+import { boardCopy, statusLabel, type Lang } from './copy'
+import type { Subtask, TaskSessionRow, TaskStatus } from '../../lib/tasks'
 
-function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStatus) => void }) {
+function StatusPick({ value, lang, onPick }: {
+  value: TaskStatus
+  lang: Lang
+  onPick: (s: TaskStatus) => void
+}) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const s = STATUS[value as BoardStatus] ?? STATUS.todo
@@ -32,7 +38,7 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
           border: `1px solid ${s.color}`, cursor: 'pointer', padding: '3px 9px', borderRadius: 5,
           background: s.dim, color: s.color, fontSize: 10.5, fontWeight: 600, whiteSpace: 'nowrap',
         }}
-      >{s.label}</button>
+      >{statusLabel(value, lang)}</button>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 30 }} />
@@ -54,7 +60,7 @@ function StatusPick({ value, onPick }: { value: TaskStatus; onPick: (s: TaskStat
                     minHeight: isMobile ? 44 : undefined,
                     borderRadius: 5, background: c.dim, color: c.color, fontSize: 10.5, fontWeight: 600,
                   }}
-                >{c.label}</button>
+                >{statusLabel(st, lang)}</button>
               )
             })}
           </div>
@@ -72,14 +78,23 @@ const bare: React.CSSProperties = {
 
 export interface SubtaskTableProps {
   subtasks: Subtask[]
-  sessionTitleOf?: (sessionId: string) => string | undefined
+  /** The DELIVERY's sessions. Each row shows the ones filed under it — see `SubtaskSessions`. */
+  sessions: readonly TaskSessionRow[]
+  lang: Lang
   onAdd: (title: string) => void | Promise<void>
   onPatch: (id: string, patch: Partial<Subtask>) => void | Promise<void>
   onRemove: (id: string) => void | Promise<void>
+  /** File a session under a subtask. */
+  onAttach: (subtaskId: string, sessionId: string) => void | Promise<void>
+  /** Take a session out of wherever it is filed. */
+  onUnfile: (sessionId: string) => void | Promise<void>
+  /** Open a session's own screen. Absent renders the reference as a label. */
+  onOpenSession?: (sessionId: string) => void
 }
 
 export function SubtaskTable(p: SubtaskTableProps) {
   const isMobile = useIsMobile()
+  const copy = boardCopy(p.lang)
   const [draft, setDraft] = useState('')
   const [linking, setLinking] = useState<string | null>(null)
 
@@ -91,7 +106,7 @@ export function SubtaskTable(p: SubtaskTableProps) {
         display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px',
         borderBottom: '1px solid var(--border)',
       }}>
-        <span style={microLabel}>Subtasks</span>
+        <span style={microLabel}>{copy.subtasks}</span>
         {/* The shared bar — it rounds DOWN, so this one cannot say 100% while the grid below it
             still shows an open row. That disagreement is exactly what one component prevents. */}
         <div style={{ flex: 1, maxWidth: 220 }}>
@@ -102,7 +117,7 @@ export function SubtaskTable(p: SubtaskTableProps) {
       <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
         <thead>
           <tr>
-            {(['Subtask', 'Status', 'Owner', 'Start', 'Due', 'Session', ''] as const).map((h, i) => (
+            {[copy.subtasks, 'Status', copy.owner, copy.start, copy.due, copy.sessions, ''].map((h, i) => (
               <th key={i} style={{ ...microLabel, textAlign: 'left', padding: '6px 9px', fontWeight: 600 }}>
                 {h}
               </th>
@@ -112,9 +127,8 @@ export function SubtaskTable(p: SubtaskTableProps) {
         <tbody>
           {p.subtasks.length === 0 && (
             <tr>
-              <td colSpan={7} style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>
-                Nothing broken out yet. A subtask carries its own status, owner, dates and session —
-                cost stays on the task, where the sessions are.
+              <td colSpan={7} style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)', lineHeight: 1.55 }}>
+                {copy.nothingBrokenOut}
               </td>
             </tr>
           )}
@@ -133,7 +147,10 @@ export function SubtaskTable(p: SubtaskTableProps) {
                 />
               </td>
               <td style={cell}>
-                <StatusPick value={t.status} onPick={s => void p.onPatch(t.id, { status: s })} />
+                <StatusPick
+                  value={t.status} lang={p.lang}
+                  onPick={s => void p.onPatch(t.id, { status: s })}
+                />
               </td>
               <td style={cell}>
                 <input
@@ -147,42 +164,31 @@ export function SubtaskTable(p: SubtaskTableProps) {
                   because the column heading above already says which date this is. */}
               <td style={cell}>
                 <DatePicker
-                  value={t.startDate ?? ''} label="" placeholder="—" lang="en"
+                  value={t.startDate ?? ''} label="" placeholder="—" lang={p.lang}
                   onChange={v => void p.onPatch(t.id, { startDate: v })}
                 />
               </td>
               <td style={cell}>
                 <DatePicker
-                  value={t.dueDate ?? ''} label="" placeholder="—" lang="en"
+                  value={t.dueDate ?? ''} label="" placeholder="—" lang={p.lang}
                   min={t.startDate || undefined}
                   onChange={v => void p.onPatch(t.id, { dueDate: v })}
                 />
               </td>
-              <td style={cell}>
-                {t.sessionId ? (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                    <span style={pill()}>
-                      {p.sessionTitleOf?.(t.sessionId) ?? t.sessionId.slice(0, 8)}
-                    </span>
-                    <button
-                      onClick={() => void p.onPatch(t.id, { sessionId: '' })} title="Unlink"
-                      style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}
-                    ><X size={11} /></button>
-                  </span>
-                ) : (
-                  <button
-                    onClick={() => setLinking(t.id)}
-                    style={{
-                      background: 'none', border: 'none', color: 'var(--text-tertiary)',
-                      cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
-                      fontSize: 11.5,
-                    }}
-                  ><Terminal size={12} /> link</button>
-                )}
+              <td style={{ ...cell, minWidth: 190 }}>
+                {subtaskSessions({
+                  subtaskId: t.id,
+                  sessions: p.sessions,
+                  lang: p.lang,
+                  mobile: isMobile,
+                  onLink: setLinking,
+                  onUnfile: sid => void p.onUnfile(sid),
+                  onOpen: p.onOpenSession,
+                })}
               </td>
               <td style={{ ...cell, textAlign: 'right' }}>
                 <button
-                  onClick={() => void p.onRemove(t.id)} title="Remove"
+                  onClick={() => void p.onRemove(t.id)} title={copy.remove}
                   style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'inline-flex' }}
                 ><Trash2 size={12} /></button>
               </td>
@@ -193,7 +199,7 @@ export function SubtaskTable(p: SubtaskTableProps) {
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%' }}>
                 <Plus size={12} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
                 <input
-                  value={draft} placeholder="Add a subtask, then Enter"
+                  value={draft} placeholder={copy.addSubtask}
                   onChange={e => setDraft(e.target.value)}
                   onKeyDown={e => {
                     if (e.key === 'Enter' && draft.trim()) { void p.onAdd(draft.trim()); setDraft('') }
@@ -208,8 +214,9 @@ export function SubtaskTable(p: SubtaskTableProps) {
 
       {linking && (
         <SessionPicker
-          multiple={false}
-          onPick={ids => { const first = ids[0]; if (first) void p.onPatch(linking, { sessionId: first }) }}
+          // MULTIPLE, because a subtask holds any number of sessions — and sequential on the way
+          // out, since every attach read-modify-writes the same store.
+          onPick={async ids => { for (const id of ids) await p.onAttach(linking, id) }}
           onClose={() => setLinking(null)}
         />
       )}

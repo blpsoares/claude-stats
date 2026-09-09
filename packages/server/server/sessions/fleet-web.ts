@@ -337,23 +337,16 @@ export async function runFleetAction(
       if (!host.deleteTask) return { ok: false, message: s.sessionsNoHost }
       if (!text) return { ok: false, message: s.taskNone }
       return await host.deleteTask(text)
-    // The two TASK verbs act on the piece of WORK the row is filed under, never on a task named in
-    // the request: a caller that could pass its own string could reopen every session of any task
-    // on this machine. The row is looked up in the fleet and its own `task` is what is used.
-    case 'openTask':
-    case 'finishTask': {
-      if (!host.openTask || !host.finishTask || !host.sessions) {
-        return { ok: false, message: s.sessionsNoHost }
-      }
-      const fleet = await host.sessions()
-      const task = fleet.sessions.find(r => r.id === req.id)?.task
-      if (!task) return { ok: false, message: s.taskNone }
-      if (req.action === 'openTask') return await host.openTask(task)
-      // A TOGGLE, read from the snapshot rather than from the request: "finish" and "unfinish" are
-      // the same switch, and letting the browser state which way it goes is how a page one poll
-      // behind marks a task finished that somebody had just reopened.
-      return await host.finishTask(task, !(fleet.finishedTasks ?? []).includes(task))
-    }
+    /*
+     * The two TASK verbs — `openTask` and `finishTask` — used to be handled here and are GONE from
+     * the wire entirely, not merely hidden. They were standing verbs about a DELIVERY on a row
+     * about a SESSION, and the browser now answers both questions where they belong: finishing is
+     * asked at the moment a session is STOPPED and written through `/api/tasks`, which is where a
+     * delivery's status lives; reopening a whole task is `agentop session open`.
+     *
+     * Removing the ids rather than the buttons is what makes it true: a hidden button is not a
+     * closed door, and this route is reachable from a central's relay.
+     */
     case 'resume': {
       if (!host.resumeSession || !host.sessions) return { ok: false, message: s.sessionsNoHost }
       // Read from the fleet rather than trusted from the browser: the reopen target is a

@@ -48,6 +48,40 @@ export interface BoardCopy {
   /** The picker's own two lines. */
   searchOrCreate: string
   newWithDetails: string
+  /**
+   * The subtask table — the one grid a session is actually filed in, so its columns are read
+   * closely and were the last English left on a Portuguese board.
+   */
+  subtasks: string
+  owner: string
+  start: string
+  due: string
+  sessions: string
+  addSubtask: string
+  nothingBrokenOut: string
+  remove: string
+  /**
+   * Stopping a session, which is the moment somebody actually knows whether the work is done.
+   *
+   * It replaces two standing verbs on the session row — "open the whole task" and "finish task" —
+   * that asked about a delivery at a moment nobody was thinking about one. This asks at the only
+   * moment the answer is in the reader's head.
+   */
+  endSession: string
+  endSessionWhat: string
+  deliveredQuestion: string
+  /** The PART this session did — what a stop actually offers to close. */
+  partQuestion: string
+  lastPart: string
+  endOnly: string
+  endAndFinishPart: string
+  endAndDeliver: string
+  markedDelivered: string
+  couldNotMarkDelivered: string
+  /** The delivery's own tabs — drawn on the page AND in the session aside, so one set of words. */
+  tabs: Record<'overview' | 'sessions' | 'comments' | 'subtasks' | 'files' | 'activity', string>
+  wholeDelivery: string
+  deleteDelivery: string
 }
 
 const EN: BoardCopy = {
@@ -78,6 +112,36 @@ const EN: BoardCopy = {
   actions: 'Actions',
   searchOrCreate: 'Search deliveries, or type a new name',
   newWithDetails: 'New delivery with all the details…',
+  subtasks: 'Subtasks',
+  owner: 'Owner',
+  start: 'Start',
+  due: 'Due',
+  sessions: 'Sessions',
+  addSubtask: 'Add a subtask, then Enter',
+  nothingBrokenOut:
+    'Nothing broken out yet. A session is filed under a SUBTASK, never under the delivery itself — '
+    + 'so break the work into parts here, and the delivery’s cost becomes the cost of its parts.',
+  remove: 'Remove',
+  endSession: 'End this session?',
+  endSessionWhat: 'Whatever it is doing stops now.',
+  deliveredQuestion: 'Is this delivery finished?',
+  partQuestion: 'Is this part finished?',
+  lastPart: 'the last open part, so the delivery is marked delivered too',
+  endOnly: 'End the session only',
+  endAndFinishPart: 'Finish this part and end',
+  endAndDeliver: 'Finish it and mark the delivery delivered',
+  markedDelivered: 'Marked delivered.',
+  couldNotMarkDelivered: 'Could not mark it delivered — the session was left running.',
+  tabs: {
+    overview: 'Overview',
+    sessions: 'Sessions',
+    comments: 'Comments',
+    subtasks: 'Subtasks',
+    files: 'Files',
+    activity: 'Activity',
+  },
+  wholeDelivery: 'The whole delivery',
+  deleteDelivery: 'Delete this delivery',
 }
 
 const PT: BoardCopy = {
@@ -110,6 +174,36 @@ const PT: BoardCopy = {
   actions: 'Ações',
   searchOrCreate: 'Buscar entregas, ou digitar um nome novo',
   newWithDetails: 'Nova entrega, com todos os detalhes…',
+  subtasks: 'Subtarefas',
+  owner: 'Responsável',
+  start: 'Início',
+  due: 'Prazo',
+  sessions: 'Sessões',
+  addSubtask: 'Adicionar subtarefa e apertar Enter',
+  nothingBrokenOut:
+    'Nada dividido ainda. Uma sessão se filia a uma SUBTAREFA, nunca à entrega em si — divida o '
+    + 'trabalho em partes aqui, e o custo da entrega passa a ser o custo das partes dela.',
+  remove: 'Remover',
+  endSession: 'Encerrar esta sessão?',
+  endSessionWhat: 'O que ela estiver fazendo para agora.',
+  deliveredQuestion: 'Esta entrega está finalizada?',
+  partQuestion: 'Esta parte está finalizada?',
+  lastPart: 'a última parte aberta, então a entrega também é marcada como entregue',
+  endOnly: 'Só encerrar a sessão',
+  endAndFinishPart: 'Finalizar esta parte e encerrar',
+  endAndDeliver: 'Finalizar e marcar a entrega como entregue',
+  markedDelivered: 'Entrega marcada como entregue.',
+  couldNotMarkDelivered: 'Não foi possível marcar a entrega — a sessão continua rodando.',
+  tabs: {
+    overview: 'Visão geral',
+    sessions: 'Sessões',
+    comments: 'Comentários',
+    subtasks: 'Subtarefas',
+    files: 'Arquivos',
+    activity: 'Atividade',
+  },
+  wholeDelivery: 'A entrega inteira',
+  deleteDelivery: 'Excluir esta entrega',
 }
 
 export function boardCopy(lang: Lang): BoardCopy {

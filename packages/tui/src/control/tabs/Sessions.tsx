@@ -162,11 +162,14 @@ type Ask =
   | { kind: 'search' }
   /** The whole key list. Its own kind because it answers nothing and acts on nothing. */
   | { kind: 'keys' }
-  /** Finishing or reopening a TASK — the session is only how the task was named. */
-  | { kind: 'finishTask'; session: ControlSession }
+  /**
+   * Finishing a DELIVERY, asked right after its session was stopped — the one moment somebody
+   * knows the answer. It carries the task NAME rather than a session, because by the time it is
+   * asked the session it came from has already ended.
+   */
+  | { kind: 'finishTask'; task: string }
   | { kind: 'deleteTask'; name: string; count: number }
   | { kind: 'task'; session: ControlSession }
-  | { kind: 'openTask'; session: ControlSession }
   | { kind: 'resume'; session: ControlSession }
   | { kind: 'rename'; session: ControlSession }
   | { kind: 'note'; session: ControlSession }
@@ -918,10 +921,6 @@ export function Sessions({
     if (!selected) return
     if (a === 'attach') return actOn('attach')
     if (a === 'resume') { setAsk({ kind: 'resume', session: selected }); return }
-    if (a === 'openTask') { setAsk({ kind: 'openTask', session: selected }); return }
-    // Asked rather than done: finishing is a statement about a whole piece of work, and the
-    // confirmation is where the screen says what happens to its sessions.
-    if (a === 'finishTask') { setAsk({ kind: 'finishTask', session: selected }); return }
     // Refused in words rather than by a key that does nothing: pressing `y` on a session that is
     // working is a reasonable thing to try, and the answer is "it is not asking anything", which is
     // information. Two different refusals, because they are two different facts — the harness's
@@ -1276,10 +1275,9 @@ export function Sessions({
     // The note is `m` for memo: `t` belongs to the TASK, which is the verb people reach for it with.
     if (input === 'm') return runAction('note')
     if (input === 't') return runAction('task')
-    // The capitals act on the whole TASK rather than on the row, which is the one thing worth making
-    // people reach for a shift key to say.
-    if (input === 'T') return runAction('openTask')
-    if (input === 'F') return runAction('finishTask')
+    // `T` and `F` are GONE with the verbs they ran — see `session-verbs.ts`. Reopening a whole task
+    // is `agentop session open`, and finishing one is now asked at the moment a session is stopped,
+    // where somebody actually knows the answer.
     // Attaching has its OWN key because `enter` deliberately does not do it any more: enter opens
     // the menu, which is what made every other verb reachable, and the cost of that was three
     // keystrokes for the thing this screen is most often opened to do.
@@ -2135,9 +2133,9 @@ export function Sessions({
               rows={paneRows(cockpit.detail)}
               fellAgo={fellAgo}
               onClose={() => setAsk(null)}
-              onRun={(fn, label) => {
+              onRun={(fn, label, then) => {
                 setAsk(null)
-                void run(fn, label).then(onRefreshFleet)
+                void run(fn, label).then(onRefreshFleet).then(() => then?.())
               }}
               host={host}
               query={query}
@@ -2150,6 +2148,7 @@ export function Sessions({
               // The mode ENDS with the act it exists for. Nobody has to remember a second keystroke
               // to disarm, which is the state this screen must never leave a person in.
               onStopped={() => setBulk(BULK_STOP_OFF)}
+              onAskFinish={task => setAsk({ kind: 'finishTask', task })}
             />
           ) : (
             <Detail lines={detail} width={paneBody(width)} rows={paneRows(cockpit.detail)} />
@@ -2794,7 +2793,8 @@ function Detail({ lines, width, rows }: {
  * read at the moment the user is deciding, and the row being acted on stays visible above.
  */
 function Question({
-  ask, strings: s, width, rows, fellAgo, onClose, onRun, host, query, onQuery, fleet, onStopped,
+  ask, strings: s, width, rows, fellAgo, onClose, onRun, onAskFinish, host, query, onQuery, fleet,
+  onStopped,
 }: {
   /** Never `new` — the wizard takes the whole screen and is rendered before this is reached. */
   ask: Exclude<Ask, { kind: 'new' } | { kind: 'view' } | { kind: 'keys' }>
@@ -2805,7 +2805,15 @@ function Question({
   /** How long ago the fall was, already localized. Absent when nothing fell. */
   fellAgo?: string
   onClose: () => void
-  onRun: (fn: () => Promise<ActionResult>, label?: string) => void
+  /**
+   * Run an action and close the question.
+   *
+   * `then` is the FOLLOW-UP question, asked once the action has actually run — the only caller is
+   * stopping a session that is filed under a delivery, which asks whether the delivery is finished.
+   * It is a callback rather than a second `Ask` shape because the follow-up is a decision about
+   * what just happened, and the parent owns the question state.
+   */
+  onRun: (fn: () => Promise<ActionResult>, label?: string, then?: () => void) => void
   host: ControlHost
   query: string
   onQuery: (q: string) => void
@@ -2813,6 +2821,8 @@ function Question({
   fleet: ControlSessions | null | undefined
   /** Called once the bulk stop actually runs, so the mode closes itself behind it. */
   onStopped: () => void
+  /** Ask about a DELIVERY once its session has been stopped — see `onRun`'s `then`. */
+  onAskFinish: (task: string) => void
 }) {
   if (ask.kind === 'search') {
     return (
@@ -2955,6 +2965,35 @@ function Question({
     )
   }
 
+  if (ask.kind === 'finishTask') {
+    const task = ask.task
+    const mine = (fleet?.sessions ?? []).filter(v => v.task === task)
+    // Counted separately and stated separately. "N sessions" alone does not tell you whether any of
+    // them is an assistant currently burning tokens, and that is the fact somebody is worried about
+    // when they hesitate over this button.
+    const running = mine.filter(sessionRunning).length
+    return (
+      <ConfirmPrompt
+        // The question states what finishing ACTUALLY does — mark the task, hide its sessions
+        // behind a switch — and says outright that nothing is stopped. It must not describe
+        // something the code does not do: a warning that claims to end everything, over an action
+        // that ends nothing, is worse than no warning, because it teaches people that the warnings
+        // on this screen can be ignored.
+        label={s.sessionsFinishConfirm(task, mine.length, running)}
+        yesLabel={s.yes}
+        noLabel={s.no}
+        width={width}
+        height={rows}
+        onCancel={onClose}
+        onAnswer={(yes: boolean) => {
+          const finish = host.finishTask
+          if (!yes || !finish) return onClose()
+          onRun(() => finish.call(host, task, true), s.actSessions.finishTask)
+        }}
+      />
+    )
+  }
+
   const { session } = ask
 
   /**
@@ -3090,6 +3129,22 @@ function Question({
           if (!yes) return onClose()
           const kill = host.killSession
           if (!kill) return onClose()
+          const task = session.task
+          /**
+           * STOPPING IS WHEN SOMEBODY KNOWS WHETHER THE WORK IS DONE.
+           *
+           * `finishTask` used to be a standing verb on the row (`F`), which meant it was offered at
+           * every moment except the one where the answer is in the reader's head — so deliveries
+           * stayed open long after their last session ended. It is now asked HERE, and only when
+           * this session is filed under something.
+           *
+           * The kill is not held up by the question: it runs first and the delivery is asked about
+           * after, so an answer nobody gives leaves the session stopped rather than running.
+           */
+          if (task && !(fleet?.finishedTasks ?? []).includes(task)) {
+            onRun(() => kill.call(host, session.id), s.actSessions.kill, () => onAskFinish(task))
+            return
+          }
           onRun(() => kill.call(host, session.id), s.actSessions.kill)
         }}
       />
@@ -3124,61 +3179,6 @@ function Question({
             ...(session.actionable ? { replaces: session.id } : {}),
             attach: false,
           }).then(r => ({ ok: r.ok, message: r.message })), s.actSessions.resume)
-        }}
-      />
-    )
-  }
-
-  if (ask.kind === 'openTask') {
-    const task = session.task ?? ''
-    // Counted from the fleet rather than passed as a literal `0`, which is what it was — the
-    // question offered to reopen "all 0 sessions" of a task that plainly had some, which is the
-    // kind of number that makes a person stop trusting every other number on the screen.
-    const count = (fleet?.sessions ?? []).filter(v => v.task === task).length
-    return (
-      <ConfirmPrompt
-        label={s.sessionsOpenTaskConfirm(task, count)}
-        yesLabel={s.yes}
-        noLabel={s.no}
-        width={width}
-        onCancel={onClose}
-        onAnswer={(yes: boolean) => {
-          const open = host.openTask
-          if (!yes || !open) return onClose()
-          onRun(() => open.call(host, task), s.actSessions.openTask)
-        }}
-      />
-    )
-  }
-
-  if (ask.kind === 'finishTask') {
-    const task = session.task ?? ''
-    const already = (fleet?.finishedTasks ?? []).includes(task)
-    const mine = (fleet?.sessions ?? []).filter(v => v.task === task)
-    const count = mine.length
-    // Counted separately and stated separately. "N sessions" alone does not tell you whether any of
-    // them is an assistant currently burning tokens, and that is the fact somebody is worried about
-    // when they hesitate over this button.
-    const running = mine.filter(sessionRunning).length
-    return (
-      <ConfirmPrompt
-        // The question states what finishing ACTUALLY does — mark the task, hide its sessions
-        // behind a switch — and says outright that nothing is stopped. It must not describe
-        // something the code does not do: a warning that claims to end everything, over an action
-        // that ends nothing, is worse than no warning, because it teaches people that the warnings
-        // on this screen can be ignored.
-        label={already
-          ? s.sessionsReopenConfirm(task)
-          : s.sessionsFinishConfirm(task, count, running)}
-        yesLabel={s.yes}
-        noLabel={s.no}
-        width={width}
-        height={rows}
-        onCancel={onClose}
-        onAnswer={(yes: boolean) => {
-          const finish = host.finishTask
-          if (!yes || !finish) return onClose()
-          onRun(() => finish.call(host, task, !already), s.actSessions.finishTask)
         }}
       />
     )

@@ -1235,7 +1235,7 @@ export function sessionKeyHelp(w: {
   move: string; open: string; attach: string; menu: string; section: string
   newSession: string; search: string; clear: string; kill: string; rename: string
   note: string; task: string; mark: string; onlyActive: string; bulkStop: string
-  openTask: string; finishTask: string; recent: string; cascade: string
+  recent: string; cascade: string
   group: string; layout: string; detail: string; menuFold: string
   reset: string; tabs: string; help: string; quit: string
   approve: string; prompt: string; reopenFell: string
@@ -1259,8 +1259,6 @@ export function sessionKeyHelp(w: {
     { keys: 'r', what: w.rename },
     { keys: 'm', what: w.note },
     { keys: 't', what: w.task },
-    { keys: 'T', what: w.openTask },
-    { keys: 'F', what: w.finishTask },
     { keys: 'space', what: w.mark },
     // The mass-stop mode, listed right under the key that pins — because they are the two gestures
     // `space` answers, and the whole point of the mode is that they are no longer the same one.

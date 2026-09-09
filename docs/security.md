@@ -520,15 +520,21 @@ a rule. `performMachineAction` now resolves the target through the same predicat
 through, and refuses an id it cannot resolve — an unresolvable target has no directory to judge,
 and passing it through would leave every verb reachable by naming an id the fleet does not list.
 
-**The task verbs are refused entirely while anything is withheld.** `openTask` acts on the piece of
-WORK a row is filed under, expanding across the whole registry, and a task routinely spans
-repositories — so on a restricted connection it reached sessions the central was never shown,
-started assistants in their directories and reported how many. Refusing only when a task provably
-spans a withheld row would answer, one visible row at a time, "does this one share work with the
-hidden half" — an oracle, and the same correlation §8 exists to deny. So the verbs are refused for
-every restricted connection and are absent from the relayed rows; the refusal names no repository
-and no count, disclosing nothing beyond the machine-level `withheld` figure the reply already
-carries. Open or finish the task on the machine itself.
+**The task verbs no longer exist.** `openTask` acted on the piece of WORK a row was filed under,
+expanding across the whole registry, and a task routinely spans repositories — so on a restricted
+connection it reached sessions the central was never shown, started assistants in their directories
+and reported how many. It was refused for every restricted connection rather than only when a task
+provably spanned a withheld row, because the narrower check answers, one visible row at a time,
+"does this one share work with the hidden half" — an oracle, and the same correlation §8 exists to
+deny.
+
+Both `openTask` and `finishTask` are now absent from `FleetActionId` and from
+`REMOTE_SCREENLESS_ACTIONS`. That list is CLOSED — an action it does not name is refused — so the
+protection is structural rather than guarded, and it applies to an unrestricted connection too,
+which the old guard never covered. Finishing a delivery is asked when its session is stopped, on
+the machine, and written through the board's own API; reopening a whole task is `agentop session
+open`. **A future verb whose subject is a TASK rather than a ROW must restore that refusal before
+it joins the list.**
 
 **The stated non-guarantee.** Whoever runs the central administers machines and can re-assign one
 to another account. This switch is what stops session access being on without its owner choosing

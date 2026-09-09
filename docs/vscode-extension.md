@@ -29,7 +29,7 @@ VS Code window                          the machine
 |---|---|---|
 | **The fleet** (sidebar, or an editor tab) | every session, grouped by project, most urgent first | `GET /api/fleet` every 5s |
 | **One session** — the sidebar walks into it, or it opens as its **own tab** | its LIVE SCREEN, the dialog it is blocked on with the options to answer, a composer to type into it, and every verb | `GET /api/fleet/stream` + `POST /api/fleet/act` |
-| **Verbs** | approve · prompt · rename · note · task · open the whole task · finish the task · kill · reopen | `POST /api/fleet/act` |
+| **Verbs** | approve · prompt · rename · note · task · kill · reopen | `POST /api/fleet/act` |
 | **Attach** | a real integrated terminal running the very `tmux` command the cockpit runs | `GET /api/fleet/attach` |
 | **New session** | the wizard: which assistants this machine can start, where, the task, the first message, model and effort | `GET`/`POST /api/fleet/new` |
 | **Status bar** | today's cost, tokens and session count, plus how many sessions are waiting on you | `GET /api/data`, slowly |
@@ -60,9 +60,11 @@ dimension added to `SESSION_DIMENSIONS` appears in the editor without a line cha
   turns the menu into a dead end you can only narrow.
 - **Search in** name · folder · harness · note · task · prompt · **transcript** — the last one is a
   text scan of the conversation on disk, and is the reason the search runs on the server at all.
-- **A task band** carries the task's own verbs: reopen the whole task, mark it finished (its band
-  is struck through, never hidden — it is still a thing that happened), delete it. They live on the
-  BAND because a task is not a session.
+- **A task band** carries one verb of its own: delete the task. It lives on the BAND because a task
+  is not a session. "Reopen the whole task" and "mark it finished" were there too and are gone with
+  the server verbs behind them — finishing is asked when a session is STOPPED, which is when
+  somebody knows the answer, and reopening a whole task is `agentop session open`. A finished
+  band is still struck through, never hidden: it is still a thing that happened.
 - **Sessions that fell together** — a reboot, a laptop closed — are offered as one group to reopen.
   The server resolves which sessions were in it (`crash-group.ts`), and it errs toward excluding: a
   row with no evidence it was ever alive is never in the group.

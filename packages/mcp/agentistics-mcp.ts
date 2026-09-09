@@ -243,7 +243,7 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_subtask",
     description:
-      "BETA — the task board is new and still changing; its shapes may move between releases. Add a subtask, or change one. Pass `title` to add; pass `id` with `done`, `status`, `assignee`, `dueDate`, `startDate` or `sessionId` to edit one. A subtask carries the same columns its parent does, but no cost of its own: cost is measured per SESSION and rolls up to the task.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. Add a subtask, or change one. Pass `title` to add; pass `id` with `done`, `status`, `assignee`, `dueDate` or `startDate` to edit one. A subtask carries the same columns its parent does, but no cost of its own: cost is measured per SESSION and rolls up to the task. To put a session ON a subtask use agentistics_task_session with `subtaskId` — a subtask holds ANY NUMBER of sessions, so the link lives on the session, not in a field here.",
     inputSchema: {
       type: "object",
       properties: {
@@ -258,7 +258,6 @@ const TOOLS: Tool[] = [
         assignee: { type: "string" },
         dueDate: { type: "string" },
         startDate: { type: "string" },
-        sessionId: { type: "string" },
       },
       required: ["ref"],
     },
@@ -354,12 +353,17 @@ const TOOLS: Tool[] = [
   {
     name: "agentistics_task_session",
     description:
-      "BETA — the task board is new and still changing; its shapes may move between releases. File a SESSION under a task, which is what makes the task measurable: its cost, tokens, rounds and harness all come from the sessions filed under it. Pass `sessionId` (a managed session id or conversation id) with `ref`, or `detach` with a session id to unfile one. The task inherits the session's repository when it has none.",
+      "BETA — the task board is new and still changing; its shapes may move between releases. File a SESSION under a SUBTASK of a task, which is what makes the task measurable: its cost, tokens, rounds and harness all come from the sessions filed under its parts. **A session is NEVER filed under a task directly — always name a `subtaskId`.** A task is the unit of DELIVERY and a subtask is the unit of WORK; filing at both levels made 'does this cost include the subtasks' unanswerable, so the server refuses it. Use agentistics_task to read the subtasks, or agentistics_task_subtask to create one, then pass `ref` + `sessionId` (a managed session id or conversation id) + `subtaskId`. Pass `detach` with a session id to unfile one. The task inherits the session's repository when it has none.",
     inputSchema: {
       type: "object",
       properties: {
         ref: { type: "string" },
         sessionId: { type: "string" },
+        subtaskId: {
+          type: "string",
+          description:
+            "The subtask to file it under. REQUIRED to file — a task does not take sessions itself.",
+        },
         detach: { type: "string" },
       },
       required: [],
@@ -638,7 +642,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const a = args as any;
         // A bare `{id, done}` is the tick; naming any column makes it an edit. The route keeps
         // `done` and `status` in step, so a caller may send either.
-        const cols = ["status", "assignee", "dueDate", "startDate", "sessionId", "title"] as const;
+        // `sessionId` is deliberately NOT here: a subtask holds any number of sessions and the
+        // link lives on the SESSION (`agentistics_task_session` with `subtaskId`). Editing a
+        // one-session field beside that would be a second, unreconciled answer to the same question.
+        const cols = ["status", "assignee", "dueDate", "startDate", "title"] as const;
         const named = cols.filter(c => typeof a?.[c] === "string");
         const payload = a?.id !== undefined
           ? (named.length > 0
@@ -713,7 +720,25 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
         }
         const ref = encodeURIComponent(String(a?.ref ?? ""));
-        const body = await apiSend("POST", `/api/tasks/${ref}/sessions`, { sessionId: a?.sessionId });
+        // REFUSED HERE, in a sentence, rather than by the server's bare `{ok:false}`. The rule is
+        // the server's (`task-attach.ts`) and this is not a second copy of it — it is the same
+        // refusal said in words the caller can act on, naming the two calls that get it unstuck.
+        // A tool that answers "false" to a reasonable request teaches a retry loop.
+        if (!a?.subtaskId) {
+          return {
+            content: [{
+              type: "text",
+              text: "A session is filed under a SUBTASK, never under the delivery itself — a task is the "
+                + "unit of delivery, a subtask the unit of work. Read the parts with agentistics_task, or "
+                + "create one with agentistics_task_subtask, then call this again with `subtaskId`.",
+            }],
+            isError: true,
+          };
+        }
+        const body = await apiSend("POST", `/api/tasks/${ref}/sessions`, {
+          sessionId: a?.sessionId,
+          subtaskId: a.subtaskId,
+        });
         return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }] };
       }
       case "agentistics_task_delete": {

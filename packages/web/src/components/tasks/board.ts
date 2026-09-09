@@ -197,8 +197,9 @@ export const button = (mobile: boolean, kind: 'ghost' | 'primary' = 'ghost'): CS
 export const NA = 'N/A'
 export const fmtInt = (n: number | null | undefined): string =>
   (n === null || n === undefined ? NA : n.toLocaleString())
-export const fmtUSD = (n: number | null | undefined): string =>
-  (n === null || n === undefined ? NA : `$${n.toFixed(2)}`)
+// Money is NOT formatted here: it depends on the reader's currency and on the cached rate, so it
+// lives in `money.ts` behind `useMoney()`. A `$`-hardcoding helper in this file is exactly how the
+// board came to answer in dollars on a dashboard set to BRL.
 export const fmtBytes = (n: number): string =>
   (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
 

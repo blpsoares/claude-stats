@@ -25,13 +25,14 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown, ArrowUp, Bot, ChevronDown, ChevronRight, Columns3, MessageSquare, Paperclip, Plus,
-  Rows3, SquareArrowOutUpRight, Terminal, Trash2, X,
+  Rows3, SquareArrowOutUpRight, Trash2, X,
 } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import {
-  COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens, fmtUSD,
+  COLUMN_ORDER, NA, PRIORITY, STATUS, button, claimLeft, field, fmtInt, fmtTokens,
   harnessColor, microLabel, numeric, pill, surface, type BoardStatus, type ColumnId,
 } from './board'
+import { useMoney, type Money } from './money'
 import {
   DEFAULT_SORT, nextSort, PRIORITY_ORDER, sortRows,
   type SortKey, type SortSpec, type TaskPriorityId,
@@ -42,10 +43,13 @@ import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
 import { ChipSelect, statusOptions } from './ChipSelect'
 import { StatusChip } from './StatusChip'
-import { boardCopy, statusLabel } from './copy'
+import { boardCopy, statusLabel, type Lang } from './copy'
+import { subtaskSessions } from './SubtaskSessions'
 import { PickerMenu } from './PickerMenu'
 import { TaskProgressBar } from './TaskProgressBar'
-import type { Subtask, TaskClaim, TaskDetail, TaskListRow, TaskStatus } from '../../lib/tasks'
+import type {
+  Subtask, TaskClaim, TaskDetail, TaskListRow, TaskSessionRow, TaskStatus,
+} from '../../lib/tasks'
 
 /** The words the "sorted by" note uses. Kept beside `COLUMNS`, whose labels they mirror. */
 const SORT_LABEL: Record<string, string> = {
@@ -170,6 +174,7 @@ function cellFor(
   onPriority: (p: TaskPriorityId) => void,
   nowMs: number,
   lang: 'pt' | 'en',
+  money: Money,
 ): React.ReactNode {
   const r = row.rollup
   switch (col) {
@@ -222,7 +227,7 @@ function cellFor(
     case 'rounds': return <Num v={r.rounds} />
     case 'cost': return r.mixedCurrency || (r.credits !== null && r.costUSD === null)
       ? <span style={{ ...numeric, fontSize: 12 }}>{r.credits!.premiumRequests} req</span>
-      : <span style={{ ...numeric, fontSize: 12, color: r.costUSD === null ? 'var(--text-tertiary)' : 'var(--anthropic-orange)' }}>{fmtUSD(r.costUSD)}</span>
+      : <span style={{ ...numeric, fontSize: 12, color: r.costUSD === null ? 'var(--text-tertiary)' : 'var(--anthropic-orange)' }}>{money(r.costUSD)}</span>
     case 'tokens': return <span style={{ ...numeric, fontSize: 12, color: r.tokens === null ? 'var(--text-tertiary)' : undefined }}>{fmtTokens(r.tokens)}</span>
     case 'harnesses': return (
       <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
@@ -269,17 +274,26 @@ function cellFor(
  * in the other is two different records as far as the reader is concerned — and the shorter one
  * teaches people the fields do not exist. One list of columns, stated here and mirrored there.
  */
-export const SUBTASK_COLUMNS = ['Subtask', 'Status', 'Owner', 'Start', 'Due', 'Session', ''] as const
+export const subtaskColumns = (lang: Lang): string[] => {
+  const c = boardCopy(lang)
+  return [c.subtasks, 'Status', c.owner, c.start, c.due, c.sessions, '']
+}
 
-function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove, onLinkSession }: {
+function SubtaskRows({
+  subtasks, indent, cols, sessions, lang, onPatch, onRemove, onLinkSession, onUnfile, onOpenSession,
+}: {
   subtasks: Subtask[]
   indent: number
   /** How many task columns the group's table has — the filler cell has to close the row exactly. */
   cols: number
-  sessionLabelOf?: (sessionId: string) => string | undefined
+  /** The DELIVERY's sessions. Each subtask draws the ones filed under IT — see `SubtaskSessions`. */
+  sessions: readonly TaskSessionRow[]
+  lang: Lang
   onPatch: (id: string, patch: Partial<Subtask>) => void
   onRemove: (id: string) => void
   onLinkSession: (subtaskId: string) => void
+  onUnfile: (sessionId: string) => void
+  onOpenSession?: (sessionId: string) => void
 }) {
   const isMobile = useIsMobile()
   const bare: React.CSSProperties = {
@@ -335,27 +349,15 @@ function SubtaskRows({ subtasks, indent, cols, sessionLabelOf, onPatch, onRemove
             />
           </td>
           <td style={{ padding: cellPad }}>
-            {t.sessionId ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <span style={pill()}>{sessionLabelOf?.(t.sessionId) ?? t.sessionId.slice(0, 8)}</span>
-                <button
-                  onClick={() => onPatch(t.id, { sessionId: '' })} title="Unlink"
-                  style={{
-                    background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
-                    display: 'inline-flex', alignItems: 'center', ...tap(isMobile),
-                  }}
-                ><X size={11} /></button>
-              </span>
-            ) : (
-              <button
-                onClick={() => onLinkSession(t.id)}
-                style={{
-                  background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
-                  display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5,
-                  ...tap(isMobile),
-                }}
-              ><Terminal size={12} /> link</button>
-            )}
+            {subtaskSessions({
+              subtaskId: t.id,
+              sessions,
+              lang,
+              mobile: isMobile,
+              onLink: onLinkSession,
+              onUnfile,
+              onOpen: onOpenSession,
+            })}
           </td>
           {filler > 0 && <td colSpan={filler} />}
           <td style={{ padding: cellPad, textAlign: 'right' }}>
@@ -391,11 +393,20 @@ export interface TaskTableProps {
   onRemoveSubtask: (ref: string, id: string) => void
   onBatchStatus: (ids: string[], status: TaskStatus) => void
   onBatchDelete: (ids: string[]) => void
-  onLinkSession: (ref: string) => void
+  /**
+   * File a session under a SUBTASK. A delivery takes no sessions directly — the delivery is the
+   * unit of delivery, the subtask the unit of work — so this verb names both, always.
+   */
+  onLinkSession: (ref: string, subtaskId: string, sessionId: string) => void | Promise<void>
+  /** Take a session out of wherever it is filed. */
+  onUnfileSession: (ref: string, sessionId: string) => void | Promise<void>
+  /** Open a session's own screen. Absent renders each reference as a label. */
+  onOpenSession?: (sessionId: string) => void
 }
 
 export function TaskTable(p: TaskTableProps) {
   const isMobile = useIsMobile()
+  const money = useMoney()
   const stored = useMemo(readBoardPrefs, [])
 
   const [shown, setShown] = useState<ColumnId[]>(stored.columns ?? DEFAULT_COLUMNS)
@@ -511,7 +522,11 @@ export function TaskTable(p: TaskTableProps) {
           // field, and the board draws its columns in it — forcing `COLUMN_ORDER` here would undo
           // a reorder made one screen away.
           onChange={next => setGroups(next as BoardStatus[])}
-          note="A hidden group's tasks are still there — this only decides what is on screen."
+          // ORDERABLE, exactly like the columns beside it. The order was always honoured (`visible`
+          // walks `groupsShown`, not `COLUMN_ORDER`) and the only way to change it was to untick
+          // every group and tick them back in the order you wanted — a sequence with no control.
+          orderable
+          note="Drag a ticked group, or use ▲▼, to reorder the bands. A hidden group's tasks are still there."
         >
           <Rows3 size={13} /> Groups
         </PickerMenu>
@@ -523,7 +538,7 @@ export function TaskTable(p: TaskTableProps) {
           items={COLUMNS.map(c => ({ value: c.id, label: c.label }))}
           value={shown}
           onChange={next => setColumns(next as ColumnId[])}
-          note="Drag a ticked column to reorder it — the table follows this order."
+          note="Drag a ticked column, or use ▲▼, to reorder it — the table follows this order."
         >
           <Columns3 size={13} /> Columns
         </PickerMenu>
@@ -552,7 +567,11 @@ export function TaskTable(p: TaskTableProps) {
               }}
             >
               {isFolded ? <ChevronRight size={14} color={s.color} /> : <ChevronDown size={14} color={s.color} />}
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: s.color }}>{s.label}</span>
+              {/* The reader's word, not the constant — the picker one control away already said
+                  `Em andamento` over the very band this heading called `In progress`. */}
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: s.color }}>
+                {statusLabel(g.status, p.lang ?? 'en')}
+              </span>
               <span style={{ ...microLabel, fontSize: 11 }}>{g.rows.length}</span>
             </div>
 
@@ -674,18 +693,11 @@ export function TaskTable(p: TaskTableProps) {
                                   pr => p.onPriority?.(row.task.id, pr),
                                   nowMs,
                                   p.lang ?? 'en',
+                                  money,
                                 )}
                               </td>
                             ))}
                             <td style={{ padding: cellPad, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                              <button
-                                onClick={() => p.onLinkSession(row.task.id)} title="Link a session"
-                                style={{
-                                  background: 'none', border: 'none', color: 'var(--text-tertiary)',
-                                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
-                                  ...tap(isMobile),
-                                }}
-                              ><Terminal size={13} /></button>
                               <button
                                 onClick={() => p.onOpen(row.task.id)} title="Open this task"
                                 style={{
@@ -701,7 +713,7 @@ export function TaskTable(p: TaskTableProps) {
                             <>
                               <tr style={{ background: 'var(--bg-surface)' }}>
                                 <td style={{ padding: '5px 10px' }} />
-                                {SUBTASK_COLUMNS.map((h, i) => (
+                                {subtaskColumns(p.lang ?? 'en').map((h, i) => (
                                   <td key={i} style={{ ...microLabel, padding: '5px 10px', paddingLeft: i === 0 ? 34 : 10 }}>
                                     {h}
                                   </td>
@@ -710,10 +722,13 @@ export function TaskTable(p: TaskTableProps) {
                               </tr>
                               <SubtaskRows
                                 subtasks={subs} indent={34} cols={cols.length}
-                                sessionLabelOf={sid => detail?.sessions.find(r => r.id === sid)?.label}
+                                sessions={detail?.sessions ?? []}
+                                lang={p.lang ?? 'en'}
                                 onPatch={(id, patch) => p.onPatchSubtask(row.task.id, id, patch)}
                                 onRemove={id => p.onRemoveSubtask(row.task.id, id)}
                                 onLinkSession={sub => setLinkingSub({ task: row.task.id, sub })}
+                                onUnfile={sid => p.onUnfileSession(row.task.id, sid)}
+                                onOpenSession={p.onOpenSession}
                               />
                               <tr style={{ background: 'var(--bg-surface)' }}>
                                 <td style={{ padding: '5px 10px' }} />
@@ -806,10 +821,10 @@ export function TaskTable(p: TaskTableProps) {
 
       {linkingSub && (
         <SessionPicker
-          multiple={false}
-          onPick={ids => {
-            const first = ids[0]
-            if (first) p.onPatchSubtask(linkingSub.task, linkingSub.sub, { sessionId: first })
+          // A subtask holds any number of sessions, so the picker is MULTIPLE and the attaches are
+          // sequential — each one read-modify-writes the same store.
+          onPick={async ids => {
+            for (const id of ids) await p.onLinkSession(linkingSub.task, linkingSub.sub, id)
           }}
           onClose={() => setLinkingSub(null)}
         />

@@ -59,7 +59,6 @@ function interruptVerb(v: ControlSession, s: ControlStrings): FleetVerb {
  */
 export type FleetActionId =
   | 'approve' | 'prompt' | 'rename' | 'note' | 'task' | 'kill' | 'resume'
-  | 'openTask' | 'finishTask'
   /**
    * Stop what the session is doing WITHOUT ending it.
    *

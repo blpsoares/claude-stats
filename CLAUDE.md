@@ -1315,15 +1315,16 @@ harness working here must not break.
   halves now resolve through the one `sharedCwd` helper, and an id the machine cannot find is
   refused for the same reason a row with no `cwd` is: the rule names directories, and an
   unresolvable target has none to judge.
-- **The TASK verbs are refused outright on a RESTRICTED connection.** `openTask` expands to every
-  session filed under the row's task, over the whole registry, and a task routinely spans
-  repositories — so pressing it on a VISIBLE row spawned live assistants inside a withheld
-  directory and answered with a count of them. Refusing only when the task provably spans a
-  withheld row would be an ORACLE: repeated over the visible rows it maps which of them share work
-  with the hidden half, which is the same correlation as counting a hidden project's sessions. The
-  blunt refusal discloses nothing the reply does not already carry (`withheld` is a machine-level
-  count), and the verbs are dropped from the relayed row too — offering one the machine will refuse
-  is the control-that-reads-as-broken this file argues against everywhere else.
+- **The TASK verbs no longer exist, and their dedicated refusal is gone with them.** `openTask`
+  expanded to every session filed under the row's task, over the whole registry, and a task
+  routinely spans repositories — so pressing it on a VISIBLE row spawned live assistants inside a
+  withheld directory and answered with a count of them. `machine-fleet.ts` carried a blunt refusal
+  for every restricted connection (refusing only when the task provably spans a withheld row would
+  be an ORACLE: repeated over the visible rows it maps which of them share work with the hidden
+  half). Both verbs are now absent from `FleetActionId` and from `REMOTE_SCREENLESS_ACTIONS`, which
+  is CLOSED — so the property is structural rather than guarded, and it holds for an unrestricted
+  connection too, which the old guard never covered. **Any future verb whose subject is a TASK
+  rather than a ROW needs that refusal back before it joins the list.**
 - **Consent is ORTHOGONAL to the sharing rules, and that is the trap.** The two switches are
   machine-wide; turning on "manage my sessions" says nothing about WHICH sessions, so without the
   rule check above it silently re-opened the act surface over every withheld repository.
@@ -1961,11 +1962,22 @@ packages/tui/scripts/preview.tsx   dev tool: render ONE control-center frame to 
   message alone: the word is beside it. `COLORS.running` (#22c55e) is its own token rather than
   `success` (#10b981), which reads as teal on a terminal and sits within a hair of
   `HARNESS_COLOR.codex`. The verbs are **`n`** new, **`r`** rename, **`m`** note (memo — `t` belongs
-  to the TASK), **`t`** task, **`T`** open the whole task, **`F`** finish it, **`a`** approve (`y`
+  to the TASK), **`t`** task, **`a`** approve (`y`
   kept as the alias every yes/no prompt taught), **`c`** show what is not running (`l`/`e` aliases),
   **`C`** the last conversations flat and by recency, **`h`** the key reference. They were handed
   out in the order they were written — `a` started a session, `n` renamed one, `t` wrote a note — so
   the only way to learn one was to read the list.
+- **`T` and `F` are GONE, and so are the verbs they ran.** "Open the whole task" and "finish task"
+  were standing verbs about a DELIVERY on a row about a SESSION, offered on every filed row — so
+  they were pressed by accident, and the one that mattered was a switch somebody had to remember to
+  flip, which left deliveries open long after their last session ended. **Finishing is now asked
+  when a session is STOPPED**, which is the one moment the answer is in the reader's head: the kill
+  runs first and the delivery is asked about after, so an answer nobody gives leaves the session
+  stopped rather than running. `host.finishTask` writes BOTH places a delivery can be finished —
+  `preferences.finishedTasks` (the cockpit's own hide switch) and the BOARD, through `markTask` —
+  because writing only the first is how the cockpit came to call work finished that the board still
+  drew in `To do`. Reopening a whole task survives as `agentop session open`, where it is a
+  deliberate act rather than a menu row two keys from `kill`.
 - **PINNING a row and PICKING one to kill are two gestures, and they share no state.** `space` in
   normal mode PINS — the word on screen is `pinned` / `fixada` everywhere a person reads it (the
   band, its "not" side, the grouping, the key reference), while the stored field keeps its

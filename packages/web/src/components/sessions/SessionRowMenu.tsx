@@ -21,8 +21,13 @@ export interface SessionRowMenuProps {
   onClose: () => void
 }
 
-/** The entries that belong to the delivery board rather than to the session itself. */
-const TASK_ENTRIES = new Set<string>(['link-task', 'openTask', 'finishTask'])
+/**
+ * The entries that belong to the delivery board rather than to the session itself.
+ *
+ * `openTask` and `finishTask` were here and are gone with the verbs — a delivery is finished when
+ * its session is STOPPED, which is where the question is asked now. Filing is what remains.
+ */
+const TASK_ENTRIES = new Set<string>(['link-task'])
 
 export function SessionRowMenu({ x, y, entries, onPick, onClose }: SessionRowMenuProps) {
   const ref = useRef<HTMLDivElement>(null)

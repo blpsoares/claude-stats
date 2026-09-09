@@ -350,7 +350,7 @@ export interface ControlStrings {
     move: string; open: string; attach: string; menu: string; section: string
     newSession: string; search: string; clear: string; kill: string; rename: string
     note: string; task: string; mark: string; onlyActive: string; bulkStop: string
-    openTask: string; finishTask: string; recent: string; cascade: string
+    recent: string; cascade: string
     group: string; layout: string; detail: string; menuFold: string
     reset: string
     tabs: string; help: string; quit: string
@@ -501,7 +501,6 @@ export interface ControlStrings {
     approve: string
     prompt: string
     kill: string
-    openTask: string
     reopenFell: string
     finishTask: string
     /** Removing a task NAME — the sessions under it survive, unfiled. */
@@ -1055,8 +1054,6 @@ const EN: ControlStrings = {
     rename: 'rename it',
     note: 'write a note on it',
     task: 'file it under a task',
-    openTask: 'open every session of its task',
-    finishTask: 'mark its task finished',
     recent: 'the last conversations, newest first, ungrouped',
     cascade: 'cascade the rows by directory',
     mark: 'pin this row, and keep it pinned',
@@ -1201,7 +1198,6 @@ const EN: ControlStrings = {
     note: 'Note',
     task: 'Task',
     kill: 'Stop session',
-    openTask: 'Open whole task',
     reopenFell: 'Reopen what fell',
     finishTask: 'Finish task',
     deleteTask: 'Delete task',
@@ -1629,8 +1625,6 @@ const PT: ControlStrings = {
     rename: 'renomeia',
     note: 'escreve uma nota nela',
     task: 'arquiva sob uma tarefa',
-    openTask: 'abre todas as sessões da tarefa dela',
-    finishTask: 'marca a tarefa dela como finalizada',
     recent: 'as últimas conversas, mais recentes primeiro, sem agrupamento',
     cascade: 'exibe em cascata por diretório',
     mark: 'fixa esta linha, e mantém fixada',
@@ -1773,7 +1767,6 @@ const PT: ControlStrings = {
     note: 'Nota',
     task: 'Tarefa',
     kill: 'Encerrar sessão',
-    openTask: 'Abrir tarefa toda',
     reopenFell: 'Reabrir o que caiu',
     finishTask: 'Finalizar tarefa',
     deleteTask: 'Apagar tarefa',

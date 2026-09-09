@@ -38,13 +38,20 @@ export interface MachineFleetDeps {
   }>
 }
 
-/**
- * The two verbs whose subject is the piece of WORK rather than the row: they expand to every
- * session filed under the row's task, across the whole registry, and a task is a unit of work that
- * routinely spans repositories. See `performMachineAction` for why a restricted connection cannot
- * be offered them at all.
+/*
+ * `TASK_WIDE_ACTIONS` LIVED HERE, and it is gone with the verbs it named.
+ *
+ * `openTask` and `finishTask` acted on the piece of WORK a row was filed under: `openTask` expanded
+ * to every session of that task across the whole registry, so pressing it on a row a restricted
+ * central COULD see spawned assistants in directories it could not. That is why they were refused
+ * outright — bluntly, for every restricted connection, because the narrower "does this task span
+ * something hidden?" check is an oracle for exactly the correlation this boundary exists to hide.
+ *
+ * Neither verb exists any more (see `session-verbs.ts`), and `REMOTE_SCREENLESS_ACTIONS` is a
+ * CLOSED list: an action it does not name is refused, so the property is now structural rather than
+ * guarded. Any future verb whose subject is a TASK rather than a ROW needs this refusal back before
+ * it is added to that list.
  */
-const TASK_WIDE_ACTIONS: readonly string[] = ['openTask', 'finishTask']
 
 /**
  * This connection's directory test, or `null` when the connection restricts NOTHING.
@@ -101,14 +108,10 @@ export async function buildMachineFleetReply(
     if (isShared && !isShared(cwd)) { withheld++; continue }
     // Narrowed to what may be driven from a central BEFORE the reduction, so a verb this machine
     // will refuse never even appears on the row. Offering one and refusing it on the click is the
-    // control-that-reads-as-broken this codebase keeps arguing against. The task verbs go with the
-    // rest on a RESTRICTED connection for exactly that reason — `performMachineAction` refuses
-    // them there, so offering them would be that same broken control.
+    // control-that-reads-as-broken this codebase keeps arguing against.
     const verbs = Array.isArray(row.verbs)
       ? (row.verbs as { action?: unknown }[]).filter(v =>
-        typeof v?.action === 'string'
-        && remoteActionAllowed(v.action, consent)
-        && !(isShared && TASK_WIDE_ACTIONS.includes(v.action)))
+        typeof v?.action === 'string' && remoteActionAllowed(v.action, consent))
       : undefined
     // The consent decides which KEYS survive, not just which verbs. Without it the screen fields
     // are dropped here even for a connection that was granted them, so the central would offer
@@ -196,25 +199,6 @@ export async function performMachineAction(
 
   const isShared = await sharedCwd(conn, deps.readIndexSources)
   if (isShared) {
-    // A TASK verb expands to every session filed under the row's task, over the whole registry
-    // (`host.openTask` → `readRegistry().filter(m => m.task === task)`), and a task routinely spans
-    // repositories. Pressing it on a VISIBLE row therefore reached withheld ones — spawning real
-    // assistants in a directory the user hid, and answering with a count of them.
-    //
-    // It is refused for EVERY restricted connection rather than only when the task provably spans a
-    // withheld row, and that is deliberate: the narrower check is an ORACLE. Repeated over the rows
-    // a central can see, "does this one span something hidden?" maps which of them share work with
-    // the hidden half — the same correlation as counting a hidden project's sessions, which is the
-    // leak this whole boundary exists to prevent. The refusal discloses nothing the reply does not
-    // already carry: `withheld` is a machine-level count the central is given anyway.
-    if (TASK_WIDE_ACTIONS.includes(req.action)) {
-      return {
-        ok: false,
-        message: pt
-          ? 'Esta máquina não compartilha toda a sua frota com esta central, e uma tarefa pode abranger sessões que ela não vê. Abra ou encerre a tarefa na própria máquina.'
-          : 'This machine does not share its whole fleet with this central, and a task can span sessions this central cannot see. Open or finish the task on the machine itself.',
-      }
-    }
     const fleet = await deps.readFleet(lang)
     const target = fleet.rows.find(r => r.id === req.id)
     const cwd = typeof target?.cwd === 'string' ? target.cwd : ''

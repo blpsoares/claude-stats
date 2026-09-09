@@ -29,7 +29,7 @@ import { SessionPickModal } from '../sessions/SessionPickModal'
 import { buildPickRows } from '../../lib/sessionPick'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
-import { TaskPicker } from '../tasks/TaskPicker'
+import { SessionFiling } from '../tasks/SessionFiling'
 import { boardCopy } from '../tasks/copy'
 import { attachSession, detachSession } from '../../lib/tasks'
 import { SessionFacts } from '../sessions/SessionFacts'
@@ -610,31 +610,19 @@ export function SessionsAside({
       </div>
 
       {linking && (
-        <TaskPicker
-          at={{ x: linking.x, y: linking.y }}
-          title={boardCopy(lang).fileUnder}
-          lang={lang}
-          {...(() => {
-            // The row the menu was opened on, so the picker can name what it is filed under and
-            // offer to unfile it — the same contract the three-dot menu passes.
-            const row = rows.find(r => r.id === linking.id)
-            return row
-              ? {
-                session: {
-                  id: row.id, title: row.title, harness: row.harness,
-                  ...(row.task ? { task: row.task } : {}),
-                },
-              }
-              : {}
+        <SessionFiling
+          session={(() => {
+            const r = rows.find(x => x.id === linking.id)
+            return {
+              id: linking.id,
+              title: r?.title ?? linking.id,
+              ...(r?.harness ? { harness: r.harness } : {}),
+              ...(r?.task ? { task: r.task } : {}),
+            }
           })()}
-          onPick={async taskId => {
-            const ok = await attachSession(taskId, linking.id)
-            setNotice(ok ? boardCopy(lang).filed : boardCopy(lang).couldNotFile)
-          }}
-          onDetach={async () => {
-            const ok = await detachSession(linking.id, linking.id)
-            setNotice(ok ? boardCopy(lang).unfiled : boardCopy(lang).couldNotUnfile)
-          }}
+          lang={lang}
+          onChanged={() => { setNotice(boardCopy(lang).filed) }}
+          onOpenTask={id => navigate(`/tasks/${encodeURIComponent(id)}`)}
           onClose={() => setLinking(null)}
         />
       )}
