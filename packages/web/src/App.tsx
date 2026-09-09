@@ -101,7 +101,7 @@ import { CentralSessions } from './components/sessions/CentralSessions'
 // filter row in the strip and the body under it have to move together at every width.
 import { PAGE_INSET, PAGE_MAX_WIDTH } from './components/sessions/FleetOverview'
 import { setFleetSourceCentral } from './lib/fleet'
-import { sessionPath } from './lib/sessionRoute'
+import { reopenedSessionRoute, sessionPath } from './lib/sessionRoute'
 import { SessionStatsMenu } from './components/sessions/SessionStatsMenu'
 
 /**
@@ -3247,8 +3247,16 @@ export default function AppLayout() {
           lang={lang === 'pt' ? 'pt' : 'en'}
           act={headerFleetAct}
           onGone={() => navigate('/sessions')}
-          // A reopen mints a NEW session; going to it is what makes the verb visibly do something.
-          onOpened={id => navigate(sessionPath(id))}
+          // A reopen mints a NEW session; going to it is what makes the verb visibly do something
+          // — WITH the state that says it is on its way, or the page shows the fleet overview
+          // until the next poll carries the new row. See `reopenedSessionRoute`.
+          onOpened={id => {
+            const r = reopenedSessionRoute(id, {
+              harness: selectedSessionRow.harness,
+              title: selectedSessionRow.title,
+            })
+            navigate(r.path, r.options)
+          }}
         />
       )}
     </div>

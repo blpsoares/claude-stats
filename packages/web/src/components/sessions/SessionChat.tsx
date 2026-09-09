@@ -109,6 +109,20 @@ export interface SessionChatProps {
    * the very turns this one already polls. Fetching the conversation a second time to build the
    * same list would be two pollers disagreeing about one session — so it is handed over instead.
    */
+  /**
+   * A REOPEN LANDED, and its NEW id.
+   *
+   * The composer's Reopen button used to keep only the message, on the belief that "the page
+   * follows it there". Nothing followed it: a reopen retires the row it was asked about, so the id
+   * in the URL stopped naming anything and the page fell through to the fleet overview — reported
+   * as "reabro uma sessão e ele me joga pra tela de sessions".
+   *
+   * A CALLBACK and not a `navigate()` here, for the reason the old comment gave and was right
+   * about: navigating from inside the composer would be this component deciding where the app
+   * goes. It reports the id; the page decides. The same callback the row's own menu already gets
+   * (`SessionActions.onOpened`), so the two Reopen buttons on one screen cannot land differently.
+   */
+  onReopened?: (id: string) => void
   onArtifacts?: (a: {
     artifacts: Artifact[]
     loading: boolean
@@ -150,7 +164,7 @@ const TAIL_SLACK = 24
 
 interface Attachment { name: string; path: string }
 
-export function SessionChat({ session, row, lang, act, onArtifacts }: SessionChatProps) {
+export function SessionChat({ session, row, lang, act, onArtifacts, onReopened }: SessionChatProps) {
   const pt = lang === 'pt'
   /** Touch targets grow on a phone and nowhere else — 44px on a desktop is a row of buttons. */
   const isMobile = useIsMobile()
@@ -1223,9 +1237,10 @@ export function SessionChat({ session, row, lang, act, onArtifacts }: SessionCha
     const out = await act({ id: session.id, action: 'resume' })
     setReopening(false)
     setNotice(out.message)
-    // The new row arrives on the next fleet poll under a NEW id; the page follows it there. Nothing
-    // to do here but say what happened — navigating from inside the composer would be this
-    // component deciding where the app goes.
+    // THE NEW ID IS REPORTED UP. The server hands it back precisely so a caller does not stay on
+    // the row it just retired; see `onReopened` for what used to happen instead. Navigating is
+    // still not this component's decision — it says what happened and hands over the id.
+    if (out.ok && out.id) onReopened?.(out.id)
   }
 
   /**

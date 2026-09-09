@@ -33,7 +33,7 @@ import { SessionFiling } from '../tasks/SessionFiling'
 import { boardCopy } from '../tasks/copy'
 import { attachSession, detachSession } from '../../lib/tasks'
 import { SessionFacts } from '../sessions/SessionFacts'
-import { sessionPath } from '../../lib/sessionRoute'
+import { reopenedSessionRoute, sessionPath } from '../../lib/sessionRoute'
 import {
   MAX_PINNED, getPinnedIds, movePinnedSession, pinnedServerSnapshot, resolvePinnedRows,
   subscribePinnedSessions, togglePinnedSession,
@@ -244,7 +244,17 @@ export function SessionsAside({
       return
     }
     if (!act) return
-    void act({ id, action }).then(out => setNotice(out.message))
+    void act({ id, action }).then(out => {
+      setNotice(out.message)
+      // A REOPEN LANDS SOMEWHERE, here too. It retires the row it was asked about, so a reader
+      // sitting on that row is left on an id the next poll drops — and this handler kept only the
+      // message. The row it came FROM names the wait; see `reopenedSessionRoute`.
+      if (out.ok && action === 'resume' && out.id) {
+        const from = rows.find(r => r.id === id)
+        const r = reopenedSessionRoute(out.id, from ? { harness: from.harness, title: from.title } : undefined)
+        navigate(r.path, r.options)
+      }
+    })
   }
 
   // The top bar's magnifier focuses this field. An event rather than a prop because the button and
