@@ -65,11 +65,39 @@ export function classifyAgentFile(filePath: string): string | null {
   return null
 }
 
-/** True when a `type: 'user'` entry is a HUMAN message rather than a tool result being fed back.
- *  A turn boundary depends on this distinction, and so does `user_message_count` — they must never
- *  disagree, hence one helper used by both the full parser and the standalone active-time pass. */
-export function isHumanUserEntry(e: Record<string, unknown>): boolean {
+/**
+ * TWO QUESTIONS, TWO PREDICATES — and for one release they were one, which silently emptied the
+ * chat of every system note.
+ *
+ * `isUserRoleMessage` asks the CHAT's question: is this a `user`-role entry that is not a pure
+ * `tool_result` being fed back? Everything else the harness writes under that role — a
+ * `<system-reminder>`, a skill being loaded, an image being attached, a message from another
+ * session — IS one of these, and `chat-envelope.ts` is what then classifies it into a note.
+ *
+ * `isHumanUserEntry` asks the COUNTER's question: did a PERSON take a turn? It excludes `isMeta`
+ * and `isCompactSummary` on top, which is a measured correction to `user_message_count` and to the
+ * turn boundary (see the comment inside it).
+ *
+ * Collapsing the two broke the chat: `chat-tail.ts` gates on the first question and was handed the
+ * second, so every injected entry was DROPPED before `classifyUserEntry` ever saw it and the whole
+ * note machinery rendered nothing. Its own doc comment stated the assumption that had quietly
+ * stopped holding — "isHumanUserEntry only excludes a pure tool_result". Now it does again, under
+ * its own name.
+ */
+export function isUserRoleMessage(e: Record<string, unknown>): boolean {
   if (e.type !== 'user') return false
+  const msgContent = (e.message as Record<string, unknown> | undefined)?.content
+  const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
+  const isPureToolResult = contentArr !== null && contentArr.length > 0 &&
+    contentArr.every(p => p.type === 'tool_result')
+  return !isPureToolResult
+}
+
+/** True when a `type: 'user'` entry is a PERSON's message — not a tool result, and not something
+ *  the harness injected under their role. A turn boundary depends on this distinction, and so does
+ *  `user_message_count`; they must never disagree, hence one helper for both. */
+export function isHumanUserEntry(e: Record<string, unknown>): boolean {
+  if (!isUserRoleMessage(e)) return false
   // `isMeta` is Claude Code's own marker for an entry IT inserted under the user's role — the
   // `<local-command-caveat>` block that precedes a slash command's output. Nobody typed it, so it
   // is not a round and it is not a turn boundary. Measured 2026-09-08 across four real sessions:
@@ -83,12 +111,7 @@ export function isHumanUserEntry(e: Record<string, unknown>): boolean {
   // from a previous conversation that ran out of context" block, which Claude Code writes under the
   // user's role when it compacts. It was the last remaining discrepancy on the fourth session —
   // exactly one entry, exactly one round of difference.
-  if (e.isMeta === true || e.isCompactSummary === true) return false
-  const msgContent = (e.message as Record<string, unknown> | undefined)?.content
-  const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
-  const isPureToolResult = contentArr !== null && contentArr.length > 0 &&
-    contentArr.every(p => p.type === 'tool_result')
-  return !isPureToolResult
+  return !(e.isMeta === true || e.isCompactSummary === true)
 }
 
 /**
