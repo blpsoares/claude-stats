@@ -149,7 +149,6 @@ browser — Overview, Projects, History, Costs, Harnesses and Hardware, switched
 |---|---|---|
 | Home | `/` | KPIs, activity over time, heatmap, hourly usage, highlights |
 | Costs | `/costs` | Spend by model and date, budget and forecast, cache efficiency |
-| Projects | `/projects` | Per-project breakdown and comparison |
 | Repositories | `/repositories` | Grouped by **git remote**, so one repo unifies across people, paths and machines |
 | Actions | `/repositories/actions` | Sessions produced by CI runners |
 | Tags | `/tags` | Saved, named groupings — "what did Client X cost this month" |

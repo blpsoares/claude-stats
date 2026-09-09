@@ -44,6 +44,7 @@ import {
   type ArtifactLayout,
 } from '../lib/artifactLayout'
 import { closeArtifacts, openArtifacts, setArtifactCount, useArtifacts } from '../lib/artifactsStore'
+import type { SessionDrilldownProps } from '../components/SessionDrilldown'
 import type { Artifact } from '../lib/sessionArtifacts'
 import { liveEvents, type LiveTurn } from '../lib/artifactTabs'
 import { FiltersBar } from '../components/FiltersBar'
@@ -113,6 +114,32 @@ export default function SessionsPage() {
   const selected = sessionId === undefined
     ? undefined
     : fleet.rows.find(r => r.id === sessionId || r.conversationId === sessionId)
+
+  /**
+   * THE STORE'S RECORD for the open conversation — read ONCE, for the two surfaces that show it.
+   *
+   * The metrics card in the bar and the aside's METRICS tab are the small reading and the full one
+   * of the same thing, so they must never be looked up apart: the card's link is what opens the
+   * tab, and a card offering a link to a tab that does not exist is the dead control this product
+   * refuses everywhere. `undefined` means the store has not seen this conversation yet, and then
+   * BOTH are absent.
+   *
+   * By CONVERSATION id, never the managed one: a row is reopened under a new managed id and keeps
+   * its conversation, which is what the record is keyed on.
+   */
+  const selectedMeta = selected?.conversationId !== undefined
+    ? data?.sessions?.find(x => x.session_id === selected.conversationId)
+    : undefined
+  const sessionMetrics: SessionDrilldownProps | undefined = selectedMeta && data
+    ? {
+        session: selectedMeta,
+        globalModelUsage: data.statsCache?.modelUsage ?? {},
+        currency,
+        brlRate,
+        lang: pt ? 'pt' : 'en',
+        ...(data.workflows ? { workflows: data.workflows } : {}),
+      }
+    : undefined
 
   /**
    * A SESSION THAT IS ON ITS WAY IS NOT A SESSION THAT IS MISSING.
@@ -457,6 +484,9 @@ export default function SessionsPage() {
       onOpenTask={taskId => navigate(`/tasks/${encodeURIComponent(taskId)}`)}
       // The badge on the row is the fleet's; re-poll so it agrees with what the tab just did.
       onTaskChanged={refresh}
+      // See `sessionMetrics`: present exactly when the store has a record, which is the same fact
+      // that decides whether the metrics card offers its link.
+      {...(sessionMetrics ? { metrics: sessionMetrics } : {})}
       onClose={closeArtifacts}
     />
   )
@@ -688,13 +718,16 @@ export default function SessionsPage() {
               <SessionStatsMenu
                 harness={selected.harness}
                 sessionId={selected.conversationId}
-                meta={data?.sessions?.find(x => x.session_id === selected.conversationId)}
+                meta={selectedMeta}
                 lang={pt ? 'pt' : 'en'}
                 currency={currency}
                 brlRate={brlRate}
                 costBasis={ctx.costBasis}
                 planFactor={sessionPlanFactor(ctx.planBasis.basis, selected.harness)}
                 touch
+                // The full reading is a TAB in the aside, not a second dialog over the session —
+                // withheld when there is no record, exactly as the tab is.
+                {...(sessionMetrics ? { onOpenFull: () => openArtifacts('metrics') } : {})}
                 {...(selected.model ? { startedModel: selected.model } : {})}
                 {...(selected.effort ? { startedEffort: selected.effort } : {})}
               />

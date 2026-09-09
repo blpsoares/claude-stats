@@ -86,7 +86,7 @@ Nay ends data responses with a navigation button that links to the relevant dash
 
 Examples:
 - `→ Ver custos` → `/costs`
-- `→ Ver projetos` → `/projects?projects=/home/user/my-project`
+- `→ Ver projetos` → `/?projects=/home/user/my-project`
 - `→ Abrir layout` → `/custom`
 
 These are rendered as purple inline buttons in the chat.

@@ -32,7 +32,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
 import { focusMissNotice, isFocusedRow, rowsCarry, ROW_FLASH } from '../../lib/noteFocus'
-import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
+import { Activity, BarChart3, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
   countSkills, groupSkills, shortName, skillInvocation, type SkillEntry,
@@ -75,11 +75,14 @@ import {
   type GalleryScope, type GalleryTurn, type GalleryView,
 } from '../../lib/gallery'
 import { prCaption } from '../../lib/prCaption'
+import {
+  SessionDrilldownBody, SessionDrilldownHead, type SessionDrilldownProps,
+} from '../SessionDrilldown'
 import { ArtifactDoc } from './ArtifactDoc'
 import { GalleryTab } from './GalleryTab'
 import { createSharedPref } from '../../lib/sharedPref'
 
-type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs' | 'tasks'
+type TabId = 'files' | 'docs' | 'live' | 'gallery' | 'skills' | 'agents' | 'forks' | 'workflows' | 'mcps' | 'prs' | 'tasks' | 'metrics'
 
 /** Where the view toggle is remembered. One key, read and written in one place. */
 // SHARED. How a person reads the gallery and a skill is about the work, not about the screen —
@@ -179,6 +182,19 @@ export interface ArtifactsAsideProps {
    * asked not to give.
    */
   facts?: ReadonlyMap<string, { bytes: number; scope: 'project' | 'temp' }>
+  /**
+   * EVERYTHING THE STORE KNOWS ABOUT THIS CONVERSATION — the METRICS tab.
+   *
+   * The full reading used to exist only as a centred dialog on the dashboard's session lists,
+   * where it is 980px wide with nothing beside it. Here it is a tab, so the figures sit next to
+   * the conversation they are about, and the panels are the SAME ones (`SessionDrilldown`) —
+   * a second copy would be a second set of answers about one session.
+   *
+   * ABSENT means the store has no record of this conversation yet, and then there is NO TAB. An
+   * empty tab is a promise that something might be behind it, and the control that opens this
+   * one (the metrics card's link) is withheld on exactly the same fact, so the two agree.
+   */
+  metrics?: SessionDrilldownProps
 }
 
 /** The gap between two tabs. Shared by the bar and the ruler, or the measurement is of a different
@@ -208,7 +224,7 @@ function RunningDot() {
  * desktop, ~343px on a phone), while this costs nothing while it is closed.
  */
 function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
-  tabs: readonly { id: TabId; label: string; icon: React.ReactNode; count: number | null }[]
+  tabs: readonly { id: TabId; label: string; icon: React.ReactNode; count?: number | null }[]
   active: TabId
   pt: boolean
   isMobile: boolean
@@ -303,12 +319,16 @@ function TabGrid({ tabs, active, pt, isMobile, anchor, onPick, onClose }: {
                   bar cell it replaces. A tab NOBODY HAS OPENED has no count, and says so with a
                   dash and a reason on hover: "not asked yet" and "there are none" are different
                   facts, and a `0` would claim the second one. */}
-              <span
-                title={t.count === null
-                  ? (pt ? 'Ainda não lido — abra a aba para contar.' : 'Not read yet — open the tab to count.')
-                  : undefined}
-                style={{ fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}
-              >{t.count === null ? '—' : t.count}</span>
+              {/* ABSENT is not `null`: a tab that counts nothing prints nothing, while a tab
+                  nobody has opened prints the dash and says why on hover. */}
+              {t.count !== undefined && (
+                <span
+                  title={t.count === null
+                    ? (pt ? 'Ainda não lido — abra a aba para contar.' : 'Not read yet — open the tab to count.')
+                    : undefined}
+                  style={{ fontSize: 9, color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}
+                >{t.count === null ? '—' : t.count}</span>
+              )}
             </button>
           )
         })}
@@ -326,7 +346,7 @@ function KindIcon({ kind }: { kind: Artifact['kind'] }) {
 
 export function ArtifactsAside({
   sessionId, cwd, lang, artifacts, loading, unavailable, older, unlistedWrites, outsideNote, turns, facts, onClose,
-  tabRequest, session, onOpenTask, onTaskChanged,
+  tabRequest, session, onOpenTask, onTaskChanged, metrics,
 }: ArtifactsAsideProps) {
   const pt = lang === 'pt'
   const isMobile = useIsMobile()
@@ -394,7 +414,8 @@ export function ArtifactsAside({
   useEffect(() => {
     const t = tabRequest?.tab
     if (t === 'files' || t === 'docs' || t === 'live' || t === 'gallery' || t === 'skills'
-      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs' || t === 'tasks') setTab(t)
+      || t === 'agents' || t === 'forks' || t === 'workflows' || t === 'mcps' || t === 'prs' || t === 'tasks'
+      || (t === 'metrics' && metrics !== undefined)) setTab(t)
     // A requested STEP comes with the tab: the edge strip names an action, so pressing it
     // lands on that row rather than on the top of a feed to be searched. Set unconditionally,
     // including to undefined, so a later request with no step clears the previous one — a
@@ -634,7 +655,11 @@ export function ArtifactsAside({
    * `loading` is the conversation's own signal, so the four counts derived from its turns wait on
    * it; the three tabs that fetch for themselves wait on their own answer.
    */
-  const tabs: { id: TabId; label: string; icon: React.ReactNode; count: number | null }[] = [
+  // `count` is OPTIONAL, and that is a third fact beside the other two: `null` is "nobody has
+  // asked yet", a number is what is there, and ABSENT is a tab that counts nothing — one
+  // session's own metrics is not a list. Without it the grid would print `—` under a tooltip
+  // saying "open the tab to count", which is a promise this tab can never keep.
+  const tabs: { id: TabId; label: string; icon: React.ReactNode; count?: number | null }[] = [
     { id: 'files', label: pt ? 'Arquivos' : 'Files', icon: <Files size={12} />, count: loading ? null : artifacts.length },
     { id: 'docs', label: pt ? 'Docs' : 'Docs', icon: <BookOpen size={12} />, count: loading ? null : docs.length },
     { id: 'live', label: 'Live', icon: <Activity size={12} />, count: loading ? null : feed.length },
@@ -682,6 +707,15 @@ export function ArtifactsAside({
       icon: <ClipboardList size={12} />,
       count: session?.task ? 1 : 0,
     },
+    // LAST, and only when there is a record to read. `BarChart3` is the metrics card's own icon —
+    // this tab is where that card's "see everything" link lands, and one feature wears one glyph.
+    ...(metrics
+      ? [{
+          id: 'metrics' as const,
+          label: pt ? 'Métricas' : 'Metrics',
+          icon: <BarChart3 size={12} />,
+        }]
+      : []),
   ]
 
   /**
@@ -762,7 +796,7 @@ export function ArtifactsAside({
         {t.label}
         {/* THE COUNTS STAY ON THE BAR. `Subagentes 64` is what says what is behind a tab without
             opening it, and it is the whole reason this design was chosen over a vertical rail. */}
-        {t.count !== null && t.count > 0 && (
+        {typeof t.count === 'number' && t.count > 0 && (
           <span style={{ fontSize: 10, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{t.count}</span>
         )}
         {/* One dot per tab that has something RUNNING behind it — the reason to look now. */}
@@ -1466,6 +1500,27 @@ export function ArtifactsAside({
     },
   }
 
+  /**
+   * THIS SESSION'S FULL METRICS — the same two panels the dashboard's dialog draws.
+   *
+   * It reads the STORE's record for the conversation, not the transcript, which is why it is
+   * offered even when the conversation itself cannot be read: those are different sources, and a
+   * harness that refuses one has not refused the other. The head loses its own "Session details"
+   * title (`title={false}`) — the tab that was pressed to get here already said it.
+   */
+  const metricsBody = () => (
+    <div style={{ overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
+      {metrics && (
+        <>
+          <div style={{ padding: '12px 14px 0' }}>
+            <SessionDrilldownHead session={metrics.session} lang={metrics.lang} title={false} />
+          </div>
+          <SessionDrilldownBody {...metrics} />
+        </>
+      )}
+    </div>
+  )
+
   const prsBody = () => (
     <div style={{ padding: '10px 12px', overflowY: 'auto', overscrollBehavior: 'contain', minHeight: 0, flex: 1 }}>
       {prs === null ? (
@@ -1605,7 +1660,10 @@ export function ArtifactsAside({
                 {...(onTaskChanged ? { onChanged: onTaskChanged } : {})}
               />
             </div>
-          ) : unavailable ? body()
+          ) : tab === 'metrics' && metrics ? metricsBody()
+            /* Like the tasks tab, and for the same reason: these figures come from the STORE, not
+               from the transcript, so a conversation this panel cannot READ still has metrics. */
+            : unavailable ? body()
             : tab === 'live' ? liveBody()
             : tab === 'gallery' ? galleryBody()
             : tab === 'skills' ? skillsBody()

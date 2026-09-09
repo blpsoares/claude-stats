@@ -70,7 +70,7 @@ import { Login } from './components/Login'
 import { ModeSwitch } from './components/nav/ModeSwitch'
 import { TopBar } from './components/nav/TopBar'
 import { COST_BASIS_W, FULL_BAR_W, MIN_BAR_W, headerFit, stripPadding } from './lib/headerFit'
-import { toggleArtifacts, useArtifacts } from './lib/artifactsStore'
+import { openArtifacts, toggleArtifacts, useArtifacts } from './lib/artifactsStore'
 import { SessionsAside } from './components/nav/SessionsAside'
 import { SessionsRail } from './components/nav/SessionsRail'
 import { getPinnedIds } from './lib/pinnedSessions'
@@ -714,7 +714,11 @@ function MobileBottomNav({
   const primary = [
     { to: '/',         labelPt: 'Home',       labelEn: 'Home',      icon: Home },
     { to: '/costs',    labelPt: 'Custos',     labelEn: 'Costs',     icon: DollarSign },
-    { to: '/projects', labelPt: 'Projetos',   labelEn: 'Projects',  icon: FolderOpen },
+    // Repositories took the slot Projects held. It is the page that now answers "which projects" —
+    // the repository is the key that survives a different path on every machine — so somebody
+    // reaching for the old tile lands where the information actually is. It leaves the "More"
+    // sheet by the same move: one destination, one place to press it.
+    { to: '/repositories', labelPt: 'Repositórios', labelEn: 'Repositories', icon: GitBranch },
     { to: '/tools',    labelPt: 'Tools',      labelEn: 'Tools',     icon: Wrench },
   ] as const
 
@@ -736,7 +740,9 @@ function MobileBottomNav({
   const attention = mobileFleet.attention
 
   const navTiles: Tile[] = [
-    { key: 'repositories', label: pt ? 'Repositórios' : 'Repositories', icon: GitBranch, onClick: () => { closeSheet(); navigate('/repositories') }, active: location.pathname.startsWith('/repositories') || location.pathname.startsWith('/repo') },
+    // Repositories is NOT here: it is a fixed slot in the bar now (see `primary`). A destination
+    // in both places is the same feature marked twice, and the sheet is where the ones that did
+    // not fit live.
     // Members/machines only exist on a central — a solo machine has exactly one of each.
     ...(isCentral
       ? [{ key: 'members', label: pt ? 'Membros' : 'Members', icon: Users, onClick: () => { closeSheet(); navigate('/members') }, active: location.pathname.startsWith('/members') } as Tile]
@@ -955,7 +961,12 @@ function MobileBottomNav({
         {primary.map(tab => {
           const active = tab.to === '/'
             ? location.pathname === '/'
-            : location.pathname.startsWith(tab.to)
+            // A repo's own page is `/repo/:id`, not a child of `/repositories` — the tile it was
+            // promoted from already knew that, and the bar has to know it too or the section it is
+            // in stops marking itself the moment you open a repository.
+            : tab.to === '/repositories'
+              ? location.pathname.startsWith('/repositories') || location.pathname.startsWith('/repo')
+              : location.pathname.startsWith(tab.to)
           const Icon = tab.icon
           return (
             <NavLink
@@ -1112,7 +1123,9 @@ function SideNav({ lang, harnesses, isCentral, hasWorkflows, collapsed, width, o
     { to: '/',          labelPt: 'Home',         labelEn: 'Home',         icon: <Home size={17} /> },
     { to: '/costs',     labelPt: 'Custos',       labelEn: 'Costs',        icon: <DollarSign size={17} /> },
     { to: '/top',       labelPt: 'Top de uso',   labelEn: 'Top usage',    icon: <Trophy size={17} /> },
-    { to: '/projects',  labelPt: 'Projetos',     labelEn: 'Projects',     icon: <FolderOpen size={17} /> },
+    // No Projects entry. Its two panels — top projects and languages — are on Home, and the
+    // repository is the dimension that survives a different path on every machine, so what the
+    // page answered is answered by Repositories. `/projects` redirects there (see `AppRouter`).
     { to: '/repositories', labelPt: 'Repositórios', labelEn: 'Repositories', icon: <GitBranch size={17} /> },
     // Members/machines only exist on a central — a solo machine has exactly one of each.
     ...(isCentral ? [{ to: '/members', labelPt: 'Membros', labelEn: 'Members', icon: <Users size={17} /> }] : []),
@@ -1906,6 +1919,10 @@ export default function AppLayout() {
     ? headerFleet.rows.find(r => r.id === selectedSessionId || r.conversationId === selectedSessionId)
     : undefined
   const selectedSessionRow = selectedFleetSession ? headerFleetIndex.get(selectedFleetSession.id) : undefined
+  /** The store's record for the open conversation — the metrics card, and the link into its tab. */
+  const headerSessionMeta = selectedFleetSession?.conversationId !== undefined
+    ? data?.sessions?.find(x => x.session_id === selectedFleetSession.conversationId)
+    : undefined
   // The Chat/Terminal choice lives in the URL (`?view=`) rather than in state here or in
   // `SessionPanel`, so the ONE control (now in this shared header) and the ONE reader (the panel,
   // still deciding which component to mount) can never disagree about which view is showing without
@@ -3179,14 +3196,17 @@ export default function AppLayout() {
         <SessionStatsMenu
           harness={selectedFleetSession.harness}
           sessionId={selectedFleetSession.conversationId ?? selectedFleetSession.id}
-          meta={selectedFleetSession.conversationId
-            ? data?.sessions?.find(x => x.session_id === selectedFleetSession.conversationId)
-            : undefined}
+          meta={headerSessionMeta}
           lang={lang === 'pt' ? 'pt' : 'en'}
           currency={currency}
           brlRate={brlRate}
           costBasis={costBasis}
           planFactor={sessionPlanFactor(planBasis.basis, selectedFleetSession.harness)}
+          /* THE FULL READING opens as a TAB in the right aside (`SessionsPage` supplies it),
+             not as a second dialog over the session. Withheld when the store has no record —
+             the same fact that decides whether that tab exists at all, read here from the same
+             lookup so the link and the tab can never disagree. */
+          {...(headerSessionMeta ? { onOpenFull: () => openArtifacts('metrics') } : {})}
           {...(selectedFleetSession.model ? { startedModel: selectedFleetSession.model } : {})}
           {...(selectedFleetSession.effort ? { startedEffort: selectedFleetSession.effort } : {})}
         />
