@@ -114,6 +114,24 @@ export function rowsOfTask(task: Task, rows: readonly ManagedSession[]): Managed
  * `costMeasured` stays unset: nothing reads a harness's own cost figure yet, and claiming a figure
  * is measured when it was estimated is precisely the confusion that field exists to prevent.
  */
+/**
+ * One row per CONVERSATION, in first-seen order — the rule stated once, for every surface that
+ * accumulates over a task's rows. `task-overview.ts` needs it too: it walks the rows itself rather
+ * than going through the rollup, so without this the headline counted a reopened conversation once
+ * per reopening while the delivery under it counted correctly.
+ *
+ * A row with NO conversation link is always kept: it cannot be shown to be a duplicate of anything.
+ */
+export function distinctConversations(rows: readonly ManagedSession[]): ManagedSession[] {
+  const seen = new Set<string>()
+  return rows.filter(r => {
+    if (!r.conversationId) return true
+    if (seen.has(r.conversationId)) return false
+    seen.add(r.conversationId)
+    return true
+  })
+}
+
 export function rollupSessionsFor(
   rows: readonly ManagedSession[],
   metas: ReadonlyMap<string, SessionMeta>,
@@ -131,14 +149,7 @@ export function rollupSessionsFor(
   // A row with NO conversation link is kept as its own row: it cannot be shown to be a duplicate of
   // anything, and it contributes no numbers anyway — the same rule `usage-dedupe.ts` applies to a
   // usage record with no message id, and `filedUnder` to an attachment.
-  const seen = new Set<string>()
-  const distinct = rows.filter(r => {
-    if (!r.conversationId) return true
-    if (seen.has(r.conversationId)) return false
-    seen.add(r.conversationId)
-    return true
-  })
-  return distinct.map(r => {
+  return distinctConversations(rows).map(r => {
     const meta = r.conversationId ? metas.get(r.conversationId) ?? null : null
     return {
       rowId: r.id,
