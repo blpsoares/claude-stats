@@ -24,7 +24,7 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { PROJECTS_DIR } from '../config'
 import { UUID_RE } from '../git'
-import { isHumanUserEntry } from '../jsonl'
+import { isUserRoleMessage } from '../jsonl'
 import { commandSummary, hasUnreadableWrite, shellWrites } from './shell-writes'
 import { classifyUserEntry, type UserEntry } from './chat-envelope'
 import type { ChatTurn } from './chat-turn'
@@ -123,11 +123,18 @@ export function forgetChatTailContent(): void {
 /**
  * What a `user` entry actually is — the person, the harness, or neither.
  *
- * `isHumanUserEntry` only excludes a pure `tool_result`; every other envelope the harness writes
- * under this role reached the pane as the user's own message. `chat-envelope.ts` is the split.
+ * `isUserRoleMessage` only excludes a pure `tool_result`; every other envelope the harness writes
+ * under this role reached the pane as the user's own message, and `chat-envelope.ts` is what splits
+ * those into a person's text and a system NOTE.
+ *
+ * It used to gate on `isHumanUserEntry`, which asks a DIFFERENT question — did a person take a
+ * turn — and grew an `isMeta`/`isCompactSummary` exclusion for the round counter. That silently
+ * emptied the chat of every system note: an injected entry was dropped HERE, before
+ * `classifyUserEntry` could ever name it, so no skill load, no attached image and no message from
+ * another session was drawn at all. Two questions need two predicates; see `jsonl.ts`.
  */
 function extractUserEntry(e: Record<string, unknown>): UserEntry | null {
-  if (!isHumanUserEntry(e)) return null
+  if (!isUserRoleMessage(e)) return null
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   let raw: string | undefined
   if (typeof msgContent === 'string') raw = msgContent

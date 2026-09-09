@@ -6,8 +6,8 @@
  * exactly, plus one compaction summary. On a session that had run 22 local commands, "rounds" read
  * 65 for 43 messages a person actually sent.
  */
-import { describe, expect, it } from 'bun:test'
-import { isHumanUserEntry } from './jsonl'
+import { describe, expect, it, test } from 'bun:test'
+import { isHumanUserEntry, isUserRoleMessage } from './jsonl'
 
 const user = (over: Record<string, unknown> = {}) => ({
   type: 'user',
@@ -55,5 +55,40 @@ describe('isHumanUserEntry', () => {
   it('answers false for anything that is not a user entry', () => {
     expect(isHumanUserEntry({ type: 'assistant', message: { content: 'x' } })).toBe(false)
     expect(isHumanUserEntry({})).toBe(false)
+  })
+})
+
+describe('TWO QUESTIONS, TWO PREDICATES', () => {
+  /**
+   * These were one function for a release, and the chat paid for it. `chat-tail.ts` gates on "is
+   * this a user-role entry I should classify" and was handed "did a person take a turn", which had
+   * just grown an `isMeta`/`isCompactSummary` exclusion for the round counter. Every injected entry
+   * was then DROPPED before `classifyUserEntry` could name it, so no skill load, no attached image
+   * and no message from another session was drawn in the conversation at all. Measured: the same
+   * fixture yielded `[{system: 'the session was resumed'}]` before and `[]` after.
+   */
+  const injected = { type: 'user', isMeta: true, message: { content: 'Continue from where you left off.' } }
+  const compacted = { type: 'user', isCompactSummary: true, message: { content: 'This session is being continued' } }
+  const toolResult = { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } }
+
+  test('the CHAT keeps an injected entry — it has a note to draw for it', () => {
+    expect(isUserRoleMessage(injected)).toBe(true)
+    expect(isUserRoleMessage(compacted)).toBe(true)
+  })
+
+  test('the COUNTER rejects the same entry — nobody took a turn', () => {
+    expect(isHumanUserEntry(injected)).toBe(false)
+    expect(isHumanUserEntry(compacted)).toBe(false)
+  })
+
+  test('a pure tool_result is neither, which is the one thing they agree on', () => {
+    expect(isUserRoleMessage(toolResult)).toBe(false)
+    expect(isHumanUserEntry(toolResult)).toBe(false)
+  })
+
+  test('an ordinary message is both', () => {
+    const typed = { type: 'user', message: { content: 'oi' } }
+    expect(isUserRoleMessage(typed)).toBe(true)
+    expect(isHumanUserEntry(typed)).toBe(true)
   })
 })
