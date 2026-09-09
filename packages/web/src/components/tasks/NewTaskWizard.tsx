@@ -13,6 +13,7 @@
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { useDismissOverlay } from '../../lib/dismissOverlay'
 import { overlayPadding } from '../../lib/mobileOverlay'
 import { microLabel, surface } from './board'
 import { TaskComposer } from './TaskComposer'
@@ -29,9 +30,13 @@ export interface NewTaskWizardProps {
 
 export function NewTaskWizard({ onDone, onClose, onCreateSession, session }: NewTaskWizardProps) {
   const isMobile = useIsMobile()
+  // A bare `onClick={onClose}` here closed the dialog when somebody selected text in the
+  // description and released the pointer outside it — see `dismissOverlay.ts`. Reported as
+  // "clicking the description just closes the modal", which is what it looks like from outside.
+  const dismiss = useDismissOverlay(onClose)
   return createPortal(
     <div
-      onClick={onClose}
+      {...dismiss}
       style={{
         position: 'fixed', inset: 0, zIndex: 999, display: 'flex',
         alignItems: 'center', justifyContent: 'center',
@@ -42,7 +47,8 @@ export function NewTaskWizard({ onDone, onClose, onCreateSession, session }: New
       }}
     >
       <div
-        onClick={e => e.stopPropagation()}
+        // No `stopPropagation` needed: `useDismissOverlay` refuses anything that did not both
+        // start AND land on the backdrop itself.
         style={{
           ...surface, background: 'var(--bg-elevated)', boxShadow: 'var(--shadow-elevated)',
           padding: 16, display: 'grid', gap: 13, gridTemplateRows: 'auto 1fr',

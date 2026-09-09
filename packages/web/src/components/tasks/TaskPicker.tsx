@@ -1,3 +1,4 @@
+import { boardCopy } from './copy'
 /**
  * TaskPicker — "file this under a task", asked once and reused everywhere.
  *
@@ -27,6 +28,8 @@ import { NewTaskWizard } from './NewTaskWizard'
 import { BetaTag } from '../BetaTag'
 
 export interface TaskPickerProps {
+  /** The reader's language. Absent = English, for a caller not yet threaded. */
+  lang?: 'pt' | 'en'
   /** Where to anchor. Absent centres it — which is what a mobile sheet wants anyway. */
   at?: { x: number; y: number }
   title?: string
@@ -44,7 +47,7 @@ export interface TaskPickerProps {
   onDetach?: () => void | Promise<void>
 }
 
-export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: TaskPickerProps) {
+export function TaskPicker({ at, title, onPick, onClose, session, onDetach, lang = 'en' }: TaskPickerProps) {
   const [composing, setComposing] = useState(false)
   const isMobile = useIsMobile()
   const { rows, reload } = useTaskList()
@@ -118,7 +121,7 @@ export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: Ta
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={microLabel}>{title ?? 'File under a task'}</span>
+          <span style={microLabel}>{title ?? boardCopy(lang).fileUnder}</span>
           <BetaTag what="Filing sessions under tasks" />
           <span style={{ flex: 1 }} />
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}>
@@ -161,7 +164,7 @@ export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: Ta
           <Search size={14} style={{ position: 'absolute', left: 10, top: isMobile ? 15 : 10, color: 'var(--text-tertiary)' }} />
           <input
             autoFocus style={{ ...field(isMobile), paddingLeft: 31 }} value={q}
-            placeholder="Search tasks, or type a new name"
+            placeholder={boardCopy(lang).searchOrCreate}
             onChange={e => setQ(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !exact && needle) void create() }}
           />
@@ -187,7 +190,7 @@ export function TaskPicker({ at, title, onPick, onClose, session, onDetach }: Ta
             }}
             title="The full form — status, priority, the pieces it breaks into"
           >
-            <Plus size={14} /> New task with all the details…
+            <Plus size={14} /> {boardCopy(lang).newWithDetails}
           </button>
           {shown.length === 0 && !needle && (
             <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', padding: '6px 2px' }}>

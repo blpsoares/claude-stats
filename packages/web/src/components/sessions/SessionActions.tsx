@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal, X } from 'lucide-react'
 import { TaskPicker } from '../tasks/TaskPicker'
+import { boardCopy } from '../tasks/copy'
 import { BetaTag } from '../BetaTag'
 import { attachSession, detachSession } from '../../lib/tasks'
 import type { FleetActionId, FleetRow, FleetVerb } from '../../lib/fleet'
@@ -159,7 +160,8 @@ export function SessionActions({
 
       {linking && (
         <TaskPicker
-          title={pt ? 'Vincular a uma tarefa' : 'File under a task'}
+          title={boardCopy(lang).fileUnder}
+          lang={lang}
           // The session goes IN, so the picker can show what it is filed under now, offer to
           // unfile it, and pre-link it on a new task. Without it the picker can only ever move a
           // session from one task to another.
