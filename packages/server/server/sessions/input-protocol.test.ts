@@ -74,10 +74,19 @@ describe('parseInputMessage', () => {
   })
 
   test('rejects a key name OUTSIDE the closed allowlist — defence in depth', () => {
-    for (const name of ['C-c; rm', 'a b', 'F1', 'Escape', 'Home', 'M-Up', 'PageDown', '', 'C-x']) {
+    for (const name of ['C-c; rm', 'a b', 'F1', 'Home', 'M-Up', 'PageDown', '', 'C-x']) {
       const r = parseInputMessage(JSON.stringify({ seq: 6, kind: 'key', name }))
       expect(r).toEqual({ ok: false, seq: 6, reason: 'bad_key' })
     }
+  })
+
+  test('Escape is IN the set — a deliberate widening, with its reason', () => {
+    // A soft keyboard has no Escape at all, so the mobile key strip is the only way to leave insert
+    // mode in `vim` or dismiss a picker; and a Claude Code permission dialog's own footer says
+    // `Esc to cancel`, which was unreachable from this channel for as long as the set excluded it.
+    // It CANCELS — it does not control the process, which is the line this allowlist draws.
+    expect(parseInputMessage(JSON.stringify({ seq: 9, kind: 'key', name: 'Escape' })))
+      .toEqual({ ok: true, msg: { seq: 9, kind: 'key', key: 'Escape' } })
   })
 
   test('rejects a non-string key name', () => {
@@ -87,7 +96,7 @@ describe('parseInputMessage', () => {
 
   test('KEY_ALLOWLIST is exactly the agreed closed set', () => {
     expect([...KEY_ALLOWLIST].sort()).toEqual(
-      ['BSpace', 'C-a', 'C-c', 'C-d', 'C-e', 'C-k', 'C-u', 'C-w', 'Down', 'Enter', 'Left', 'Right', 'Tab', 'Up'],
+      ['BSpace', 'C-a', 'C-c', 'C-d', 'C-e', 'C-k', 'C-u', 'C-w', 'Down', 'Enter', 'Escape', 'Left', 'Right', 'Tab', 'Up'],
     )
     for (const k of KEY_ALLOWLIST) {
       expect(parseInputMessage(JSON.stringify({ seq: 1, kind: 'key', name: k })).ok).toBe(true)
