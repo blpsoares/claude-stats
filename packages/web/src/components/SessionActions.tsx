@@ -463,6 +463,7 @@ export function SessionActionsPanel({ ctrl }: { ctrl: SessionActionsController }
       {active && CONFIRM_VERBS.has(active) && (
         <StopSessionConfirm
           title={row.title}
+          sessionId={row.id}
           {...(row.task ? { task: row.task } : {})}
           lang={lang}
           busy={busy}

@@ -264,6 +264,7 @@ export function SessionActions({
             ) : confirming ? (
               <StopSessionConfirm
                 title={row.title}
+                sessionId={row.id}
                 {...(row.task ? { task: row.task } : {})}
                 lang={lang}
                 busy={busy}

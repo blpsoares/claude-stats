@@ -34,6 +34,7 @@ import {
   surface, type BoardStatus,
 } from './board'
 import { ChipSelect, statusOptions } from './ChipSelect'
+import { Select } from '../../pages/settings/primitives'
 import { addSubtask, attachSession, createTask, editTask, markTask, type Subtask } from '../../lib/tasks'
 
 const LIVE = new Set(['working', 'waiting', 'waiting-approval'])
@@ -340,20 +341,23 @@ export function TaskComposer(p: TaskComposerProps) {
                       an answer about a decision already made. One part is still a choice worth
                       seeing: it says where the work is about to be filed. */}
                   {on && (
-                    <label style={{
+                    <div style={{
                       display: 'flex', alignItems: 'center', gap: 7, paddingLeft: 12,
                       fontSize: 11.5, color: 'var(--text-tertiary)',
                     }}>
                       <CornerDownRight size={12} style={{ flexShrink: 0 }} />
                       <span style={{ flexShrink: 0 }}>files under</span>
-                      <select
-                        value={at}
-                        onChange={e => setPicked(v => new Map(v).set(s.id, Number(e.target.value)))}
-                        style={{ ...field(isMobile), flex: 1, minWidth: 0, height: isMobile ? 44 : 28, padding: '0 8px' }}
-                      >
-                        {subs.map((t, i) => <option key={i} value={i}>{t}</option>)}
-                      </select>
-                    </label>
+                      {/* This application's own picker, never the browser's `<select>` — the OS menu
+                          ignores the palette in both themes and misses the 44px target on a phone.
+                          Same control the settings screens use. */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <Select
+                          value={String(at)}
+                          options={subs.map((t, i) => ({ value: String(i), label: t }))}
+                          onChange={v => setPicked(m => new Map(m).set(s.id, Number(v)))}
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
               )

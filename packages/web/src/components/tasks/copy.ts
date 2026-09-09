@@ -70,10 +70,17 @@ export interface BoardCopy {
   endSession: string
   endSessionWhat: string
   deliveredQuestion: string
+  /** The PART this session did — what a stop actually offers to close. */
+  partQuestion: string
+  lastPart: string
   endOnly: string
+  endAndFinishPart: string
   endAndDeliver: string
   markedDelivered: string
   couldNotMarkDelivered: string
+  /** The delivery's own tabs — drawn on the page AND in the session aside, so one set of words. */
+  tabs: Record<'overview' | 'sessions' | 'comments' | 'subtasks' | 'files' | 'activity', string>
+  wholeDelivery: string
 }
 
 const EN: BoardCopy = {
@@ -117,10 +124,22 @@ const EN: BoardCopy = {
   endSession: 'End this session?',
   endSessionWhat: 'Whatever it is doing stops now.',
   deliveredQuestion: 'Is this delivery finished?',
+  partQuestion: 'Is this part finished?',
+  lastPart: 'the last open part, so the delivery is marked delivered too',
   endOnly: 'End the session only',
-  endAndDeliver: 'End and mark delivered',
+  endAndFinishPart: 'Finish this part and end',
+  endAndDeliver: 'Finish it and mark the delivery delivered',
   markedDelivered: 'Marked delivered.',
   couldNotMarkDelivered: 'Could not mark it delivered — the session was left running.',
+  tabs: {
+    overview: 'Overview',
+    sessions: 'Sessions',
+    comments: 'Comments',
+    subtasks: 'Subtasks',
+    files: 'Files',
+    activity: 'Activity',
+  },
+  wholeDelivery: 'The whole delivery',
 }
 
 const PT: BoardCopy = {
@@ -166,10 +185,22 @@ const PT: BoardCopy = {
   endSession: 'Encerrar esta sessão?',
   endSessionWhat: 'O que ela estiver fazendo para agora.',
   deliveredQuestion: 'Esta entrega está finalizada?',
+  partQuestion: 'Esta parte está finalizada?',
+  lastPart: 'a última parte aberta, então a entrega também é marcada como entregue',
   endOnly: 'Só encerrar a sessão',
-  endAndDeliver: 'Encerrar e marcar entregue',
+  endAndFinishPart: 'Finalizar esta parte e encerrar',
+  endAndDeliver: 'Finalizar e marcar a entrega como entregue',
   markedDelivered: 'Entrega marcada como entregue.',
   couldNotMarkDelivered: 'Não foi possível marcar a entrega — a sessão continua rodando.',
+  tabs: {
+    overview: 'Visão geral',
+    sessions: 'Sessões',
+    comments: 'Comentários',
+    subtasks: 'Subtarefas',
+    files: 'Arquivos',
+    activity: 'Atividade',
+  },
+  wholeDelivery: 'A entrega inteira',
 }
 
 export function boardCopy(lang: Lang): BoardCopy {

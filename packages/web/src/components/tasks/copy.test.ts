@@ -21,12 +21,16 @@ describe('boardCopy', () => {
     }
   })
 
-  it('leaves no sentence empty', () => {
+  it('leaves no sentence empty, at any depth', () => {
+    // WALKED rather than skipped by key: `status` and `tabs` are nested records, and the old
+    // version's `if (key === 'status') continue` meant every record added after it went unchecked —
+    // `tabs` arrived empty-safe by luck, not by test.
+    const strings = (v: unknown): string[] =>
+      typeof v === 'string' ? [v] : (v && typeof v === 'object' ? Object.values(v).flatMap(strings) : [])
     for (const lang of ['en', 'pt'] as const) {
-      for (const [key, value] of Object.entries(boardCopy(lang))) {
-        if (key === 'status') continue
-        expect(typeof value === 'string' && value.length > 0).toBe(true)
-      }
+      const all = strings(boardCopy(lang))
+      expect(all.length).toBeGreaterThan(20)
+      for (const value of all) expect(value.length).toBeGreaterThan(0)
     }
   })
 
