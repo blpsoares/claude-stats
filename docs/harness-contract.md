@@ -142,6 +142,30 @@ fails until a new harness declares every flag. **Be honest.** A flag set `true` 
 harness cannot produce renders a confident `0`, which is exactly the failure this mechanism exists
 to prevent. `activeTime: false` means the UI shows only wall-clock elapsed.
 
+Three flags are narrower than their neighbours and are worth reading before you fill them in:
+
+- **`compaction`** — the harness records when it compacted the conversation, so
+  `SessionMeta.compact_count` (and `compact_ms` / `compact_dropped_tokens`) can be filled. Claude
+  Code writes a `compact_boundary` system line carrying a `compactMetadata` block. If your harness
+  has no equivalent marker the figures are **absent**, never zero: a session that compacted and one
+  whose harness cannot say are different facts.
+- **`skills`** — the harness records SKILL invocations BY NAME, so `SessionMeta.skill_uses` can be
+  filled. Claude's is a `Skill` tool_use whose `input.skill` names it. An empty map is a real answer
+  ("this session invoked none") only where the concept exists at all.
+- **`mcpServers`** — the harness names an MCP tool `mcp__<server>__<tool>`, so the SERVER can be
+  read back off `tool_counts`. **This is narrower than `tools`**, which is `true` for every harness:
+  recording the tool is not the same as recording whose server it was. Antigravity records `mcp_`
+  with one underscore and `call_mcp_tool`, Copilot keeps MCP names in its own `mcp_tool_names` and
+  never a server, codex and gemini record no MCP tool at all. Only claude and kimi qualify.
+
+**A capability gates a DENOMINATOR as well as a rendering.** `packages/core/src/session-profile.ts`
+computes the machine's 30-day baseline and its per-metric `n` counts the sessions that COULD have
+answered — so a metric whose reader returns a number regardless (a `.length` over a filtered map,
+say) drags every incapable harness into the sample and reports `0 (n=479)` for a question most of
+that population was never asked. Where the metric is only fillable from a transcript, the second
+half of the same rule applies: write the real `0`, so "answered none" stays distinguishable from
+"was never read".
+
 ## 5. Filters and aggregation
 
 - **`stats-cache.json` is Claude-only.** Never aggregate another harness from it. Non-Claude

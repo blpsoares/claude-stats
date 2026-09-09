@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Baseline } from '@agentistics/core'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { fleetSeedNotice, fleetStaleNotice } from './fleetStale'
 import { cacheIsUsable, stripVolatile } from './fleetCache'
@@ -93,6 +94,8 @@ export interface FleetRow {
 
 export interface FleetPayload {
   sessions: FleetRow[]
+  /** This machine's 30-day behaviour baseline — see `session-profile.ts`. */
+  baseline?: Baseline
   /**
    * The same rows unshaped, for `session-fleet.ts` to arrange.
    *
@@ -268,6 +271,9 @@ async function pollCentralOnce(): Promise<void> {
       // FINISHED task is a statement the machine's own user made. Neither is invented here.
       tasks: [],
       finishedTasks: [],
+      // And no `baseline`, deliberately. It is THIS machine's own 30-day history, drawn under a
+      // heading that reads "your last 30 days" — attaching it over somebody else's fleet would put
+      // the operator's numbers under a sentence about the machine they are looking at.
     }
     snapFailures = 0
     snapLastOkMs = Date.now()
