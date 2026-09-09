@@ -81,6 +81,7 @@ export interface BoardCopy {
   /** The delivery's own tabs — drawn on the page AND in the session aside, so one set of words. */
   tabs: Record<'overview' | 'sessions' | 'comments' | 'subtasks' | 'files' | 'activity', string>
   wholeDelivery: string
+  deleteDelivery: string
 }
 
 const EN: BoardCopy = {
@@ -140,6 +141,7 @@ const EN: BoardCopy = {
     activity: 'Activity',
   },
   wholeDelivery: 'The whole delivery',
+  deleteDelivery: 'Delete this delivery',
 }
 
 const PT: BoardCopy = {
@@ -201,6 +203,7 @@ const PT: BoardCopy = {
     activity: 'Atividade',
   },
   wholeDelivery: 'A entrega inteira',
+  deleteDelivery: 'Excluir esta entrega',
 }
 
 export function boardCopy(lang: Lang): BoardCopy {

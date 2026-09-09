@@ -1097,14 +1097,20 @@ export function DeliveryDetail({ id, detail, lang, reload, dense, onDeleted }: D
             * panel called Actions, three sections away from the chip. They are gone: the chip is
             * the one control, and it is at the top of this rail on every screen.
             */}
-          <RailSection id="actions" title={boardCopy(lang).actions}>
-            <button
-              style={{ ...button(isMobile), color: 'var(--accent-red)' }} disabled={busy}
-              onClick={() => setConfirmDelete(true)}
-            >
-              <Trash2 size={14} /> Delete task
-            </button>
-          </RailSection>
+          {/* DELETING is offered only where the caller has somewhere to go afterwards. In the
+              session aside there is nowhere: the delivery this panel is a view OF would be gone,
+              and the panel would sit on a record that no longer answers. The board's own page
+              navigates back to the list, which is why it passes `onDeleted`. */}
+          {onDeleted && (
+            <RailSection id="actions" title={copy.actions}>
+              <button
+                style={{ ...button(isMobile), color: 'var(--accent-red)' }} disabled={busy}
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 size={14} /> {copy.deleteDelivery}
+              </button>
+            </RailSection>
+          )}
         </aside>
       </div>
       {blocking && (
