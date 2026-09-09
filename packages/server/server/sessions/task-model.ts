@@ -265,6 +265,16 @@ export interface Subtask {
   /** One session filed under this specific piece. The task's own sessions stay on the task. */
   sessionId?: string
   notes?: string
+  /**
+   * Subtask ids, of the SAME task, that must be `done` before a session can be filed under this
+   * one. See `task-attach.ts`'s `planAttach`, which is the only place this is actually enforced —
+   * this field is the fact, not the rule.
+   *
+   * An id naming a subtask outside this task, or naming itself, is never written here — the
+   * sanitize step lives beside the write (`patchSubtask`), the same place `Task.blockedBy`'s
+   * cross-task version lives.
+   */
+  blockedBy?: string[]
 }
 
 /** `done` and `status` are one fact written twice; this keeps them from disagreeing. */

@@ -19,6 +19,7 @@ import { SessionPicker } from './SessionPicker'
 import { DatePicker } from '../DatePicker'
 import { TaskProgressBar } from './TaskProgressBar'
 import { subtaskSessions } from './SubtaskSessions'
+import { SubtaskBlockedBy } from './SubtaskBlockedBy'
 import { boardCopy, statusLabel, type Lang } from './copy'
 import type { Subtask, TaskSessionRow, TaskStatus } from '../../lib/tasks'
 
@@ -147,10 +148,21 @@ export function SubtaskTable(p: SubtaskTableProps) {
                 />
               </td>
               <td style={cell}>
-                <StatusPick
-                  value={t.status} lang={p.lang}
-                  onPick={s => void p.onPatch(t.id, { status: s })}
-                />
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                  <StatusPick
+                    value={t.status} lang={p.lang}
+                    onPick={s => void p.onPatch(t.id, { status: s })}
+                  />
+                  {/* Blockers are SIBLINGS of this same delivery — `p.subtasks` already IS that
+                      pool, so no second fetch is needed. */}
+                  <SubtaskBlockedBy
+                    subtaskId={t.id}
+                    blockedBy={t.blockedBy ?? []}
+                    siblings={p.subtasks}
+                    lang={p.lang}
+                    onChange={ids => p.onPatch(t.id, { blockedBy: ids })}
+                  />
+                </span>
               </td>
               <td style={cell}>
                 <input

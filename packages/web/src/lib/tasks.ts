@@ -170,6 +170,11 @@ export interface Subtask {
   startDate?: string
   sessionId?: string
   notes?: string
+  /**
+   * Sibling subtask ids, of the SAME task, that must be `done` before a session may file under
+   * this one. See `task-attach.ts`'s `planAttach` — the rule lives on the server; this is the fact.
+   */
+  blockedBy?: string[]
 }
 export interface TaskFile {
   id: string; taskId: string; name: string; size: number
@@ -408,9 +413,48 @@ export const removeLink = (ref: string, remove: string) =>
  * is filed under one or the other and never both — the rule lives in the server's `task-attach.ts`,
  * and this client only ever states a target.
  */
-export const attachSession = (ref: string, sessionId: string, subtaskId?: string) =>
-  post(`/api/tasks/${encodeURIComponent(ref)}/sessions`,
-    subtaskId ? { sessionId, subtaskId } : { sessionId })
+export type AttachRefusalReason =
+  | 'no_such_task' | 'no_such_session' | 'no_such_subtask' | 'needs_subtask' | 'wrong_delivery'
+  | 'blocked'
+  // This function's own addition — the server can never say a request never reached it.
+  | 'network'
+
+export type AttachResult =
+  | { ok: true }
+  | {
+    ok: false
+    reason: AttachRefusalReason
+    /** Set only for `reason: 'blocked'` — the subtask ids still open. */
+    blockedBy?: string[]
+  }
+
+/**
+ * File a session under a delivery's subtask — the STRUCTURED answer, not just a boolean.
+ *
+ * `post()` (below) collapses every outcome to `ok`/`not ok`, which is the right shape for a plain
+ * write and the wrong one here: a REFUSED attach carries WHY, and `reason: 'blocked'` carries WHICH
+ * subtasks are still open, so a caller can open `BlockedSubtaskResolve` instead of reporting a bare
+ * failure. `network` is this function's own addition for a request that never reached the server —
+ * the server can never say that about itself.
+ */
+export async function attachSession(ref: string, sessionId: string, subtaskId?: string): Promise<AttachResult> {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(ref)}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(subtaskId ? { sessionId, subtaskId } : { sessionId }),
+    })
+    if (res.ok) return { ok: true }
+    const body = await res.json().catch(() => null) as { reason?: string; blockedBy?: string[] } | null
+    return {
+      ok: false,
+      reason: (body?.reason as AttachRefusalReason | undefined) ?? 'no_such_task',
+      ...(body?.blockedBy ? { blockedBy: body.blockedBy } : {}),
+    }
+  } catch {
+    return { ok: false, reason: 'network' }
+  }
+}
 
 export const detachSession = (ref: string, detach: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/sessions`, { detach })
@@ -424,7 +468,9 @@ export const removeComment = (ref: string, id: string) =>
 export const patchSubtask = (
   ref: string,
   id: string,
-  patch: Partial<Pick<Subtask, 'title' | 'status' | 'assignee' | 'dueDate' | 'startDate' | 'sessionId' | 'notes'>>,
+  patch: Partial<Pick<Subtask,
+    'title' | 'status' | 'assignee' | 'dueDate' | 'startDate' | 'sessionId' | 'notes' | 'blockedBy'
+  >>,
 ) => post(`/api/tasks/${encodeURIComponent(ref)}/subtasks`, { id, ...patch })
 
 export const removeSubtask = (ref: string, id: string) =>

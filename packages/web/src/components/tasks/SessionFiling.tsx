@@ -30,6 +30,7 @@ import {
   addSubtask, attachSession, createTask, detachSession, useTaskDetail, useTaskList,
   type Subtask, type TaskListRow,
 } from '../../lib/tasks'
+import { BlockedSubtaskResolve } from './BlockedSubtaskResolve'
 import { STATUS, button, field, microLabel, pill, surface, type BoardStatus } from './board'
 import { boardCopy, statusLabel, type Lang } from './copy'
 import { BetaTag } from '../BetaTag'
@@ -71,6 +72,8 @@ export function SessionFiling(p: SessionFilingProps) {
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState('')
   const [adding, setAdding] = useState(false)
+  /** Set when the server refuses an attach because the subtask is still blocked. */
+  const [blocked, setBlocked] = useState<{ taskId: string; subtaskId: string; blockedBy: string[] } | null>(null)
 
   const refresh = async () => { await reload(); await reloadDetail(); await p.onChanged() }
 
@@ -84,8 +87,14 @@ export function SessionFiling(p: SessionFilingProps) {
 
   const fileInto = async (taskId: string, subtaskId: string) => {
     setBusy(true)
-    await attachSession(taskId, p.session.id, subtaskId)
+    const result = await attachSession(taskId, p.session.id, subtaskId)
     setBusy(false)
+    if (!result.ok && result.reason === 'blocked') {
+      // The dialog it opens is HANDED the answer, never asked to guess it — the ids `planAttach`
+      // named are exactly what it needs.
+      setBlocked({ taskId, subtaskId, blockedBy: result.blockedBy ?? [] })
+      return
+    }
     setMoving(false)
     await refresh()
   }
@@ -315,6 +324,28 @@ export function SessionFiling(p: SessionFilingProps) {
         </div>
       </div>
     )
+
+  // Replaces the filing dialog outright rather than stacking on top of it — a person answering
+  // "did you already finish that" should not also be looking at the subtask list underneath, and
+  // two fixed overlays would double the scrim.
+  if (blocked) {
+    return (
+      <BlockedSubtaskResolve
+        taskId={blocked.taskId}
+        blockedSubtaskTitle={detail?.subtasks.find(s => s.id === blocked.subtaskId)?.title ?? ''}
+        blockedBy={blocked.blockedBy}
+        subtasks={detail?.subtasks ?? []}
+        sessions={detail?.sessions ?? []}
+        lang={p.lang}
+        onCancel={() => setBlocked(null)}
+        onResolved={async () => {
+          const { taskId, subtaskId } = blocked
+          setBlocked(null)
+          await fileInto(taskId, subtaskId)
+        }}
+      />
+    )
+  }
 
   return createPortal(
     <div

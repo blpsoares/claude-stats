@@ -1,250 +1,286 @@
-import { boardCopy } from './copy'
 /**
- * TaskPicker — "file this under a task", asked once and reused everywhere.
+ * TaskPicker — "file this new session under a subtask", asked once, before it exists.
  *
- * It is ONE component because the question is one question: the row menu, the right-click on a
- * card, the three-dot menu and the create-task wizard all ask it, and four implementations of a
- * picker is four places for the list, the search and the create-new to drift apart.
+ * It used to stop at the DELIVERY: pick a task, and the session that got created carried the
+ * delivery's title as a free-text label with no subtask at all — the wizard's own version of the
+ * rule every other filing surface (`SessionFiling`, the subtask table) now enforces. Reported
+ * directly: the picker still only offered deliveries, and the dialog itself read as too small to
+ * work in.
  *
- * It always offers CREATE as well as pick. A picker that can only choose from what exists makes
- * "file this under something new" a two-screen errand, which is how a filing gesture goes unused —
- * and unfiled sessions are exactly what makes the whole measurement short. Creating from here opens
- * the FULL composer with this session already linked, rather than minting a bare title: a task
- * created from a session used to arrive with no status, no priority and nothing broken out, while
- * the same task created from the board got all three.
- *
- * And it says what the session is filed under NOW, with the way to undo it. Assigning without being
- * able to unassign is half a control — you can put a session under the wrong task and then only fix
- * it by picking another, which leaves no way back to "filed under nothing".
+ * So this is now the SAME two-step shape `SessionFiling`'s unfiled face uses — pick a delivery,
+ * then one of its subtasks, with "create" offered at both steps — returning the exact ids a spawn
+ * needs to attach the session once it exists. **It never enforces `blockedBy` itself**: this
+ * session has not been created yet, so there is nothing yet to refuse filing, and the rule lives in
+ * exactly one place (`task-attach.ts`'s `planAttach`, reached through `attachSession`) — the CALLER
+ * finds out the subtask is blocked the moment it actually tries to file the session it just spawned,
+ * which is the true first attempt, and opens `BlockedSubtaskResolve` there.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, Plus, Search, X } from 'lucide-react'
+import { ArrowLeft, Check, CornerDownRight, Plus, Search, X } from 'lucide-react'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { addSubtask, createTask, useTaskDetail, useTaskList, type Subtask, type TaskListRow } from '../../lib/tasks'
 import { STATUS, button, field, microLabel, pill, surface, type BoardStatus } from './board'
-import { createTask, useTaskList, type TaskListRow } from '../../lib/tasks'
-import { NewTaskWizard } from './NewTaskWizard'
+import { boardCopy, statusLabel, type Lang } from './copy'
 import { BetaTag } from '../BetaTag'
+import { overlayPadding } from '../../lib/mobileOverlay'
 
-export interface TaskPickerProps {
-  /** The reader's language. Absent = English, for a caller not yet threaded. */
-  lang?: 'pt' | 'en'
-  /** Where to anchor. Absent centres it — which is what a mobile sheet wants anyway. */
-  at?: { x: number; y: number }
-  title?: string
-  /** Called with the chosen (or newly created) task id. */
-  onPick: (taskId: string, task: TaskListRow['task']) => void | Promise<void>
-  onClose: () => void
-  /**
-   * The session being filed, when there is one.
-   *
-   * It buys two things nothing else can: the CURRENT task is shown with an unassign beside it, and
-   * "create a new one" can pre-link this session instead of leaving it to a second gesture.
-   */
-  session?: { id: string; title: string; harness?: string; task?: string }
-  /** Unfile it. Absent means this caller has no session to unfile — the row is then not offered. */
-  onDetach?: () => void | Promise<void>
+export interface TaskPickerPick {
+  taskId: string
+  subtaskId: string
+  taskTitle: string
+  subtaskTitle: string
 }
 
-export function TaskPicker({ at, title, onPick, onClose, session, onDetach, lang = 'en' }: TaskPickerProps) {
-  const [composing, setComposing] = useState(false)
+export interface TaskPickerProps {
+  lang: Lang
+  title?: string
+  onPick: (pick: TaskPickerPick) => void | Promise<void>
+  onClose: () => void
+}
+
+export function TaskPicker(p: TaskPickerProps) {
   const isMobile = useIsMobile()
+  const copy = boardCopy(p.lang)
+  const pt = p.lang === 'pt'
   const { rows, reload } = useTaskList()
+
+  const [chosen, setChosen] = useState<TaskListRow | null>(null)
+  const { detail, reload: reloadDetail } = useTaskDetail(chosen?.task.id)
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    // Closes on the PRESS, not on a release that may land somewhere else — the rule
-    // `SessionRowMenu` already follows.
-    const down = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) onClose()
-    }
-    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('mousedown', down)
-    document.addEventListener('keydown', key)
-    return () => {
-      document.removeEventListener('mousedown', down)
-      document.removeEventListener('keydown', key)
-    }
-  }, [onClose])
+  const [draft, setDraft] = useState('')
+  const [adding, setAdding] = useState(false)
 
   const needle = q.trim().toLowerCase()
   const shown = useMemo(() => {
     const all = rows ?? []
-    if (!needle) return all.slice(0, 40)
-    return all.filter(r => r.task.title.toLowerCase().includes(needle)).slice(0, 40)
+    return needle ? all.filter(r => r.task.title.toLowerCase().includes(needle)) : all
   }, [rows, needle])
-
-  // An exact title match means "create" would return the existing task, so the row is not offered:
-  // two ways to reach one record, one of them labelled "new", is how a duplicate gets expected.
   const exact = (rows ?? []).some(r => r.task.title.toLowerCase() === needle)
 
-  const create = async () => {
-    if (!needle || busy) return
+  const pickSubtask = async (st: Subtask) => {
+    if (!chosen) return
+    await p.onPick({
+      taskId: chosen.task.id, subtaskId: st.id, taskTitle: chosen.task.title, subtaskTitle: st.title,
+    })
+    p.onClose()
+  }
+
+  const createAndPick = async () => {
+    const title = draft.trim()
+    if (!title || !chosen) return
     setBusy(true)
-    const made = await createTask(q.trim())
+    const ok = await addSubtask(chosen.task.id, title)
+    if (ok) {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(chosen.task.id)}`)
+      const body = res.ok ? await res.json() as { task: { subtasks: Subtask[] } } : null
+      const made = body?.task.subtasks.filter(s => s.title === title).slice(-1)[0]
+      if (made) { setBusy(false); await pickSubtask(made); return }
+    }
+    setBusy(false); setDraft(''); setAdding(false)
+    await reloadDetail()
+  }
+
+  const newDelivery = async () => {
+    const title = q.trim()
+    if (!title) return
+    setBusy(true)
+    const made = await createTask(title)
     setBusy(false)
     if (!made) return
     await reload()
-    await onPick(made.id, made)
-    onClose()
+    setChosen({ task: made } as TaskListRow)
+    setQ('')
+    setAdding(true)
   }
 
-  /** What this session is filed under right now — matched by NAME, which is what the fleet carries. */
-  const current = session?.task
-    ? (rows ?? []).find(r => r.task.title === session.task)
-    : undefined
-
-  const box: React.CSSProperties = isMobile || !at
-    ? {
-      position: 'fixed', inset: 0, margin: 'auto', width: 'min(420px, 92vw)', maxHeight: '70vh',
-    }
-    : {
-      position: 'fixed',
-      // Flipped when it would leave the viewport, like the row menu.
-      left: Math.min(at.x, window.innerWidth - 340),
-      top: Math.min(at.y, window.innerHeight - 380),
-      width: 320, maxHeight: 360,
-    }
-
-  return createPortal(
-    <>
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 998 }} />
-      <div
-        ref={boxRef}
+  const head = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      {chosen && (
+        <button
+          onClick={() => setChosen(null)}
+          title={pt ? 'Voltar' : 'Back'}
+          style={{ ...button(isMobile), height: isMobile ? 44 : 26, padding: '0 8px' }}
+        ><ArrowLeft size={13} /></button>
+      )}
+      <span style={microLabel}>{chosen ? copy.delivery : (p.title ?? copy.fileUnder)}</span>
+      <BetaTag what={copy.deliveries} />
+      <span style={{ flex: 1 }} />
+      <button
+        onClick={p.onClose}
+        aria-label={pt ? 'Fechar' : 'Close'}
+        className="ag-tap-icon"
         style={{
-          ...surface, ...box, zIndex: 999, padding: 12, display: 'grid', gap: 9,
-          gridTemplateRows: 'auto auto 1fr', boxShadow: 'var(--shadow-elevated)',
-          background: 'var(--bg-elevated)',
+          background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer',
+          display: 'flex', width: 22, height: 22, alignItems: 'center', justifyContent: 'center',
         }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={microLabel}>{title ?? boardCopy(lang).fileUnder}</span>
-          <BetaTag what="Filing sessions under tasks" />
-          <span style={{ flex: 1 }} />
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex' }}>
-            <X size={15} />
-          </button>
+      ><X size={16} /></button>
+    </div>
+  )
+
+  const body = chosen
+    ? (
+      <div style={{ display: 'grid', gap: 10, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 14, fontWeight: 650, color: 'var(--text-primary)', minWidth: 0 }}>
+            {chosen.task.title}
+          </span>
+          <span style={{
+            ...pill(STATUS[(chosen.task.status as BoardStatus)]?.color),
+            background: STATUS[(chosen.task.status as BoardStatus)]?.dim,
+          }}>
+            {statusLabel(chosen.task.status, p.lang)}
+          </span>
         </div>
 
-        {session?.task && (
-          // What it is filed under NOW, and the way out. Without this the picker can only ever move
-          // a session from one task to another, never back to none.
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, padding: '7px 9px',
-            borderRadius: 'var(--radius-sm)', background: 'var(--anthropic-orange-dim)',
-            border: '1px solid var(--anthropic-orange)',
-          }}>
-            <Check size={12} style={{ color: 'var(--anthropic-orange)', flexShrink: 0 }} />
-            <span style={{
-              flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}>{session.task}</span>
-            {current && (
-              <span style={pill(STATUS[current.task.status as BoardStatus]?.color)}>
-                {STATUS[current.task.status as BoardStatus]?.label}
-              </span>
-            )}
-            {onDetach && (
-              <button
-                onClick={async () => { await onDetach(); onClose() }}
-                title="Unfile this session"
-                style={{
-                  ...button(isMobile), height: isMobile ? 44 : 24, fontSize: 11,
-                  color: 'var(--accent-red)',
-                }}
-              >Unfile</button>
-            )}
-          </div>
+        <span style={{ ...microLabel, fontSize: 9 }}>
+          {pt
+            ? 'Subtarefas — a sessão vai ficar em UMA delas'
+            : 'Subtasks — the session will sit in ONE of them'}
+        </span>
+
+        {(detail?.subtasks.length ?? 0) === 0 && !adding && (
+          <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-tertiary)' }}>
+            {pt
+              ? 'Esta entrega ainda não tem subtarefas, e uma sessão só se filia a uma subtarefa — crie a primeira aqui.'
+              : 'This delivery has no subtasks yet, and a session is only ever filed under one — create the first one here.'}
+          </p>
         )}
 
-        <div style={{ position: 'relative' }}>
-          <Search size={14} style={{ position: 'absolute', left: 10, top: isMobile ? 15 : 10, color: 'var(--text-tertiary)' }} />
-          <input
-            autoFocus style={{ ...field(isMobile), paddingLeft: 31 }} value={q}
-            placeholder={boardCopy(lang).searchOrCreate}
-            onChange={e => setQ(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !exact && needle) void create() }}
-          />
+        <div style={{ display: 'grid', gap: 2, maxHeight: 260, overflowY: 'auto' }}>
+          {(detail?.subtasks ?? []).map(st => (
+            <button
+              key={st.id}
+              onClick={() => void pickSubtask(st)}
+              disabled={busy}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                minHeight: isMobile ? 44 : 32, padding: isMobile ? '8px 10px' : '6px 9px',
+                borderRadius: 7, font: 'inherit', fontSize: 12.5,
+                border: '1px solid transparent', background: 'transparent',
+                color: 'var(--text-secondary)', cursor: busy ? 'default' : 'pointer',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <CornerDownRight size={11} style={{ opacity: 0.6, flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {st.title}
+              </span>
+              <span style={{ ...microLabel, fontSize: 9.5 }}>{statusLabel(st.status, p.lang)}</span>
+            </button>
+          ))}
         </div>
 
-        <div style={{ overflowY: 'auto', display: 'grid', gap: 4, alignContent: 'start' }}>
-          {needle && !exact && (
-            <button
-              onClick={() => void create()} disabled={busy}
-              style={{
-                ...button(isMobile), justifyContent: 'flex-start', width: '100%',
-                color: 'var(--anthropic-orange)', borderStyle: 'dashed',
-              }}
-            >
-              <Plus size={14} /> Create “{q.trim()}” and file this here
+        {adding
+          ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <input
+                autoFocus={!isMobile}
+                style={{ ...field(isMobile), flex: '1 1 170px' }}
+                value={draft}
+                placeholder={pt ? 'O que esta parte entrega…' : 'What this part delivers…'}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') void createAndPick() }}
+              />
+              <button style={button(isMobile, 'primary')} disabled={busy || !draft.trim()} onClick={() => void createAndPick()}>
+                {pt ? 'Criar e escolher' : 'Create and pick'}
+              </button>
+              <button style={button(isMobile)} disabled={busy} onClick={() => { setAdding(false); setDraft('') }}>
+                {pt ? 'Cancelar' : 'Cancel'}
+              </button>
+            </div>
+          )
+          : (
+            <button style={{ ...button(isMobile), alignSelf: 'start' }} disabled={busy} onClick={() => setAdding(true)}>
+              <Plus size={13} /> {pt ? 'Nova subtarefa' : 'New subtask'}
             </button>
           )}
-          <button
-            onClick={() => setComposing(true)}
-            style={{
-              ...button(isMobile), justifyContent: 'flex-start', width: '100%',
-              borderStyle: 'dashed',
-            }}
-            title="The full form — status, priority, the pieces it breaks into"
-          >
-            <Plus size={14} /> {boardCopy(lang).newWithDetails}
-          </button>
-          {shown.length === 0 && !needle && (
-            <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', padding: '6px 2px' }}>
-              No tasks yet — type a name to create the first one.
-            </div>
-          )}
-          {shown.map(r => {
-            const s = STATUS[r.task.status as BoardStatus] ?? STATUS.todo
-            return (
-              <button
-                key={r.task.id}
-                onClick={() => { void onPick(r.task.id, r.task); onClose() }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-                  padding: '7px 9px', borderRadius: 'var(--radius-sm)', border: '1px solid transparent',
-                  background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer',
-                  minHeight: isMobile ? 44 : 30, fontSize: 12.5,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
-              >
-                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {r.task.title}
-                </span>
-                <span style={pill(s.color)}>{s.label}</span>
-              </button>
-            )
-          })}
-          {exact && (
-            <div style={{ ...microLabel, textTransform: 'none', letterSpacing: 0, padding: '4px 2px' }}>
-              <Check size={11} style={{ verticalAlign: -1 }} /> That task already exists — pick it above.
-            </div>
-          )}
-        </div>
       </div>
+    )
+    : (
+      <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
+        <div style={{ position: 'relative' }}>
+          <Search size={13} style={{ position: 'absolute', left: 10, top: isMobile ? 15 : 9, color: 'var(--text-tertiary)' }} />
+          <input
+            autoFocus={!isMobile}
+            style={{ ...field(isMobile), paddingLeft: 30 }}
+            value={q}
+            placeholder={copy.searchOrCreate}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && q.trim() && shown.length === 0) void newDelivery() }}
+          />
+        </div>
+        {q.trim() && !shown.some(r => r.task.title === q.trim()) && (
+          <button style={{ ...button(isMobile), justifyContent: 'flex-start' }} disabled={busy} onClick={() => void newDelivery()}>
+            <Plus size={13} /> {pt ? `Criar “${q.trim()}”` : `Create “${q.trim()}”`}
+          </button>
+        )}
+        <div style={{ display: 'grid', gap: 2, maxHeight: 320, overflowY: 'auto' }}>
+          {shown.map(r => (
+            <button
+              key={r.task.id}
+              onClick={() => { setChosen(r); setQ('') }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+                minHeight: isMobile ? 44 : 32, padding: isMobile ? '8px 10px' : '6px 9px',
+                borderRadius: 7, border: '1px solid transparent', background: 'transparent',
+                color: 'var(--text-secondary)', font: 'inherit', fontSize: 12.5, cursor: 'pointer',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-card-hover)' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+            >
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.task.title}
+              </span>
+              <span style={{
+                marginLeft: 'auto',
+                ...pill(STATUS[(r.task.status as BoardStatus)]?.color),
+                background: STATUS[(r.task.status as BoardStatus)]?.dim,
+              }}>
+                {statusLabel(r.task.status, p.lang)}
+              </span>
+            </button>
+          ))}
+        </div>
+        {exact && (
+          <div style={{ ...microLabel, textTransform: 'none', letterSpacing: 0, padding: '4px 2px' }}>
+            <Check size={11} style={{ verticalAlign: -1 }} /> {pt ? 'Essa entrega já existe — escolha acima.' : 'That delivery already exists — pick it above.'}
+          </div>
+        )}
+      </div>
+    )
 
-      {composing && (
-        // The FULL composer, with this session pre-linked — the same form the board's "New task"
-        // opens. A task created from a session should not be a poorer record than one created from
-        // the board; it is the same task.
-        <NewTaskWizard
-          {...(session ? { session } : {})}
-          onClose={() => setComposing(false)}
-          onDone={async taskId => {
-            setComposing(false)
-            await reload()
-            const made = (rows ?? []).find(r => r.task.id === taskId)
-            if (made) await onPick(taskId, made.task)
-            onClose()
-          }}
-          onCreateSession={() => { setComposing(false); onClose() }}
-        />
-      )}
-    </>,
+  return createPortal(
+    <div
+      role="dialog" aria-modal="true"
+      onClick={e => { if (e.target === e.currentTarget) p.onClose() }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 999, display: 'flex',
+        alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)',
+        padding: overlayPadding(isMobile, 16),
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          ...surface, background: 'var(--bg-elevated)', boxShadow: 'var(--shadow-elevated)',
+          padding: 16, display: 'grid', gap: 12, alignContent: 'start',
+          // WIDER, on purpose: this used to be 320-420px, which is fine for a list of titles alone
+          // and cramped the moment a subtask row also carries a status pill — reported as "ta
+          // minusculo esse componente em largura". A dialog, not a small anchored flyout: it now
+          // opens centred at a size that holds both steps comfortably.
+          ...(isMobile
+            ? { width: '100%', height: '100%', borderRadius: 0, overflowY: 'auto' }
+            : { width: 'min(560px, 92vw)', maxHeight: '80vh', overflowY: 'auto' }),
+        }}
+      >
+        {head}
+        {body}
+      </div>
+    </div>,
     document.body,
   )
 }
