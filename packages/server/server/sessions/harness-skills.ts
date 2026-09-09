@@ -34,93 +34,13 @@
 
 import { join } from 'node:path'
 import type { HarnessId } from '@agentistics/core'
+import { HARNESS_SKILLS, type HarnessSkill, parseSkillFrontmatter } from './skill-source'
 import { HOME_DIR } from '../config'
 
-export interface HarnessSkill {
-  /** The INVOCATION name, prefix included — what `skillLine` turns into a typed line. */
-  name: string
-  description: string
-  scope: 'user' | 'plugin' | 'project'
-  /**
-   * The `SKILL.md` this was read from.
-   *
-   * Carried so the panel can SHOW a skill rather than only name it — and it is the server that
-   * holds it, never the browser: the detail route takes a skill NAME and resolves it back through
-   * this same list, so no path a client sent is ever opened. That is the whole reason this field
-   * exists here instead of on the wire.
-   */
-  path: string
-}
+// The PURE half lives in `skill-source.ts` and is re-exported, so every existing importer of this
+// module is untouched. See that file's header for why the split exists.
+export * from './skill-source'
 
-export interface SkillSource {
-  /** `<HOME_DIR>/<dir>/<name>/SKILL.md`. */
-  userDirs: string[]
-  /**
-   * `<HOME_DIR>/<root>/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md`, invoked as
-   * `<plugin>:<name>`. A fixed depth rather than a search: it is the layout the CLI writes, and a
-   * recursive hunt for `SKILL.md` under a home directory is a different and much slower promise.
-   */
-  pluginRoots: string[]
-  /** `<cwd>/<dir>/<name>/SKILL.md`. */
-  projectDirs: string[]
-  /** The line typed to invoke one. `{name}` is replaced. */
-  line: string
-}
-
-export const HARNESS_SKILLS: Record<HarnessId, SkillSource | null> = {
-  // Verified against claude 2.1.260 on this machine — see the layout in the header.
-  claude: {
-    userDirs: ['.claude/skills'],
-    pluginRoots: ['.claude/plugins/cache'],
-    projectDirs: ['.claude/skills'],
-    line: '/{name}',
-  },
-  // No documented skill mechanism reachable from a typed line.
-  codex: null,
-  gemini: null,
-  copilot: null,
-  antigravity: null,
-  kimi: null,
-}
-
-/** Why the picker is absent, so the menu says it instead of leaving a hole. */
-export function skillsReason(harness: string, lang: 'en' | 'pt'): string | null {
-  if (HARNESS_SKILLS[harness as HarnessId]) return null
-  return lang === 'pt'
-    ? 'Invocar skills a partir daqui só está verificado no Claude Code.'
-    : 'Invoking skills from here is only verified for Claude Code.'
-}
-
-/**
- * PURE: the `name` and `description` out of a SKILL.md's frontmatter.
- *
- * Deliberately a small hand parser rather than a YAML dependency: it reads two scalar keys out of
- * a leading `---` block, and it is TOTAL — a malformed, unterminated or empty document yields `{}`
- * rather than throwing. A skill file somebody is midway through editing must not take the picker
- * down with it.
- */
-export function parseSkillFrontmatter(text: string): { name?: string; description?: string } {
-  if (!text.startsWith('---')) return {}
-  const end = text.indexOf('\n---', 3)
-  if (end === -1) return {}
-  const out: { name?: string; description?: string } = {}
-  for (const line of text.slice(3, end).split('\n')) {
-    const m = /^\s*(name|description)\s*:\s*(.*)$/.exec(line)
-    if (!m) continue
-    const value = m[2]!.trim().replace(/^["']|["']$/g, '')
-    if (value !== '') out[m[1] as 'name' | 'description'] = value
-  }
-  return out
-}
-
-/** The line to type for a skill, or null where the harness has none. */
-export function skillLine(harness: string, name: string): string | null {
-  const spec = HARNESS_SKILLS[harness as HarnessId]
-  if (!spec || name === '') return null
-  return spec.line.replace('{name}', name)
-}
-
-/** The IO half. Unreadable directories and files are skipped, never thrown. */
 export async function readHarnessSkills(harness: string, cwd: string): Promise<HarnessSkill[]> {
   const spec = HARNESS_SKILLS[harness as HarnessId]
   if (!spec) return []
@@ -164,3 +84,4 @@ export async function readHarnessSkills(harness: string, cwd: string): Promise<H
 
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
+

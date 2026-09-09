@@ -121,4 +121,13 @@ export interface ChatTurn {
    * `chat-envelope.ts` for the measured list and why two of those envelopes are the person's.
    */
   system?: string
+  /**
+   * WHICH thing the note is about, where its body named one — a skill's invocation name today.
+   *
+   * `system` names a KIND, which is all the chip could ever say, so clicking one opened the aside
+   * tab and left the reader hunting the list for the row that was actually used. The identity was
+   * in the body and was thrown away with it. Absent whenever the body names nothing resolvable:
+   * the chip then behaves exactly as it always has, and a guessed reference would match no row.
+   */
+  systemRef?: string
 }
