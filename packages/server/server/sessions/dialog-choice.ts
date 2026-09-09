@@ -120,6 +120,17 @@ export interface DialogRead {
   kind: 'options' | 'none' | 'unreadable'
   /** The options, in order. EMPTY unless `kind` is `options` — a half-read list is never offered. */
   options: DialogOption[]
+  /**
+   * HOW one of them is picked — and the reason this field exists is that the answer differs.
+   *
+   * `numbered` — the dialog printed `1.`…`n.` and typing the digit selects. `marker` — it printed
+   * no numbers at all (claude's trust prompt: `❯ No, exit` / `  Yes, I trust this folder`), so the
+   * only way to reach a row is to MOVE the cursor onto it. `number` on those options is a POSITION,
+   * never something to type; a caller that sends it as a digit is typing into the dialog.
+   *
+   * `null` whenever `kind` is not `options`.
+   */
+  select: 'numbered' | 'marker' | null
   /** Present only on `unreadable`. */
   reason?: DialogUnreadable
   /** Index of the TOPMOST option row reached, `-1` when none was. Feeds the preview's window. */
@@ -134,7 +145,18 @@ export interface DialogRead {
  * says WHICH refusal, and hands back where the block starts so the preview and the options can
  * never describe different parts of the screen.
  */
-export function readDialog(frame: readonly string[]): DialogRead {
+export function readDialog(
+  frame: readonly string[],
+  /**
+   * Whether to try the NUMBERLESS shape when no numbers are found.
+   *
+   * Off by default, and that is the safe direction: a caller that does not know which harness drew
+   * this frame must not go looking for a menu with the weaker signal. `ApprovalSpec.markerSelect`
+   * is what turns it on, per harness and only where the shape has been measured — see that field
+   * for the kimi frame that makes this a gate rather than a flag.
+   */
+  opts: { marker?: boolean } = {},
+): DialogRead {
   const found: DialogOption[] = []
   let top = -1
   let anchored = false
@@ -155,21 +177,109 @@ export function readDialog(frame: readonly string[]): DialogRead {
 
   found.reverse()
 
-  // Nothing numbered at the bottom at all: there is no menu to read.
-  if (found.length === 0) return { kind: 'none', options: [], top: -1 }
+  // Nothing numbered at the bottom at all. It may still be a menu — claude's trust prompt prints
+  // none — so the marker shape gets its turn. This is the ONLY place it runs: a frame whose numbers
+  // were found and then refused keeps that refusal, or a `gap` would be re-read as two loose rows.
+  if (found.length === 0) return opts.marker ? readMarkerSelect(frame) : { kind: 'none', options: [], select: null, top: -1 }
   // Rows were found and `1.` never was. The block is real and its top is out of reach.
-  if (!anchored) return { kind: 'unreadable', reason: 'no-anchor', options: [], top }
+  if (!anchored) return { kind: 'unreadable', reason: 'no-anchor', options: [], select: null, top }
   // A menu is at least a choice. One option is a statement, and the caller confirms it instead.
-  if (found.length < 2) return { kind: 'none', options: [], top }
+  if (found.length < 2) return { kind: 'none', options: [], select: null, top }
   // Exactly `1..n`, in order. A gap, a repeat or a wrong start means this was not read correctly —
   // and half-read options are worse than none, because they would be offered as if they were whole.
-  if (found.some((o, i) => o.number !== i + 1)) return { kind: 'unreadable', reason: 'gap', options: [], top }
+  if (found.some((o, i) => o.number !== i + 1)) return { kind: 'unreadable', reason: 'gap', options: [], select: null, top }
   // At most one highlighted row. Two cursors is a frame this parser does not understand.
   if (found.filter(o => o.selected).length > 1) {
-    return { kind: 'unreadable', reason: 'two-cursors', options: [], top }
+    return { kind: 'unreadable', reason: 'two-cursors', options: [], select: null, top }
   }
 
-  return { kind: 'options', options: found, top }
+  return { kind: 'options', options: found, select: 'numbered', top }
+}
+
+/**
+ * The select cursor, and ONLY the cursor.
+ *
+ * `readDialog`'s numbered rule also accepts a plain `>`, because there the digit carries the proof
+ * that it is a menu. Here nothing else does, and a `>`-quoted block — two lines of somebody's mail,
+ * a diff, a markdown quote — has exactly the shape this scan looks for. `❯` is the glyph claude's
+ * select component draws and prose does not.
+ */
+const MARKER = /^(\s*)❯ (\S.*?)\s*$/
+
+/**
+ * A sibling row: its text STARTS at the cursor's label column, exactly.
+ *
+ * Both halves are load-bearing. Nothing before the column (or the row belongs to some other block),
+ * and a non-space AT it — testing only that the prefix is blank accepts a row indented further,
+ * which is how an unrelated paragraph two columns to the right joined the menu.
+ */
+const siblingAt = (line: string, col: number): string | null => {
+  if (line.length <= col) return null
+  if (line.slice(0, col).trim() !== '') return null
+  if (line[col] === ' ') return null
+  return line.slice(col).trimEnd()
+}
+
+/**
+ * A menu with NO numbers, read off the frame — PURE.
+ *
+ * Claude's trust prompt is the case, and it is the one dialog where being wrong costs the most: the
+ * highlighted row is `No, exit`, so the bare confirm the caller used to fall back to answered every
+ * one of them by quitting. Reported by a user who could only reach that row from the web and had to
+ * open the terminal to say yes.
+ *
+ * The shape is a cursor row plus the rows CONTIGUOUS with it at the same indentation. That is a
+ * weaker signal than `1..n`, so it is fenced accordingly: the `❯` glyph only, at most one of them,
+ * a label on the cursor row (the composer's own `❯ ` is empty and must never read as a menu), at
+ * least one sibling (one row is a statement — the codex `Press enter to continue` — and a caller
+ * confirms those), and a blank line or a change of indentation ends the block.
+ *
+ * Provenance: the trust frame was captured from a live session on 2026-09-08; the numbered frames
+ * and the idle composer in `dialog-marker.test.ts` were captured the same day from claude 2.1.x
+ * driven under tmux, which is what pins that this scan leaves them alone.
+ */
+function readMarkerSelect(frame: readonly string[]): DialogRead {
+  const cursors: number[] = []
+  for (let i = frame.length - 1; i >= 0; i--) {
+    if (frame.length - 1 - i > LAST_OPTION_LINES) break
+    if (MARKER.test(frame[i] ?? '')) cursors.push(i)
+  }
+  if (cursors.length === 0) return { kind: 'none', options: [], select: null, top: -1 }
+  // Two highlighted rows is the same fact the numbered path refuses under this name: a frame this
+  // parser does not understand, and guessing which cursor is the real one is how a menu gets
+  // half-read and offered anyway.
+  if (cursors.length > 1) return { kind: 'unreadable', reason: 'two-cursors', options: [], select: null, top: cursors[cursors.length - 1]! }
+
+  const at = cursors[0]!
+  const m = MARKER.exec(frame[at] ?? '')!
+  // The label's own column — the cursor glyph plus its space. A sibling is a row that starts its
+  // text exactly there; anything else belongs to some other block.
+  const col = m[1]!.length + 2
+  const rows: { i: number; label: string }[] = [{ i: at, label: m[2]! }]
+
+  for (let i = at - 1; i >= 0; i--) {
+    const label = siblingAt(frame[i] ?? '', col)
+    if (label === null || MARKER.test(frame[i] ?? '')) break
+    rows.unshift({ i, label })
+  }
+  for (let i = at + 1; i < frame.length; i++) {
+    const label = siblingAt(frame[i] ?? '', col)
+    if (label === null || MARKER.test(frame[i] ?? '')) break
+    rows.push({ i, label })
+  }
+
+  // One row is a statement, not a choice — and the caller may confirm it, which is exactly what
+  // `none` grants and `unreadable` withholds.
+  if (rows.length < 2) return { kind: 'none', options: [], select: null, top: at }
+
+  return {
+    kind: 'options',
+    select: 'marker',
+    top: rows[0]!.i,
+    // `number` is the POSITION, 1-based, so every caller can address an option the same way it
+    // addresses a numbered one. `select: 'marker'` is what stops it being typed as a digit.
+    options: rows.map((r, n) => ({ number: n + 1, label: r.label, selected: r.i === at })),
+  }
 }
 
 /**
@@ -180,8 +290,11 @@ export function readDialog(frame: readonly string[]): DialogRead {
  * menu", and that conflation is what put a blind confirm button on a six-option dialog. Ask
  * `readDialog(...).kind === 'none'`.
  */
-export function parseDialogOptions(frame: readonly string[]): DialogOption[] {
-  return readDialog(frame).options
+export function parseDialogOptions(
+  frame: readonly string[],
+  opts: { marker?: boolean } = {},
+): DialogOption[] {
+  return readDialog(frame, opts).options
 }
 
 /**

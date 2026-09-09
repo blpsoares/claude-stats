@@ -92,7 +92,13 @@ export function sessionCostUSD(s: SessionMeta): number {
       webSearchRequests: 0,
       costUSD: 0,
     },
-    '',
+    // THE SESSION'S OWN MODEL. This passed `''` — so every session was priced at
+    // `getModelPrice`'s fallback blend whatever it actually ran, which the comment above already
+    // said was only meant to happen when the model is unknown. Measured 2026-09-08 against a real
+    // `claude-opus-5` session: the board showed $814.93 where the table says $871.45, because opus
+    // costs more than the fallback. Under-reporting money is the reassuring direction, which is
+    // why it survived.
+    s.model ?? '',
   )
 }
 

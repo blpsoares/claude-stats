@@ -85,3 +85,36 @@ test('a row whose harness the registry has forgotten says THAT, not "we cannot r
   const out = await readSessionChat(hostWith('waiting', ''), 'en', 'sess1')
   expect(out.unavailable).toContain('which assistant')
 })
+
+/**
+ * THE LAST STEP AT WHICH A BLANK PANE WAS STILL POSSIBLE.
+ *
+ * The link and the format are refused in words above. A transcript that RESOLVED and then failed to
+ * read was not: the catch flattened it into `turns: []`, and on a live session that carries no
+ * `unavailable` — so the view drew "This conversation has no messages yet" over a conversation that
+ * was entirely on disk. Reported 2026-09-08, reached through the stale path memo (fixed in
+ * `transcript-path-memo.ts`); this is the guard that makes the NEXT cause say something.
+ */
+test('a transcript that resolves but cannot be READ is refused in words, never as an empty chat', async () => {
+  const brokenReader = () => ({
+    resolve: async () => '/some/found/transcript.jsonl',
+    read: async () => { throw new Error('EISDIR') },
+    readRecent: async () => ({ turns: [], older: false }),
+  })
+  const out = await readSessionChat(hostWith('waiting'), 'en', 'sess1', brokenReader as never)
+  expect(out.turns).toEqual([])
+  expect(out.live).toBe(true)
+  expect(out.unavailable).toContain('could not be read')
+})
+
+test('a reader that resolves and reads fine still carries no refusal', async () => {
+  // The guard must not fire on the ordinary path: an empty conversation stays empty and keeps the
+  // composer, which is what the first test in this file exists to protect.
+  const okReader = () => ({
+    resolve: async () => '/some/found/transcript.jsonl',
+    read: async () => ({ turns: [], older: false }),
+    readRecent: async () => ({ turns: [], older: false }),
+  })
+  const out = await readSessionChat(hostWith('waiting'), 'en', 'sess1', okReader as never)
+  expect(out.unavailable).toBeUndefined()
+})

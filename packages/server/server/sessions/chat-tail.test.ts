@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, writeFile, utimes } from 'node:fs/promises'
 import {
   forgetChatTailContent, forgetChatTailPaths, readChatWindow, readRecentChatTurns,
   resolveChatTranscriptPath,
@@ -504,16 +504,77 @@ describe('a transcript that does not exist YET', () => {
     expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root, now + 31_000)).toBe(stray)
   })
 
-  test('a path once found is never re-scanned for', async () => {
+  test('a path once found is not re-scanned for WHILE IT IS STILL THERE', async () => {
     const dir = join(root, '-home-u-proj')
     await mkdir(dir, { recursive: true })
     const file = join(dir, `${SESSION_ID}.jsonl`)
     await writeFile(file, line({ type: 'user', message: { content: 'oi' } }) + '\n')
     expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(file)
-    // Removing the tree does not un-answer it: a transcript does not move, and a read that fails
-    // is the reader's business, not the resolver's.
-    await rm(root, { recursive: true, force: true })
     expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(file)
+  })
+
+  test('THE REPORTED CASE: the transcript MOVED, and the memo must not go on answering the old path', async () => {
+    // This test used to assert the opposite, in these words: "removing the tree does not un-answer
+    // it: a transcript does not move". It does. Claude Code files a transcript under the project
+    // directory derived from the session's CURRENT cwd, so a session whose cwd changes has its
+    // `<id>.jsonl` re-filed elsewhere — measured 2026-09-08 on a live 2.4 MB conversation. The
+    // stale answer then failed every read, `chat-web.ts` turned that into `turns: []`, and because
+    // the session was live it carried no refusal: the panel said "This conversation has no messages
+    // yet" over a full transcript, and the user stopped receiving replies altogether.
+    const here = join(root, '-home-u-proj')
+    await mkdir(here, { recursive: true })
+    const first = join(here, `${SESSION_ID}.jsonl`)
+    await writeFile(first, line({ type: 'user', message: { content: 'oi' } }) + '\n')
+    expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(first)
+
+    // The cwd changed under the session: same conversation, another project directory.
+    const there = join(root, '-home-u-proj--worktrees-x')
+    await mkdir(there, { recursive: true })
+    const moved = join(there, `${SESSION_ID}.jsonl`)
+    await rename(first, moved)
+
+    expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(moved)
+  })
+
+  test('THE DELETION CASE: a transcript Claude Code cleaned up stops being answered', async () => {
+    // No cwd change needed. Claude Code deletes transcripts older than `cleanupPeriodDays` (30 by
+    // default) on every startup, so a long-lived server holds a path to a file removed under it.
+    const dir = join(root, '-home-u-proj')
+    await mkdir(dir, { recursive: true })
+    const file = join(dir, `${SESSION_ID}.jsonl`)
+    await writeFile(file, line({ type: 'user', message: { content: 'oi' } }) + '\n')
+    expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(file)
+    await rm(root, { recursive: true, force: true })
+    expect(await resolveChatTranscriptPath(CWD, SESSION_ID, root)).toBe(null)
   })
 })
 
+
+describe('a system note carries WHICH thing it is about, where the body named one', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'chat-tail-ref-')); forgetChatTailContent() })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  async function turnsOf(text: string) {
+    const file = join(root, 'x.jsonl')
+    await writeFile(file, line({ type: 'user', isMeta: true, message: { content: text } }) + '\n')
+    forgetChatTailContent()
+    return (await readChatWindow(file, 10)).turns
+  }
+
+  test('a skill load reaches the browser naming the skill', async () => {
+    // Without this the chip opens the skills tab and lands at the top of a list to be searched —
+    // the limitation CLAUDE.md records. The identity was in the body all along.
+    const [turn] = await turnsOf(
+      'Base directory for this skill: /home/u/.claude/plugins/cache/superpowers-dev/superpowers/6.0.2/skills/brainstorming',
+    )
+    expect(turn?.system).toBe('a skill was loaded')
+    expect(turn?.systemRef).toBe('superpowers:brainstorming')
+  })
+
+  test('a note that names nothing carries no reference at all', async () => {
+    const [turn] = await turnsOf('Continue from where you left off.')
+    expect(turn?.system).toBe('the session was resumed')
+    expect(turn?.systemRef).toBeUndefined()
+  })
+})

@@ -19,6 +19,7 @@ import {
   type Task, type TaskEvent, type TaskStatus,
 } from './task-model'
 import { boardProgress, DEFAULT_LEASE_MS, planNext } from './task-next'
+import { planAttach } from './task-attach'
 import { planMove } from './task-rank'
 import { compareBy } from '@agentistics/core'
 import { deleteTaskFile, deleteTaskFiles, readTaskFile, writeTaskFile } from './task-files'
@@ -532,15 +533,43 @@ export async function removeLink(ref: string, linkId: string): Promise<boolean> 
  * is asking them for a fact the machine holds. It never OVERWRITES a repo the task already carries
  * — a task that spans two repos keeps the one it was given.
  */
-export async function attachSession(ref: string, sessionId: string): Promise<boolean> {
+/**
+ * File a session under a delivery, or under one of its SUBTASKS.
+ *
+ * `subtaskId` makes it a subtask filing, and it is a MOVE either way: `planAttach` decides the
+ * whole pair, so filing under a subtask replaces a direct filing and filing under the task clears
+ * the subtask. A session is never under both — see `task-attach.ts`, which is the only place that
+ * rule exists.
+ */
+export async function attachSession(
+  ref: string,
+  sessionId: string,
+  o: { subtaskId?: string } = {},
+): Promise<boolean> {
   const w = await loadTaskWorld()
   const task = findTask(ref, w.book.tasks)
   if (!task) return false
   const row = w.rows.find(r => r.id === sessionId)
   if (!row) return false
 
+  const plan = planAttach({
+    target: o.subtaskId ? { kind: 'subtask', id: o.subtaskId } : { kind: 'task', id: task.id },
+    taskIds: w.book.tasks.map(t => t.id),
+    subtasks: w.book.subtasks.map(st => ({ id: st.id, taskId: st.taskId })),
+  })
+  if (!plan.ok) return false
+  // A subtask of ANOTHER delivery is refused rather than quietly re-parenting the session: the
+  // caller named a task, and honouring a subtask outside it would file the work somewhere nobody
+  // asked for.
+  if (plan.taskId !== task.id) return false
+
   const { patchSession } = await import('./registry')
-  const ok = await patchSession(row.id, { taskId: task.id, task: task.title })
+  const ok = await patchSession(row.id, {
+    taskId: task.id,
+    task: task.title,
+    // `null` CLEARS — a move from a subtask back to the delivery leaves nothing behind.
+    subtaskId: plan.subtaskId,
+  })
   if (!ok) return false
 
   // The record first, then LIVE git. Every row written before `ManagedSession.repo` existed carries
@@ -569,7 +598,11 @@ export async function attachSession(ref: string, sessionId: string): Promise<boo
  */
 export async function detachSession(sessionId: string): Promise<boolean> {
   const { patchSession } = await import('./registry')
-  return await patchSession(sessionId, { taskId: '', attemptId: '', task: '' })
+  // The SUBTASK goes with it. Unfiling a session that left a `subtaskId` behind would leave it
+  // drawn under a subtask of a delivery it is no longer part of.
+  return await patchSession(sessionId, {
+    taskId: '', attemptId: '', task: '', subtaskId: null,
+  })
 }
 
 export async function markTask(

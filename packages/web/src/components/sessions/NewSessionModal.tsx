@@ -26,7 +26,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Check, FolderClock, FolderGit2, Folder, Loader, Paperclip, Search, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Check, ClipboardList, FolderClock, FolderGit2, Folder, Loader, Paperclip, Search, X } from 'lucide-react'
 import { projectKind, type ProjectKind } from '@agentistics/core'
 import {
   KIND_TABS, SEARCH_DEBOUNCE_MS, kindCount, kindEmpty, kindHint, kindLabel, kindMore, kindMoreText,
@@ -38,6 +38,11 @@ import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { effortColor, effortSteps } from '../../lib/effortScale'
 import { HarnessMark } from './HarnessMark'
+import { TaskPicker } from '../tasks/TaskPicker'
+import { boardCopy } from '../tasks/copy'
+import { useFleet } from '../../lib/fleet'
+import { useTaskList } from '../../lib/tasks'
+import { suggestDelivery } from '../../lib/taskSuggest'
 import {
   STEP_ORDER, clearForHarness, modelDisplay, nextStep, prevStep, stepReady, unsetAnswer,
   visibleQuestions, type MissingAnswer, type StepId, type WizardDraft, type WizardHarness,
@@ -106,7 +111,6 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
    * counting rows rather than to a guess.
    */
   const [projectTotals, setProjectTotals] = useState<Record<ProjectKind, number> | undefined>(undefined)
-  const [tasks, setTasks] = useState<string[]>([])
   const [query, setQuery] = useState('')
   /**
    * The query the SEARCH is actually run with, one debounce behind the field.
@@ -126,10 +130,65 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
   const [harness, setHarness] = useState<HarnessOption | null>(null)
   const [cwd, setCwd] = useState('')
   const [task, setTask] = useState(initialTask ?? '')
+  /** Open when the delivery picker is up. */
+  const [pickingTask, setPickingTask] = useState(false)
+  /**
+   * The suggestion has been dismissed for this spawn.
+   *
+   * Kept apart from `task === ''`: clearing must STAY cleared, and without this the effect below
+   * would helpfully put the suggestion back the moment the field went empty — a field that refuses
+   * to be emptied is worse than one that was never filled.
+   */
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false)
+  /** True while the value in the field is the one the machine proposed, not one a person picked. */
+  const [taskWasSuggested, setTaskWasSuggested] = useState(false)
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState('')
   const [prompt, setPrompt] = useState('')
   const [label, setLabel] = useState('')
+
+  /**
+   * The delivery this session probably belongs to, from the folder that is selected RIGHT NOW.
+   *
+   * Both reads are ones the app already makes (the 5s refcounted fleet poll and the board's own
+   * list), so this costs no request of its own. `suggestDelivery` is pure and says nothing when the
+   * evidence is absent or points two ways — see its own note.
+   */
+  const isMobile = useIsMobile()
+  const { fleet } = useFleet(lang)
+  const { rows: taskRows } = useTaskList()
+  const suggestion = useMemo(
+    () => (cwd && taskRows
+      ? suggestDelivery({
+        cwd,
+        sessions: fleet.rows,
+        tasks: (taskRows ?? []).map(r => r.task),
+      })
+      : null),
+    [cwd, fleet.rows, taskRows],
+  )
+
+  /**
+   * Changing the FOLDER re-arms the suggestion, because a dismissal was about the folder that was
+   * selected when it was made. A person's own PICK survives it — the effect below refuses to write
+   * over a value they chose — so this only ever revives a proposal, never replaces an answer.
+   */
+  useEffect(() => {
+    setSuggestionDismissed(false)
+  }, [cwd])
+
+  /**
+   * Fill the field FROM the suggestion — never over a person's own choice, and never again once
+   * they have cleared it for this folder.
+   */
+  useEffect(() => {
+    if (suggestionDismissed) return
+    if (task && !taskWasSuggested) return
+    const next = suggestion?.title ?? ''
+    if (next === task) return
+    setTask(next)
+    setTaskWasSuggested(next !== '')
+  }, [suggestion, suggestionDismissed, task, taskWasSuggested])
 
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -181,7 +240,6 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
         setHarnesses(json.harnesses)
         setProjects(json.projects)
         setProjectTotals(json.projectTotals)
-        setTasks(json.tasks)
         // Pre-select the only assistant there is. A one-item picker is a question with one answer.
         setHarness(h => h ?? (json.harnesses.length === 1 ? json.harnesses[0]! : null))
       } catch {
@@ -444,7 +502,7 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
           choice nobody was allowed to make. */}
       <ReviewRow label={pt ? 'Título' : 'Title'} value={label || null} />
       <ReviewRow label={pt ? 'Onde' : 'Where'} value={cwd || null} mono />
-      <ReviewRow label={pt ? 'Tarefa' : 'Task'} value={task || null}
+      <ReviewRow label={pt ? 'Entrega' : 'Delivery'} value={task || null}
         muted={task === '' ? (pt ? 'Nenhuma' : 'None') : undefined} />
       <ReviewRow label={pt ? 'Primeira mensagem' : 'First message'} value={prompt || null}
         muted={prompt === '' ? (pt ? 'Nenhuma — a sessão abre esperando você' : 'None — the session opens waiting for you') : undefined} />
@@ -734,7 +792,7 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
           </Field>
           </>)}
 
-          {/* STEP 2 — WHERE. The directory, and the task that files this session with its
+          {/* STEP 2 — WHERE. The directory, and the delivery that files this session with its
               siblings. Both are about the WORK rather than about the assistant. */}
           {step === 'where' && (<>
           <Field label={pt ? 'Onde' : 'Where'}>
@@ -859,20 +917,82 @@ export function NewSessionModal({ lang, onClose, onStarted, initialTask }: NewSe
             </div>
           </Field>
 
-          <Field label={pt ? 'Tarefa (opcional)' : 'Task (optional)'} hint={pt
+          {/*
+            * The delivery. This is the PRIMARY door for filing a session: the field is here, filled
+            * in, before the session exists — every other surface is a repair afterwards.
+            *
+            * It is a PICKER and not a text field. It used to be an input with a datalist, which
+            * meant typing "ALM Board" where "ALM board" existed created a SECOND delivery with the
+            * metrics split between the two and nothing on screen saying so. The row menu had
+            * already been fixed this way; the form that files most sessions had not.
+            */}
+          <Field label={pt ? 'Entrega (opcional)' : 'Delivery (optional)'} hint={pt
             ? 'Agrupa várias sessões como um trabalho só, e é o que permite reabrir todas de uma vez.'
             : 'Groups several sessions as one piece of work, and is what lets you reopen them all at once.'}>
-            <input
-              value={task}
-              onChange={e => setTask(e.target.value)}
-              list="agentistics-tasks"
-              placeholder={pt ? 'Nova ou existente…' : 'New or existing…'}
-              style={{ ...inputStyle, paddingLeft: 12 }}
-            />
-            <datalist id="agentistics-tasks">
-              {tasks.map(t => <option key={t} value={t} />)}
-            </datalist>
+            <button
+              type="button"
+              onClick={() => setPickingTask(true)}
+              style={{
+                ...inputStyle, paddingLeft: 12, display: 'flex', alignItems: 'center', gap: 8,
+                textAlign: 'left', cursor: 'pointer',
+                color: task ? 'var(--text-primary)' : 'var(--text-tertiary)',
+              }}
+            >
+              <ClipboardList size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {task || (pt ? 'Nenhuma — escolher ou criar…' : 'None — pick or create…')}
+              </span>
+              <ChevronDown size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+            </button>
+            {/*
+              * The reason, and the way out. A field that fills itself in without saying why is a
+              * field nobody trusts, and one that cannot be emptied is worse than one that was never
+              * filled — so the sentence and the [×] always travel together.
+              */}
+            {taskWasSuggested && suggestion && task === suggestion.title && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+                fontSize: 11, color: 'var(--text-tertiary)',
+              }}>
+                <span style={{ flex: 1 }}>
+                  {pt
+                    ? `sugerida: ${suggestion.sameFolder} ${suggestion.sameFolder === 1 ? 'sessão desta pasta está' : 'sessões desta pasta estão'} nesta entrega`
+                    : `suggested: ${suggestion.sameFolder} session${suggestion.sameFolder === 1 ? '' : 's'} in this folder ${suggestion.sameFolder === 1 ? 'is' : 'are'} filed here`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setTask(''); setTaskWasSuggested(false); setSuggestionDismissed(true) }}
+                  title={pt ? 'Não usar a sugestão' : 'Do not use the suggestion'}
+                  // `.ag-tap-icon` PROJECTS the 44px a finger needs around a 22px glyph, rather
+                  // than painting a 44x44 box three times the size of what is in it.
+                  className="ag-tap-icon"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 22, height: 22, flexShrink: 0,
+                    background: 'transparent', border: 'none', borderRadius: 4,
+                    color: 'var(--text-tertiary)', cursor: 'pointer',
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
           </Field>
+
+          {pickingTask && (
+            <TaskPicker
+              title={boardCopy(lang).fileUnder}
+              lang={lang}
+              onPick={(_id, picked) => {
+                setTask(picked.title)
+                // A person chose it, so the effect above must stop proposing over the top of it.
+                setTaskWasSuggested(false)
+                setSuggestionDismissed(true)
+                setPickingTask(false)
+              }}
+              onClose={() => setPickingTask(false)}
+            />
+          )}
           </>)}
 
           {/* STEP 3 — WHAT. The first message, and the files it points at. */}

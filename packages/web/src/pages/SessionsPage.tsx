@@ -878,6 +878,7 @@ export default function SessionsPage() {
                 unsupported={unsupported}
                 heatmap={derived.heatmapData}
                 heatmapByHarness={derived.heatmapByHarness}
+                baseline={fleet.baseline}
                 {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
               />
             </div>
@@ -1047,6 +1048,7 @@ export default function SessionsPage() {
           unsupported={unsupported}
           heatmap={derived.heatmapData}
           heatmapByHarness={derived.heatmapByHarness}
+          baseline={fleet.baseline}
           {...(fleet.unavailable ? { unavailable: fleet.unavailable } : {})}
         />
       </div>

@@ -24,13 +24,15 @@ import { conversationOfRow } from './row-conversation'
 import { controlStrings } from '@agentistics/tui/control/i18n'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import type { ProjectSearchResult } from '@agentistics/tui/control'
-import { sessionRunning } from '@agentistics/tui/control/session-dimensions' 
+import { sessionRunning } from '@agentistics/tui/control/session-dimensions'
 import { fleetRow, type FleetActionRequest, type FleetRow } from './fleet-row'
 import { planFleetSpawn, type FleetSpawnBody } from './fleet-spawn'
 import { arrangeFleet, type FleetArrangement, type FleetViewRequest } from './fleet-arrange'
 import { markFleetPhase, timeFleetPhase } from './fleet-profile'
+import { cachedBaseline } from './fleet-baseline'
+import { loadConsolidated } from '../consolidate'
 import { readHarnessSkills, skillsReason, type HarnessSkill } from './harness-skills'
-import { modelsFor, type ModelOption } from '@agentistics/core'
+import { modelsFor, type ModelOption, type Baseline } from '@agentistics/core'
 import { artifactPathsFromTurns, type AllowedArtifact } from './artifact-file'
 import type { ArtifactResponse } from './artifact-web'
 
@@ -82,6 +84,8 @@ export interface FleetPayload {
    * find one id.
    */
   view?: FleetArrangement
+  /** This machine's 30-day behaviour baseline. Absent when the store could not be read at all. */
+  baseline?: Baseline
 }
 
 
@@ -190,6 +194,11 @@ export async function readFleet(lang: CliLang, view?: FleetViewRequest): Promise
     const fleet = await timeFleetPhase('readFleet: host.sessions()', () => host.sessions!())
     const tasks = host.sessionTasks ? await host.sessionTasks().catch(() => []) : []
     const finishedTasks = fleet.finishedTasks ?? []
+    // A failed store read costs freshness, never the fleet: the fleet is what this route is for.
+    const baseline = await cachedBaseline(
+      async () => [...(await loadConsolidated()).values()],
+      Date.now(),
+    ).catch(() => undefined)
     return {
       sessions: fleet.sessions.map(row => fleetRow(row, s)),
       rows: fleet.sessions,
@@ -204,6 +213,7 @@ export async function readFleet(lang: CliLang, view?: FleetViewRequest): Promise
       // paying for a grouping nobody reads on every five-second poll is the kind of cost that never
       // shows up in one profile and always shows up in a battery.
       ...(view ? { view: arrangeFleet(fleet.sessions, view, s, finishedTasks) } : {}),
+      ...(baseline ? { baseline } : {}),
     }
   } catch (e) {
     return {

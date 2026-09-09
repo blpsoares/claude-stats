@@ -247,6 +247,17 @@ export interface ManagedSession {
    * existed resolves through `legacyTaskId`.
    */
   taskId?: string
+  /**
+   * The SUBTASK this session is filed under, when it is filed under one.
+   *
+   * **A session is filed under a task OR under one of its subtasks, never both.** `task-attach.ts`
+   * is the only thing that decides the pair, and the invariant it keeps is that a set `subtaskId`
+   * means `taskId` is that subtask's OWN task. The parent is stored all the same, because the
+   * delivery's cost must keep including the work — direct sessions plus every subtask's IS the
+   * delivery — but the two are ONE attachment read through `filedUnder`, never two. Reading them
+   * as two is the double-count that rule exists to prevent.
+   */
+  subtaskId?: string
   attemptId?: string
   /**
    * The last time this session was OBSERVED ALIVE, epoch ms — stamped at creation, then refreshed by
@@ -446,6 +457,23 @@ export interface SessionBackend {
   sendChoiceText?(
     id: string, key: string, text: string, opened: (frame: string[]) => boolean,
   ): Promise<'sent' | 'no-field' | 'failed'>
+  /**
+   * Answer a NUMBERLESS dialog: move the cursor onto the row, LOOK, and only then confirm.
+   *
+   * There is no digit to type on claude's trust prompt (`❯ No, exit` / `  Yes, I trust this
+   * folder`), so the only way to reach the other row is to move onto it — and a count of arrow
+   * presses is an assumption about a widget nobody has driven in that exact dialog. `landed` is the
+   * caller's check, run on the frame AFTER the moves and BEFORE the confirm: it answers "is the
+   * highlighted row the one the person picked". `wrong-row` means it was not, and NOTHING was
+   * confirmed — the dialog is left exactly as it was found, which is the one outcome that is always
+   * recoverable.
+   *
+   * One call and not three for the same reason `sendChoiceText` is one: `writeToPane` locks per
+   * pane, and three locked calls leave two gaps another writer can land in.
+   */
+  sendMoveChoice?(
+    id: string, keys: readonly string[], confirmKey: string, landed: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'wrong-row' | 'failed'>
   sendTextRaw(id: string, text: string): Promise<boolean>
   /**
    * Press ONE named key — the backend's own vocabulary (`Enter`, `Escape`).

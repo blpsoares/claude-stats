@@ -7,7 +7,7 @@
  * lets the whole surface be rewritten without changing a single behaviour.
  */
 
-import type { HarnessId, ProjectKind } from '@agentistics/core'
+import type { Baseline, HarnessId, ProjectKind } from '@agentistics/core'
 import type { CliLang } from './lang'
 import type { GithubSection } from './backup'
 import type { SearchFields, SearchScope } from './search-scope'
@@ -1157,6 +1157,8 @@ export interface ControlSessions {
    * fell.
    */
   restorable?: RestoreCandidate[]
+  /** This machine's 30-day behaviour baseline. Absent when the store could not be read at all. */
+  baseline?: Baseline
 }
 
 export type TeamMode = 'solo' | 'central' | 'member'

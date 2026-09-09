@@ -57,6 +57,12 @@ export interface SessionPatch {
   task?: string
   /** See `ManagedSession.taskId` — stamped at spawn, patched only when a row is re-attributed. */
   taskId?: string
+  /**
+   * See `ManagedSession.subtaskId`. `null` CLEARS it, which is what moving a session from a subtask
+   * back to its task is: leaving the old value behind would keep drawing the row under a subtask it
+   * was explicitly moved out of.
+   */
+  subtaskId?: string | null
   attemptId?: string
   endedAt?: string
   conversationId?: string
@@ -117,6 +123,9 @@ function sanitize(raw: unknown): ManagedSession | null {
     ...(typeof s.note === 'string' ? { note: s.note } : {}),
     ...(typeof s.task === 'string' ? { task: s.task } : {}),
     ...(typeof s.taskId === 'string' ? { taskId: s.taskId } : {}),
+    // A field missing HERE is read back as absent however correctly it was written — the same
+    // silent drop `conversationId` suffered above, and `TaskPatch` suffered for `shared`.
+    ...(typeof s.subtaskId === 'string' ? { subtaskId: s.subtaskId } : {}),
     ...(typeof s.attemptId === 'string' ? { attemptId: s.attemptId } : {}),
     ...(typeof s.endedAt === 'string' ? { endedAt: s.endedAt } : {}),
     // Written by `resumeSession` and `openTask` and, until this line existed, dropped on the way back
@@ -285,7 +294,13 @@ export function createSessionRegistry(file: string): SessionRegistry {
         const list = await read()
         const idx = list.findIndex(s => s.id === id)
         if (idx === -1) return false
-        list[idx] = { ...list[idx]!, ...patch }
+        // `null` CLEARS the key rather than storing a null. A patch that could only ever ADD cannot
+        // express "this session is no longer filed under a subtask", and a stored `null` would then
+        // be dropped by the sanitizer on the next read anyway — leaving the in-memory row and the
+        // file disagreeing for exactly as long as the process lives.
+        const next = { ...list[idx]!, ...patch } as Record<string, unknown>
+        for (const [k, v] of Object.entries(patch)) if (v === null) delete next[k]
+        list[idx] = next as unknown as ManagedSession
         await write(list)
         return true
       })

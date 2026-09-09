@@ -44,3 +44,37 @@ function trim(lines: readonly string[]): string[] {
   while (out.length > 0 && (out[out.length - 1] ?? '').trim() === '') out.pop()
   return out
 }
+
+/**
+ * Should a second return be sent?
+ *
+ * THE CHECK ABOVE ANSWERS ONLY FOR A STILL PANE, and for one release nothing said so. `frameChanged`
+ * asks "did anything on screen change" as a proxy for "did the input empty", and a session MID-TURN
+ * changes on its own: the spinner glyph, the elapsed timers and the token counter all advance
+ * between any two captures. Measured 2026-09-08 on a live pane, two captures 200 ms apart with
+ * nothing sent to it, three lines differed. So the proxy was `true` on the first 60 ms poll of every
+ * send to a working session, the bounded retry never fired, and a swallowed return was reported as
+ * delivered: the composer cleared and the row said "delivered · it reads this when its turn ends"
+ * over a prompt still sitting in the harness's input box, found there with 36 minutes on the clock.
+ *
+ * That is the worst possible place to lose the retry. A BUSY session is exactly where the return is
+ * at risk — the input arrives as one fast burst, the harness reads it as a paste, and a return
+ * landing inside that burst becomes a newline rather than a submit — and it is also the only place
+ * where a submit produces no obvious change, because the message goes to a queue instead of
+ * starting a turn.
+ *
+ * So the pane is ASKED whether it animates, by comparing two captures taken before the return with
+ * nothing sent between them, and:
+ *
+ * - **animating** — the comparison cannot answer, so press return again. This is not a guess; it is
+ *   the module's own rule applied honestly: "nothing moved" was never evidence, only a reason to
+ *   press return once more, and on an emptied input that costs nothing.
+ * - **still** — today's behaviour exactly, unchanged and untouched.
+ *
+ * Every case this cannot settle therefore resolves toward the keystroke, because the two errors are
+ * not symmetric: a redundant return on an empty input does nothing, while a missing one strands a
+ * message for as long as nobody opens the terminal.
+ */
+export function needsSecondReturn(animating: boolean, movedAfterReturn: boolean): boolean {
+  return animating || !movedAfterReturn
+}

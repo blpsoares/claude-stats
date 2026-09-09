@@ -7,9 +7,33 @@
  * about: tab names, key hints, empty states, the words on this app's own screens.
  */
 
+import type { ProfileMetric } from '@agentistics/core'
 import type { CliLang } from './lang'
 import { dimensionWordBook, type DimensionWordBook, type SessionDimensionId, type SessionGroupingId } from './session-dimensions'
 import type { BackupLayer, BackupScheduleId, TabId, TeamMode } from './types'
+
+/**
+ * A profile metric's label, in both languages.
+ *
+ * `Record<ProfileMetric, string>` and NOT a `Record<string, string>` with a `?? key` fallback: a
+ * seventh metric must fail the BUILD here, not print `activeMinutes` to somebody reading a panel.
+ *
+ * EXPORTED so `ProfilePanel.tsx` — the web panel's OWN copy of this same map — can be cross-checked
+ * against it: nothing else keeps a translator who updates one from forgetting its twin, since the
+ * two are separately-typed literals in separate packages and TypeScript checks each one only
+ * against `ProfileMetric` itself, never against each other.
+ */
+export const PROFILE_METRIC_EN: Record<ProfileMetric, string> = {
+  messages: 'messages', activeMinutes: 'active minutes', compacts: 'compacts',
+  skills: 'skills', mcpServers: 'MCP servers', subagents: 'subagents',
+  tokens: 'tokens', toolErrors: 'tool errors',
+}
+
+export const PROFILE_METRIC_PT: Record<ProfileMetric, string> = {
+  messages: 'mensagens', activeMinutes: 'minutos ativos', compacts: 'compacts',
+  skills: 'skills', mcpServers: 'servidores MCP', subagents: 'subagentes',
+  tokens: 'tokens', toolErrors: 'erros de ferramenta',
+}
 
 export interface ControlStrings {
   tagline: string
@@ -214,6 +238,10 @@ export interface ControlStrings {
   sessionsLoading: string
   /** Said when the host does not implement the fleet at all — not the same as an empty fleet. */
   sessionsUnsupported: string
+  /** The heading over the behaviour profile drawn under the empty-state sentence. */
+  profileHeading: (days: number, sessions: number) => string
+  /** A profile metric's own label. Total over `ProfileMetric` — there is no fallback. */
+  profileMetric: (key: ProfileMetric) => string
   /** The summary row: "3 sessions · 1 waiting on you". */
   /**
    * How many rows are ON SCREEN, and out of how many the machine has.
@@ -910,6 +938,8 @@ const EN: ControlStrings = {
   sessionsEmptyFiltered: 'nothing matches · esc clears the filter',
   sessionsLoading: 'reading…',
   sessionsUnsupported: 'session management is not available on this machine.',
+  profileHeading: (days, sessions) => `Your last ${days} days · ${sessions} sessions`,
+  profileMetric: key => PROFILE_METRIC_EN[key],
   // `N of M sessions` read as "N of your M open sessions", which is not what either number is: the
   // second is every session this machine KNOWS, closed conversations and lost rows included, and
   // the first is only what the current view draws. Two counts of different kinds joined by "of" is
@@ -1493,6 +1523,8 @@ const PT: ControlStrings = {
   sessionsEmptyFiltered: 'nada corresponde · esc limpa o filtro',
   sessionsLoading: 'lendo…',
   sessionsUnsupported: 'gerenciamento de sessões não está disponível nesta máquina.',
+  profileHeading: (days, sessions) => `Seus últimos ${days} dias · ${sessions} sessões`,
+  profileMetric: key => PROFILE_METRIC_PT[key],
   // Ver a nota na versão em inglês: dois números de espécies diferentes ligados por "de" são lidos
   // como um só, e o medidor de memória do cabeçalho (`ram 4/18`) está na mesma tela.
   sessionsCount: (shown: number, total: number) => (shown === total

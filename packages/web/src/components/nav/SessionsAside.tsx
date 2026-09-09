@@ -30,6 +30,7 @@ import { buildPickRows } from '../../lib/sessionPick'
 import { rowMenuEntries, type RowVerb } from '../../lib/rowMenu'
 import { SessionRowMenu } from '../sessions/SessionRowMenu'
 import { TaskPicker } from '../tasks/TaskPicker'
+import { boardCopy } from '../tasks/copy'
 import { attachSession, detachSession } from '../../lib/tasks'
 import { SessionFacts } from '../sessions/SessionFacts'
 import { sessionPath } from '../../lib/sessionRoute'
@@ -573,6 +574,8 @@ export function SessionsAside({
                     onMoveBy={d => movePinnedSession(i, i + d)}
                     {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
                     onOpenMenu={(x, y, verbs) => openMenu(s, x, y, verbs)}
+                    onFile={(x, y) => setLinking({ id: s.id, x, y })}
+                    lang={lang}
                   />
                 </div>
               ))}
@@ -598,6 +601,8 @@ export function SessionsAside({
                 onOpen={s => (onOpenRow ? onOpenRow(s) : navigate(sessionPath(s.id)))}
                 {...(rowsById ? { rowsById } : {})}
                 onOpenMenu={openMenu}
+                onFile={(s, x, y) => setLinking({ id: s.id, x, y })}
+                lang={lang}
               />
             ))}
           </>
@@ -607,7 +612,8 @@ export function SessionsAside({
       {linking && (
         <TaskPicker
           at={{ x: linking.x, y: linking.y }}
-          title={pt ? 'Vincular a uma tarefa' : 'Link to a task'}
+          title={boardCopy(lang).fileUnder}
+          lang={lang}
           {...(() => {
             // The row the menu was opened on, so the picker can name what it is filed under and
             // offer to unfile it — the same contract the three-dot menu passes.
@@ -623,15 +629,11 @@ export function SessionsAside({
           })()}
           onPick={async taskId => {
             const ok = await attachSession(taskId, linking.id)
-            setNotice(ok
-              ? (pt ? 'Sessão vinculada à tarefa.' : 'Session filed under the task.')
-              : (pt ? 'Não foi possível vincular.' : 'Could not link that session.'))
+            setNotice(ok ? boardCopy(lang).filed : boardCopy(lang).couldNotFile)
           }}
           onDetach={async () => {
             const ok = await detachSession(linking.id, linking.id)
-            setNotice(ok
-              ? (pt ? 'Sessão desvinculada.' : 'No longer filed under a task.')
-              : (pt ? 'Não foi possível desvincular.' : 'Could not unfile that session.'))
+            setNotice(ok ? boardCopy(lang).unfiled : boardCopy(lang).couldNotUnfile)
           }}
           onClose={() => setLinking(null)}
         />
@@ -725,7 +727,7 @@ export function SessionsAside({
 
 /** One band of the two-way (active/inactive) split. Absent when it would be empty — an empty
  *  band with a heading and no rows under it is a label pretending to be information. */
-function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu }: {
+function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, rowsById, onOpenMenu, onFile, lang }: {
   label: string
   /** The band's rows, already grouped by project and ordered — see `lib/fleetGroups.ts`. */
   groups: readonly SessionGroup[]
@@ -736,6 +738,9 @@ function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, row
   onOpen: (row: ControlSession) => void
   rowsById?: Map<string, { verbs: RowVerb[] }>
   onOpenMenu: (session: ControlSession, x: number, y: number, verbs: RowVerb[]) => void
+  /** File a row under a delivery — the visible half of the gesture the menu also offers. */
+  onFile: (session: ControlSession, x: number, y: number) => void
+  lang: 'pt' | 'en'
 }) {
   const count = groups.reduce((n, g) => n + g.sessions.length, 0)
   if (count === 0) return null
@@ -776,6 +781,8 @@ function SessionBand({ label, groups, pinned, sessionId, tap, onPin, onOpen, row
               onOpen={() => onOpen(s)}
               {...(rowsById?.get(s.id) ? { verbs: rowsById.get(s.id)!.verbs } : {})}
               onOpenMenu={(x, y, verbs) => onOpenMenu(s, x, y, verbs)}
+              onFile={(x, y) => onFile(s, x, y)}
+              lang={lang}
             />
           ))}
         </div>
@@ -835,7 +842,7 @@ function EmptyReason({
 }
 
 
-function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, verbs, onOpenMenu }: {
+function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, verbs, onOpenMenu, onFile, lang }: {
   session: ControlSession; selected: boolean
   /** Minimum row height on mobile — 44px, and undefined on desktop. */
   tap?: number
@@ -848,10 +855,15 @@ function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, v
   verbs?: RowVerb[]
   /** Opens the context menu at a point, carrying the verbs it was opened with. */
   onOpenMenu?: (x: number, y: number, verbs: RowVerb[]) => void
+  /** File this row under a delivery — the visible half of the gesture the menu also offers. */
+  onFile?: (x: number, y: number) => void
+  lang?: 'pt' | 'en'
 }) {
   const wants = sessionNotify(session)
   const color = STATE_COLOR[session.state] ?? 'var(--text-tertiary)'
   const longPress = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Where the last pointer event landed, so a picker opened from inside the row is anchored. */
+  const lastPoint = useRef({ x: 0, y: 0 })
   const clearLongPress = () => {
     if (longPress.current !== null) { clearTimeout(longPress.current); longPress.current = null }
   }
@@ -881,6 +893,7 @@ function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, v
         cursor: 'pointer', fontFamily: 'inherit', minWidth: 0,
         transition: 'background 0.15s',
       }}
+      onPointerDown={e => { lastPoint.current = { x: e.clientX, y: e.clientY } }}
       onMouseEnter={e => { if (!selected) e.currentTarget.style.background = 'var(--bg-elevated)' }}
       onMouseLeave={e => {
         if (!selected) e.currentTarget.style.background = STATE_WASH[session.state] ?? 'transparent'
@@ -924,7 +937,16 @@ function SessionRow({ session, selected, pinned, tap, onPin, onOpen, onMoveBy, v
           opacity: wants ? 1 : 0.55,
         }}
       />
-      <SessionFacts session={session} selected={selected} />
+      <SessionFacts
+        session={session}
+        selected={selected}
+        {...(lang ? { lang } : {})}
+        {...(onFile
+          // Anchored where the click landed, like the menu's own picker — the gesture stays where
+          // the reader's eye already is.
+          ? { onFile: () => onFile(lastPoint.current.x, lastPoint.current.y) }
+          : {})}
+      />
       {/* The assistant, NAMED. It was a 5px dot, which carries the fact in colour alone — and a
           colour is not a name. The model sits with it on the meta line below. */}
       {/* The pin lives on the row rather than in a menu: it is a one-click decision about the row

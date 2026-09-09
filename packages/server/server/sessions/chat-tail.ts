@@ -24,12 +24,12 @@ import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { PROJECTS_DIR } from '../config'
 import { UUID_RE } from '../git'
-import { isHumanUserEntry } from '../jsonl'
+import { isUserRoleMessage } from '../jsonl'
 import { commandSummary, hasUnreadableWrite, shellWrites } from './shell-writes'
 import { classifyUserEntry, type UserEntry } from './chat-envelope'
 import type { ChatTurn } from './chat-turn'
 import { MAX_TAIL_BYTES, TAIL_BYTES, readTailBytes, windowLines } from './transcript-window'
-import { createTranscriptPathMemo } from './transcript-path-memo'
+import { createTranscriptPathMemo, resolveMemoizedPath } from './transcript-path-memo'
 
 // The turn shape now lives in `chat-turn.ts` — every harness reader produces it, and this module
 // is only one of them. Re-exported so nothing that already imports it from here has to move.
@@ -93,17 +93,18 @@ export async function resolveChatTranscriptPath(
   now: number = Date.now(),
 ): Promise<string | null> {
   if (!UUID_RE.test(sessionId)) return null
-  const known = pathMemo.get(sessionId)
-  if (known !== undefined) return known
-
-  const direct = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`)
-  if (await exists(direct)) { pathMemo.remember(sessionId, direct); return direct }
-
-  if (!pathMemo.mayScan(sessionId, now)) return null
-  pathMemo.missed(sessionId, now)
-  const scanned = await scanForTranscript(sessionId, projectsDir)
-  if (scanned !== null) pathMemo.remember(sessionId, scanned)
-  return scanned
+  // The remembered path is VERIFIED before it is answered — Claude Code re-files a transcript under
+  // the project directory of the session's CURRENT cwd, and deletes it outright after 30 days. See
+  // `resolveMemoizedPath`, which is where all three resolvers' shared shape lives.
+  return resolveMemoizedPath(pathMemo, sessionId, {
+    exists,
+    direct: async () => {
+      const p = join(projectsDir, encodeProjectDir(cwd), `${sessionId}.jsonl`)
+      return await exists(p) ? p : null
+    },
+    scan: () => scanForTranscript(sessionId, projectsDir),
+    now,
+  })
 }
 
 interface Cached {
@@ -122,11 +123,18 @@ export function forgetChatTailContent(): void {
 /**
  * What a `user` entry actually is — the person, the harness, or neither.
  *
- * `isHumanUserEntry` only excludes a pure `tool_result`; every other envelope the harness writes
- * under this role reached the pane as the user's own message. `chat-envelope.ts` is the split.
+ * `isUserRoleMessage` only excludes a pure `tool_result`; every other envelope the harness writes
+ * under this role reached the pane as the user's own message, and `chat-envelope.ts` is what splits
+ * those into a person's text and a system NOTE.
+ *
+ * It used to gate on `isHumanUserEntry`, which asks a DIFFERENT question — did a person take a
+ * turn — and grew an `isMeta`/`isCompactSummary` exclusion for the round counter. That silently
+ * emptied the chat of every system note: an injected entry was dropped HERE, before
+ * `classifyUserEntry` could ever name it, so no skill load, no attached image and no message from
+ * another session was drawn at all. Two questions need two predicates; see `jsonl.ts`.
  */
 function extractUserEntry(e: Record<string, unknown>): UserEntry | null {
-  if (!isHumanUserEntry(e)) return null
+  if (!isUserRoleMessage(e)) return null
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   let raw: string | undefined
   if (typeof msgContent === 'string') raw = msgContent
@@ -264,7 +272,12 @@ function queuedPromptText(prompt: unknown): string | null {
 function userTurn(entry: UserEntry): ChatTurn {
   return entry.kind === 'person'
     ? { role: 'user', text: entry.text }
-    : { role: 'user', text: entry.note, system: entry.note }
+    : {
+        role: 'user',
+        text: entry.note,
+        system: entry.note,
+        ...(entry.noteRef ? { systemRef: entry.noteRef } : {}),
+      }
 }
 
 function extractAssistantText(e: Record<string, unknown>): string | null {

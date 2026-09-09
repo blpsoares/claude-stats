@@ -16,6 +16,7 @@
     "./control/session-dimensions": "./src/control/session-dimensions.ts",
     "./control/search-scope": "./src/control/search-scope.ts",
     "./control/surface": "./src/control/surface.ts",
+    "./control/profile-lines": "./src/control/profile-lines.ts",
     "./control/i18n": "./src/control/i18n.ts"
   },
   "scripts": {

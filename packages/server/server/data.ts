@@ -214,12 +214,14 @@ async function scanProjectDir(
         extraSessions.push(session)
       } else if (metaEntry && (!metaEntry.model || metaEntry.active_minutes === undefined
         || metaEntry.context_tokens === undefined
+        || metaEntry.compact_count === undefined
+        || metaEntry.skill_uses === undefined
         || (metaEntry.uses_task_agent && !metaEntry.agentMetrics))) {
-        // Meta session — model, active time and agent metrics all come from the
-        // transcript (Claude's own session-meta files carry none of the three), and all
-        // three are cached as one unit keyed on the file's version. Wall-clock duration
-        // is in the meta file; per-turn active time only exists here, so it has to be
-        // computed or the metric is blank for the path that serves MOST Claude sessions.
+        // Meta session — model, active time, agent metrics, compaction and skill uses all come from
+        // the transcript (Claude's own session-meta files carry none of them), and all five are
+        // cached as one unit keyed on the file's version. Wall-clock duration is in the meta file;
+        // per-turn active time only exists here, so it has to be computed or the metric is blank for
+        // the path that serves MOST Claude sessions.
         await fileLimit(async () => {
           const needsModel = !metaEntry.model
           const needsAgentMetrics = metaEntry.uses_task_agent && !metaEntry.agentMetrics
@@ -228,7 +230,16 @@ async function scanProjectDir(
           // context reading, and this path serves MOST Claude sessions — a gauge computed only
           // inside `parseSessionJsonl` would be blank on nearly every row it exists for.
           const needsContext = metaEntry.context_tokens === undefined
-          if (!needsModel && !needsAgentMetrics && !needsActive && !needsContext) return
+          // `compact_count` and `skill_uses` are the same story: `parseSessionJsonl` fills them only
+          // when it reads the session's OWN transcript (`source === 'jsonl'`), and a meta-backed
+          // session never takes that path once it ages past Claude's cleanup window into
+          // `session-meta`. Gating on `undefined` (never on `!metaEntry.compact_count`, which `0`
+          // would trip) matches the field's own rule: presence IS the record of a real read, so a
+          // session already carrying `compact_count: 0` must not be enriched again.
+          const needsCompaction = metaEntry.compact_count === undefined
+          const needsSkills = metaEntry.skill_uses === undefined
+          if (!needsModel && !needsAgentMetrics && !needsActive && !needsContext
+            && !needsCompaction && !needsSkills) return
 
           const enriched = await cachedEnrich(cache, filePath, metaEntry.model ?? '')
           if (!enriched) return
@@ -240,6 +251,17 @@ async function scanProjectDir(
           // existing meta value is not the same as not writing.
           if (needsContext && enriched.contextTokens !== null) metaEntry.context_tokens = enriched.contextTokens
           if (needsAgentMetrics && enriched.agentMetrics) metaEntry.agentMetrics = enriched.agentMetrics
+          if (needsCompaction) {
+            // `0` is written unconditionally, matching `parseSessionJsonl`'s own rule — the whole
+            // point of the fix this branch exists for was that presence must mean "read", not
+            // "read and found something".
+            metaEntry.compact_count = enriched.compact.count
+            metaEntry.compact_ms = enriched.compact.ms
+            if (enriched.compact.droppedTokens !== undefined) {
+              metaEntry.compact_dropped_tokens = enriched.compact.droppedTokens
+            }
+          }
+          if (needsSkills) metaEntry.skill_uses = enriched.skillUses
         })
       }
       return

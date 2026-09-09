@@ -13,6 +13,7 @@
  */
 
 import { calcCost, totalTokens } from '@agentistics/core'
+import { countUsage } from './usage-dedupe'
 import type { AgentInvocation, SessionAgentMetrics } from '@agentistics/core'
 
 /** What one MODEL cost inside a subagent. Per model, because a subagent may run a cheaper one. */
@@ -94,6 +95,8 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
 /** Sum one subagent transcript. Total: malformed input yields an empty summary, never a throw. */
 export function summarizeSubagentTranscript(lines: Iterable<string>): SubagentSummary {
   const byModel = new Map<string, SubagentUsage>()
+  /** Message ids whose usage is already counted — see `usage-dedupe.ts`. */
+  const countedUsageIds = new Set<string>()
   let firstMs: number | null = null
   let lastMs: number | null = null
   let toolUseCount = 0
@@ -158,6 +161,11 @@ export function summarizeSubagentTranscript(lines: Iterable<string>): SubagentSu
 
     const usage = msg?.usage as UsageRecord | undefined
     if (!usage) continue
+    // ONE BILLED RESPONSE, COUNTED ONCE — the same rule the parent transcript needs, for the same
+    // reason: an assistant turn with several content blocks is several lines carrying the identical
+    // `message.usage`. Measured on three real subagent transcripts: 31 lines over 17 ids, 64 over
+    // 36, 55 over 31 — 77-83 % over. See `usage-dedupe.ts`.
+    if (!countUsage((msg as Record<string, unknown> | undefined)?.id, countedUsageIds)) continue
 
     const model = typeof msg?.model === 'string' ? msg.model : ''
     let entry = byModel.get(model)

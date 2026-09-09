@@ -14,11 +14,13 @@
 import { useMemo } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { Activity, Bell, FolderGit2, Power } from 'lucide-react'
+import type { Baseline } from '@agentistics/core'
 import type { ControlSession } from '@agentistics/tui/control/session-fleet'
 import { HARNESS_COLORS, HARNESS_LABELS } from '../../lib/harness'
 import { formatUptime, summarizeFleet } from '../../lib/fleetSummary'
 import { ActivityHeatmap } from '../ActivityHeatmap'
 import { formatDay, linePoints, trendChart, trendTicks, type TrendSeries } from '../../lib/trendLines'
+import { ProfilePanel } from './ProfilePanel'
 
 export interface HeatmapDay { date: string; value: number; sessions: number; tools: number }
 
@@ -56,10 +58,17 @@ export interface FleetOverviewProps {
    * is exactly what the line beside it is for.
    */
   heatmapByHarness?: Readonly<Record<string, readonly { date: string; sessions: number }[]>>
+  /**
+   * This machine's 30-day behaviour baseline — see `session-profile.ts` in `@agentistics/core`.
+   *
+   * Rendered only under the GENUINELY empty state (see below); absent everywhere else, since the
+   * cards above already say what the fleet is doing when there is one to summarize.
+   */
+  baseline?: Baseline
 }
 
 export function FleetOverview({
-  lang, rows, loading, unsupported, unavailable, heatmap, heatmapByHarness,
+  lang, rows, loading, unsupported, unavailable, heatmap, heatmapByHarness, baseline,
 }: FleetOverviewProps) {
   // Where the session list IS depends on the layout — see the paragraph below.
   const isMobile = useIsMobile()
@@ -69,6 +78,10 @@ export function FleetOverview({
   const s = useMemo(() => summarizeFleet(rows, Date.now()), [rows])
 
   if (loading || unsupported || unavailable || rows.length === 0) {
+    // A GENUINELY empty fleet — not loading, not refused, not a failed poll masquerading as
+    // "nothing running". The profile is a statement about this machine's own history and has
+    // nothing to do with why the live list is blank right now, so it renders only in this one case.
+    const genuinelyEmpty = !loading && !unsupported && !unavailable
     return (
       <Notice text={loading
         ? (pt ? 'Lendo as sessões desta máquina…' : 'Reading this machine’s sessions…')
@@ -81,7 +94,9 @@ export function FleetOverview({
             : (pt
                 ? 'Nenhuma sessão nesta máquina ainda. Inicie uma pelo agentop e ela aparece aqui.'
                 : 'No sessions on this machine yet. Start one with agentop and it shows up here.')}
-      />
+      >
+        {genuinelyEmpty && <ProfilePanel baseline={baseline} pt={pt} />}
+      </Notice>
     )
   }
 
@@ -370,10 +385,10 @@ function Stat({ icon, tone, label, value, note }: {
   )
 }
 
-function Notice({ text }: { text: string }) {
+function Notice({ text, children }: { text: string; children?: React.ReactNode }) {
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       height: '100%', minHeight: 320, padding: 32,
     }}>
       <p style={{
@@ -382,6 +397,14 @@ function Notice({ text }: { text: string }) {
       }}>
         {text}
       </p>
+      {/* The behaviour profile, when the fleet is genuinely empty — see `genuinelyEmpty` above.
+          Capped to the same width as the sentence so it reads as part of one message rather than
+          a second, wider block breaking out from under it. */}
+      {children && (
+        <div style={{ width: '100%', maxWidth: 460 }}>
+          {children}
+        </div>
+      )}
     </div>
   )
 }

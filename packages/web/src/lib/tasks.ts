@@ -143,6 +143,8 @@ export interface TaskSessionRow {
   harness: string
   cwd: string
   attemptId: string | null
+  /** The subtask it is filed under, or null for the delivery itself — never both. */
+  subtaskId: string | null
   createdAt: string
   endedAt?: string
   label?: string
@@ -399,8 +401,16 @@ export const addLink = (ref: string, url: string, label?: string, kind?: string)
 export const removeLink = (ref: string, remove: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/links`, { remove })
 
-export const attachSession = (ref: string, sessionId: string) =>
-  post(`/api/tasks/${encodeURIComponent(ref)}/sessions`, { sessionId })
+/**
+ * File a session under a delivery, or under one of its subtasks.
+ *
+ * Passing `subtaskId` MOVES it there; passing none moves it back to the delivery itself. A session
+ * is filed under one or the other and never both — the rule lives in the server's `task-attach.ts`,
+ * and this client only ever states a target.
+ */
+export const attachSession = (ref: string, sessionId: string, subtaskId?: string) =>
+  post(`/api/tasks/${encodeURIComponent(ref)}/sessions`,
+    subtaskId ? { sessionId, subtaskId } : { sessionId })
 
 export const detachSession = (ref: string, detach: string) =>
   post(`/api/tasks/${encodeURIComponent(ref)}/sessions`, { detach })

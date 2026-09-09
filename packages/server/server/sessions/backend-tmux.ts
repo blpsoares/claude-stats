@@ -14,7 +14,7 @@ import {
 import { dependencyCommandLine } from './dependency-plan'
 import { probeDependency } from './dependency-probe'
 import { planPromptDelivery } from './initial-prompt'
-import { frameChanged } from './submit-check'
+import { frameChanged, needsSecondReturn } from './submit-check'
 import { writeToPane } from './pane-writer'
 import type {
   BackendInitialPrompt, BackendSession, BackendSpawn, SessionBackend, TerminalCapture,
@@ -129,15 +129,35 @@ async function typeAndSubmit(id: string, text: string): Promise<boolean> {
   // not the prompt's own words.
   await sleep(SUBMIT_SETTLE_MS)
   const typedFrame = await captureFrame(id)
+
+  // DOES THIS PANE REPAINT ON ITS OWN? Two captures with nothing sent between them, which is the
+  // only way to find out. A session mid-turn advances its spinner glyph, its elapsed timers and its
+  // token counter, so the post-return comparison below answered `true` however the submit went —
+  // on exactly the sessions the retry exists for. See `needsSecondReturn` for the measurement.
+  await sleep(SUBMIT_POLL_MS)
+  const settleFrame = await captureFrame(id)
+  const animating = frameChanged(typedFrame, settleFrame)
+
   if ((await tmux(sendKeysNamedArgs(id, 'Enter'))).code !== 0) return false
+
+  // The comparison is only SPENT where it can answer, and it is made against the LAST pre-return
+  // capture — against `typedFrame` the animation between the two would count as movement all over
+  // again. On an animating pane it is skipped outright: it would return true on the first poll and
+  // cost a poll to learn nothing, so a busy send now gets faster rather than slower.
+  //
   // POLLED, not slept. A fixed wait spends its whole budget on every message — measured at ~820ms
   // per send, which a person feels on every keystroke of a conversation ("DEMORA MUITO pra enviar
-  // as mensagens"). The pane usually moves within one or two frames, so the common case now costs
-  // one poll and the budget is only spent when the submit genuinely did not show.
-  if (!(await paneMoved(id, typedFrame))) {
-    // The pane did not move. That is NOT proof the submit was swallowed — measured: a screen that
-    // redraws identically looks the same either way — so it buys one more return rather than a
-    // verdict. An extra return on an emptied input does nothing.
+  // as mensagens"). The pane usually moves within one or two frames, so the common case costs one
+  // poll and the budget is only spent when the submit genuinely did not show.
+  const moved = animating ? false : await paneMoved(id, settleFrame)
+
+  if (needsSecondReturn(animating, moved)) {
+    // Settled first, for the reason the gap above exists at all: two returns microseconds apart are
+    // one burst to a terminal UI reading them, and the second would be swallowed with the first.
+    await sleep(SUBMIT_SETTLE_MS)
+    // NOT proof the submit was swallowed — a screen that redraws identically looks the same either
+    // way — so this buys one more return rather than a verdict. An extra return on an emptied input
+    // does nothing; a missing one strands the message until somebody opens the terminal.
     await tmux(sendKeysNamedArgs(id, 'Enter'))
   }
   return true
@@ -313,6 +333,33 @@ export const tmuxBackend: SessionBackend = {
       if ((await tmux(sendKeysLiteralArgs(id, text))).code !== 0) return 'failed'
       await sleep(SUBMIT_SETTLE_MS)
       return (await tmux(sendKeysNamedArgs(id, 'Enter'))).code === 0 ? 'sent' : 'failed'
+    })
+  },
+
+  /**
+   * Move the cursor, LOOK, then confirm — the numberless dialog's answer.
+   *
+   * The look is the point. Everything else here is an assumption: that the widget wraps or does not,
+   * that one press moves one row, that the list has not been redrawn since the poll. `landed` tests
+   * the only thing that settles it — where the cursor IS, in the frame as it stands a moment before
+   * the confirm — so a miscount costs a refusal instead of the wrong answer to a question about
+   * somebody's folder. Nothing is sent after a failed look.
+   */
+  async sendMoveChoice(
+    id: string, keys: readonly string[], confirmKey: string, landed: (frame: string[]) => boolean,
+  ): Promise<'sent' | 'wrong-row' | 'failed'> {
+    return writeToPane(id, async () => {
+      for (const key of keys) {
+        const before = await captureFrame(id)
+        if ((await tmux(sendKeysNamedArgs(id, key))).code !== 0) return 'failed'
+        // A moved highlight IS a frame change; waiting for it is waiting for the widget to redraw.
+        // Bounded, exactly like `sendChoiceText`: a pane that will not move must not hold the
+        // request open, and the look below is what decides the outcome either way.
+        await paneMoved(id, before)
+      }
+      await sleep(SUBMIT_SETTLE_MS)
+      if (!landed(await captureFrame(id))) return 'wrong-row'
+      return (await tmux(sendKeysNamedArgs(id, confirmKey))).code === 0 ? 'sent' : 'failed'
     })
   },
 

@@ -1613,7 +1613,13 @@ async function handleRequestInner(req: Request, server: Server<WSData>): Promise
         if (typeof body.detach === 'string') {
           return json({ ok: await mod.detachSession(body.detach) })
         }
-        const ok = await mod.attachSession(ref, String(body.sessionId ?? ''))
+        // `subtaskId` files it under a SUBTASK of this delivery instead of under the delivery
+        // itself — a move, never an addition. `task-attach.ts` holds the exclusivity; a subtask
+        // belonging to another task is refused there, not repaired.
+        const ok = await mod.attachSession(ref, String(body.sessionId ?? ''),
+          typeof body.subtaskId === 'string' && body.subtaskId
+            ? { subtaskId: body.subtaskId }
+            : {})
         return json({ ok }, ok ? 200 : 404)
       }
       if (verb === 'links') {

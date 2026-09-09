@@ -3,6 +3,7 @@ import type { SessionDayUsage, SessionMeta, TurnEvent } from '@agentistics/core'
 import { activeMinutesOf, charCount } from '@agentistics/core'
 import { getSessionFileStats } from './git'
 import { countGitCommands } from './harness-activity'
+import { countUsage } from './usage-dedupe'
 import { extractAgentMetrics } from './agent-metrics'
 import { enrichFromSubagentTranscripts } from './subagent-metrics'
 import { addDelta, editDelta, type EditDelta } from './edit-lines'
@@ -64,16 +65,53 @@ export function classifyAgentFile(filePath: string): string | null {
   return null
 }
 
-/** True when a `type: 'user'` entry is a HUMAN message rather than a tool result being fed back.
- *  A turn boundary depends on this distinction, and so does `user_message_count` — they must never
- *  disagree, hence one helper used by both the full parser and the standalone active-time pass. */
-export function isHumanUserEntry(e: Record<string, unknown>): boolean {
+/**
+ * TWO QUESTIONS, TWO PREDICATES — and for one release they were one, which silently emptied the
+ * chat of every system note.
+ *
+ * `isUserRoleMessage` asks the CHAT's question: is this a `user`-role entry that is not a pure
+ * `tool_result` being fed back? Everything else the harness writes under that role — a
+ * `<system-reminder>`, a skill being loaded, an image being attached, a message from another
+ * session — IS one of these, and `chat-envelope.ts` is what then classifies it into a note.
+ *
+ * `isHumanUserEntry` asks the COUNTER's question: did a PERSON take a turn? It excludes `isMeta`
+ * and `isCompactSummary` on top, which is a measured correction to `user_message_count` and to the
+ * turn boundary (see the comment inside it).
+ *
+ * Collapsing the two broke the chat: `chat-tail.ts` gates on the first question and was handed the
+ * second, so every injected entry was DROPPED before `classifyUserEntry` ever saw it and the whole
+ * note machinery rendered nothing. Its own doc comment stated the assumption that had quietly
+ * stopped holding — "isHumanUserEntry only excludes a pure tool_result". Now it does again, under
+ * its own name.
+ */
+export function isUserRoleMessage(e: Record<string, unknown>): boolean {
   if (e.type !== 'user') return false
   const msgContent = (e.message as Record<string, unknown> | undefined)?.content
   const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
   const isPureToolResult = contentArr !== null && contentArr.length > 0 &&
     contentArr.every(p => p.type === 'tool_result')
   return !isPureToolResult
+}
+
+/** True when a `type: 'user'` entry is a PERSON's message — not a tool result, and not something
+ *  the harness injected under their role. A turn boundary depends on this distinction, and so does
+ *  `user_message_count`; they must never disagree, hence one helper for both. */
+export function isHumanUserEntry(e: Record<string, unknown>): boolean {
+  if (!isUserRoleMessage(e)) return false
+  // `isMeta` is Claude Code's own marker for an entry IT inserted under the user's role — the
+  // `<local-command-caveat>` block that precedes a slash command's output. Nobody typed it, so it
+  // is not a round and it is not a turn boundary. Measured 2026-09-08 across four real sessions:
+  // the parser's count exceeded a hand recount by 22, 15, 7 and 1 — the isMeta count of each,
+  // exactly. On a session that ran 22 local commands, "rounds" read 65 for 43 real messages.
+  //
+  // `sessionLabel` already strips these wrappers out of `first_prompt`, so the product had two
+  // readings of the same entry: not-prose when labelling it, a person's turn when counting it.
+  //
+  // `isCompactSummary` is the other one, found the same way: the "This session is being continued
+  // from a previous conversation that ran out of context" block, which Claude Code writes under the
+  // user's role when it compacts. It was the last remaining discrepancy on the fourth session —
+  // exactly one entry, exactly one round of difference.
+  return !(e.isMeta === true || e.isCompactSummary === true)
 }
 
 /**
@@ -118,6 +156,74 @@ export function contextTokensFromClaudeJsonl(lines: string[]): number | undefine
     if (sent > 0) last = sent
   }
   return last > 0 ? last : undefined
+}
+
+/** What a session's compactions cost it. `droppedTokens` is absent when no record reported one. */
+export interface CompactStats {
+  count: number
+  ms: number
+  droppedTokens?: number
+}
+
+/**
+ * COMPACTIONS, off the raw transcript — PURE.
+ *
+ * `cumulativeDroppedTokens` is CUMULATIVE and monotonic, so it is a MAX and never a sum: measured
+ * on a real five-compact session it runs 954.238 → 4.785.215, and adding those reports 14,4M for a
+ * session that dropped 4,8M. The field is also frequently absent (27 of 46 real records), and an
+ * absent measurement stays `undefined` — a `0` there would claim a session that compacted five
+ * times dropped nothing.
+ *
+ * Takes an `Iterable<string>` rather than an array so the caller can pass `iterLines(content)`
+ * directly. `parseSessionJsonl` deliberately never materialises its lines — the header on
+ * `iterLines` records why, with the measurement — and an array parameter here would have forced it
+ * to.
+ */
+export function compactsFromClaudeJsonl(lines: Iterable<string>): CompactStats {
+  let count = 0
+  let ms = 0
+  let dropped: number | undefined
+  for (const line of lines) {
+    // Cheap reject before the parse: most lines are not this.
+    if (!line.includes('compact_boundary')) continue
+    let e: Record<string, unknown>
+    try { e = JSON.parse(line) as Record<string, unknown> } catch { continue }
+    if (e.type !== 'system' || e.subtype !== 'compact_boundary') continue
+    const meta = e.compactMetadata as Record<string, unknown> | undefined
+    if (!meta) continue
+    count++
+    if (typeof meta.durationMs === 'number') ms += meta.durationMs
+    const c = meta.cumulativeDroppedTokens
+    if (typeof c === 'number') dropped = Math.max(dropped ?? 0, c)
+  }
+  return dropped === undefined ? { count, ms } : { count, ms, droppedTokens: dropped }
+}
+
+/**
+ * SKILL INVOCATIONS, by the skill's own name — PURE.
+ *
+ * A skill is a `Skill` tool_use whose `input.skill` names it. A call with no readable name is
+ * skipped rather than filed under a placeholder: an invented bucket would show up in the profile as
+ * a skill somebody uses.
+ */
+export function skillUsesFromClaudeJsonl(lines: Iterable<string>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const line of lines) {
+    if (!line.includes('"Skill"')) continue
+    let e: Record<string, unknown>
+    try { e = JSON.parse(line) as Record<string, unknown> } catch { continue }
+    const msg = e.message as Record<string, unknown> | undefined
+    const content = msg?.content
+    if (!Array.isArray(content)) continue
+    for (const p of content as Record<string, unknown>[]) {
+      if (p.type !== 'tool_use' || p.name !== 'Skill') continue
+      const input = p.input as Record<string, unknown> | undefined
+      const name = input?.skill
+      if (typeof name !== 'string' || name === '') continue
+      out[name] = (out[name] ?? 0) + 1
+    }
+  }
+  return out
 }
 
 export function activeMinutesFromClaudeJsonl(lines: string[]): number | undefined {
@@ -277,6 +383,12 @@ export async function parseSessionJsonl(
    * Verified on a real transcript (2026-08-14, claude 2.1.232): 2 + 1.380 + 211.577 = 212.959.
    */
   let contextTokens = 0
+  /**
+   * The message ids whose usage has already been counted — see `usage-dedupe.ts`. A Set and not a
+   * post-pass, because this walk reads files that reach hundreds of megabytes and must stay one
+   * pass with nothing held.
+   */
+  const countedUsageIds = new Set<string>()
   let gitCommits = 0, gitPushes = 0
   let toolErrors = 0, userInterruptions = 0
   let hasMcp = false
@@ -382,12 +494,15 @@ export async function parseSessionJsonl(
       const msgContent = (e.message as Record<string, unknown> | undefined)?.content
       const contentArr = Array.isArray(msgContent) ? msgContent as Record<string, unknown>[] : null
 
-      // Tool result messages: content is an array where every item is type='tool_result'
-      const isPureToolResult = !isHumanUserEntry(e)
+      // NOT a person's turn: a tool result being fed back, or an entry the harness injected under
+      // the user's role (`isMeta`). The two are different things and only the first carries a
+      // content ARRAY — `contentArr!` used to rest on "not human implies tool result", which stopped
+      // being true the moment `isMeta` was excluded, and threw on the first local command.
+      const notHuman = !isHumanUserEntry(e)
 
-      if (isPureToolResult) {
+      if (notHuman) {
         // Count tool errors and attribute them to the originating tool
-        for (const p of contentArr!) {
+        for (const p of contentArr ?? []) {
           if (p.is_error === true) {
             toolErrors++
             const toolName = toolUseIdToName.get(p.tool_use_id as string) ?? 'unknown'
@@ -430,7 +545,11 @@ export async function parseSessionJsonl(
       if (!modelId && typeof msg?.model === 'string' && msg.model.startsWith('claude-')) modelId = msg.model
       const msgOutputTokens = (msg?.usage as Record<string, number> | undefined)?.output_tokens ?? 0
       { const d = dayOf(ts); if (d) d.messages++ }
-      if (msg?.usage) {
+      // ONE BILLED RESPONSE IS COUNTED ONCE. Claude Code writes an assistant turn as several lines
+      // when its content has several blocks, and every one repeats the SAME `message.usage`. This
+      // walk summed per LINE, so a real session's tokens — and the cost priced from them — read
+      // 60-90 % high; see `usage-dedupe.ts` for the three sessions that proved it.
+      if (msg?.usage && countUsage(msg.id, countedUsageIds)) {
         const u = msg.usage as Record<string, number>
         inputTokens         += u.input_tokens ?? 0
         outputTokens        += u.output_tokens ?? 0
@@ -552,6 +671,9 @@ export async function parseSessionJsonl(
     ? await enrichFromSubagentTranscripts(extractAgentMetrics(iterLines(content), modelId), filePath, sessionId)
     : undefined
 
+  const compaction = compactsFromClaudeJsonl(iterLines(content))
+  const skillUses = skillUsesFromClaudeJsonl(iterLines(content))
+
   return {
     session_id: sessionId,
     project_path: projectPath,
@@ -567,6 +689,30 @@ export async function parseSessionJsonl(
     assistant_chars: assistantChars,
     assistant_char_messages: assistantCharMsgs,
     tool_counts: toolCounts,
+    // `0` and `{}` ARE REAL ANSWERS HERE, and are written as such. This parser has just walked the
+    // whole transcript, so "it compacted zero times" / "it invoked no skill" is a measurement, and
+    // an ABSENT field means only that no transcript was read for this session. Writing them only
+    // above zero made `session-profile.ts`'s `n` identical to its `nonZero` for both metrics: the
+    // panel printed `compacts: 2 (n=23)` beside `messages: 2 (n=479)`, reading as "your typical
+    // session compacts twice" when 23 of 479 sessions ever compacted at all and the typical one
+    // compacts none. `compact_dropped_tokens` stays conditional — no record carrying one is a
+    // different fact from a record carrying zero.
+    //
+    // `source === 'subdir'` is the exception, and it is the one `backfill-compaction.ts` records:
+    // there the file just read is a SUBAGENT's stand-in for a session whose own transcript is gone,
+    // and a subagent runs its own context and compacts on its own (5 of this machine's 255 subagent
+    // transcripts carry a `compact_boundary`). Stamping its count on the session would be a
+    // confident wrong number where the honest answer is that the evidence is gone.
+    ...(source === 'jsonl'
+      ? {
+          compact_count: compaction.count,
+          compact_ms: compaction.ms,
+          ...(compaction.droppedTokens !== undefined
+            ? { compact_dropped_tokens: compaction.droppedTokens }
+            : {}),
+          skill_uses: skillUses,
+        }
+      : {}),
     tool_output_tokens: toolOutputTokens,
     agent_file_reads: agentFileReads,
     languages: Array.from(languageSet),

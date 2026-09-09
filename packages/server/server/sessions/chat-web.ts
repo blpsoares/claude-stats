@@ -80,6 +80,11 @@ export async function readSessionChat(
   host: StartHost,
   lang: CliLang,
   id: string,
+  // Injectable for tests only — the same seam `resolveChatTranscriptPath` gives `projectsDir` and
+  // `now`. Without it the "found but unreadable" refusal below can only be reached by making a real
+  // file unreadable under a `PROJECTS_DIR` fixed at import time, which is why that branch went
+  // untested long enough to become a blank pane in front of a user.
+  readerFor: typeof transcriptReaderFor = transcriptReaderFor,
 ): Promise<ChatPayload> {
   const s = controlStrings(lang)
   if (!host.sessions) return { turns: [], unavailable: s.sessionsNoHost, live: false }
@@ -132,7 +137,7 @@ export async function readSessionChat(
     }
   }
 
-  const reader = transcriptReaderFor(row.harness)
+  const reader = readerFor(row.harness)
   if (!reader) {
     const name = row.harness
     return {
@@ -185,8 +190,23 @@ export async function readSessionChat(
   // briefly an optional `readWindow` that only Claude implemented, which gives the other four the
   // silent version of the bug the notice exists to fix: the antigravity transcript this reader was
   // written against holds 1239 turns, so a 400-turn window cuts it and says nothing.
-  const read = await reader.read(path, MAX_TURNS)
-    .catch(() => ({ turns: [] as ChatTurn[], older: false }))
+  // A READ THAT FAILED IS NOT AN EMPTY CONVERSATION. This catch used to flatten the two into
+  // `turns: []`, which on a LIVE session carries no `unavailable` — so a transcript that resolved
+  // and then could not be read drew "This conversation has no messages yet" over a conversation
+  // that was entirely there. That is the same confident-empty this module exists to refuse, reached
+  // one step later than the link and format refusals above. The cause behind the report was the
+  // stale memo in `transcript-path-memo.ts`; this is the symptom guard beside it, so the next cause
+  // says something instead of drawing a blank pane.
+  const read = await reader.read(path, MAX_TURNS).catch(() => null)
+  if (read === null) {
+    return {
+      turns: [],
+      unavailable: lang === 'pt'
+        ? 'A transcrição desta conversa foi encontrada nesta máquina, mas não pôde ser lida.'
+        : 'This conversation’s transcript was found on this machine, but could not be read.',
+      live,
+    }
+  }
   // What is still waiting, judged against the user turns THIS read returned. The window matters and
   // is the right one: a message queued a minute ago cannot be older than the last 400 turns, and
   // comparing against a wider slice would cost a second read to learn nothing.
