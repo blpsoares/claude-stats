@@ -20,9 +20,16 @@
  *
  * ## The rules
  *
- * - **A session that is not RUNNING is excluded, by name.** A prompt to a `lost` or `exited` row
- *   has nowhere to go. It is reported rather than dropped: a count that shrinks between what was
- *   ticked and what was sent is the thing that makes somebody re-send.
+ * - **A session that is not running is REOPENED FIRST, when it can be.** A prompt to a `lost` or
+ *   `exited` row used to have nowhere to go and was skipped; asked for directly, a ticked row that
+ *   the machine knows how to reopen is now brought back and then written to. The plan only SAYS
+ *   which ones need it (`needsReopen`) — the reopening, and waiting for it to be real, is the
+ *   host's job, exactly as the writing is.
+ * - **A row that cannot be reopened is still excluded, by name, and with its own reason.** "It is
+ *   not running" and "it is not running and nothing here knows how to bring it back" send a person
+ *   to different places, so `not-reopenable` is a separate code. It is reported rather than
+ *   dropped: a count that shrinks between what was ticked and what was sent is the thing that makes
+ *   somebody re-send.
  * - **A session with a DIALOG OPEN is excluded, by name.** The row already knows this — it is the
  *   same rule the composer keeps — and a sentence typed into a dialog goes into its filter, where
  *   the submit takes whatever is highlighted.
@@ -42,16 +49,34 @@ export interface BroadcastCandidate {
   running: boolean
   /** Is a dialog open on it? A prompt would go into the dialog's filter. */
   blocked: boolean
+  /**
+   * Can this machine bring it back? Read off the row's own `resume` target, never inferred here.
+   *
+   * The row is absent that field precisely when the harness cannot reopen by id, so a row that
+   * cannot be resurrected is one this plan must not promise to write to.
+   */
+  reopenable: boolean
 }
 
 /** A session this prompt will be offered to. */
-export interface BroadcastTarget { id: string; title: string }
+export interface BroadcastTarget {
+  id: string
+  title: string
+  /**
+   * It is not running, and has to be brought back before anything can be typed into it.
+   *
+   * The host reopens it and waits for it to actually be up — a prompt typed into a session that
+   * does not exist yet goes nowhere, and reporting that as a send would be worse than the skip this
+   * replaced.
+   */
+  needsReopen: boolean
+}
 
 /** A session it will not, and the reason in a code the caller renders. */
 export interface BroadcastSkip {
   id: string
   title: string
-  reason: 'not-running' | 'dialog-open' | 'unknown'
+  reason: 'not-reopenable' | 'dialog-open' | 'unknown'
 }
 
 export type BroadcastPlan =
@@ -66,6 +91,11 @@ export type BroadcastPlan =
  * before pressing. A caller that wants more sends twice, which is a decision made twice.
  */
 export const MAX_BROADCAST = 12
+
+/** How many of a plan's targets have to be brought back before they can be written to. */
+export function reopenCount(targets: readonly BroadcastTarget[]): number {
+  return targets.filter(t => t.needsReopen).length
+}
 
 export function planBroadcast(o: {
   text: string
@@ -88,9 +118,13 @@ export function planBroadcast(o: {
     seen.add(id)
     const row = known.get(id)
     if (!row) { skipped.push({ id, title: id, reason: 'unknown' }); continue }
-    if (!row.running) { skipped.push({ id, title: row.title, reason: 'not-running' }); continue }
-    if (row.blocked) { skipped.push({ id, title: row.title, reason: 'dialog-open' }); continue }
-    targets.push({ id, title: row.title })
+    // A dialog is checked FIRST and on running rows only: a stopped session has no dialog open,
+    // and its `blocked` is whatever the last frame before it died happened to say.
+    if (row.running && row.blocked) { skipped.push({ id, title: row.title, reason: 'dialog-open' }); continue }
+    if (!row.running && !row.reopenable) {
+      skipped.push({ id, title: row.title, reason: 'not-reopenable' }); continue
+    }
+    targets.push({ id, title: row.title, needsReopen: !row.running })
   }
 
   // Counted over the TARGETS, not the selection: rows that were going to be skipped anyway cost

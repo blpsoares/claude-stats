@@ -1,9 +1,9 @@
 import { test, expect } from 'bun:test'
-import { MAX_BROADCAST, broadcastReport, planBroadcast } from './broadcast-plan'
+import { MAX_BROADCAST, broadcastReport, planBroadcast , reopenCount } from './broadcast-plan'
 import type { BroadcastCandidate } from './broadcast-plan'
 
 const row = (id: string, o: Partial<BroadcastCandidate> = {}): BroadcastCandidate => ({
-  id, title: id.toUpperCase(), running: true, blocked: false, ...o,
+  id, title: id.toUpperCase(), running: true, blocked: false, reopenable: false, ...o,
 })
 
 test('sends to the running rows that were ticked', () => {
@@ -23,13 +23,14 @@ test('names what it will not send to, rather than dropping it', () => {
   const p = planBroadcast({
     text: 'go',
     ids: ['live', 'dead', 'asking'],
+    // `dead` cannot be brought back, so it is still named rather than sent to.
     rows: [row('live'), row('dead', { running: false }), row('asking', { blocked: true })],
   })
   expect(p.ok).toBe(true)
   if (!p.ok) throw new Error('expected ok')
   expect(p.targets.map(t => t.id)).toEqual(['live'])
   expect(p.skipped).toEqual([
-    { id: 'dead', title: 'DEAD', reason: 'not-running' },
+    { id: 'dead', title: 'DEAD', reason: 'not-reopenable' },
     { id: 'asking', title: 'ASKING', reason: 'dialog-open' },
   ])
 })
@@ -100,10 +101,59 @@ test('the report keeps every outcome, and counts both sides', () => {
       { id: 'a', title: 'A', ok: true, message: 'sent' },
       { id: 'b', title: 'B', ok: false, message: 'that session is not asking anything right now' },
     ],
-    [{ id: 'c', title: 'C', reason: 'not-running' }],
+    [{ id: 'c', title: 'C', reason: 'not-reopenable' }],
   )
   expect(r.sent).toBe(1)
   expect(r.failed).toBe(1)
   expect(r.skipped).toHaveLength(1)
   expect(r.outcomes.find(o => o.id === 'b')!.message).toContain('not asking')
+})
+
+/**
+ * A ticked session that is not running is BROUGHT BACK, when this machine knows how.
+ *
+ * Asked for directly: picking a closed session should reopen it and give it the prompt, rather than
+ * quietly dropping it from the send. The plan only says which ones need it — reopening, and waiting
+ * for the session to be real before anything is typed, is the host's job.
+ */
+test('a closed session that can be reopened becomes a target, marked as needing it', () => {
+  const p = planBroadcast({
+    text: 'go',
+    ids: ['live', 'closed'],
+    rows: [row('live'), row('closed', { running: false, reopenable: true })],
+  })
+  expect(p.ok).toBe(true)
+  if (!p.ok) throw new Error('expected ok')
+  expect(p.targets).toEqual([
+    { id: 'live', title: 'LIVE', needsReopen: false },
+    { id: 'closed', title: 'CLOSED', needsReopen: true },
+  ])
+  expect(p.skipped).toEqual([])
+  expect(reopenCount(p.targets)).toBe(1)
+})
+
+test('a closed session nothing can reopen is still named, with its own reason', () => {
+  // "It is not running" and "it is not running and nothing here knows how to bring it back" send a
+  // person to different places.
+  const p = planBroadcast({
+    text: 'go',
+    ids: ['gone'],
+    rows: [row('gone', { running: false, reopenable: false })],
+  })
+  expect(p.ok).toBe(false)
+  if (p.ok) throw new Error('expected refusal')
+  expect(p.skipped).toEqual([{ id: 'gone', title: 'GONE', reason: 'not-reopenable' }])
+})
+
+test('a stopped row is never skipped for a dialog its last frame happened to show', () => {
+  // A session that is not running has no dialog open; `blocked` there is whatever the frame before
+  // it died said, and reading it as a live dialog would refuse a reopen for no reason.
+  const p = planBroadcast({
+    text: 'go',
+    ids: ['stale'],
+    rows: [row('stale', { running: false, blocked: true, reopenable: true })],
+  })
+  expect(p.ok).toBe(true)
+  if (!p.ok) throw new Error('expected ok')
+  expect(p.targets).toEqual([{ id: 'stale', title: 'STALE', needsReopen: true }])
 })
