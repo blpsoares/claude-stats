@@ -66,6 +66,11 @@
  * the direction that has to be safe.
  */
 
+// The PURE half of the skills table — never the reader, which would drag `config.ts` and its
+// import-time environment reads into this parser. See `skill-source.ts`'s header.
+import { HARNESS_SKILLS, skillNameFromDir } from './skill-source'
+
+
 /** What a `user` entry turns out to be. */
 export type UserEntry =
   /** The person typed this. `text` is theirs, verbatim. */
@@ -74,7 +79,20 @@ export type UserEntry =
    * The harness wrote this under the user role. `note` names the kind in one short phrase; the
    * BODY is deliberately absent — see the header.
    */
-  | { kind: 'system'; note: string }
+  | {
+      kind: 'system'
+      note: string
+      /**
+       * WHICH thing the note is about, where the body named one — a skill's invocation name today.
+       *
+       * The note names a KIND, which is all a chip could ever say, so clicking one opened the aside
+       * tab and left the reader hunting the list. Some bodies do carry the identity and it was
+       * simply thrown away with the rest of the body. Absent whenever the body names nothing this
+       * product can resolve: an absent reference makes the chip behave exactly as it always has,
+       * while a guessed one would match no row and look broken.
+       */
+      noteRef?: string
+    }
 
 /**
  * Envelopes the harness writes, and what each one is.
@@ -145,9 +163,27 @@ export function classifyUserText(text: string): UserEntry {
  * generic one. That is why a new shape appearing upstream cannot regress anything here: it is
  * already `system`, it just says less.
  */
-const META_KINDS: Array<{ test: RegExp; note: string }> = [
-  { test: /^Base directory for this skill:/, note: 'a skill was loaded' },
-  { test: /^\(Re-invocation of/, note: 'a skill was re-invoked' },
+const META_KINDS: Array<{ test: RegExp; note: string; ref?: (text: string) => string | undefined }> = [
+  // Measured on real transcripts: `Base directory for this skill: <dir>` on the first line, the
+  // skill's own document below it. `skillNameFromDir` turns that directory into the INVOCATION
+  // name, which is what `HarnessSkill.name` is and what the panel lists.
+  {
+    test: /^Base directory for this skill:/,
+    note: 'a skill was loaded',
+    ref: text => {
+      const dir = /^Base directory for this skill:[ \t]*(.+)$/m.exec(text)?.[1]?.trim()
+      if (!dir) return undefined
+      const source = HARNESS_SKILLS.claude
+      return (source ? skillNameFromDir(dir, source) : null) ?? undefined
+    },
+  },
+  // Measured: `(Re-invocation of /claude-code-notifications:ccn — the skill instructions were
+  // previously loaded; …`. Here the invocation name is already written out, behind a slash.
+  {
+    test: /^\(Re-invocation of/,
+    note: 'a skill was re-invoked',
+    ref: text => /^\(Re-invocation of \/([^\s—]+)/.exec(text)?.[1],
+  },
   { test: /^Another Claude session sent a message:/, note: 'a message from another session' },
   // agentop's own peer message, from the event channel — the same family, and measured beside it.
   { test: /^The coordinator sent a message/, note: 'a message from another session' },
@@ -206,5 +242,6 @@ export function classifyUserEntry(
   // An unrecognised meta entry is still the harness — the flag said so. It gets a truthful generic
   // note rather than being shown, because the alternative is attributing to a person something
   // they did not write.
-  return { kind: 'system', note: kind?.note ?? 'injected by the assistant' }
+  const ref = kind?.ref?.(trimmed)
+  return { kind: 'system', note: kind?.note ?? 'injected by the assistant', ...(ref ? { noteRef: ref } : {}) }
 }

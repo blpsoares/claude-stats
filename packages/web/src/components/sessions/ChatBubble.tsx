@@ -60,6 +60,15 @@ export interface ChatTurn {
    * circled in a screenshot with "I didn't send that". See `chat-envelope.ts`.
    */
   system?: string
+  /**
+   * WHICH thing that note is about, where its body named one — a skill's invocation name today.
+   *
+   * `system` names a KIND, so the chip could only open the aside tab and leave the reader hunting
+   * the list. Passed to `openArtifacts` so the row that was actually used scrolls into view and
+   * flashes. Absent for every note whose body names nothing resolvable, and the chip then behaves
+   * exactly as it always has.
+   */
+  systemRef?: string
   /** Carried by the transcript; deliberately not rendered here. See the header. */
   tools?: Array<{ name: string; detail?: string }>
   /** Carried by the transcript; deliberately not rendered here. See the header. */
@@ -149,7 +158,7 @@ export interface ChatBubbleProps {
  * answer is the place it takes you to, and a sentence plus a destination on one 10px chip is two
  * targets in a control that has room for one.
  */
-function SystemNote({ note, pt }: { note: string; pt: boolean }) {
+function SystemNote({ note, noteRef, pt }: { note: string; noteRef?: string; pt: boolean }) {
   const { label, help, tab } = chatNote(note, pt)
   const [shown, setShown] = useState(false)
   const isMobile = useIsMobile()
@@ -172,7 +181,9 @@ function SystemNote({ note, pt }: { note: string; pt: boolean }) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: '2px 0' }}>
         <button
-          onClick={() => openArtifacts(tab satisfies ChatNoteTab)}
+          // The REFERENCE goes with the tab. Without it this lands at the top of a list to be
+          // searched — the limitation CLAUDE.md records — and the body named the thing all along.
+          onClick={() => openArtifacts(tab satisfies ChatNoteTab, noteRef)}
           {...(help ? { title: help, 'aria-label': `${label} — ${help}` } : {})}
           style={{ ...chip, display: 'inline-flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}
         >
@@ -367,7 +378,7 @@ export const ChatBubble = memo(function ChatBubble({ turn, lang, harness, provis
   }
 
   if (turn.system) {
-    return <SystemNote note={turn.system} pt={pt} />
+    return <SystemNote note={turn.system} noteRef={turn.systemRef} pt={pt} />
   }
 
   const color = (HARNESS_COLORS as Record<string, string>)[harness] ?? 'var(--text-secondary)'

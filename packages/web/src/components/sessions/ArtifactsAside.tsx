@@ -31,6 +31,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { asideCache, asideKey } from '../../lib/asideCache'
+import { focusMissNotice, isFocusedRow, rowsCarry, ROW_FLASH } from '../../lib/noteFocus'
 import { Activity, BookOpen, Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, ExternalLink, Eye, FileEdit, FilePlus2, FileText, Files, GitBranch, GitPullRequest, Image, LayoutGrid, Loader, PanelRightClose, Pencil, Plug, Plus, Send, Sparkles, Terminal, Trash2, Workflow, X } from 'lucide-react'
 import type { Artifact } from '../../lib/sessionArtifacts'
 import {
@@ -1153,6 +1154,11 @@ export function ArtifactsAside({
         {feed.map((e, i) => (
           <EventRow
             key={i} e={e} pt={pt} now={now} sessionId={sessionId}
+            // THE ROW THE STRIP ASKED FOR. `EventRow` has answered `focused` since it was written —
+            // it opens itself, scrolls into view and flashes — and nothing ever passed it, so
+            // `openArtifacts('live', hint.ref)` landed at the top of a feed to be searched. The
+            // state was computed and faded on a timer the whole time; only this line was missing.
+            focused={e.ref !== undefined && isFocusedRow(e.ref, focusStep)}
             // A WROTE row is a link to the file it names. Only when that file is actually in the
             // Files list: the feed shows every write the transcript recorded, while Files shows the
             // ones still readable on disk, and offering to open a deleted file would be a row whose
@@ -1397,30 +1403,29 @@ export function ArtifactsAside({
                   {skillsNote}
                 </p>
               )}
+              {/*
+                * A REFERENCE NO ROW CARRIES IS SAID, never swallowed. The chip promised to show
+                * which skill was used; a tab that opens and highlights nothing is indistinguishable
+                * from a button that did not work. It happens for real — a skill loaded from a
+                * directory this machine no longer lists, or a list that has not arrived yet.
+                */}
+              {focusStep !== undefined && !rowsCarry(skills.map(sk => sk.name), focusStep) && (
+                <p style={{
+                  margin: '0 0 8px', padding: '7px 10px', borderRadius: 8, fontSize: 11,
+                  lineHeight: 1.5, color: 'var(--text-secondary)',
+                  background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                }}>
+                  {focusMissNotice(focusStep, pt)}
+                </p>
+              )}
               {skillGroups.map(group => (
                 <Band key={group.key || '_own'} label={`${group.label} · ${group.skills.length}`}>
                   {group.skills.map(sk => (
-                    <button
-                      key={sk.name}
-                      onClick={() => setOpenSkill(sk.name)}
-                      style={{
-                        display: 'block', width: '100%', textAlign: 'left',
-                        padding: '8px 10px', marginBottom: 6, borderRadius: 9, cursor: 'pointer',
-                        background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
-                        fontFamily: 'inherit',
-                      }}
-                    >
-                      <span style={{
-                        display: 'block', fontSize: 12, fontWeight: 650, color: 'var(--text-primary)',
-                        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                      }}>/{shortName(sk)}</span>
-                      {sk.description && (
-                        <span style={{
-                          display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5,
-                          color: 'var(--text-tertiary)',
-                        }}>{sk.description}</span>
-                      )}
-                    </button>
+                    <SkillButton
+                      key={sk.name} sk={sk} label={shortName(sk)}
+                      focused={isFocusedRow(sk.name, focusStep)}
+                      onOpen={() => setOpenSkill(sk.name)}
+                    />
                   ))}
                 </Band>
               ))}
@@ -1765,6 +1770,52 @@ function StepBlock({ label, text, tone }: { label: string; text: string; tone?: 
   )
 }
 
+/**
+ * ONE SKILL, and the row a note's chip can point AT.
+ *
+ * A component rather than the inline `<button>` it replaced, for one reason: a row that scrolls
+ * itself into view needs a ref and an effect, and neither can live inside a `.map`. The behaviour is
+ * `EventRow`'s, deliberately — same flash (`ROW_FLASH`), same `scrollIntoView`, because "the one you
+ * asked for" must not look like two different things in two tabs of one panel.
+ */
+function SkillButton({ sk, label, focused, onOpen }: {
+  sk: { name: string; description?: string }
+  label: string
+  focused: boolean
+  onOpen: () => void
+}) {
+  const ref = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    // `nearest` and not `center`: the row is often already on screen, and yanking a list that did
+    // not need to move is its own kind of lost place.
+    if (focused) ref.current?.scrollIntoView({ block: 'nearest' })
+  }, [focused])
+  return (
+    <button
+      ref={ref}
+      onClick={onOpen}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left',
+        padding: '8px 10px', marginBottom: 6, borderRadius: 9, cursor: 'pointer',
+        background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+        fontFamily: 'inherit',
+        ...(focused ? { animation: ROW_FLASH } : {}),
+      }}
+    >
+      <span style={{
+        display: 'block', fontSize: 12, fontWeight: 650, color: 'var(--text-primary)',
+        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+      }}>/{label}</span>
+      {sk.description && (
+        <span style={{
+          display: 'block', marginTop: 3, fontSize: 11, lineHeight: 1.5,
+          color: 'var(--text-tertiary)',
+        }}>{sk.description}</span>
+      )}
+    </button>
+  )
+}
+
 function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
   e: LiveEvent; pt: boolean; now: number; onOpen?: () => void; status?: WriteStatus
   sessionId: string
@@ -1820,7 +1871,7 @@ function EventRow({ e, pt, now, onOpen, status, sessionId, agentId, focused }: {
       style={{
         borderRadius: 7,
         background: open ? 'var(--bg-elevated)' : 'transparent',
-        ...(focused === true ? { animation: 'ag-row-flash 1.6s ease-in-out 2' } : {}),
+        ...(focused === true ? { animation: ROW_FLASH } : {}),
       }}
     >
     <div style={{ display: 'flex', alignItems: 'flex-start' }}>

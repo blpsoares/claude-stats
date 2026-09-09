@@ -549,3 +549,32 @@ describe('a transcript that does not exist YET', () => {
   })
 })
 
+
+describe('a system note carries WHICH thing it is about, where the body named one', () => {
+  let root: string
+  beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'chat-tail-ref-')); forgetChatTailContent() })
+  afterEach(async () => { await rm(root, { recursive: true, force: true }) })
+
+  async function turnsOf(text: string) {
+    const file = join(root, 'x.jsonl')
+    await writeFile(file, line({ type: 'user', isMeta: true, message: { content: text } }) + '\n')
+    forgetChatTailContent()
+    return (await readChatWindow(file, 10)).turns
+  }
+
+  test('a skill load reaches the browser naming the skill', async () => {
+    // Without this the chip opens the skills tab and lands at the top of a list to be searched —
+    // the limitation CLAUDE.md records. The identity was in the body all along.
+    const [turn] = await turnsOf(
+      'Base directory for this skill: /home/u/.claude/plugins/cache/superpowers-dev/superpowers/6.0.2/skills/brainstorming',
+    )
+    expect(turn?.system).toBe('a skill was loaded')
+    expect(turn?.systemRef).toBe('superpowers:brainstorming')
+  })
+
+  test('a note that names nothing carries no reference at all', async () => {
+    const [turn] = await turnsOf('Continue from where you left off.')
+    expect(turn?.system).toBe('the session was resumed')
+    expect(turn?.systemRef).toBeUndefined()
+  })
+})
