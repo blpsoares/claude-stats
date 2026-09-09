@@ -83,3 +83,43 @@ describe('buildTaskList repos', () => {
     expect(only!.rollup.sessionsUsed).toBe(1)
   })
 })
+
+describe('rollupSessionsFor', () => {
+  const meta2 = (over: Partial<SessionMeta> = {}): SessionMeta => ({
+    session_id: 'c1', project_path: '/repo', start_time: '2026-09-05T10:00:00.000Z',
+    harness: 'claude', input_tokens: 100, output_tokens: 50,
+    cache_read_input_tokens: 800, cache_creation_input_tokens: 50,
+    user_message_count: 3,
+    ...over,
+  } as SessionMeta)
+
+  it('counts one CONVERSATION once, however many rows point at it', async () => {
+    // Every reopen mints a new managedId for the same conversation. Measured on a live board: six
+    // rows of one conversation made a delivery report five times its real cost.
+    const { rollupSessionsFor } = await import('./task-report')
+    const rows = ['r1', 'r2', 'r3'].map(id => row({ id, conversationId: 'c1' }))
+    const out = rollupSessionsFor(rows, metasOf(meta2()), () => 7)
+    expect(out).toHaveLength(1)
+    expect(out[0]!.costUSD).toBe(7)
+  })
+
+  it('keeps every row that has no conversation to be a duplicate OF', async () => {
+    const { rollupSessionsFor } = await import('./task-report')
+    const rows = [
+      row({ id: 'r1', conversationId: undefined }),
+      row({ id: 'r2', conversationId: undefined }),
+      row({ id: 'r3', conversationId: 'c1' }),
+    ]
+    const out = rollupSessionsFor(rows, metasOf(meta2()), () => 1)
+    expect(out).toHaveLength(3)
+    // The two unlinked ones contribute nothing, which is what `sessionsLinked` is for.
+    expect(out.filter(s => s.meta !== null)).toHaveLength(1)
+  })
+
+  it('keeps distinct conversations apart', async () => {
+    const { rollupSessionsFor } = await import('./task-report')
+    const rows = [row({ id: 'r1', conversationId: 'c1' }), row({ id: 'r2', conversationId: 'c2' })]
+    const out = rollupSessionsFor(rows, metasOf(meta2(), meta2({ session_id: 'c2' })), () => 3)
+    expect(out).toHaveLength(2)
+  })
+})
