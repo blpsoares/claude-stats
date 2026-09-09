@@ -123,3 +123,20 @@ describe('rollupSessionsFor', () => {
     expect(out).toHaveLength(2)
   })
 })
+
+describe('distinctConversations', () => {
+  it('is the rule every surface that walks a task\'s rows must share', async () => {
+    // `task-overview.ts` accumulates its own totals rather than going through the rollup, so the
+    // headline counted a reopened conversation once per reopening while the delivery under it was
+    // right. Measured on a live board: 13.110.140.051 tokens over deliveries summing 2.493.697.631.
+    const { distinctConversations } = await import('./task-report')
+    const rows = [
+      row({ id: 'r1', conversationId: 'c1' }),
+      row({ id: 'r2', conversationId: 'c1' }),
+      row({ id: 'r3', conversationId: 'c2' }),
+      row({ id: 'r4', conversationId: undefined }),
+      row({ id: 'r5', conversationId: undefined }),
+    ]
+    expect(distinctConversations(rows).map(r => r.id)).toEqual(['r1', 'r3', 'r4', 'r5'])
+  })
+})

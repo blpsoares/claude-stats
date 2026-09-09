@@ -18,7 +18,7 @@ import { sessionTokens } from '@agentistics/core'
 import { TASK_STATUSES, isClosed, type Task, type TaskStatus } from './task-model'
 import type { Bucket } from './task-stats'
 import type { ManagedSession } from './types'
-import { rowsOfTask } from './task-report'
+import { distinctConversations, rowsOfTask } from './task-report'
 
 export interface BoardOverview {
   /** Every status, always present — a column at zero is a fact, not an absence. */
@@ -85,7 +85,12 @@ export function buildBoardOverview(o: {
   for (const task of o.tasks) {
     statusCounts[task.status] = (statusCounts[task.status] ?? 0) + 1
 
-    const mine = rowsOfTask(task, o.rows)
+    // ONE CONVERSATION, COUNTED ONCE — the same rule `rollupSessionsFor` keeps, and it has to be
+    // kept HERE TOO because this walk accumulates its own totals rather than going through it.
+    // Six rows of one reopened conversation put its tokens and its cost into the headline six
+    // times: measured on a live board, the overview read 13.110.140.051 tokens where the
+    // deliveries under it summed to 2.493.697.631.
+    const mine = distinctConversations(rowsOfTask(task, o.rows))
     totalSessions += mine.length
     sessionsPer.push(mine.length)
 
